@@ -1,9 +1,9 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseSeamFile, resolveComposition } from "@seam/core";
-import { buildMlt, serializeToXml } from "@seam/renderer";
+import { buildFfmpegCommand, checkFfmpeg, renderWithFfmpeg } from "@seam/renderer";
 
-export function renderCommand(
+export async function renderCommand(
   file: string,
   options: { output?: string; fps?: string; width?: string; height?: string }
 ) {
@@ -11,6 +11,8 @@ export function renderCommand(
   const fps = options.fps ? parseInt(options.fps, 10) : 30;
   const width = options.width ? parseInt(options.width, 10) : 1920;
   const height = options.height ? parseInt(options.height, 10) : 1080;
+
+  checkFfmpeg();
 
   const json = readFileSync(filePath, "utf-8");
   const result = parseSeamFile(json);
@@ -23,10 +25,17 @@ export function renderCommand(
   }
 
   const timeline = resolveComposition(result.data);
-  const mltDoc = buildMlt(timeline, { fps, width, height });
-  const xml = serializeToXml(mltDoc);
+  const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
+  const command = buildFfmpegCommand(timeline, outputPath, { fps, width, height });
 
-  const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mlt");
-  writeFileSync(outputPath, xml, "utf-8");
-  console.log(`Rendered MLT XML to ${outputPath}`);
+  console.log(`Rendering to ${outputPath}...`);
+  const renderResult = await renderWithFfmpeg(command, outputPath);
+
+  if (renderResult.success) {
+    console.log(`Done in ${renderResult.duration.toFixed(1)}s → ${outputPath}`);
+  } else {
+    console.error("ffmpeg failed:");
+    console.error(renderResult.stderr);
+    process.exit(1);
+  }
 }

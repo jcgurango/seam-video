@@ -1,4 +1,4 @@
-export { buildMlt } from "./mlt-builder.js";
-export type { MltDocument, MltOptions, MltProducer, MltEntry, MltBlank } from "./mlt-builder.js";
-export { serializeToXml } from "./xml-serializer.js";
-export { secondsToFrames, framesToMltTime } from "./frame-utils.js";
+export { buildFfmpegCommand } from "./ffmpeg-builder.js";
+export type { FfmpegCommand, FfmpegOptions } from "./ffmpeg-builder.js";
+export { renderWithFfmpeg, checkFfmpeg } from "./ffmpeg-runner.js";
+export type { RenderResult } from "./ffmpeg-runner.js";

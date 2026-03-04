@@ -14,7 +14,16 @@ export interface ResolvedEmpty {
   timelineEnd: number;
 }
 
-export type ResolvedChild = ResolvedClip | ResolvedEmpty;
+export interface ResolvedComposition {
+  type: "composition";
+  timelineStart: number;
+  timelineEnd: number;
+  duration: number;
+  speed: number;
+  children: ResolvedChild[];
+}
+
+export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition;
 
 export interface ResolvedTimeline {
   duration: number;

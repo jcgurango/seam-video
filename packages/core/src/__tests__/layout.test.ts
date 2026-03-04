@@ -365,7 +365,7 @@ describe("resolveComposition", () => {
   });
 
   describe("nested compositions", () => {
-    it("resolves a nested composition", () => {
+    it("resolves a nested composition preserving hierarchy", () => {
       const result = resolveComposition(
         comp({
           children: [
@@ -385,6 +385,75 @@ describe("resolveComposition", () => {
 
       expect(result.duration).toBe(8);
       expect(result.children).toHaveLength(2);
+      expect(result.children[0]).toMatchObject({
+        type: "clip",
+        source: "a.mp4",
+        timelineStart: 0,
+        timelineEnd: 3,
+      });
+
+      const nested = result.children[1];
+      expect(nested.type).toBe("composition");
+      if (nested.type === "composition") {
+        expect(nested.timelineStart).toBe(3);
+        expect(nested.timelineEnd).toBe(8);
+        expect(nested.duration).toBe(5);
+        expect(nested.speed).toBe(1);
+        expect(nested.children).toHaveLength(1);
+        expect(nested.children[0]).toMatchObject({
+          type: "clip",
+          source: "inner.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+        });
+      }
+    });
+
+    it("crops nested composition to window", () => {
+      const result = resolveComposition(
+        comp({
+          layout: { duration: 5, justify: "start", gap: 0 },
+          children: [
+            {
+              type: "composition",
+              overflow: "trim-end",
+              flex: 1,
+              children: [
+                { type: "clip", source: "x.mp4", in: 0, out: 4, overflow: "trim-end" },
+                { type: "clip", source: "y.mp4", in: 0, out: 6, overflow: "trim-end" },
+              ],
+              in: 0,
+              out: 10,
+            },
+          ],
+        })
+      );
+
+      // Container is 5s, inner composition has 10s natural → trim-end to 5s
+      const nested = result.children[0];
+      expect(nested.type).toBe("composition");
+      if (nested.type === "composition") {
+        expect(nested.duration).toBe(5);
+        // x.mp4 (0-4) is fully inside window 0-5
+        // y.mp4 (4-10) is cropped to 4-5
+        expect(nested.children).toHaveLength(2);
+        expect(nested.children[0]).toMatchObject({
+          type: "clip",
+          source: "x.mp4",
+          sourceIn: 0,
+          sourceOut: 4,
+          timelineStart: 0,
+          timelineEnd: 4,
+        });
+        expect(nested.children[1]).toMatchObject({
+          type: "clip",
+          source: "y.mp4",
+          sourceIn: 0,
+          sourceOut: 1,
+          timelineStart: 4,
+          timelineEnd: 5,
+        });
+      }
     });
   });
 });

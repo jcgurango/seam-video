@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import type { ResolvedTimeline, ResolvedChild, ResolvedClip } from "@seam/core";
+import { flattenResolved } from "@seam/core";
 
 interface PlayerProps {
   timeline: ResolvedTimeline;
@@ -47,8 +48,8 @@ export default function Player({ timeline, basePath }: PlayerProps) {
   // Track the logical source currently loaded (not the browser-normalized URL)
   const loadedSourceRef = useRef<string | null>(null);
 
-  const children = timeline.children;
-  const current = children[currentIndex] as ResolvedChild | undefined;
+  const children = flattenResolved(timeline.children);
+  const current = children[currentIndex] as (ResolvedClip | { type: "empty"; timelineStart: number; timelineEnd: number }) | undefined;
 
   const playClip = useCallback(
     async (index: number) => {

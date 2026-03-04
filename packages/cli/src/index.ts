@@ -12,7 +12,7 @@ program
 
 program
   .command("render <file>")
-  .description("Render a .seam file to MLT XML")
+  .description("Render a .seam file to mp4 via ffmpeg")
   .option("-o, --output <path>", "Output file path")
   .option("--fps <number>", "Frames per second", "30")
   .option("--width <number>", "Output width in pixels", "1920")

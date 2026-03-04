@@ -1,22 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { secondsToFrames } from "../frame-utils.js";
-import { buildMlt } from "../mlt-builder.js";
-import { serializeToXml } from "../xml-serializer.js";
+import { buildFfmpegCommand } from "../ffmpeg-builder.js";
 import type { ResolvedTimeline } from "@seam/core";
 
-describe("secondsToFrames", () => {
-  it("converts seconds to frames at 30fps", () => {
-    expect(secondsToFrames(1, 30)).toBe(30);
-    expect(secondsToFrames(0.5, 30)).toBe(15);
-    expect(secondsToFrames(0, 30)).toBe(0);
-  });
-
-  it("rounds to nearest frame", () => {
-    expect(secondsToFrames(1.017, 30)).toBe(31);
-  });
-});
-
-describe("buildMlt", () => {
+describe("buildFfmpegCommand", () => {
   it("builds a simple two-clip timeline", () => {
     const timeline: ResolvedTimeline = {
       duration: 8,
@@ -42,15 +28,17 @@ describe("buildMlt", () => {
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
 
-    expect(doc.producers).toHaveLength(2);
-    expect(doc.producers[0]).toMatchObject({ resource: "a.mp4" });
-    expect(doc.producers[1]).toMatchObject({ resource: "b.mp4" });
-    expect(doc.playlist).toHaveLength(2);
+    expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
+    expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
+    expect(cmd.filterComplex).toContain("[1:v]trim=5:10");
+    expect(cmd.filterComplex).toContain("concat=n=2:v=1:a=1[outv][outa]");
+    expect(cmd.outputArgs).toContain("libx264");
+    expect(cmd.outputArgs).toContain("out.mp4");
   });
 
-  it("reuses producers for same source", () => {
+  it("gives each clip its own input (no dedup)", () => {
     const timeline: ResolvedTimeline = {
       duration: 6,
       children: [
@@ -75,11 +63,13 @@ describe("buildMlt", () => {
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
-    expect(doc.producers).toHaveLength(1);
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.inputs).toEqual(["video.mp4", "video.mp4"]);
+    expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
+    expect(cmd.filterComplex).toContain("[1:v]trim=5:8");
   });
 
-  it("handles speed with timewarp resource", () => {
+  it("handles speed with setpts and atempo", () => {
     const timeline: ResolvedTimeline = {
       duration: 5,
       children: [
@@ -95,11 +85,13 @@ describe("buildMlt", () => {
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
-    expect(doc.producers[0].resource).toBe("timewarp:2:video.mp4");
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    // setpts=PTS*0.5 for 2x speed
+    expect(cmd.filterComplex).toContain("setpts=PTS*0.5");
+    expect(cmd.filterComplex).toContain("atempo=2");
   });
 
-  it("inserts blanks for empty segments", () => {
+  it("handles empty segments with color and anullsrc", () => {
     const timeline: ResolvedTimeline = {
       duration: 8,
       children: [
@@ -129,35 +121,14 @@ describe("buildMlt", () => {
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
-    expect(doc.playlist).toHaveLength(3);
-    expect(doc.playlist[1]).toEqual({ length: 60 }); // 2 seconds * 30fps
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
+    expect(cmd.filterComplex).toContain("color=c=black");
+    expect(cmd.filterComplex).toContain("anullsrc");
+    expect(cmd.filterComplex).toContain("concat=n=3:v=1:a=1");
   });
 
-  it("inserts blank for gap at timeline start", () => {
-    const timeline: ResolvedTimeline = {
-      duration: 8,
-      children: [
-        {
-          type: "clip",
-          source: "a.mp4",
-          sourceIn: 0,
-          sourceOut: 3,
-          timelineStart: 5,
-          timelineEnd: 8,
-          speed: 1,
-        },
-      ],
-    };
-
-    const doc = buildMlt(timeline, 30);
-    expect(doc.playlist).toHaveLength(2);
-    expect(doc.playlist[0]).toEqual({ length: 150 }); // 5s * 30fps
-  });
-});
-
-describe("serializeToXml", () => {
-  it("produces valid MLT XML", () => {
+  it("traverses nested compositions", () => {
     const timeline: ResolvedTimeline = {
       duration: 8,
       children: [
@@ -171,81 +142,82 @@ describe("serializeToXml", () => {
           speed: 1,
         },
         {
-          type: "clip",
-          source: "b.mp4",
-          sourceIn: 5,
-          sourceOut: 10,
+          type: "composition",
           timelineStart: 3,
           timelineEnd: 8,
+          duration: 5,
           speed: 1,
+          children: [
+            {
+              type: "clip",
+              source: "inner.mp4",
+              sourceIn: 0,
+              sourceOut: 5,
+              timelineStart: 0,
+              timelineEnd: 5,
+              speed: 1,
+            },
+          ],
         },
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
-    const xml = serializeToXml(doc);
-
-    expect(xml).toContain('<?xml version="1.0"');
-    expect(xml).toContain("<mlt>");
-    expect(xml).toContain('frame_rate_num="30"');
-    expect(xml).toContain('<producer id="producer0">');
-    expect(xml).toContain("<property name=\"resource\">a.mp4</property>");
-    expect(xml).toContain('<producer id="producer1">');
-    expect(xml).toContain("<property name=\"resource\">b.mp4</property>");
-    expect(xml).toContain('producer="producer0"');
-    expect(xml).toContain('producer="producer1"');
-    expect(xml).toContain('<playlist id="playlist0">');
-    expect(xml).toContain('<tractor id="tractor0"');
-    expect(xml).toContain("</mlt>");
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.inputs).toEqual(["a.mp4", "inner.mp4"]);
+    expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
+    expect(cmd.filterComplex).toContain("[1:v]trim=0:5");
+    expect(cmd.filterComplex).toContain("concat=n=2:v=1:a=1");
   });
 
-  it("snapshot: simple two-clip timeline", () => {
+  it("compounds speed through nested compositions", () => {
     const timeline: ResolvedTimeline = {
       duration: 5,
       children: [
         {
-          type: "clip",
-          source: "intro.mp4",
-          sourceIn: 0,
-          sourceOut: 2,
+          type: "composition",
           timelineStart: 0,
-          timelineEnd: 2,
-          speed: 1,
-        },
-        {
-          type: "clip",
-          source: "main.mp4",
-          sourceIn: 10,
-          sourceOut: 13,
-          timelineStart: 2,
           timelineEnd: 5,
-          speed: 1,
+          duration: 5,
+          speed: 2,
+          children: [
+            {
+              type: "clip",
+              source: "fast.mp4",
+              sourceIn: 0,
+              sourceOut: 10,
+              timelineStart: 0,
+              timelineEnd: 10,
+              speed: 1,
+            },
+          ],
         },
       ],
     };
 
-    const doc = buildMlt(timeline, 30);
-    const xml = serializeToXml(doc);
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    // Parent speed 2 * clip speed 1 = effective 2
+    expect(cmd.filterComplex).toContain("setpts=PTS*0.5");
+    expect(cmd.filterComplex).toContain("atempo=2");
+  });
 
-    expect(xml).toMatchInlineSnapshot(`
-      "<?xml version="1.0" encoding="utf-8"?>
-      <mlt>
-        <profile frame_rate_num="30" frame_rate_den="1" width="1920" height="1080" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1920" display_aspect_den="1080" progressive="1" />
-        <producer id="producer0">
-          <property name="resource">intro.mp4</property>
-        </producer>
-        <producer id="producer1">
-          <property name="resource">main.mp4</property>
-        </producer>
-        <playlist id="playlist0">
-          <entry producer="producer0" in="0" out="59" />
-          <entry producer="producer1" in="300" out="389" />
-        </playlist>
-        <tractor id="tractor0" out="149">
-          <track producer="playlist0" />
-        </tractor>
-      </mlt>
-      "
-    `);
+  it("handles slow speed with chained atempo", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 40,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 10,
+          timelineStart: 0,
+          timelineEnd: 40,
+          speed: 0.25,
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    // 0.25 speed needs chained atempo: 0.5 * 0.5
+    expect(cmd.filterComplex).toContain("atempo=0.5,atempo=0.5");
   });
 });

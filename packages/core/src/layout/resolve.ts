@@ -1,9 +1,8 @@
-import type { Composition, Child, Clip, Empty } from "../types.js";
+import type { Composition, Child } from "../types.js";
 import type {
   ResolvedTimeline,
   ResolvedChild,
-  ResolvedClip,
-  ResolvedEmpty,
+  ResolvedComposition,
 } from "../resolved-types.js";
 import { distributeFlex } from "./flex.js";
 import { applyOverflow } from "./overflow.js";
@@ -45,7 +44,7 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
     targetDurations = [...naturals];
   }
 
-  // Apply overflow/underflow per child, flatten nested compositions
+  // Resolve each child, preserving hierarchy for compositions
   const resolvedChildren: ResolvedChild[] = [];
   const actualDurations: number[] = [];
 
@@ -90,14 +89,20 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
         }
       }
 
-      // Flatten: crop inner children to the visible window
-      const flattened = flattenInnerComposition(inner, windowIn, windowOut, speed);
-      for (const fc of flattened) {
-        resolvedChildren.push(fc);
-      }
+      // Crop inner children to the visible window, preserving nesting
+      const croppedChildren = cropChildrenToWindow(inner.children, windowIn, windowOut);
       const windowDur = speed !== 1
         ? (windowOut - windowIn) / speed
         : windowOut - windowIn;
+
+      resolvedChildren.push({
+        type: "composition" as const,
+        timelineStart: 0,
+        timelineEnd: 0,
+        duration: windowDur,
+        speed,
+        children: croppedChildren,
+      });
       actualDurations.push(windowDur);
       continue;
     }
@@ -148,43 +153,15 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
     containerDuration
   );
 
-  // Assign timeline positions. Compositions may have produced multiple
-  // resolved children for a single logical child, so we walk with two cursors.
-  let ri = 0;
-  for (let i = 0; i < actualDurations.length; i++) {
+  // Assign timeline positions — 1:1 mapping now
+  for (let i = 0; i < resolvedChildren.length; i++) {
     const start = offsets[i];
     const end = start + actualDurations[i];
-
-    // Count how many resolved children belong to this logical child.
-    // Non-composition children produce exactly 1. Compositions may produce N.
-    // We tagged composition children by collecting them as a group above,
-    // but since we push them sequentially, we need to track counts.
-    // Simple approach: recount from the children array.
-    const child = children[i];
-    if (child.type === "composition") {
-      const inner = resolveComposition(child);
-      const compIn = child.in ?? 0;
-      const compOut = child.out ?? inner.duration;
-      // Recalculate how many resolved items this produced
-      const count = countFlattenedChildren(inner, compIn, compOut);
-      // Offset all flattened children relative to this logical child's start
-      for (let j = 0; j < count; j++) {
-        const rc = resolvedChildren[ri + j];
-        resolvedChildren[ri + j] = {
-          ...rc,
-          timelineStart: start + rc.timelineStart,
-          timelineEnd: start + rc.timelineEnd,
-        };
-      }
-      ri += count;
-    } else {
-      resolvedChildren[ri] = {
-        ...resolvedChildren[ri],
-        timelineStart: start,
-        timelineEnd: end,
-      };
-      ri += 1;
-    }
+    resolvedChildren[i] = {
+      ...resolvedChildren[i],
+      timelineStart: start,
+      timelineEnd: end,
+    };
   }
 
   return {
@@ -194,18 +171,18 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
 }
 
 /**
- * Flatten a resolved inner composition into a list of resolved children,
- * cropped to the visible window [windowIn, windowOut] of the inner timeline.
+ * Crop resolved children to the visible window [windowIn, windowOut]
+ * of the inner timeline, preserving nesting. Timeline positions are
+ * rebased so the first visible moment maps to time 0.
  */
-function flattenInnerComposition(
-  inner: ResolvedTimeline,
+function cropChildrenToWindow(
+  children: ResolvedChild[],
   windowIn: number,
-  windowOut: number,
-  speed: number
+  windowOut: number
 ): ResolvedChild[] {
   const result: ResolvedChild[] = [];
 
-  for (const child of inner.children) {
+  for (const child of children) {
     // Skip children completely outside the window
     if (child.timelineEnd <= windowIn || child.timelineStart >= windowOut) {
       continue;
@@ -214,8 +191,8 @@ function flattenInnerComposition(
     // Clamp to window
     const visibleStart = Math.max(child.timelineStart, windowIn);
     const visibleEnd = Math.min(child.timelineEnd, windowOut);
-    const offsetStart = (visibleStart - windowIn) / (speed !== 0 ? speed : 1);
-    const offsetEnd = (visibleEnd - windowIn) / (speed !== 0 ? speed : 1);
+    const rebasedStart = visibleStart - windowIn;
+    const rebasedEnd = visibleEnd - windowIn;
 
     if (child.type === "clip") {
       const clipStartOffset = visibleStart - child.timelineStart;
@@ -226,39 +203,38 @@ function flattenInnerComposition(
         source: child.source,
         sourceIn: child.sourceIn + clipStartOffset * child.speed,
         sourceOut: child.sourceOut - clipEndOffset * child.speed,
-        timelineStart: offsetStart,
-        timelineEnd: offsetEnd,
-        speed: child.speed * speed,
+        timelineStart: rebasedStart,
+        timelineEnd: rebasedEnd,
+        speed: child.speed,
       });
-    } else {
+    } else if (child.type === "empty") {
       result.push({
         type: "empty",
-        timelineStart: offsetStart,
-        timelineEnd: offsetEnd,
+        timelineStart: rebasedStart,
+        timelineEnd: rebasedEnd,
+      });
+    } else {
+      // Nested composition — crop recursively
+      const innerWindowIn = visibleStart - child.timelineStart;
+      const innerWindowOut = innerWindowIn + (visibleEnd - visibleStart);
+      const croppedInner = cropChildrenToWindow(child.children, innerWindowIn, innerWindowOut);
+
+      result.push({
+        type: "composition",
+        timelineStart: rebasedStart,
+        timelineEnd: rebasedEnd,
+        duration: rebasedEnd - rebasedStart,
+        speed: child.speed,
+        children: croppedInner,
       });
     }
   }
 
-  // If window starts before any children, insert leading empty
+  // If window has no visible children, insert an empty
   if (result.length === 0) {
-    const dur = (windowOut - windowIn) / (speed !== 0 ? speed : 1);
+    const dur = windowOut - windowIn;
     result.push({ type: "empty", timelineStart: 0, timelineEnd: dur });
   }
 
   return result;
-}
-
-function countFlattenedChildren(
-  inner: ResolvedTimeline,
-  windowIn: number,
-  windowOut: number
-): number {
-  let count = 0;
-  for (const child of inner.children) {
-    if (child.timelineEnd <= windowIn || child.timelineStart >= windowOut) {
-      continue;
-    }
-    count++;
-  }
-  return count || 1; // at least 1 for the empty fallback
 }
