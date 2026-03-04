@@ -1,0 +1,23 @@
+{
+  "name": "@seam/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "seam": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@seam/core": "workspace:*",
+    "@seam/preview": "workspace:*",
+    "@seam/renderer": "workspace:*",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
