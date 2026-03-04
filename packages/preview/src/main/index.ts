@@ -36,6 +36,7 @@ function createWindow() {
       preload: join(__dirname, "../preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: false,
     },
   });
 
@@ -50,19 +51,7 @@ function createWindow() {
   });
 }
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: "seam-media",
-    privileges: { stream: true, bypassCSP: true, supportFetchAPI: true },
-  },
-]);
-
 app.whenReady().then(() => {
-  protocol.handle("seam-media", (request) => {
-    const filePath = decodeURIComponent(request.url.replace("seam-media://media/", ""));
-    return net.fetch(pathToFileURL(filePath).href);
-  });
-
   createWindow();
 
   // Get seam file path from args or SEAM_FILE env var

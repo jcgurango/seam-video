@@ -1,108 +1,38 @@
-We are building a new video editing experience lovingly called "Seam Video." The philosophy is simple: video is inherently a flowing art. Ripple editing and absolute timecodes are byproducts of digitization that we no longer need. Let me lay out what V1 should look like:
-- There are two components
-  - An editor - React-based, Electron. For V1 I just need one component: the preview. Something that takes Seam data and renders it in a web browser so we can preview it.
-  - A renderer - MLT-based. This takes Seam data, converts it into something MELT can understand.
+I want to rebuild how the preview works and I think we can take a lot of queues from Remotion, but I want to refine the implementation. At the top level is a timeline context that provides:
+- currentTime
+- isPlaying
+- totalDuration
+- functions for controlling playback
 
-Both should be Typescript based and inherit a single data model.
+A <Timeline /> component will emit a provider, but it will also inside that provider generate a <div />. Our timeline component will be provided an aspect ratio that that div must respect. The div will just size to whatever its container is (width-wise), but the aspect ratio must be respected. To do playback, all we're doing is requestAnimationFrame() and updating currentTime.
 
-Seam projects are hierarchical and can be nested. The top-level primitive is a *Composition* which defines a sequence. Here's an example of seam data:
+Now within that timeline component, we'll render the entire seam data as a series of components, so we're technically reusing ResolvedTimeline as the props. For example, if we have several clips, it'll be:
 
-```json
-{
-  "type": "composition",
-  "children": [
-    {
-      "type": "clip",
-      "source": "video.mp4",
-      "in": 13.4,
-      "out": 18.9 // Seconds
-    },
-    {
-      "type": "clip",
-      "source": "video.mp4",
-      "in": 15.4,
-      "out": 16.9 // Seconds
-    },
-    {
-      "type": "empty",
-      "duration": 1
-    }
-  ]
-}
-```
+<ContextProvider>
+  <Clip />
+  <Clip />
+  <Clip />
+  <Clip />
+</ContextProvider>
 
-Notice how all we're really defining here is clips with their in/out. We're not defining specific time-codes. If the clip0 gets longer, or shorter, clip1 moves automatically. Compositions can also be nested within each other:
+What we're passing to these objects is actually a ResolvedClip/ResolvedEmpty/ResolvedComposition as well. But the key here is that all these elements are still going through the React. Every element in the entire data set is constantly rendered *by React*, they just handle their own appearing/disappearing based on currentTime.
 
-```json
-{
-  "type": "composition",
-  "children": [
-    ...other clips,
-    {
-      "type": "composition",
-      "segments": [
-        {
-          "type": "clip",
-          "source": "video.mp4",
-          "in": 13.4,
-          "out": 18.9 // Seconds
-        },
-        {
-          "type": "clip",
-          "source": "video.mp4",
-          "in": 15.4,
-          "out": 16.9 // Seconds
-        }
-      ],
-      "in": 12,
-      "out": 16.4
-    }
-  ]
-}
-```
+Here's how I think compositions should work:
+- It's an absolute fill div (top/left/etc. all 0, position: absolute).
+- We define a constant "window" variable, say 0.1s.
+- What this means is if the composition is going to be on-screen within 0.1s of the current time, it should already be there, ready in the DOM, but with opacity 0. Then we turn it to opacity 1 when it's time to be visible.
+- This exposes a secondary context provider that recomputes currentTime in *composition time* rather than in absolute time. This matches our resolution data model.
 
-Which means compositions are technically handled like clips too. They both must define an in/out so we know the duration. The only thing that is allowed to not have an in/out is the top-level composition. Where this gets interesting is in layout. V1 doesn't yet need to support the spatial side, but it does need to support the temporal layout. Our primary unit is seconds, not frames. Let's map this carefully, but we can take many cues from flexboxes here:
+Here's how I think clips should work:
+- We wrap this in a <Composition /> element and pass our timelineStart and timelineEnd to inherit the absolute fill and opacity behavior.
+- In that, we render a <video /> which is also absolute fill - this will mirror our pillar/letterboxing behavior in ffmpeg.
+- Two flows:
+  - When currentTime reaches us and isPlaying = true and the video isn't already playing, we play().
+  - When scrubbing, currentTime should just be constantly updating. It's not that big of a deal.
+- We have to be conscious of isPlaying here - we're syncing two state machines. We can't be constantly overwriting currentTime on the video element with every frame. It should just be a play() during playback and a hard pause() if isPlaying ever becomes false. Scrubbing is where it would just be doing that constant overwrite, but that's okay for that use case.
 
-```json
-{
-  "type": "composition",
-  "layout": {
-    "duration": 30, // The total duration of the composition. This is optional.
-    "justify": "start", // How to justify clips within
-    "gap": 0 // How much silence to leave between each child
-  },
-  "children": [
-    {
-      // Clip or composition data
-      "in": 12,
-      "out": 16.4,
-      "flex": 1, // Optional, but with this we can define that this child should take proportional space relative to other children w/ flex. If we're enforcing a unit, then the child will take unit * flex. This requires a duration to be set.
-      "overflow": "trim-end", // Only valid if there's flex.
-      "underflow": "extend-center" // Only valid if there's flex.
-    }
-  ]
-}
-```
+Silence is just silence, it doesn't need its own component.
 
-`justify` can take the following values:
-- start - Pack clips backward in time, leave silence after
-- end - Lead with silence, pack clips forward
-- center - split the silence evenly at the start and end
-- space-between - equal silence between each clip
+Then a separate <TransportControls /> component that can go to the start/end/play/pause and scrub just by hitting the context.
 
-`underflow` activates when the target duration of a clip is greater than the in/out specifies. It takes:
-- null - default. Does nothing. Puts the clip at the start. Lets silence happen.
-- extend-end - Puts the start of the clip at the start, extends "out" to fill the space after
-- extend-start - Puts the end of the clip at the end, extends "in" to fill the space before
-- extend-center - Puts the center of the clip at the center, extends both "in" and "out"
-- stretch - Clip speeds up/slows down to fill the space
-
-`overflow` activates when the target duration of a clip is less than the in/out specifies. It takes:
-- trim-end - Puts the start of the clip at the start, shrinks "out" to fill the space after. Technically the default null behavior too.
-- trim-start - Puts the end of the clip at the end, shrinks "in" to fill the space before
-- trim-center - Puts the center of the clip at the center, shrinks both "in" and "out"
-- stretch - Clip speeds up/slows down to fill the space
-
-Feel free to iterate on this and come back to me with any issues and questions. The expected output is two commands:
-- preview X (a seam file) - to open an electron window that'll let me preview and live-reload whenever I make changes.
-- render X (a seam file) - render to MLT XML.
+Do you get the vision? Let me know of any concerns before we proceed.
