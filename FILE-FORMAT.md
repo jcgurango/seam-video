@@ -90,7 +90,9 @@ A composition is a container that holds other nodes in sequence. The root of eve
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
 | `children` | array | yes | One or more child nodes (clips, empties, compositions, or overlays) |
-| `layout` | object | no | Controls duration, spacing, and alignment (see [Layout](#layout)) |
+| `duration` | number | no | Fixes the total container duration in seconds (mutually exclusive with `unitDuration`) |
+| `unitDuration` | number | no | Duration per unit of flex (see [unitDuration](#unitduration)); mutually exclusive with `duration` |
+| `layout` | object | no | Controls spacing and alignment (see [Layout](#layout)) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
@@ -181,23 +183,23 @@ In an overlay, `flex` works as a boolean: any `flex` value greater than 0 forces
 
 ## Layout
 
-The `layout` field on a composition controls how its children are arranged within a fixed duration.
+The `layout` field on a composition controls spacing and alignment of its children.
 
 ```json
 {
   "type": "composition",
-  "layout": { "duration": 20, "gap": 1, "justify": "center" },
+  "duration": 20,
+  "layout": { "gap": 1, "justify": "center" },
   "children": [...]
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `duration` | number | sum of children | Fixes the total container duration in seconds |
 | `gap` | number | `0` | Silence inserted between each pair of adjacent children (seconds) |
 | `justify` | string | `"start"` | How children are positioned within the container |
 
-Without a `layout`, the composition's duration is simply the sum of its children's natural durations.
+Without a `duration` or `unitDuration`, the composition's duration is simply the sum of its children's natural durations (plus any gaps).
 
 ### Justify
 
@@ -215,7 +217,8 @@ Example — centering 10 seconds of content in a 20-second container:
 ```json
 {
   "type": "composition",
-  "layout": { "duration": 20, "justify": "center" },
+  "duration": 20,
+  "layout": { "justify": "center" },
   "children": [
     { "type": "clip", "source": "a.mp4", "in": 0, "out": 10 }
   ]
@@ -255,7 +258,7 @@ When any child in a composition has a `flex` value, the flex system activates:
 ```json
 {
   "type": "composition",
-  "layout": { "duration": 30 },
+  "duration": 30,
   "children": [
     { "type": "clip", "source": "intro.mp4", "in": 0, "out": 5 },
     { "type": "clip", "source": "a.mp4", "in": 0, "out": 10, "flex": 1 },
@@ -265,6 +268,42 @@ When any child in a composition has a `flex` value, the flex system activates:
 ```
 
 The intro clip takes 5 seconds (no flex). The remaining 25 seconds are split: clip A gets ~8.33s (`1/3 * 25`), clip B gets ~16.67s (`2/3 * 25`). Since both clips are naturally 10 seconds, clip A will be shortened (overflow) and clip B will be lengthened (underflow) to match.
+
+## unitDuration
+
+`unitDuration` provides a rhythm-based alternative to `duration`. Instead of specifying the total container duration, you specify how long one "unit" of flex is. Each child defaults to `flex: 1`, so every child gets `unitDuration` seconds unless it has a different `flex` value.
+
+```json
+{
+  "type": "composition",
+  "unitDuration": 5,
+  "children": [
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "c.mp4", "in": 0, "out": 10 }
+  ]
+}
+```
+
+Each clip gets 5 seconds. Total duration: 15 seconds. All three clips are naturally 10 seconds, so they'll be trimmed to 5 seconds each (using overflow, default `"trim-end"`).
+
+With `flex`, children can claim multiple units:
+
+```json
+{
+  "type": "composition",
+  "unitDuration": 5,
+  "children": [
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 20, "flex": 2 },
+    { "type": "clip", "source": "c.mp4", "in": 0, "out": 10 }
+  ]
+}
+```
+
+Clip A gets 5s (flex 1), clip B gets 10s (flex 2), clip C gets 5s (flex 1). Total: 20 seconds.
+
+Container duration is calculated as `unitDuration * totalFlex + totalGap`. You cannot specify both `duration` and `unitDuration` on the same composition.
 
 ## Overflow & Underflow
 

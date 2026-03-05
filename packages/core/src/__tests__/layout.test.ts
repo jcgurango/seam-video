@@ -100,7 +100,8 @@ describe("resolveComposition", () => {
     it("justify start (default)", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "start", gap: 0 },
+          duration: 20,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 5, overflow: "trim-end" },
@@ -115,7 +116,8 @@ describe("resolveComposition", () => {
     it("justify end", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "end", gap: 0 },
+          duration: 20,
+          layout: { justify: "end", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 5, overflow: "trim-end" },
@@ -130,7 +132,8 @@ describe("resolveComposition", () => {
     it("justify center", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "center", gap: 0 },
+          duration: 20,
+          layout: { justify: "center", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 5, overflow: "trim-end" },
@@ -145,7 +148,8 @@ describe("resolveComposition", () => {
     it("justify space-between", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "space-between", gap: 0 },
+          duration: 20,
+          layout: { justify: "space-between", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 5, overflow: "trim-end" },
@@ -163,7 +167,8 @@ describe("resolveComposition", () => {
     it("distributes equal flex", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "start", gap: 0 },
+          duration: 20,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 3, flex: 1, overflow: "trim-end", underflow: "extend-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 3, flex: 1, overflow: "trim-end", underflow: "extend-end" },
@@ -178,7 +183,8 @@ describe("resolveComposition", () => {
     it("distributes proportional flex", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 30, justify: "start", gap: 0 },
+          duration: 30,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, flex: 1, overflow: "trim-end", underflow: "extend-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 5, flex: 2, overflow: "trim-end", underflow: "extend-end" },
@@ -193,7 +199,8 @@ describe("resolveComposition", () => {
     it("respects non-flex children", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 20, justify: "start", gap: 0 },
+          duration: 20,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
             { type: "clip", source: "b.mp4", in: 0, out: 3, flex: 1, overflow: "trim-end", underflow: "extend-end" },
@@ -211,7 +218,8 @@ describe("resolveComposition", () => {
     it("trim-end cuts the end", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 6, justify: "start", gap: 0 },
+          duration: 6,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 10, out: 20, flex: 1, overflow: "trim-end" },
           ],
@@ -230,7 +238,8 @@ describe("resolveComposition", () => {
     it("trim-start cuts the start", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 6, justify: "start", gap: 0 },
+          duration: 6,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 10, out: 20, flex: 1, overflow: "trim-start" },
           ],
@@ -247,7 +256,8 @@ describe("resolveComposition", () => {
     it("trim-center trims both ends", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 6, justify: "start", gap: 0 },
+          duration: 6,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 10, out: 20, flex: 1, overflow: "trim-center" },
           ],
@@ -264,7 +274,8 @@ describe("resolveComposition", () => {
     it("stretch speeds up the clip", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 5, justify: "start", gap: 0 },
+          duration: 5,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 10, flex: 1, overflow: "stretch" },
           ],
@@ -284,7 +295,8 @@ describe("resolveComposition", () => {
     it("extend-end extends the out point", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 10, justify: "start", gap: 0 },
+          duration: 10,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 5, out: 8, flex: 1, overflow: "trim-end", underflow: "extend-end" },
           ],
@@ -301,7 +313,8 @@ describe("resolveComposition", () => {
     it("extend-start extends the in point", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 10, justify: "start", gap: 0 },
+          duration: 10,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 5, out: 8, flex: 1, overflow: "trim-end", underflow: "extend-start" },
           ],
@@ -318,7 +331,8 @@ describe("resolveComposition", () => {
     it("extend-center extends both ends", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 10, justify: "start", gap: 0 },
+          duration: 10,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 10, out: 14, flex: 1, overflow: "trim-end", underflow: "extend-center" },
           ],
@@ -336,7 +350,8 @@ describe("resolveComposition", () => {
     it("stretch slows down the clip", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 10, justify: "start", gap: 0 },
+          duration: 10,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5, flex: 1, overflow: "trim-end", underflow: "stretch" },
           ],
@@ -354,7 +369,8 @@ describe("resolveComposition", () => {
     it("no underflow strategy leaves silence", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 10, justify: "start", gap: 0 },
+          duration: 10,
+          layout: { justify: "start", gap: 0 },
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 3, flex: 1, overflow: "trim-end" },
           ],
@@ -368,6 +384,84 @@ describe("resolveComposition", () => {
         expect(clip.sourceOut).toBe(3);
         expect(clip.speed).toBe(1);
       }
+    });
+  });
+
+  describe("unitDuration", () => {
+    it("assigns unitDuration to each child", () => {
+      const result = resolveComposition(
+        comp({
+          unitDuration: 5,
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, overflow: "trim-end" },
+            { type: "clip", source: "b.mp4", in: 0, out: 10, overflow: "trim-end" },
+            { type: "clip", source: "c.mp4", in: 0, out: 10, overflow: "trim-end" },
+          ],
+        })
+      );
+
+      // 3 children × flex 1 × unitDuration 5 = 15s
+      expect(result.duration).toBe(15);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[1]).toMatchObject({ timelineStart: 5, timelineEnd: 10 });
+      expect(result.children[2]).toMatchObject({ timelineStart: 10, timelineEnd: 15 });
+    });
+
+    it("includes gap in container duration", () => {
+      const result = resolveComposition(
+        comp({
+          unitDuration: 5,
+          layout: { justify: "start", gap: 1 },
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, overflow: "trim-end" },
+            { type: "clip", source: "b.mp4", in: 0, out: 10, overflow: "trim-end" },
+            { type: "clip", source: "c.mp4", in: 0, out: 10, overflow: "trim-end" },
+          ],
+        })
+      );
+
+      // 3 × 5 + 2 gaps × 1 = 17s
+      expect(result.duration).toBe(17);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[1]).toMatchObject({ timelineStart: 6, timelineEnd: 11 });
+      expect(result.children[2]).toMatchObject({ timelineStart: 12, timelineEnd: 17 });
+    });
+
+    it("respects flex weights", () => {
+      const result = resolveComposition(
+        comp({
+          unitDuration: 5,
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, overflow: "trim-end" },
+            { type: "clip", source: "b.mp4", in: 0, out: 20, flex: 2, overflow: "trim-end" },
+            { type: "clip", source: "c.mp4", in: 0, out: 10, overflow: "trim-end" },
+          ],
+        })
+      );
+
+      // flex values: 1, 2, 1 → totalFlex = 4 → container = 5 * 4 = 20s
+      expect(result.duration).toBe(20);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[1]).toMatchObject({ timelineStart: 5, timelineEnd: 15 });
+      expect(result.children[2]).toMatchObject({ timelineStart: 15, timelineEnd: 20 });
+    });
+  });
+
+  describe("promoted duration", () => {
+    it("works at top level (same as old layout.duration)", () => {
+      const result = resolveComposition(
+        comp({
+          duration: 20,
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 5, overflow: "trim-end" },
+            { type: "clip", source: "b.mp4", in: 0, out: 5, overflow: "trim-end" },
+          ],
+        })
+      );
+
+      expect(result.duration).toBe(20);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[1]).toMatchObject({ timelineStart: 5, timelineEnd: 10 });
     });
   });
 
@@ -419,7 +513,8 @@ describe("resolveComposition", () => {
     it("crops nested composition to window", () => {
       const result = resolveComposition(
         comp({
-          layout: { duration: 5, justify: "start", gap: 0 },
+          duration: 5,
+          layout: { justify: "start", gap: 0 },
           children: [
             {
               type: "composition",

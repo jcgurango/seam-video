@@ -40,26 +40,10 @@ export function buildFfmpegCommand(
     options: opts,
   };
 
-  const segmentLabels = buildSegments(ctx, timeline.children, 1);
+  const { v, a } = buildCompositeSegment(ctx, timeline.children, timeline.duration, 1);
 
-  // Concat all segments
-  if (segmentLabels.length === 0) {
-    // Degenerate: empty timeline
-    const dur = Math.max(timeline.duration, 0.001);
-    ctx.filters.push(
-      `color=c=black:s=${opts.width}x${opts.height}:r=${opts.fps}:d=${dur}[outv]`,
-      `anullsrc=r=48000:cl=stereo[outa_pre]`,
-      `[outa_pre]atrim=0:${dur}[outa]`
-    );
-  } else if (segmentLabels.length === 1) {
-    const { v, a } = segmentLabels[0];
-    ctx.filters.push(`${v}copy[outv]`, `${a}acopy[outa]`);
-  } else {
-    const concatIn = segmentLabels.map(({ v, a }) => `${v}${a}`).join("");
-    ctx.filters.push(
-      `${concatIn}concat=n=${segmentLabels.length}:v=1:a=1[outv][outa]`
-    );
-  }
+  // Route to output labels
+  ctx.filters.push(`${v}copy[outv]`, `${a}acopy[outa]`);
 
   return {
     inputs: ctx.inputs,
@@ -75,107 +59,39 @@ export function buildFfmpegCommand(
   };
 }
 
-function buildSegments(
+/**
+ * Build a list of children into a single {v, a} pair by creating a black base
+ * and overlaying each child at its timelineStart offset. Works for both
+ * sequential compositions and stacked overlays.
+ */
+function buildCompositeSegment(
   ctx: BuildContext,
   children: ResolvedChild[],
-  parentSpeed: number
-): { v: string; a: string }[] {
-  const labels: { v: string; a: string }[] = [];
-
-  for (const child of children) {
-    if (child.type === "clip") {
-      const label = buildClipSegment(ctx, child, parentSpeed);
-      labels.push(label);
-    } else if (child.type === "empty") {
-      const label = buildEmptySegment(ctx, child, parentSpeed);
-      labels.push(label);
-    } else if (child.type === "overlay") {
-      const label = buildOverlaySegment(ctx, child, parentSpeed);
-      labels.push(label);
-    } else {
-      // Composition: recurse with compounded speed
-      const compoundSpeed = child.speed * parentSpeed;
-      const innerLabels = buildSegments(ctx, child.children, compoundSpeed);
-      labels.push(...innerLabels);
-    }
-  }
-
-  return labels;
-}
-
-/**
- * Build a single resolved child into one {v, a} label pair.
- * For compositions, concatenates inner segments into one stream.
- */
-function buildSingleSegment(
-  ctx: BuildContext,
-  child: ResolvedChild,
+  duration: number,
   parentSpeed: number
 ): { v: string; a: string } {
-  if (child.type === "clip") {
-    return buildClipSegment(ctx, child, parentSpeed);
-  }
-  if (child.type === "empty") {
-    return buildEmptySegment(ctx, child, parentSpeed);
-  }
-  if (child.type === "overlay") {
-    return buildOverlaySegment(ctx, child, parentSpeed);
-  }
-  // Composition: build inner segments and concat into one
-  const compoundSpeed = child.speed * parentSpeed;
-  const innerLabels = buildSegments(ctx, child.children, compoundSpeed);
-  return concatLabels(ctx, innerLabels);
-}
-
-/**
- * Concatenate multiple segment labels into a single {v, a} pair.
- */
-function concatLabels(
-  ctx: BuildContext,
-  labels: { v: string; a: string }[]
-): { v: string; a: string } {
-  if (labels.length === 1) return labels[0];
-  const seg = ctx.segmentIndex++;
-  const vLabel = `[vc${seg}]`;
-  const aLabel = `[ac${seg}]`;
-  const concatIn = labels.map(({ v, a }) => `${v}${a}`).join("");
-  ctx.filters.push(
-    `${concatIn}concat=n=${labels.length}:v=1:a=1${vLabel}${aLabel}`
-  );
-  return { v: vLabel, a: aLabel };
-}
-
-function buildOverlaySegment(
-  ctx: BuildContext,
-  overlay: { duration: number; speed: number; children: ResolvedChild[] },
-  parentSpeed: number
-): { v: string; a: string } {
-  const compoundSpeed = overlay.speed * parentSpeed;
-  const overlayDur = overlay.duration / compoundSpeed;
+  const totalDur = duration / parentSpeed;
   const { width, height, fps } = ctx.options;
 
-  // Build each non-empty child as a single segment
+  // Collect non-empty children as built segments with their time offsets
   const childSegments: { v: string; a: string; delay: number }[] = [];
-  for (const child of overlay.children) {
+  for (const child of children) {
     if (child.type === "empty") continue;
-    const delay = child.timelineStart / compoundSpeed;
-    const label = buildSingleSegment(ctx, child, compoundSpeed);
+    const delay = child.timelineStart / parentSpeed;
+    const label = buildSingleSegment(ctx, child, parentSpeed);
     childSegments.push({ ...label, delay });
   }
 
+  // If no visible children, return pure black
   if (childSegments.length === 0) {
-    return buildEmptySegment(
-      ctx,
-      { timelineStart: 0, timelineEnd: overlayDur },
-      1
-    );
+    return buildBlackSegment(ctx, totalDur);
   }
 
-  // Create black base video for the full overlay duration
+  // Create black base for the full duration
   const baseSeg = ctx.segmentIndex++;
-  const baseV = `[ovbase${baseSeg}]`;
+  const baseV = `[base${baseSeg}]`;
   ctx.filters.push(
-    `color=c=black:s=${width}x${height}:r=${fps}:d=${overlayDur},setsar=1${baseV}`
+    `color=c=black:s=${width}x${height}:r=${fps}:d=${totalDur},setsar=1${baseV}`
   );
 
   // Chain overlay filters: base ← child0 ← child1 ← ...
@@ -189,22 +105,22 @@ function buildOverlaySegment(
 
     // Delay child if it doesn't start at t=0
     if (child.delay > 0) {
-      const delayedV = `[ovdv${seg}]`;
+      const delayedV = `[dv${seg}]`;
       ctx.filters.push(
-        `${childV}tpad=start_duration=${child.delay}:color=black${delayedV}`
+        `${childV}format=yuva420p,tpad=start_duration=${child.delay}:color=black@0${delayedV}`
       );
       childV = delayedV;
 
       const delayMs = Math.round(child.delay * 1000);
-      const delayedA = `[ovda${seg}]`;
+      const delayedA = `[da${seg}]`;
       ctx.filters.push(
         `${childA}adelay=${delayMs}|${delayMs}${delayedA}`
       );
       childA = delayedA;
     }
 
-    // Stack video: overlay child on top of current result
-    const resultV = `[ovr${seg}]`;
+    // Overlay child on top of current result
+    const resultV = `[comp${seg}]`;
     ctx.filters.push(
       `${currentV}${childV}overlay=0:0:eof_action=pass${resultV}`
     );
@@ -214,17 +130,42 @@ function buildOverlaySegment(
 
   // Mix audio from all children
   let resultA: string;
-  if (audioLabels.length === 1) {
+  if (audioLabels.length === 0) {
+    const silenceSeg = ctx.segmentIndex++;
+    resultA = `[sil${silenceSeg}]`;
+    ctx.filters.push(
+      `anullsrc=r=48000:cl=stereo[sil${silenceSeg}_pre];[sil${silenceSeg}_pre]atrim=0:${totalDur}${resultA}`
+    );
+  } else if (audioLabels.length === 1) {
     resultA = audioLabels[0];
   } else {
     const seg = ctx.segmentIndex++;
-    resultA = `[ovamix${seg}]`;
+    resultA = `[amix${seg}]`;
     ctx.filters.push(
       `${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0${resultA}`
     );
   }
 
   return { v: currentV, a: resultA };
+}
+
+/**
+ * Build a single resolved child into one {v, a} label pair.
+ */
+function buildSingleSegment(
+  ctx: BuildContext,
+  child: ResolvedChild,
+  parentSpeed: number
+): { v: string; a: string } {
+  if (child.type === "clip") {
+    return buildClipSegment(ctx, child, parentSpeed);
+  }
+  if (child.type === "empty") {
+    return buildBlackSegment(ctx, (child.timelineEnd - child.timelineStart) / parentSpeed);
+  }
+  // Composition or overlay: recurse into children
+  const compoundSpeed = child.speed * parentSpeed;
+  return buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed);
 }
 
 function buildClipSegment(
@@ -235,16 +176,16 @@ function buildClipSegment(
   const idx = ctx.inputs.length;
   ctx.inputs.push(clip.source);
   const seg = ctx.segmentIndex++;
-  const { width, height, fps } = ctx.options;
+  const { fps } = ctx.options;
 
   const effectiveSpeed = clip.speed * parentSpeed;
 
-  // Video chain: trim → setpts → scale → fps
+  // Video chain: trim → setpts → fps (native resolution, no scaling/padding)
   let vChain = `[${idx}:v]trim=${clip.sourceIn}:${clip.sourceOut},setpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     vChain += `,setpts=PTS*${1 / effectiveSpeed}`;
   }
-  vChain += `,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}`;
+  vChain += `,fps=${fps}`;
   const vLabel = `[v${seg}]`;
   ctx.filters.push(`${vChain}${vLabel}`);
 
@@ -259,14 +200,15 @@ function buildClipSegment(
   return { v: vLabel, a: aLabel };
 }
 
-function buildEmptySegment(
+/**
+ * Generate a black video + silence segment of the given duration.
+ */
+function buildBlackSegment(
   ctx: BuildContext,
-  empty: { timelineStart: number; timelineEnd: number },
-  parentSpeed: number
+  dur: number
 ): { v: string; a: string } {
   const seg = ctx.segmentIndex++;
   const { width, height, fps } = ctx.options;
-  const dur = (empty.timelineEnd - empty.timelineStart) / parentSpeed;
 
   const vLabel = `[v${seg}]`;
   const aLabel = `[a${seg}]`;

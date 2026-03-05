@@ -44,7 +44,8 @@ describe("validate", () => {
   it("accepts layout options", () => {
     const result = validate({
       type: "composition",
-      layout: { duration: 30, justify: "center", gap: 0.5 },
+      duration: 30,
+      layout: { justify: "center", gap: 0.5 },
       children: [
         { type: "clip", source: "v.mp4", in: 0, out: 5 },
       ],
@@ -55,7 +56,7 @@ describe("validate", () => {
   it("accepts flex on children", () => {
     const result = validate({
       type: "composition",
-      layout: { duration: 20 },
+      duration: 20,
       children: [
         { type: "clip", source: "a.mp4", in: 0, out: 5, flex: 1 },
         { type: "clip", source: "b.mp4", in: 0, out: 5, flex: 2 },
@@ -67,7 +68,7 @@ describe("validate", () => {
   it("accepts overflow and underflow", () => {
     const result = validate({
       type: "composition",
-      layout: { duration: 10 },
+      duration: 10,
       children: [
         {
           type: "clip",
@@ -81,6 +82,30 @@ describe("validate", () => {
       ],
     });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts unitDuration", () => {
+    const result = validate({
+      type: "composition",
+      unitDuration: 5,
+      children: [
+        { type: "clip", source: "a.mp4", in: 0, out: 10 },
+        { type: "clip", source: "b.mp4", in: 0, out: 10 },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects both duration and unitDuration", () => {
+    const result = validate({
+      type: "composition",
+      duration: 20,
+      unitDuration: 5,
+      children: [
+        { type: "clip", source: "a.mp4", in: 0, out: 10 },
+      ],
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects empty children array", () => {

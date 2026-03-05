@@ -133,23 +133,33 @@ function resolveChild(
 }
 
 export function resolveComposition(composition: Composition): ResolvedTimeline {
-  const { children, layout } = composition;
+  const { children, layout, unitDuration } = composition;
+  const duration = composition.duration;
   const justify = layout?.justify ?? "start";
   const gap = layout?.gap ?? 0;
 
   const naturals = children.map((c) => naturalDuration(c));
   const totalGap = gap * Math.max(0, children.length - 1);
   const sumNaturals = naturals.reduce((a, b) => a + b, 0);
-  const containerDuration = layout?.duration ?? sumNaturals + totalGap;
 
-  // Compute target durations
-  const hasFlex = children.some((c) => c.flex);
+  let containerDuration: number;
   let targetDurations: number[];
 
-  if (hasFlex) {
-    targetDurations = distributeFlex(children, naturals, totalGap, containerDuration);
+  if (unitDuration != null) {
+    const flexValues = children.map((c) => c.flex ?? 1);
+    const totalFlex = flexValues.reduce((a, b) => a + b, 0);
+    containerDuration = unitDuration * totalFlex + totalGap;
+    targetDurations = flexValues.map((f) => unitDuration * f);
   } else {
-    targetDurations = [...naturals];
+    containerDuration = duration ?? sumNaturals + totalGap;
+
+    // Compute target durations
+    const hasFlex = children.some((c) => c.flex);
+    if (hasFlex) {
+      targetDurations = distributeFlex(children, naturals, totalGap, containerDuration);
+    } else {
+      targetDurations = [...naturals];
+    }
   }
 
   // Resolve each child

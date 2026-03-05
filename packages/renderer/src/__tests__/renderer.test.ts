@@ -33,7 +33,11 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
     expect(cmd.filterComplex).toContain("[1:v]trim=5:10");
-    expect(cmd.filterComplex).toContain("concat=n=2:v=1:a=1[outv][outa]");
+    // Unified assembly: black base + overlay each child
+    expect(cmd.filterComplex).toContain("color=c=black");
+    expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
+    // Second clip starts at t=3, so it gets delayed
+    expect(cmd.filterComplex).toContain("tpad=start_duration=3");
     expect(cmd.outputArgs).toContain("libx264");
     expect(cmd.outputArgs).toContain("out.mp4");
   });
@@ -124,8 +128,9 @@ describe("buildFfmpegCommand", () => {
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
     expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
     expect(cmd.filterComplex).toContain("color=c=black");
-    expect(cmd.filterComplex).toContain("anullsrc");
-    expect(cmd.filterComplex).toContain("concat=n=3:v=1:a=1");
+    expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
+    // Empty segment is skipped, second clip delayed to t=5
+    expect(cmd.filterComplex).toContain("tpad=start_duration=5");
   });
 
   it("traverses nested compositions", () => {
@@ -166,7 +171,8 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.inputs).toEqual(["a.mp4", "inner.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
     expect(cmd.filterComplex).toContain("[1:v]trim=0:5");
-    expect(cmd.filterComplex).toContain("concat=n=2:v=1:a=1");
+    // Nested composition gets its own black base, then overlaid on parent
+    expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
   });
 
   it("compounds speed through nested compositions", () => {

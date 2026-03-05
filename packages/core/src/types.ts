@@ -7,7 +7,6 @@ export type Underflow =
   | "stretch";
 
 export interface CompositionLayout {
-  duration?: number;
   justify: Justify;
   gap: number;
 }
@@ -36,6 +35,8 @@ export interface Empty {
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
+  duration?: number;
+  unitDuration?: number;
   layout?: CompositionLayout;
 }
 

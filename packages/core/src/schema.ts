@@ -22,7 +22,6 @@ export const UnderflowSchema = z.enum([
 ]);
 
 export const LayoutSchema = z.object({
-  duration: z.number().positive().optional(),
   justify: JustifySchema.default("start"),
   gap: z.number().nonnegative().default(0),
 });
@@ -67,13 +66,18 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
     children: z.array(ChildSchema).min(1),
+    duration: z.number().positive().optional(),
+    unitDuration: z.number().positive().optional(),
     layout: LayoutSchema.optional(),
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
     flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
-  })
+  }).refine(
+    (data) => !(data.duration != null && data.unitDuration != null),
+    { message: "Cannot specify both 'duration' and 'unitDuration'" }
+  )
 );
 
 export const SeamFileSchema = CompositionSchema;
