@@ -33,7 +33,7 @@ export const ClipSchema = z.object({
   in: z.number().nonnegative(),
   out: z.number().positive(),
   flex: z.number().positive().optional(),
-  overflow: OverflowSchema.default("trim-end"),
+  overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
 });
 
@@ -43,8 +43,24 @@ export const EmptySchema = z.object({
   flex: z.number().positive().optional(),
 });
 
+export const AlignItemsSchema = z.enum(["start", "end", "center"]);
+
+export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal("overlay"),
+    children: z.array(ChildSchema).min(1),
+    duration: z.number().positive().optional(),
+    alignItems: AlignItemsSchema.default("start"),
+    in: z.number().nonnegative().optional(),
+    out: z.number().positive().optional(),
+    flex: z.number().positive().optional(),
+    overflow: OverflowSchema.optional(),
+    underflow: UnderflowSchema.optional(),
+  })
+);
+
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
-  z.union([ClipSchema, EmptySchema, CompositionSchema])
+  z.union([ClipSchema, EmptySchema, CompositionSchema, OverlaySchema])
 );
 
 export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
@@ -55,7 +71,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
     flex: z.number().positive().optional(),
-    overflow: OverflowSchema.default("trim-end"),
+    overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
   })
 );

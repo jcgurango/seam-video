@@ -200,6 +200,86 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).toContain("atempo=2");
   });
 
+  it("builds overlay with overlay filter", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "overlay",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [
+            {
+              type: "clip",
+              source: "bg.mp4",
+              sourceIn: 0,
+              sourceOut: 5,
+              timelineStart: 0,
+              timelineEnd: 5,
+              speed: 1,
+            },
+            {
+              type: "clip",
+              source: "fg.mp4",
+              sourceIn: 0,
+              sourceOut: 3,
+              timelineStart: 1,
+              timelineEnd: 4,
+              speed: 1,
+            },
+          ],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.inputs).toEqual(["bg.mp4", "fg.mp4"]);
+    expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
+    // Second child has delay=1s, so tpad should appear
+    expect(cmd.filterComplex).toContain("tpad=start_duration=1");
+    expect(cmd.filterComplex).toContain("adelay=1000|1000");
+  });
+
+  it("mixes overlay audio with amix", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "overlay",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [
+            {
+              type: "clip",
+              source: "a.mp4",
+              sourceIn: 0,
+              sourceOut: 5,
+              timelineStart: 0,
+              timelineEnd: 5,
+              speed: 1,
+            },
+            {
+              type: "clip",
+              source: "b.mp4",
+              sourceIn: 0,
+              sourceOut: 5,
+              timelineStart: 0,
+              timelineEnd: 5,
+              speed: 1,
+            },
+          ],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("amix=inputs=2:duration=longest:normalize=0");
+  });
+
   it("handles slow speed with chained atempo", () => {
     const timeline: ResolvedTimeline = {
       duration: 40,

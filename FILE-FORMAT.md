@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are three types of nodes: **clip**, **empty**, and **composition**.
+There are four types of nodes: **clip**, **empty**, **composition**, and **overlay**.
 
 ### Clip
 
@@ -89,7 +89,7 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | yes | One or more child nodes (clips, empties, or compositions) |
+| `children` | array | yes | One or more child nodes (clips, empties, compositions, or overlays) |
 | `layout` | object | no | Controls duration, spacing, and alignment (see [Layout](#layout)) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
@@ -121,6 +121,63 @@ When a composition is used as a child of another composition, you can use `in` a
 The inner composition has two 3-second clips (6 seconds total). Setting `in: 1, out: 5` takes a 4-second window: it skips the first second of clip A and the last second of clip B.
 
 If `in` and `out` are omitted, the full inner timeline is used.
+
+### Overlay
+
+An overlay stacks its children visually — all playing at the same time, layered on top of each other. The first child is the base layer, and each subsequent child is drawn on top.
+
+```json
+{
+  "type": "overlay",
+  "children": [
+    { "type": "clip", "source": "background.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "foreground.mp4", "in": 0, "out": 5 }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"overlay"` | yes | Must be `"overlay"` |
+| `children` | array | yes | One or more child nodes, stacked bottom to top |
+| `duration` | number | no | Total duration (defaults to the longest child's natural duration) |
+| `alignItems` | string | no | Where shorter children sit within the overlay's duration (default: `"start"`) |
+| `in` | number | no | Window start when used as a child (seconds, >= 0) |
+| `out` | number | no | Window end when used as a child (seconds, > 0) |
+| `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
+| `overflow` | string | no | Strategy when overlay must be shortened |
+| `underflow` | string | no | Strategy when overlay must be lengthened |
+
+#### alignItems
+
+When children have different durations, `alignItems` controls where the shorter children are placed in time:
+
+| Value | Effect |
+|-------|--------|
+| `"start"` | Shorter children start at the beginning |
+| `"end"` | Shorter children end at the overlay's end |
+| `"center"` | Shorter children are centered |
+
+```json
+{
+  "type": "overlay",
+  "alignItems": "center",
+  "children": [
+    { "type": "clip", "source": "background.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "title.mp4", "in": 0, "out": 4 }
+  ]
+}
+```
+
+The background plays for 10 seconds. The title appears centered at seconds 3-7.
+
+#### Overflow in overlays
+
+If `duration` is set shorter than a child, that child is overflowed. The default overflow strategy depends on `alignItems`: `"start"` uses `"trim-end"`, `"end"` uses `"trim-start"`, `"center"` uses `"trim-center"`. You can override this per-child with the `overflow` field.
+
+#### Flex in overlays
+
+In an overlay, `flex` works as a boolean: any `flex` value greater than 0 forces the child to match the overlay's duration (triggering overflow or underflow as needed). Unlike compositions, relative flex values don't matter — `flex: 1` and `flex: 2` have the same effect.
 
 ## Layout
 
@@ -215,7 +272,7 @@ When a clip or composition needs to be shorter or longer than its natural durati
 
 ### Overflow (making things shorter)
 
-Applied when the target duration is less than the natural duration. Default: `"trim-end"`.
+Applied when the target duration is less than the natural duration. Default: `"trim-end"` for clips and compositions. In overlays, the default depends on `alignItems` (see [Overlay](#overlay)).
 
 | Strategy | Effect |
 |----------|--------|

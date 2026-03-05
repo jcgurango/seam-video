@@ -2,6 +2,7 @@ import React from "react";
 import type { ResolvedChild } from "@seam/core";
 import Clip from "./Clip.js";
 import Composition from "./Composition.js";
+import Overlay from "./Overlay.js";
 
 interface NodeRendererProps {
   node: ResolvedChild;
@@ -13,6 +14,8 @@ export default function NodeRenderer({ node }: NodeRendererProps) {
       return <Clip clip={node} />;
     case "composition":
       return <Composition composition={node} />;
+    case "overlay":
+      return <Overlay overlay={node} />;
     case "empty":
       return null;
   }

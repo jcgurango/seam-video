@@ -23,7 +23,16 @@ export interface ResolvedComposition {
   children: ResolvedChild[];
 }
 
-export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition;
+export interface ResolvedOverlay {
+  type: "overlay";
+  timelineStart: number;
+  timelineEnd: number;
+  duration: number;
+  speed: number;
+  children: ResolvedChild[];
+}
+
+export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition | ResolvedOverlay;
 
 export interface ResolvedTimeline {
   duration: number;

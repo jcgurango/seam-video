@@ -89,6 +89,9 @@ function buildSegments(
     } else if (child.type === "empty") {
       const label = buildEmptySegment(ctx, child, parentSpeed);
       labels.push(label);
+    } else if (child.type === "overlay") {
+      const label = buildOverlaySegment(ctx, child, parentSpeed);
+      labels.push(label);
     } else {
       // Composition: recurse with compounded speed
       const compoundSpeed = child.speed * parentSpeed;
@@ -98,6 +101,130 @@ function buildSegments(
   }
 
   return labels;
+}
+
+/**
+ * Build a single resolved child into one {v, a} label pair.
+ * For compositions, concatenates inner segments into one stream.
+ */
+function buildSingleSegment(
+  ctx: BuildContext,
+  child: ResolvedChild,
+  parentSpeed: number
+): { v: string; a: string } {
+  if (child.type === "clip") {
+    return buildClipSegment(ctx, child, parentSpeed);
+  }
+  if (child.type === "empty") {
+    return buildEmptySegment(ctx, child, parentSpeed);
+  }
+  if (child.type === "overlay") {
+    return buildOverlaySegment(ctx, child, parentSpeed);
+  }
+  // Composition: build inner segments and concat into one
+  const compoundSpeed = child.speed * parentSpeed;
+  const innerLabels = buildSegments(ctx, child.children, compoundSpeed);
+  return concatLabels(ctx, innerLabels);
+}
+
+/**
+ * Concatenate multiple segment labels into a single {v, a} pair.
+ */
+function concatLabels(
+  ctx: BuildContext,
+  labels: { v: string; a: string }[]
+): { v: string; a: string } {
+  if (labels.length === 1) return labels[0];
+  const seg = ctx.segmentIndex++;
+  const vLabel = `[vc${seg}]`;
+  const aLabel = `[ac${seg}]`;
+  const concatIn = labels.map(({ v, a }) => `${v}${a}`).join("");
+  ctx.filters.push(
+    `${concatIn}concat=n=${labels.length}:v=1:a=1${vLabel}${aLabel}`
+  );
+  return { v: vLabel, a: aLabel };
+}
+
+function buildOverlaySegment(
+  ctx: BuildContext,
+  overlay: { duration: number; speed: number; children: ResolvedChild[] },
+  parentSpeed: number
+): { v: string; a: string } {
+  const compoundSpeed = overlay.speed * parentSpeed;
+  const overlayDur = overlay.duration / compoundSpeed;
+  const { width, height, fps } = ctx.options;
+
+  // Build each non-empty child as a single segment
+  const childSegments: { v: string; a: string; delay: number }[] = [];
+  for (const child of overlay.children) {
+    if (child.type === "empty") continue;
+    const delay = child.timelineStart / compoundSpeed;
+    const label = buildSingleSegment(ctx, child, compoundSpeed);
+    childSegments.push({ ...label, delay });
+  }
+
+  if (childSegments.length === 0) {
+    return buildEmptySegment(
+      ctx,
+      { timelineStart: 0, timelineEnd: overlayDur },
+      1
+    );
+  }
+
+  // Create black base video for the full overlay duration
+  const baseSeg = ctx.segmentIndex++;
+  const baseV = `[ovbase${baseSeg}]`;
+  ctx.filters.push(
+    `color=c=black:s=${width}x${height}:r=${fps}:d=${overlayDur},setsar=1${baseV}`
+  );
+
+  // Chain overlay filters: base ← child0 ← child1 ← ...
+  let currentV = baseV;
+  const audioLabels: string[] = [];
+
+  for (const child of childSegments) {
+    const seg = ctx.segmentIndex++;
+    let childV = child.v;
+    let childA = child.a;
+
+    // Delay child if it doesn't start at t=0
+    if (child.delay > 0) {
+      const delayedV = `[ovdv${seg}]`;
+      ctx.filters.push(
+        `${childV}tpad=start_duration=${child.delay}:color=black${delayedV}`
+      );
+      childV = delayedV;
+
+      const delayMs = Math.round(child.delay * 1000);
+      const delayedA = `[ovda${seg}]`;
+      ctx.filters.push(
+        `${childA}adelay=${delayMs}|${delayMs}${delayedA}`
+      );
+      childA = delayedA;
+    }
+
+    // Stack video: overlay child on top of current result
+    const resultV = `[ovr${seg}]`;
+    ctx.filters.push(
+      `${currentV}${childV}overlay=0:0:eof_action=pass${resultV}`
+    );
+    currentV = resultV;
+    audioLabels.push(childA);
+  }
+
+  // Mix audio from all children
+  let resultA: string;
+  if (audioLabels.length === 1) {
+    resultA = audioLabels[0];
+  } else {
+    const seg = ctx.segmentIndex++;
+    resultA = `[ovamix${seg}]`;
+    ctx.filters.push(
+      `${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0${resultA}`
+    );
+  }
+
+  return { v: currentV, a: resultA };
 }
 
 function buildClipSegment(

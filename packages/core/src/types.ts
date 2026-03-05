@@ -6,20 +6,25 @@ export type Underflow =
   | "extend-center"
   | "stretch";
 
-export interface Layout {
+export interface CompositionLayout {
   duration?: number;
   justify: Justify;
   gap: number;
 }
 
-export interface Clip {
+export interface ChildTimingFields {
+  in?: number;
+  out?: number;
+  flex?: number;
+  overflow?: Overflow;
+  underflow?: Underflow;
+}
+
+export interface Clip extends ChildTimingFields {
   type: "clip";
   source: string;
   in: number;
   out: number;
-  flex?: number;
-  overflow: Overflow;
-  underflow?: Underflow;
 }
 
 export interface Empty {
@@ -28,16 +33,20 @@ export interface Empty {
   flex?: number;
 }
 
-export interface Composition {
+export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
-  layout?: Layout;
-  in?: number;
-  out?: number;
-  flex?: number;
-  overflow: Overflow;
-  underflow?: Underflow;
+  layout?: CompositionLayout;
 }
 
-export type Child = Clip | Empty | Composition;
+export type AlignItems = "start" | "end" | "center";
+
+export interface Overlay extends ChildTimingFields {
+  type: "overlay";
+  children: Child[];
+  duration?: number;
+  alignItems: AlignItems;
+}
+
+export type Child = Clip | Empty | Composition | Overlay;
 export type SeamFile = Composition;
