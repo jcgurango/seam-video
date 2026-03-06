@@ -1,6 +1,10 @@
 import type {
   ResolvedTimeline,
   ResolvedChild,
+  ResolvedClip,
+  SpatialRect,
+  SpatialAnchor,
+  ObjectFit,
 } from "@seam/core";
 
 export interface FfmpegCommand {
@@ -68,18 +72,23 @@ function buildCompositeSegment(
   ctx: BuildContext,
   children: ResolvedChild[],
   duration: number,
-  parentSpeed: number
+  parentSpeed: number,
+  containerW?: number,
+  containerH?: number
 ): { v: string; a: string } {
   const totalDur = duration / parentSpeed;
-  const { width, height, fps } = ctx.options;
+  const width = containerW ?? ctx.options.width;
+  const height = containerH ?? ctx.options.height;
+  const { fps } = ctx.options;
 
   // Collect non-empty children as built segments with their time offsets
-  const childSegments: { v: string; a: string; delay: number }[] = [];
+  const childSegments: { v: string; a: string; delay: number; spatial?: SpatialRect }[] = [];
   for (const child of children) {
     if (child.type === "empty") continue;
     const delay = child.timelineStart / parentSpeed;
-    const label = buildSingleSegment(ctx, child, parentSpeed);
-    childSegments.push({ ...label, delay });
+    const label = buildSingleSegment(ctx, child, parentSpeed, width, height);
+    const spatial = (child as any).spatial as SpatialRect | undefined;
+    childSegments.push({ ...label, delay, spatial });
   }
 
   // If no visible children, return pure black
@@ -120,9 +129,11 @@ function buildCompositeSegment(
     }
 
     // Overlay child on top of current result
+    const ox = child.spatial ? child.spatial.x : 0;
+    const oy = child.spatial ? child.spatial.y : 0;
     const resultV = `[comp${seg}]`;
     ctx.filters.push(
-      `${currentV}${childV}overlay=0:0:eof_action=pass${resultV}`
+      `${currentV}${childV}overlay=${ox}:${oy}:eof_action=pass${resultV}`
     );
     currentV = resultV;
     audioLabels.push(childA);
@@ -155,23 +166,42 @@ function buildCompositeSegment(
 function buildSingleSegment(
   ctx: BuildContext,
   child: ResolvedChild,
-  parentSpeed: number
+  parentSpeed: number,
+  parentW: number,
+  parentH: number
 ): { v: string; a: string } {
   if (child.type === "clip") {
-    return buildClipSegment(ctx, child, parentSpeed);
+    return buildClipSegment(ctx, child, parentSpeed, parentW, parentH);
   }
   if (child.type === "empty") {
     return buildBlackSegment(ctx, (child.timelineEnd - child.timelineStart) / parentSpeed);
   }
   // Composition or overlay: recurse into children
   const compoundSpeed = child.speed * parentSpeed;
-  return buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed);
+  const displayW = child.spatial ? child.spatial.width : parentW;
+  const displayH = child.spatial ? child.spatial.height : parentH;
+  const innerW = child.contentWidth ?? displayW;
+  const innerH = child.contentHeight ?? displayH;
+  const result = buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed, innerW, innerH);
+
+  // Scale from inner to display size if they differ
+  if (innerW !== displayW || innerH !== displayH) {
+    const seg = ctx.segmentIndex++;
+    const scaledV = `[scaled${seg}]`;
+    ctx.filters.push(
+      `${result.v}scale=${Math.round(displayW)}:${Math.round(displayH)}${scaledV}`
+    );
+    return { v: scaledV, a: result.a };
+  }
+  return result;
 }
 
 function buildClipSegment(
   ctx: BuildContext,
-  clip: { source: string; sourceIn: number; sourceOut: number; speed: number },
-  parentSpeed: number
+  clip: ResolvedClip,
+  parentSpeed: number,
+  parentW: number,
+  parentH: number
 ): { v: string; a: string } {
   const idx = ctx.inputs.length;
   ctx.inputs.push(clip.source);
@@ -180,12 +210,22 @@ function buildClipSegment(
 
   const effectiveSpeed = clip.speed * parentSpeed;
 
-  // Video chain: trim → setpts → fps (native resolution, no scaling/padding)
+  // Video chain: trim → setpts → fps
   let vChain = `[${idx}:v]trim=${clip.sourceIn}:${clip.sourceOut},setpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     vChain += `,setpts=PTS*${1 / effectiveSpeed}`;
   }
   vChain += `,fps=${fps}`;
+
+  // Apply objectFit scaling
+  if (clip.objectFit) {
+    const rect: SpatialRect = clip.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
+    vChain += buildObjectFitFilters(clip.objectFit, rect, clip.anchor);
+  } else if (clip.spatial) {
+    // Explicit spatial but no objectFit: stretch to exact dimensions
+    vChain += `,scale=${clip.spatial.width}:${clip.spatial.height}`;
+  }
+
   const vLabel = `[v${seg}]`;
   ctx.filters.push(`${vChain}${vLabel}`);
 
@@ -221,6 +261,32 @@ function buildBlackSegment(
   );
 
   return { v: vLabel, a: aLabel };
+}
+
+/**
+ * Build FFmpeg filter string for objectFit scaling.
+ */
+function buildObjectFitFilters(objectFit: ObjectFit, spatial: SpatialRect, anchor?: SpatialAnchor): string {
+  const w = Math.round(spatial.width);
+  const h = Math.round(spatial.height);
+
+  const padX = anchor?.right != null && anchor?.left == null ? "(ow-iw)" :
+               anchor?.left != null && anchor?.right == null ? "0" : "(ow-iw)/2";
+  const padY = anchor?.bottom != null && anchor?.top == null ? "(oh-ih)" :
+               anchor?.top != null && anchor?.bottom == null ? "0" : "(oh-ih)/2";
+  const cropX = anchor?.right != null && anchor?.left == null ? "(iw-ow)" :
+                anchor?.left != null && anchor?.right == null ? "0" : "(iw-ow)/2";
+  const cropY = anchor?.bottom != null && anchor?.top == null ? "(ih-oh)" :
+                anchor?.top != null && anchor?.bottom == null ? "0" : "(ih-oh)/2";
+
+  switch (objectFit) {
+    case "center":
+      return `,pad=${w}:${h}:${padX}:${padY}:color=black@0`;
+    case "fit":
+      return `,scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:${padX}:${padY}:color=black@0`;
+    case "cover":
+      return `,scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}:${cropX}:${cropY}`;
+  }
 }
 
 /**

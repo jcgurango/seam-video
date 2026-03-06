@@ -6,12 +6,26 @@ export type Underflow =
   | "extend-center"
   | "stretch";
 
+export type Position = "absolute" | "relative";
+export type ObjectFit = "center" | "fit" | "cover";
+
 export interface CompositionLayout {
   justify: Justify;
   gap: number;
 }
 
-export interface ChildTimingFields {
+export interface SpatialFields {
+  position?: Position;
+  objectFit?: ObjectFit;
+  top?: string;
+  left?: string;
+  right?: string;
+  bottom?: string;
+  width?: string;
+  height?: string;
+}
+
+export interface ChildTimingFields extends SpatialFields {
   in?: number;
   out?: number;
   flex?: number;
@@ -38,6 +52,8 @@ export interface Composition extends ChildTimingFields {
   duration?: number;
   unitDuration?: number;
   layout?: CompositionLayout;
+  contentWidth?: number;
+  contentHeight?: number;
 }
 
 export type AlignItems = "start" | "end" | "center";
@@ -47,6 +63,8 @@ export interface Overlay extends ChildTimingFields {
   children: Child[];
   duration?: number;
   alignItems: AlignItems;
+  contentWidth?: number;
+  contentHeight?: number;
 }
 
 export type Child = Clip | Empty | Composition | Overlay;

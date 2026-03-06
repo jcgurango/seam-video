@@ -6,18 +6,24 @@ import NodeRenderer from "./NodeRenderer.js";
 interface TimelineProps {
   timeline: ResolvedTimeline;
   basePath: string;
+  width?: number;
+  height?: number;
   children?: React.ReactNode;
 }
 
 export default function Timeline({
   timeline,
   basePath,
+  width = 1920,
+  height = 1080,
   children,
 }: TimelineProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
   const rafRef = useRef<number>(0);
   const prevFrameRef = useRef<number>(0);
+  const outerRef = useRef<HTMLDivElement>(null);
 
   // Reset when timeline changes
   const prevTimelineRef = useRef(timeline);
@@ -59,6 +65,21 @@ export default function Timeline({
     return () => cancelAnimationFrame(rafRef.current);
   }, [isPlaying, timeline.duration]);
 
+  // ResizeObserver for scaling
+  useEffect(() => {
+    const el = outerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const scale = containerWidth > 0 ? containerWidth / width : 1;
+
   const play = useCallback(() => {
     setCurrentTime((prev) => (prev >= timeline.duration ? 0 : prev));
     setIsPlaying(true);
@@ -77,6 +98,8 @@ export default function Timeline({
     totalDuration: timeline.duration,
     isPlaying,
     basePath,
+    canvasWidth: width,
+    canvasHeight: height,
     play,
     pause,
     restart,
@@ -106,9 +129,10 @@ export default function Timeline({
           }}
         >
           <div
+            ref={outerRef}
             style={{
               position: "relative",
-              aspectRatio: "16 / 9",
+              aspectRatio: `${width} / ${height}`,
               maxWidth: "100%",
               maxHeight: "100%",
               width: "100%",
@@ -116,9 +140,19 @@ export default function Timeline({
               overflow: "hidden",
             }}
           >
-            {timeline.children.map((child, i) => (
-              <NodeRenderer key={i} node={child} />
-            ))}
+            <div
+              style={{
+                width: `${width}px`,
+                height: `${height}px`,
+                transform: `scale(${scale})`,
+                transformOrigin: "0 0",
+                position: "relative",
+              }}
+            >
+              {timeline.children.map((child, i) => (
+                <NodeRenderer key={i} node={child} />
+              ))}
+            </div>
           </div>
         </div>
 

@@ -6,7 +6,8 @@
       "WebFetch(domain:github.com)",
       "Bash(npm)",
       "Bash(corepack:*)",
-      "Bash(pnpm:*)"
+      "Bash(pnpm:*)",
+      "Bash(npx tsx:*)"
     ]
   }
 }

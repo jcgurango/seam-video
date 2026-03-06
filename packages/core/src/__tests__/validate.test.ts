@@ -164,6 +164,114 @@ describe("validate", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts spatial fields on clips", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          in: 0,
+          out: 5,
+          position: "absolute",
+          left: "10px",
+          top: "20%",
+          width: "480px",
+          height: "270px",
+          objectFit: "cover",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts spatial fields on compositions", () => {
+    const result = validate({
+      type: "composition",
+      objectFit: "fit",
+      children: [
+        {
+          type: "composition",
+          left: "0px",
+          top: "0px",
+          width: "50%",
+          height: "50%",
+          children: [
+            { type: "clip", source: "v.mp4", in: 0, out: 5 },
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts spatial fields on overlays", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "overlay",
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          objectFit: "center",
+          children: [
+            { type: "clip", source: "v.mp4", in: 0, out: 5 },
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid dimension strings", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          in: 0,
+          out: 5,
+          width: "10em",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid objectFit value", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          in: 0,
+          out: 5,
+          objectFit: "stretch",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid position value", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          in: 0,
+          out: 5,
+          position: "fixed",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseSeamFile", () => {

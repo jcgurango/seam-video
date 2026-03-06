@@ -5,6 +5,8 @@ export interface TimelineContextValue {
   totalDuration: number;
   isPlaying: boolean;
   basePath: string;
+  canvasWidth: number;
+  canvasHeight: number;
   play: () => void;
   pause: () => void;
   restart: () => void;

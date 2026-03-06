@@ -55,6 +55,9 @@ A clip references a segment of a source media file.
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
 | `overflow` | string | no | Strategy when clip must be shortened (default: `"trim-end"`) |
 | `underflow` | string | no | Strategy when clip must be lengthened |
+| `position` | string | no | `"relative"` or `"absolute"` (see [Spatial Layout](#spatial-layout)) |
+| `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
+| `top`, `left`, `right`, `bottom`, `width`, `height` | string | no | Box properties (see [Spatial Layout](#spatial-layout)) |
 
 The **natural duration** of a clip is `out - in`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
 
@@ -98,6 +101,8 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
 | `overflow` | string | no | Strategy when composition must be shortened (default: `"trim-end"`) |
 | `underflow` | string | no | Strategy when composition must be lengthened |
+| `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
+| `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
 
 #### Nested Compositions and Windowing
 
@@ -149,6 +154,8 @@ An overlay stacks its children visually — all playing at the same time, layere
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
 | `overflow` | string | no | Strategy when overlay must be shortened |
 | `underflow` | string | no | Strategy when overlay must be lengthened |
+| `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
+| `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
 
 #### alignItems
 
@@ -342,3 +349,166 @@ Applied when the target duration is greater than the natural duration. No defaul
 ```
 
 If this clip's flex allocation is 10 seconds, `"stretch"` plays the 5-10s range at 0.5x speed.
+
+## Spatial Layout
+
+Nodes can be positioned and sized within their parent container using box properties.
+
+### Box Properties
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | `"relative"` \| `"absolute"` | Placement mode (default: `"relative"`) |
+| `objectFit` | `"center"` \| `"fit"` \| `"cover"` | How children are scaled within this container (default: `"fit"`) |
+| `top` | string | Offset from top edge |
+| `left` | string | Offset from left edge |
+| `right` | string | Offset from right edge |
+| `bottom` | string | Offset from bottom edge |
+| `width` | string | Explicit width |
+| `height` | string | Explicit height |
+
+All spatial fields are optional. When no spatial properties are present, the default `objectFit` (`"fit"`) still applies — clips are scaled to fit the canvas preserving aspect ratio.
+
+### Units
+
+Dimension values are CSS-like strings:
+
+- `"10px"` — pixels
+- `"50%"` — percentage of parent dimension
+- `"100"` — bare number, treated as pixels
+
+Negative values are allowed (e.g. `"-10px"`).
+
+### objectFit
+
+`objectFit` is a **container-to-children policy**. It determines how children are scaled within the container:
+
+| Value | Effect |
+|-------|--------|
+| `"center"` | Children displayed at native size, centered |
+| `"fit"` | Children scaled to fit within container, preserving aspect ratio (default) |
+| `"cover"` | Children scaled to cover container, preserving aspect ratio (may crop) |
+
+The default is `"fit"`, which applies at every level — even with no spatial properties at all, clips are scaled to fit the canvas. A child can specify its own `objectFit`, but that only affects *its own children*, not its own sizing within the parent.
+
+Compositions and overlays have intrinsic dimensions equal to the canvas size (1920x1080 by default), which can be overridden with `contentWidth`/`contentHeight`. See [Content Dimensions](#content-dimensions).
+
+### Position
+
+| Value | Effect |
+|-------|--------|
+| `"relative"` | Offsets from the objectFit-derived centered position (default) |
+| `"absolute"` | Positions from the container's top-left origin |
+
+### Box Model
+
+The box properties follow CSS-like rules:
+
+- `width` + `left` → placed at left offset, explicit width
+- `width` + `right` → placed at right offset, explicit width
+- `left` + `right` (no width) → width computed from parent minus offsets
+- Same rules apply for the vertical axis (`height`, `top`, `bottom`)
+
+### Content Dimensions
+
+By default, compositions and overlays have intrinsic dimensions equal to the canvas (1920x1080). `contentWidth` and `contentHeight` override this, defining the container's internal coordinate space.
+
+When a container has custom content dimensions, two things happen:
+
+1. **The parent's objectFit sizes the container** using the content dimensions as intrinsic size — just like it sizes a video clip using the video's native resolution.
+2. **Children are positioned in the content coordinate space**, which is then scaled to the container's display size.
+
+```json
+{
+  "type": "composition",
+  "children": [
+    {
+      "type": "overlay",
+      "contentWidth": 800,
+      "contentHeight": 600,
+      "children": [
+        { "type": "clip", "source": "game.mp4", "in": 0, "out": 60 }
+      ]
+    }
+  ]
+}
+```
+
+The overlay has an 800x600 coordinate space. The parent's default `"fit"` scales it to fit the 1920x1080 canvas: `min(1920/800, 1080/600) = 1.8`, giving a 1440x1080 display area centered horizontally with 240px of black on each side. The clip inside is fit within 800x600.
+
+To stretch a container (breaking its aspect ratio), give it explicit `width` + `height` that don't match the content aspect ratio. The content space maps to the forced display size.
+
+### Edge Anchoring
+
+When you specify a single edge (`right`, `bottom`, etc.), objectFit-scaled content aligns to that edge instead of centering. This lets you control which part of a video is visible after scaling.
+
+| Edges specified | Alignment |
+|----------------|-----------|
+| `right` only | Content pinned to right edge |
+| `left` only | Content pinned to left edge |
+| Both or neither | Content centered (default) |
+| `top` only | Content pinned to top edge |
+| `bottom` only | Content pinned to bottom edge |
+
+This interacts with all objectFit modes:
+
+- **`"fit"`**: determines where the letterbox padding goes (e.g. `right: "0px"` puts all padding on the left)
+- **`"cover"`**: determines which part of the video is kept (e.g. `top: "0px"` crops from the bottom)
+- **`"center"`**: determines where the native-size content sits in the container
+
+```json
+{
+  "type": "composition",
+  "objectFit": "cover",
+  "children": [
+    {
+      "type": "clip",
+      "source": "tall-video.mp4",
+      "in": 0, "out": 10,
+      "top": "0px"
+    }
+  ]
+}
+```
+
+The video is scaled to cover the canvas, and the `top: "0px"` anchor keeps the top of the video visible, cropping from the bottom.
+
+### Crop via objectFit
+
+`objectFit: "cover"` scales to fill the container, then crops overflow. A 4:3 video in a 16:9 canvas will be zoomed in and cropped on the sides:
+
+```json
+{
+  "type": "composition",
+  "objectFit": "cover",
+  "children": [
+    { "type": "clip", "source": "4x3-footage.mp4", "in": 0, "out": 10 }
+  ]
+}
+```
+
+With the default `"fit"`, the same clip would be letterboxed (black bars on the sides). With `"center"`, it would be displayed at native resolution.
+
+### Picture-in-Picture Example
+
+```json
+{
+  "type": "overlay",
+  "children": [
+    { "type": "clip", "source": "main.mp4", "in": 0, "out": 30 },
+    {
+      "type": "clip",
+      "source": "camera.mp4",
+      "in": 0,
+      "out": 30,
+      "position": "absolute",
+      "right": "20px",
+      "bottom": "20px",
+      "width": "25%",
+      "height": "25%"
+    }
+  ]
+}
+```
+
+The main video fills the frame. The camera feed is placed in the bottom-right corner at 25% size.

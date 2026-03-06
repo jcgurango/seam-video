@@ -1,5 +1,23 @@
 import { z } from "zod";
 
+export const PositionSchema = z.enum(["absolute", "relative"]);
+export const ObjectFitSchema = z.enum(["center", "fit", "cover"]);
+export const DimensionStringSchema = z.string().regex(
+  /^-?\d+(?:\.\d+)?(?:px|%)?$/,
+  "Must be a CSS dimension string (e.g. '10px', '50%', '100')"
+);
+
+const SpatialFieldsSchema = {
+  position: PositionSchema.optional(),
+  objectFit: ObjectFitSchema.optional(),
+  top: DimensionStringSchema.optional(),
+  left: DimensionStringSchema.optional(),
+  right: DimensionStringSchema.optional(),
+  bottom: DimensionStringSchema.optional(),
+  width: DimensionStringSchema.optional(),
+  height: DimensionStringSchema.optional(),
+};
+
 export const JustifySchema = z.enum([
   "start",
   "end",
@@ -34,6 +52,7 @@ export const ClipSchema = z.object({
   flex: z.number().positive().optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
+  ...SpatialFieldsSchema,
 });
 
 export const EmptySchema = z.object({
@@ -55,6 +74,9 @@ export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
     flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
+    contentWidth: z.number().positive().optional(),
+    contentHeight: z.number().positive().optional(),
+    ...SpatialFieldsSchema,
   })
 );
 
@@ -74,6 +96,9 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
+    contentWidth: z.number().positive().optional(),
+    contentHeight: z.number().positive().optional(),
+    ...SpatialFieldsSchema,
   }).refine(
     (data) => !(data.duration != null && data.unitDuration != null),
     { message: "Cannot specify both 'duration' and 'unitDuration'" }

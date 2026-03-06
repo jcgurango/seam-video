@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { watch } from "chokidar";
-import { parseSeamFile, resolveComposition } from "@seam/core";
+import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 
 let mainWindow: BrowserWindow | null = null;
 let seamFilePath: string | null = null;
@@ -14,7 +14,8 @@ function loadAndSend() {
     const json = readFileSync(seamFilePath, "utf-8");
     const result = parseSeamFile(json);
     if (result.success) {
-      const timeline = resolveComposition(result.data);
+      const temporal = resolveComposition(result.data);
+      const timeline = resolveSpatial(temporal, 1920, 1080);
       mainWindow.webContents.send("timeline-update", {
         timeline,
         basePath: dirname(seamFilePath),
@@ -102,8 +103,9 @@ app.whenReady().then(() => {
       const json = readFileSync(seamFilePath, "utf-8");
       const result = parseSeamFile(json);
       if (result.success) {
+        const temporal = resolveComposition(result.data);
         return {
-          timeline: resolveComposition(result.data),
+          timeline: resolveSpatial(temporal, 1920, 1080),
           basePath: dirname(seamFilePath),
         };
       }

@@ -2,6 +2,7 @@ import type { Composition, Overlay, Child, Overflow } from "../types.js";
 import type {
   ResolvedTimeline,
   ResolvedChild,
+  SpatialInput,
 } from "../resolved-types.js";
 import { distributeFlex } from "./flex.js";
 import { applyOverflow } from "./overflow.js";
@@ -33,6 +34,16 @@ function naturalDuration(child: Child): number {
  * Resolve a single child to its target duration, applying overflow/underflow.
  * Returns the resolved child (with placeholder timeline positions) and its actual duration.
  */
+function collectSpatialInput(child: Child): SpatialInput | undefined {
+  if (child.type === "empty") return undefined;
+  const { position, objectFit, top, left, right, bottom, width, height } = child;
+  if (position == null && objectFit == null && top == null && left == null &&
+      right == null && bottom == null && width == null && height == null) {
+    return undefined;
+  }
+  return { position, objectFit, top, left, right, bottom, width, height };
+}
+
 function resolveChild(
   child: Child,
   nat: number,
@@ -45,6 +56,8 @@ function resolveChild(
       actualDuration: target,
     };
   }
+
+  const spatialInput = collectSpatialInput(child);
 
   if (child.type === "composition" || child.type === "overlay") {
     const inner = child.type === "composition"
@@ -87,6 +100,9 @@ function resolveChild(
         duration: windowDur,
         speed,
         children: croppedChildren,
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
+        ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },
       actualDuration: windowDur,
     };
@@ -127,6 +143,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(spatialInput ? { spatialInput } : {}),
     },
     actualDuration: clipDur,
   };
@@ -196,6 +213,9 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
   return {
     duration: containerDuration,
     children: resolvedChildren,
+    ...(composition.objectFit ? { objectFit: composition.objectFit } : {}),
+    ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
+    ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
   };
 }
 
@@ -280,17 +300,15 @@ function cropChildrenToWindow(
       const clipEndOffset = child.timelineEnd - visibleEnd;
 
       result.push({
-        type: "clip",
-        source: child.source,
+        ...child,
         sourceIn: child.sourceIn + clipStartOffset * child.speed,
         sourceOut: child.sourceOut - clipEndOffset * child.speed,
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
-        speed: child.speed,
       });
     } else if (child.type === "empty") {
       result.push({
-        type: "empty",
+        ...child,
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
@@ -301,11 +319,10 @@ function cropChildrenToWindow(
       const croppedInner = cropChildrenToWindow(child.children, innerWindowIn, innerWindowOut);
 
       result.push({
-        type: child.type,
+        ...child,
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
         duration: rebasedEnd - rebasedStart,
-        speed: child.speed,
         children: croppedInner,
       });
     }

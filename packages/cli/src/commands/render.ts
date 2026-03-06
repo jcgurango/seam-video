@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseSeamFile, resolveComposition } from "@seam/core";
+import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 import { buildFfmpegCommand, checkFfmpeg, renderWithFfmpeg } from "@seam/renderer";
 
 export async function renderCommand(
@@ -24,7 +24,8 @@ export async function renderCommand(
     process.exit(1);
   }
 
-  const timeline = resolveComposition(result.data);
+  const temporal = resolveComposition(result.data);
+  const timeline = resolveSpatial(temporal, width, height);
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const command = buildFfmpegCommand(timeline, outputPath, { fps, width, height });
 

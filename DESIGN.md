@@ -1,31 +1,24 @@
-The next thing I'd like to implement is overlays. Overlays are defined like this:
+Our next big thing: layouts. This is actually the reason we built the video element the way we did. Compositions can now have positional and sizing parameters, as well as "fit".
 
 ```json
 {
-  "type": "overlay",
-  "children": [
-    { ... },
-    { ... },
-    { ... },
-  ],
-  "duration": 10,
-  "alignItems": "center"
+  "fit": "none",
+  "position": "absolute",
+  "top": "10px",
+  "width": "100%",
+  "height": "50px",
+  ...composition
 }
 ```
 
-I notice clips and compositions actually share a lot of the same fields. I think it would be worth it to move these:
-- in: number;
-- out: number;
-- flex?: number;
-- overflow: Overflow;
-- underflow?: Underflow;
+Possible values for fit:
+- `none` - Default. Does nothing to the children.
+- `fit` - Fits the entire child into the composition, centered.
+- `cover` - Covers the composition with the child, centered.
+- `center` - Centers the child without scaling it.
 
-To a generic properties interface since overlays are also gonna have these as well.
+The big change here is that compositions, overlays, and clips now have explicit dimensions that they report back to the parent. We've already loaded clip dimensions and set them, we now have to pass that up the tree. We should apply fit using CSS transforms rather than relying on CSS's fitting parameters, this will ensure WYSIWYG when we do more complicated things with it later.
 
-So what is an overlay? It essentially puts each child on top of the other. Third over second over first, so the order you define them is from base -> top.
+Now you might have also noticed the "position" attribute can be absolute and relative. This just changes the behavior of everything downstream. "position": "relative" with "top": "10px" is different from "position": "absolute" with "top": "0px". In ffmpeg these things will be applied via filters and we have to take care that the result in the preview and the result in the render are the same. Percentage units are understood as percentage of the parent width/height. If scaling/cropping is what we do on the FFMPEG side - that's also what we should do on the preview side.
 
-- Duration is optional
-- alignItems is the interesting thing. We take the longest duration thing in the children, then with the other children:
-  - "start" will put those children at the start
-  - "end" will put the ends of those children at the end
-  - "center" will try to center those children instead
+Again, have a look and let me know of any concerns.

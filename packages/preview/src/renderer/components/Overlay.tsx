@@ -27,24 +27,60 @@ export default function Overlay({ overlay }: OverlayProps) {
       )
     : 0;
 
+  const s = overlay.spatial;
+  const displayW = s ? s.width : parent.canvasWidth;
+  const displayH = s ? s.height : parent.canvasHeight;
+  const innerW = overlay.contentWidth ?? displayW;
+  const innerH = overlay.contentHeight ?? displayH;
+
   const localContext = {
     ...parent,
     currentTime: localTime,
     totalDuration: overlay.duration,
+    canvasWidth: innerW,
+    canvasHeight: innerH,
   };
 
-  return (
-    <div
-      style={{
+  const style: React.CSSProperties = s
+    ? {
+        position: "absolute",
+        left: s.x,
+        top: s.y,
+        width: s.width,
+        height: s.height,
+        overflow: "hidden",
+        opacity: isActive ? 1 : 0,
+      }
+    : {
         position: "absolute",
         inset: 0,
         opacity: isActive ? 1 : 0,
-      }}
-    >
+      };
+
+  const needsInnerScale = innerW !== displayW || innerH !== displayH;
+
+  return (
+    <div style={style}>
       <TimelineContext.Provider value={localContext}>
-        {overlay.children.map((child, i) => (
-          <NodeRenderer key={i} node={child} />
-        ))}
+        {needsInnerScale ? (
+          <div
+            style={{
+              width: innerW,
+              height: innerH,
+              transform: `scale(${displayW / innerW}, ${displayH / innerH})`,
+              transformOrigin: "0 0",
+              position: "relative",
+            }}
+          >
+            {overlay.children.map((child, i) => (
+              <NodeRenderer key={i} node={child} />
+            ))}
+          </div>
+        ) : (
+          overlay.children.map((child, i) => (
+            <NodeRenderer key={i} node={child} />
+          ))
+        )}
       </TimelineContext.Provider>
     </div>
   );
