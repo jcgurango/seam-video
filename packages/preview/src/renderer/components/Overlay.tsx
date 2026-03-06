@@ -2,6 +2,7 @@ import React from "react";
 import type { ResolvedOverlay } from "@seam/core";
 import { useTimeline, TimelineContext } from "./TimelineContext.js";
 import NodeRenderer from "./NodeRenderer.js";
+import { shouldBeInDOM } from "./preload.js";
 
 interface OverlayProps {
   overlay: ResolvedOverlay;
@@ -11,9 +12,7 @@ export default function Overlay({ overlay }: OverlayProps) {
   const parent = useTimeline();
   const { currentTime } = parent;
 
-  const preloadStart = overlay.timelineStart - 0.1;
-  const isInDOM =
-    currentTime >= preloadStart && currentTime < overlay.timelineEnd;
+  const isInDOM = shouldBeInDOM(currentTime, overlay.timelineStart, overlay.timelineEnd);
   const isActive =
     currentTime >= overlay.timelineStart &&
     currentTime < overlay.timelineEnd;

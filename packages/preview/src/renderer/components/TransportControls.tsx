@@ -2,7 +2,7 @@ import React from "react";
 import { useTimeline } from "./TimelineContext.js";
 
 export default function TransportControls() {
-  const { currentTime, totalDuration, isPlaying, play, pause, restart, seek } =
+  const { currentTime, totalDuration, isPlaying, loop, play, pause, restart, seek, setLoop } =
     useTimeline();
 
   const progress =
@@ -73,6 +73,20 @@ export default function TransportControls() {
           }}
         >
           Restart
+        </button>
+        <button
+          onClick={() => setLoop(!loop)}
+          style={{
+            background: loop ? "#4a9eff" : "none",
+            border: `1px solid ${loop ? "#4a9eff" : "#666"}`,
+            color: "#fff",
+            padding: "6px 16px",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontSize: 14,
+          }}
+        >
+          Loop
         </button>
         <span style={{ color: "#999", fontSize: 13 }}>
           {currentTime.toFixed(1)}s / {totalDuration.toFixed(1)}s

@@ -4,6 +4,7 @@ export interface TimelineContextValue {
   currentTime: number;
   totalDuration: number;
   isPlaying: boolean;
+  loop: boolean;
   basePath: string;
   canvasWidth: number;
   canvasHeight: number;
@@ -11,6 +12,7 @@ export interface TimelineContextValue {
   pause: () => void;
   restart: () => void;
   seek: (time: number) => void;
+  setLoop: (loop: boolean) => void;
 }
 
 export const TimelineContext = createContext<TimelineContextValue | null>(null);

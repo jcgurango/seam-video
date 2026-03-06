@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useState } from "react";
 import type { ResolvedClip } from "@seam/core";
 import { useTimeline } from "./TimelineContext.js";
 import { resolveSource } from "./resolveSource.js";
+import { shouldBeInDOM } from "./preload.js";
+import Video from "./Video.js";
 
 interface ClipProps {
   clip: ResolvedClip;
@@ -10,65 +12,13 @@ interface ClipProps {
 export default function Clip({ clip }: ClipProps) {
   const { currentTime, isPlaying, basePath, canvasWidth, canvasHeight } = useTimeline();
   const [intrinsicSize, setIntrinsicSize] = useState<{ w: number; h: number } | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const wasPlayingRef = useRef(false);
-  const wasActiveRef = useRef(false);
 
-  const preloadStart = clip.timelineStart - 0.1;
-  const isInDOM =
-    currentTime >= preloadStart && currentTime < clip.timelineEnd;
+  const isInDOM = shouldBeInDOM(currentTime, clip.timelineStart, clip.timelineEnd);
   const isActive =
     currentTime >= clip.timelineStart && currentTime < clip.timelineEnd;
 
   const clipLocalTime = isActive ? currentTime - clip.timelineStart : 0;
   const sourceTime = clip.sourceIn + clipLocalTime * clip.speed;
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const prevPlaying = wasPlayingRef.current;
-    const prevActive = wasActiveRef.current;
-    wasPlayingRef.current = isPlaying;
-    wasActiveRef.current = isActive;
-
-    if (isActive && isPlaying) {
-      if (!prevActive || !prevPlaying) {
-        // Play transition
-        video.playbackRate = clip.speed;
-        video.currentTime = sourceTime;
-        video.play().catch(() => {});
-      }
-    } else if (isActive && !isPlaying) {
-      if (prevPlaying) {
-        // Pause transition
-        video.pause();
-      }
-      // Scrubbing: sync video position
-      video.currentTime = sourceTime;
-    } else {
-      // Not active — pause and pre-seek to first frame
-      if (prevActive || prevPlaying) {
-        video.pause();
-      }
-      video.currentTime = clip.sourceIn;
-    }
-  }, [isActive, isPlaying, currentTime, clip, sourceTime]);
-
-  // Boundary check: pause at sourceOut
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const onTimeUpdate = () => {
-      if (video.currentTime >= clip.sourceOut - 0.02) {
-        video.pause();
-      }
-    };
-
-    video.addEventListener("timeupdate", onTimeUpdate);
-    return () => video.removeEventListener("timeupdate", onTimeUpdate);
-  }, [clip.sourceOut]);
 
   if (!isInDOM) return null;
 
@@ -133,8 +83,7 @@ export default function Clip({ clip }: ClipProps) {
           opacity: isActive ? 1 : 0,
         }}
       >
-        <video
-          ref={videoRef}
+        <Video
           src={src}
           playsInline
           preload="auto"
@@ -149,6 +98,9 @@ export default function Clip({ clip }: ClipProps) {
             width: scaledW,
             height: scaledH,
           }}
+          time={sourceTime}
+          isPlaying={isActive && isPlaying}
+          rate={clip.speed}
         />
       </div>
     );
@@ -167,8 +119,7 @@ export default function Clip({ clip }: ClipProps) {
         opacity: isActive ? 1 : 0,
       }}
     >
-      <video
-        ref={videoRef}
+      <Video
         src={src}
         playsInline
         preload="auto"
@@ -184,6 +135,9 @@ export default function Clip({ clip }: ClipProps) {
           height: containerH,
           objectFit: "fill",
         }}
+        time={sourceTime}
+        isPlaying={isActive && isPlaying}
+        rate={clip.speed}
       />
     </div>
   );

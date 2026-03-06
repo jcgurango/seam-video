@@ -76,7 +76,7 @@ function buildCompositeSegment(
   containerW?: number,
   containerH?: number
 ): { v: string; a: string } {
-  const totalDur = duration / parentSpeed;
+  const totalDur = snapToFrame(duration / parentSpeed, ctx.options.fps);
   const width = containerW ?? ctx.options.width;
   const height = containerH ?? ctx.options.height;
   const { fps } = ctx.options;
@@ -85,7 +85,7 @@ function buildCompositeSegment(
   const childSegments: { v: string; a: string; delay: number; spatial?: SpatialRect }[] = [];
   for (const child of children) {
     if (child.type === "empty") continue;
-    const delay = child.timelineStart / parentSpeed;
+    const delay = snapToFrame(child.timelineStart / parentSpeed, ctx.options.fps);
     const label = buildSingleSegment(ctx, child, parentSpeed, width, height);
     const spatial = (child as any).spatial as SpatialRect | undefined;
     childSegments.push({ ...label, delay, spatial });
@@ -174,7 +174,7 @@ function buildSingleSegment(
     return buildClipSegment(ctx, child, parentSpeed, parentW, parentH);
   }
   if (child.type === "empty") {
-    return buildBlackSegment(ctx, (child.timelineEnd - child.timelineStart) / parentSpeed);
+    return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
   // Composition or overlay: recurse into children
   const compoundSpeed = child.speed * parentSpeed;
@@ -210,8 +210,12 @@ function buildClipSegment(
 
   const effectiveSpeed = clip.speed * parentSpeed;
 
+  // Snap trim points to output frame grid
+  const trimIn = snapToFrame(clip.sourceIn, fps);
+  const trimOut = snapToFrame(clip.sourceOut, fps);
+
   // Video chain: trim → setpts → fps
-  let vChain = `[${idx}:v]trim=${clip.sourceIn}:${clip.sourceOut},setpts=PTS-STARTPTS`;
+  let vChain = `[${idx}:v]trim=${trimIn}:${trimOut},setpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     vChain += `,setpts=PTS*${1 / effectiveSpeed}`;
   }
@@ -230,7 +234,7 @@ function buildClipSegment(
   ctx.filters.push(`${vChain}${vLabel}`);
 
   // Audio chain: trim → asetpts → atempo
-  let aChain = `[${idx}:a]atrim=${clip.sourceIn}:${clip.sourceOut},asetpts=PTS-STARTPTS`;
+  let aChain = `[${idx}:a]atrim=${trimIn}:${trimOut},asetpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     aChain += buildAtempoChain(effectiveSpeed);
   }
@@ -249,15 +253,16 @@ function buildBlackSegment(
 ): { v: string; a: string } {
   const seg = ctx.segmentIndex++;
   const { width, height, fps } = ctx.options;
+  const snappedDur = snapToFrame(dur, fps);
 
   const vLabel = `[v${seg}]`;
   const aLabel = `[a${seg}]`;
 
   ctx.filters.push(
-    `color=c=black:s=${width}x${height}:r=${fps}:d=${dur},setsar=1${vLabel}`
+    `color=c=black:s=${width}x${height}:r=${fps}:d=${snappedDur},setsar=1${vLabel}`
   );
   ctx.filters.push(
-    `anullsrc=r=48000:cl=stereo[a${seg}_pre];[a${seg}_pre]atrim=0:${dur}${aLabel}`
+    `anullsrc=r=48000:cl=stereo[a${seg}_pre];[a${seg}_pre]atrim=0:${snappedDur}${aLabel}`
   );
 
   return { v: vLabel, a: aLabel };
@@ -287,6 +292,13 @@ function buildObjectFitFilters(objectFit: ObjectFit, spatial: SpatialRect, ancho
     case "cover":
       return `,scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}:${cropX}:${cropY}`;
   }
+}
+
+/**
+ * Snap a time value to the nearest frame boundary at the given fps.
+ */
+function snapToFrame(seconds: number, fps: number): number {
+  return Math.round(seconds * fps) / fps;
 }
 
 /**

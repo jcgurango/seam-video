@@ -20,6 +20,7 @@ export default function Timeline({
 }: TimelineProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [loop, setLoop] = useState(false);
   const [containerWidth, setContainerWidth] = useState(0);
   const rafRef = useRef<number>(0);
   const prevFrameRef = useRef<number>(0);
@@ -52,6 +53,9 @@ export default function Timeline({
       setCurrentTime((prev) => {
         const next = prev + delta;
         if (next >= timeline.duration) {
+          if (loop) {
+            return next % timeline.duration;
+          }
           setIsPlaying(false);
           return timeline.duration;
         }
@@ -63,7 +67,7 @@ export default function Timeline({
 
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, timeline.duration]);
+  }, [isPlaying, loop, timeline.duration]);
 
   // ResizeObserver for scaling
   useEffect(() => {
@@ -97,6 +101,7 @@ export default function Timeline({
     currentTime,
     totalDuration: timeline.duration,
     isPlaying,
+    loop,
     basePath,
     canvasWidth: width,
     canvasHeight: height,
@@ -104,6 +109,7 @@ export default function Timeline({
     pause,
     restart,
     seek,
+    setLoop,
   };
 
   return (
@@ -149,9 +155,16 @@ export default function Timeline({
                 position: "relative",
               }}
             >
-              {timeline.children.map((child, i) => (
-                <NodeRenderer key={i} node={child} />
-              ))}
+              {timeline.children.map((child, i) => {
+                const isPassed = currentTime >= child.timelineEnd;
+                const effectiveTime = isPassed ? currentTime - timeline.duration : currentTime;
+
+                return (
+                  <TimelineContext.Provider key={i} value={{ ...ctx, currentTime: effectiveTime }}>
+                    <NodeRenderer node={child} />
+                  </TimelineContext.Provider>
+                );
+              })}
             </div>
           </div>
         </div>
