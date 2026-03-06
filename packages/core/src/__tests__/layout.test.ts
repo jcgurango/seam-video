@@ -730,6 +730,103 @@ describe("resolveOverlay", () => {
     });
   });
 
+  describe("clip speed and duration", () => {
+    it("clip speed changes natural duration", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, speed: 2 },
+          ],
+        })
+      );
+
+      expect(result.duration).toBe(5); // 10 / 2
+      const clip = result.children[0];
+      expect(clip.type).toBe("clip");
+      if (clip.type === "clip") {
+        expect(clip.speed).toBe(2);
+        expect(clip.sourceIn).toBe(0);
+        expect(clip.sourceOut).toBe(10);
+      }
+    });
+
+    it("clip duration stretches to fit", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, duration: 20 },
+          ],
+        })
+      );
+
+      expect(result.duration).toBe(20);
+      const clip = result.children[0];
+      if (clip.type === "clip") {
+        expect(clip.speed).toBe(0.5); // 10 / 20
+        expect(clip.sourceIn).toBe(0);
+        expect(clip.sourceOut).toBe(10);
+      }
+    });
+
+    it("clip speed compounds with overflow stretch", () => {
+      const result = resolveComposition(
+        comp({
+          duration: 2.5,
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, speed: 2, flex: 1, overflow: "stretch" },
+          ],
+        })
+      );
+
+      // nat = 10/2 = 5, target = 2.5, overflow stretch
+      // sourceTarget = 2.5 * 2 = 5, overflowSpeed = 10/5 = 2, final = 2 * 2 = 4
+      const clip = result.children[0];
+      if (clip.type === "clip") {
+        expect(clip.speed).toBe(4);
+        expect(clip.sourceIn).toBe(0);
+        expect(clip.sourceOut).toBe(10);
+      }
+    });
+
+    it("clip speed compounds with overflow trim", () => {
+      const result = resolveComposition(
+        comp({
+          duration: 2.5,
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, speed: 2, flex: 1, overflow: "trim-end" },
+          ],
+        })
+      );
+
+      // nat = 5, target = 2.5, trim-end
+      // sourceTarget = 2.5 * 2 = 5, trim to sourceOut = 0 + 5 = 5
+      const clip = result.children[0];
+      if (clip.type === "clip") {
+        expect(clip.speed).toBe(2);
+        expect(clip.sourceIn).toBe(0);
+        expect(clip.sourceOut).toBe(5);
+        expect(clip.timelineEnd - clip.timelineStart).toBeCloseTo(2.5);
+      }
+    });
+
+    it("clips with speed are placed sequentially using adjusted duration", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 10, speed: 2 },
+            { type: "clip", source: "b.mp4", in: 0, out: 6, speed: 3 },
+          ],
+        })
+      );
+
+      expect(result.duration).toBe(7); // 5 + 2
+      expect(result.children[0].timelineStart).toBe(0);
+      expect(result.children[0].timelineEnd).toBe(5);
+      expect(result.children[1].timelineStart).toBe(5);
+      expect(result.children[1].timelineEnd).toBe(7);
+    });
+  });
+
   it("composition inside overlay", () => {
     const result = resolveOverlay(
       overlay({

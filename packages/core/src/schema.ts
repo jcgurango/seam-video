@@ -49,11 +49,16 @@ export const ClipSchema = z.object({
   source: z.string().min(1),
   in: z.number().nonnegative(),
   out: z.number().positive(),
+  speed: z.number().positive().optional(),
+  duration: z.number().positive().optional(),
   flex: z.number().positive().optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...SpatialFieldsSchema,
-});
+}).refine(
+  (data) => !(data.speed != null && data.duration != null),
+  { message: "Cannot specify both 'speed' and 'duration' on a clip" }
+);
 
 export const EmptySchema = z.object({
   type: z.literal("empty"),

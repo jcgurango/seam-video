@@ -52,6 +52,8 @@ A clip references a segment of a source media file.
 | `source` | string | yes | Path to the media file |
 | `in` | number | yes | Start point in the source file (seconds, >= 0) |
 | `out` | number | yes | End point in the source file (seconds, > 0) |
+| `speed` | number | no | Playback speed multiplier (e.g. `2` for 2x speed). Mutually exclusive with `duration` |
+| `duration` | number | no | Explicit duration in seconds — stretches the clip to fit. Mutually exclusive with `speed` |
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
 | `overflow` | string | no | Strategy when clip must be shortened (default: `"trim-end"`) |
 | `underflow` | string | no | Strategy when clip must be lengthened |
@@ -60,6 +62,13 @@ A clip references a segment of a source media file.
 | `top`, `left`, `right`, `bottom`, `width`, `height` | string | no | Box properties (see [Spatial Layout](#spatial-layout)) |
 
 The **natural duration** of a clip is `out - in`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
+
+Setting `speed` or `duration` changes the natural duration:
+
+- `speed: 2` plays the clip at 2x speed, halving its natural duration to `(out - in) / 2`
+- `duration: 20` stretches the clip to exactly 20 seconds, implying `speed = (out - in) / 20`
+
+These compound with flex and overflow/underflow. If a clip has `speed: 2` and the layout system assigns a different target (via flex), overflow/underflow applies on top of the base speed.
 
 ### Empty
 

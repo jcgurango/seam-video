@@ -38,6 +38,8 @@ export interface Clip extends ChildTimingFields {
   source: string;
   in: number;
   out: number;
+  speed?: number;
+  duration?: number;
 }
 
 export interface Empty {

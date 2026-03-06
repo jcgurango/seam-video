@@ -9,10 +9,15 @@ import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
 import { computeJustifyOffsets } from "./justify.js";
 
+function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration?: number }): number {
+  if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
+  return clip.speed ?? 1;
+}
+
 function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
-      return child.out - child.in;
+      return (child.out - child.in) / clipBaseSpeed(child);
     case "empty":
       return child.duration;
     case "composition": {
@@ -112,27 +117,28 @@ function resolveChild(
   const clip = child;
   let sourceIn = clip.in;
   let sourceOut = clip.out;
-  let speed = 1;
+  const baseSpeed = clipBaseSpeed(clip);
+  let speed = baseSpeed;
 
   if (target < nat) {
     const overflow = clip.overflow ?? defaultOverflow;
-    const result = applyOverflow(overflow, sourceIn, sourceOut, target);
+    const sourceTarget = target * baseSpeed;
+    const result = applyOverflow(overflow, sourceIn, sourceOut, sourceTarget);
     sourceIn = result.sourceIn;
     sourceOut = result.sourceOut;
-    speed = result.speed;
+    speed = result.speed * baseSpeed;
   } else if (target > nat) {
     const underflow = clip.underflow;
     if (underflow) {
-      const result = applyUnderflow(underflow, sourceIn, sourceOut, target);
+      const sourceTarget = target * baseSpeed;
+      const result = applyUnderflow(underflow, sourceIn, sourceOut, sourceTarget);
       sourceIn = result.sourceIn;
       sourceOut = result.sourceOut;
-      speed = result.speed;
+      speed = result.speed * baseSpeed;
     }
   }
 
-  const clipDur = speed !== 1
-    ? (sourceOut - sourceIn) / speed
-    : sourceOut - sourceIn;
+  const clipDur = (sourceOut - sourceIn) / speed;
 
   return {
     resolved: {
