@@ -2,7 +2,6 @@ import React from "react";
 import type { ResolvedComposition } from "@seam/core";
 import { useTimeline, TimelineContext } from "./TimelineContext.js";
 import NodeRenderer from "./NodeRenderer.js";
-import { shouldBeInDOM } from "./preload.js";
 
 interface CompositionProps {
   composition: ResolvedComposition;
@@ -12,12 +11,11 @@ export default function Composition({ composition }: CompositionProps) {
   const parent = useTimeline();
   const { currentTime } = parent;
 
-  const isInDOM = shouldBeInDOM(currentTime, composition.timelineStart, composition.timelineEnd);
   const isActive =
     currentTime >= composition.timelineStart &&
     currentTime < composition.timelineEnd;
 
-  if (!isInDOM) return null;
+  if (!isActive) return null;
 
   const localTime = Math.min(
     (currentTime - composition.timelineStart) * composition.speed,
@@ -46,12 +44,10 @@ export default function Composition({ composition }: CompositionProps) {
         width: s.width,
         height: s.height,
         overflow: "hidden",
-        opacity: isActive ? 1 : 0,
       }
     : {
         position: "absolute",
         inset: 0,
-        opacity: isActive ? 1 : 0,
       };
 
   const needsInnerScale = innerW !== displayW || innerH !== displayH;

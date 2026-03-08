@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { ResolvedClip } from "@seam/core";
 
 export interface TimelineContextValue {
   currentTime: number;
@@ -8,6 +9,8 @@ export interface TimelineContextValue {
   basePath: string;
   canvasWidth: number;
   canvasHeight: number;
+  getFrame: (clip: ResolvedClip) => HTMLCanvasElement | OffscreenCanvas | null;
+  getIntrinsicSize: (clip: ResolvedClip) => { w: number; h: number } | null;
   play: () => void;
   pause: () => void;
   restart: () => void;

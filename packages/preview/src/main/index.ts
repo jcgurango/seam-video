@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain } from "electron";
-import { existsSync, readFileSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, protocol } from "electron";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { watch } from "chokidar";
 import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
@@ -74,7 +74,73 @@ function validateSeamFile(filePath: string): void {
   }
 }
 
+// Intercept file:// to add Content-Length (required by mediabunny's UrlSource)
+protocol.registerSchemesAsPrivileged([
+  { scheme: "file", privileges: { supportFetchAPI: true } },
+]);
+
 app.whenReady().then(() => {
+  protocol.handle("file", (request) => {
+    const url = new URL(request.url);
+    const filePath = decodeURIComponent(url.pathname).replace(/^\/([A-Z]:)/i, "$1");
+
+    let size: number;
+    try {
+      size = statSync(filePath).size;
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const rangeHeader = request.headers.get("Range");
+    if (rangeHeader) {
+      const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
+      const start = match ? parseInt(match[1], 10) : 0;
+      const end = match && match[2] ? parseInt(match[2], 10) : size - 1;
+      const chunkSize = end - start + 1;
+
+      const stream = createReadStream(filePath, { start, end });
+      const body = new ReadableStream({
+        start(controller) {
+          stream.on("data", (chunk: Buffer) => controller.enqueue(chunk));
+          stream.on("end", () => controller.close());
+          stream.on("error", (err) => controller.error(err));
+        },
+        cancel() {
+          stream.destroy();
+        },
+      });
+
+      return new Response(body, {
+        status: 206,
+        statusText: "Partial Content",
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${size}`,
+          "Content-Length": String(chunkSize),
+          "Accept-Ranges": "bytes",
+        },
+      });
+    }
+
+    const stream = createReadStream(filePath);
+    const body = new ReadableStream({
+      start(controller) {
+        stream.on("data", (chunk: Buffer) => controller.enqueue(chunk));
+        stream.on("end", () => controller.close());
+        stream.on("error", (err) => controller.error(err));
+      },
+      cancel() {
+        stream.destroy();
+      },
+    });
+
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Length": String(size),
+        "Accept-Ranges": "bytes",
+      },
+    });
+  });
   // Get seam file path from args or SEAM_FILE env var
   const args = process.argv.slice(2);
   const fileArg = args[0] || process.env.SEAM_FILE;

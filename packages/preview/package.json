@@ -10,6 +10,7 @@
   "dependencies": {
     "@seam/core": "workspace:*",
     "chokidar": "^4.0.0",
+    "mediabunny": "^1.38.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

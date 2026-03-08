@@ -233,10 +233,11 @@ function buildClipSegment(
   const vLabel = `[v${seg}]`;
   ctx.filters.push(`${vChain}${vLabel}`);
 
-  // Audio chain: trim → asetpts → atempo
+  // Audio chain: trim → asetpts → pitch-shifted speed change
+  // Uses asetrate+aresample to match preview's AudioBufferSourceNode.playbackRate behavior
   let aChain = `[${idx}:a]atrim=${trimIn}:${trimOut},asetpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
-    aChain += buildAtempoChain(effectiveSpeed);
+    aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
   }
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);
@@ -301,29 +302,3 @@ function snapToFrame(seconds: number, fps: number): number {
   return Math.round(seconds * fps) / fps;
 }
 
-/**
- * Build an atempo filter chain. atempo only accepts values in [0.5, 100],
- * so for speeds below 0.5, chain multiple atempo filters.
- */
-function buildAtempoChain(speed: number): string {
-  const parts: number[] = [];
-  let remaining = speed;
-
-  if (remaining < 0.5) {
-    while (remaining < 0.5) {
-      parts.push(0.5);
-      remaining /= 0.5;
-    }
-    parts.push(remaining);
-  } else if (remaining > 100) {
-    while (remaining > 100) {
-      parts.push(100);
-      remaining /= 100;
-    }
-    parts.push(remaining);
-  } else {
-    parts.push(remaining);
-  }
-
-  return parts.map((p) => `,atempo=${p}`).join("");
-}

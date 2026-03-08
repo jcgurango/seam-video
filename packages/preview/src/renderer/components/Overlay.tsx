@@ -2,7 +2,6 @@ import React from "react";
 import type { ResolvedOverlay } from "@seam/core";
 import { useTimeline, TimelineContext } from "./TimelineContext.js";
 import NodeRenderer from "./NodeRenderer.js";
-import { shouldBeInDOM } from "./preload.js";
 
 interface OverlayProps {
   overlay: ResolvedOverlay;
@@ -12,19 +11,16 @@ export default function Overlay({ overlay }: OverlayProps) {
   const parent = useTimeline();
   const { currentTime } = parent;
 
-  const isInDOM = shouldBeInDOM(currentTime, overlay.timelineStart, overlay.timelineEnd);
   const isActive =
     currentTime >= overlay.timelineStart &&
     currentTime < overlay.timelineEnd;
 
-  if (!isInDOM) return null;
+  if (!isActive) return null;
 
-  const localTime = isActive
-    ? Math.min(
-        (currentTime - overlay.timelineStart) * overlay.speed,
-        overlay.duration
-      )
-    : 0;
+  const localTime = Math.min(
+    (currentTime - overlay.timelineStart) * overlay.speed,
+    overlay.duration
+  );
 
   const s = overlay.spatial;
   const displayW = s ? s.width : parent.canvasWidth;
@@ -48,12 +44,10 @@ export default function Overlay({ overlay }: OverlayProps) {
         width: s.width,
         height: s.height,
         overflow: "hidden",
-        opacity: isActive ? 1 : 0,
       }
     : {
         position: "absolute",
         inset: 0,
-        opacity: isActive ? 1 : 0,
       };
 
   const needsInnerScale = innerW !== displayW || innerH !== displayH;

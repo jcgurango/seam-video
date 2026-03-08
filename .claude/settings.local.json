@@ -7,7 +7,9 @@
       "Bash(npm)",
       "Bash(corepack:*)",
       "Bash(pnpm:*)",
-      "Bash(npx tsx:*)"
+      "Bash(npx tsx:*)",
+      "WebFetch(domain:mediabunny.dev)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

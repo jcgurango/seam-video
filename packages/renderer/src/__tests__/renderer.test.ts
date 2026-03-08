@@ -73,7 +73,7 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).toContain("[1:v]trim=5:8");
   });
 
-  it("handles speed with setpts and atempo", () => {
+  it("handles speed with setpts and pitch-shifted audio", () => {
     const timeline: ResolvedTimeline = {
       duration: 5,
       children: [
@@ -92,7 +92,7 @@ describe("buildFfmpegCommand", () => {
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
     // setpts=PTS*0.5 for 2x speed
     expect(cmd.filterComplex).toContain("setpts=PTS*0.5");
-    expect(cmd.filterComplex).toContain("atempo=2");
+    expect(cmd.filterComplex).toContain("asetrate=48000*2,aresample=48000");
   });
 
   it("handles empty segments with color and anullsrc", () => {
@@ -203,7 +203,7 @@ describe("buildFfmpegCommand", () => {
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
     // Parent speed 2 * clip speed 1 = effective 2
     expect(cmd.filterComplex).toContain("setpts=PTS*0.5");
-    expect(cmd.filterComplex).toContain("atempo=2");
+    expect(cmd.filterComplex).toContain("asetrate=48000*2,aresample=48000");
   });
 
   it("builds overlay with overlay filter", () => {
@@ -466,7 +466,7 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).toContain("crop=1920:1080:(iw-ow)/2:0");
   });
 
-  it("handles slow speed with chained atempo", () => {
+  it("handles slow speed with pitch-shifted audio", () => {
     const timeline: ResolvedTimeline = {
       duration: 40,
       children: [
@@ -483,7 +483,7 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    // 0.25 speed needs chained atempo: 0.5 * 0.5
-    expect(cmd.filterComplex).toContain("atempo=0.5,atempo=0.5");
+    // 0.25 speed uses asetrate+aresample for pitch-shifted slowdown
+    expect(cmd.filterComplex).toContain("asetrate=48000*0.25,aresample=48000");
   });
 });

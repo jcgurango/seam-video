@@ -2,6 +2,9 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import type { ResolvedTimeline } from "@seam/core";
 import { TimelineContext } from "./TimelineContext.js";
 import NodeRenderer from "./NodeRenderer.js";
+import { MediaStore } from "../media/MediaStore.js";
+import { AudioScheduler } from "../media/AudioScheduler.js";
+import { FrameCoordinator } from "../media/FrameCoordinator.js";
 
 interface TimelineProps {
   timeline: ResolvedTimeline;
@@ -22,52 +25,88 @@ export default function Timeline({
   const [isPlaying, setIsPlaying] = useState(false);
   const [loop, setLoop] = useState(false);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [, setFrameTick] = useState(0);
   const rafRef = useRef<number>(0);
-  const prevFrameRef = useRef<number>(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outerRef = useRef<HTMLDivElement>(null);
 
-  // Reset when timeline changes
-  const prevTimelineRef = useRef(timeline);
+  // Persistent instances
+  const mediaStoreRef = useRef<MediaStore | null>(null);
+  const audioSchedulerRef = useRef<AudioScheduler | null>(null);
+  const coordinatorRef = useRef<FrameCoordinator | null>(null);
+
+  if (!mediaStoreRef.current) mediaStoreRef.current = new MediaStore();
+  if (!audioSchedulerRef.current) audioSchedulerRef.current = new AudioScheduler();
+  if (!coordinatorRef.current) coordinatorRef.current = new FrameCoordinator();
+
+  const mediaStore = mediaStoreRef.current;
+  const audioScheduler = audioSchedulerRef.current;
+  const coordinator = coordinatorRef.current;
+
+  // Cleanup on unmount
   useEffect(() => {
-    if (prevTimelineRef.current !== timeline) {
-      prevTimelineRef.current = timeline;
-      setCurrentTime(0);
-      setIsPlaying(false);
-    }
-  }, [timeline]);
+    return () => {
+      coordinatorRef.current?.dispose();
+      audioSchedulerRef.current?.dispose();
+      mediaStoreRef.current?.dispose();
+    };
+  }, []);
 
-  // rAF loop
+  // Wire up frame-available callback for re-renders on async seek
   useEffect(() => {
-    if (!isPlaying) {
-      prevFrameRef.current = 0;
-      return;
-    }
+    coordinator.onFrameAvailable = () => setFrameTick((n) => n + 1);
+    return () => { coordinator.onFrameAvailable = null; };
+  }, [coordinator]);
 
-    const tick = (timestamp: number) => {
-      if (prevFrameRef.current === 0) {
-        prevFrameRef.current = timestamp;
-      }
-      const delta = (timestamp - prevFrameRef.current) / 1000;
-      prevFrameRef.current = timestamp;
+  // Initialize coordinator when timeline changes
+  useEffect(() => {
+    setCurrentTime(0);
+    setIsPlaying(false);
+    audioScheduler.pause();
+    void coordinator.setTimeline(timeline, basePath, mediaStore, audioScheduler);
+  }, [timeline, basePath, mediaStore, audioScheduler, coordinator]);
 
-      setCurrentTime((prev) => {
-        const next = prev + delta;
-        if (next >= timeline.duration) {
-          if (loop) {
-            return next % timeline.duration;
-          }
+  // Refs for rAF access to latest state
+  const loopRef = useRef(loop);
+  loopRef.current = loop;
+  const durationRef = useRef(timeline.duration);
+  durationRef.current = timeline.duration;
+
+  // Playback loop — rAF for smooth rendering, setInterval as fallback when window is hidden
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    const tick = () => {
+      const duration = durationRef.current;
+      let t = audioScheduler.currentTime;
+
+      if (t >= duration) {
+        if (loopRef.current) {
+          const wrapped = t % duration;
+          audioScheduler.seekAll(wrapped);
+          coordinator.onPlay(wrapped);
+          t = wrapped;
+        } else {
+          setCurrentTime(duration);
           setIsPlaying(false);
-          return timeline.duration;
+          audioScheduler.pause();
+          return;
         }
-        return next;
-      });
+      }
+
+      coordinator.tick(t, true, duration, loopRef.current);
+      setCurrentTime(t);
 
       rafRef.current = requestAnimationFrame(tick);
     };
 
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, loop, timeline.duration]);
+    intervalRef.current = setInterval(() => tick(), 16);
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [isPlaying, audioScheduler, coordinator]);
 
   // ResizeObserver for scaling
   useEffect(() => {
@@ -85,17 +124,46 @@ export default function Timeline({
   const scale = containerWidth > 0 ? containerWidth / width : 1;
 
   const play = useCallback(() => {
-    setCurrentTime((prev) => (prev >= timeline.duration ? 0 : prev));
-    setIsPlaying(true);
-  }, [timeline.duration]);
-  const pause = useCallback(() => setIsPlaying(false), []);
+    setCurrentTime((prev) => {
+      const startTime = prev >= timeline.duration ? 0 : prev;
+      coordinator.onPlay(startTime);
+      void audioScheduler.play(startTime);
+      setIsPlaying(true);
+      return startTime;
+    });
+  }, [timeline.duration, audioScheduler, coordinator]);
+
+  const pause = useCallback(() => {
+    audioScheduler.pause();
+    const t = audioScheduler.currentTime;
+    setCurrentTime(t);
+    setIsPlaying(false);
+  }, [audioScheduler]);
+
   const restart = useCallback(() => {
     setCurrentTime(0);
+    coordinator.onPlay(0);
+    void audioScheduler.play(0);
     setIsPlaying(true);
-  }, []);
-  const seek = useCallback((time: number) => {
-    setCurrentTime(time);
-  }, []);
+  }, [audioScheduler, coordinator]);
+
+  const seek = useCallback(
+    (time: number) => {
+      setCurrentTime(time);
+      coordinator.onSeek(time, timeline.duration, loopRef.current);
+      audioScheduler.seekAll(time);
+    },
+    [audioScheduler, coordinator, timeline.duration]
+  );
+
+  const getFrame = useCallback(
+    (clip: Parameters<typeof coordinator.getFrame>[0]) => coordinator.getFrame(clip),
+    [coordinator]
+  );
+  const getIntrinsicSize = useCallback(
+    (clip: Parameters<typeof coordinator.getIntrinsicSize>[0]) => coordinator.getIntrinsicSize(clip),
+    [coordinator]
+  );
 
   const ctx = {
     currentTime,
@@ -105,6 +173,8 @@ export default function Timeline({
     basePath,
     canvasWidth: width,
     canvasHeight: height,
+    getFrame,
+    getIntrinsicSize,
     play,
     pause,
     restart,
@@ -155,16 +225,9 @@ export default function Timeline({
                 position: "relative",
               }}
             >
-              {timeline.children.map((child, i) => {
-                const isPassed = currentTime >= child.timelineEnd;
-                const effectiveTime = isPassed ? currentTime - timeline.duration : currentTime;
-
-                return (
-                  <TimelineContext.Provider key={i} value={{ ...ctx, currentTime: effectiveTime }}>
-                    <NodeRenderer node={child} />
-                  </TimelineContext.Provider>
-                );
-              })}
+              {timeline.children.map((child, i) => (
+                <NodeRenderer key={i} node={child} />
+              ))}
             </div>
           </div>
         </div>
