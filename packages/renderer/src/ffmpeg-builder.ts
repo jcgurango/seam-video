@@ -210,12 +210,12 @@ function buildClipSegment(
 
   const effectiveSpeed = clip.speed * parentSpeed;
 
-  // Snap trim points to output frame grid
-  const trimIn = snapToFrame(clip.sourceIn, fps);
-  const trimOut = snapToFrame(clip.sourceOut, fps);
+  // Video trim snaps to frame grid; audio uses exact times for sample-accurate cuts
+  const vTrimIn = snapToFrame(clip.sourceIn, fps);
+  const vTrimOut = snapToFrame(clip.sourceOut, fps);
 
   // Video chain: trim → setpts → fps
-  let vChain = `[${idx}:v]trim=${trimIn}:${trimOut},setpts=PTS-STARTPTS`;
+  let vChain = `[${idx}:v]trim=${vTrimIn}:${vTrimOut},setpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     vChain += `,setpts=PTS*${1 / effectiveSpeed}`;
   }
@@ -233,9 +233,9 @@ function buildClipSegment(
   const vLabel = `[v${seg}]`;
   ctx.filters.push(`${vChain}${vLabel}`);
 
-  // Audio chain: trim → asetpts → pitch-shifted speed change
-  // Uses asetrate+aresample to match preview's AudioBufferSourceNode.playbackRate behavior
-  let aChain = `[${idx}:a]atrim=${trimIn}:${trimOut},asetpts=PTS-STARTPTS`;
+  // Audio chain: uses exact source times (not frame-snapped) for sample-accurate cuts
+  // Pitch-shifted speed via asetrate+aresample to match preview's playbackRate behavior
+  let aChain = `[${idx}:a]atrim=${clip.sourceIn}:${clip.sourceOut},asetpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
   }
