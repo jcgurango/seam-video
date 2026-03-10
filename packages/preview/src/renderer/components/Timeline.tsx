@@ -1,10 +1,11 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import type { ResolvedTimeline } from "@seam/core";
 import { TimelineContext } from "./TimelineContext.js";
-import NodeRenderer from "./NodeRenderer.js";
 import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
 import { FrameCoordinator } from "../media/FrameCoordinator.js";
+import { WebGPURenderer } from "../media/gpu/WebGPURenderer.js";
+import { buildRenderList } from "../media/gpu/RenderList.js";
 
 interface TimelineProps {
   timeline: ResolvedTimeline;
@@ -24,24 +25,26 @@ export default function Timeline({
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loop, setLoop] = useState(false);
-  const [containerWidth, setContainerWidth] = useState(0);
-  const [, setFrameTick] = useState(0);
   const rafRef = useRef<number>(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const outerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Persistent instances
   const mediaStoreRef = useRef<MediaStore | null>(null);
   const audioSchedulerRef = useRef<AudioScheduler | null>(null);
   const coordinatorRef = useRef<FrameCoordinator | null>(null);
+  const rendererRef = useRef<WebGPURenderer | null>(null);
 
   if (!mediaStoreRef.current) mediaStoreRef.current = new MediaStore();
-  if (!audioSchedulerRef.current) audioSchedulerRef.current = new AudioScheduler();
-  if (!coordinatorRef.current) coordinatorRef.current = new FrameCoordinator();
+  if (!audioSchedulerRef.current)
+    audioSchedulerRef.current = new AudioScheduler();
+  if (!coordinatorRef.current)
+    coordinatorRef.current = new FrameCoordinator();
+  if (!rendererRef.current) rendererRef.current = new WebGPURenderer();
 
   const mediaStore = mediaStoreRef.current;
   const audioScheduler = audioSchedulerRef.current;
   const coordinator = coordinatorRef.current;
+  const renderer = rendererRef.current;
 
   // Cleanup on unmount
   useEffect(() => {
@@ -49,14 +52,19 @@ export default function Timeline({
       coordinatorRef.current?.dispose();
       audioSchedulerRef.current?.dispose();
       mediaStoreRef.current?.dispose();
+      rendererRef.current?.dispose();
     };
   }, []);
 
-  // Wire up frame-available callback for re-renders on async seek
+  // Initialize WebGPU when canvas mounts
   useEffect(() => {
-    coordinator.onFrameAvailable = () => setFrameTick((n) => n + 1);
-    return () => { coordinator.onFrameAvailable = null; };
-  }, [coordinator]);
+    const canvas = canvasRef.current;
+    if (!canvas || renderer.ready) return;
+
+    void renderer.init(canvas).catch((err) => {
+      console.error("WebGPU init failed:", err);
+    });
+  }, [renderer]);
 
   // Initialize coordinator when timeline changes
   useEffect(() => {
@@ -71,8 +79,42 @@ export default function Timeline({
   loopRef.current = loop;
   const durationRef = useRef(timeline.duration);
   durationRef.current = timeline.duration;
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
 
-  // Playback loop — rAF for smooth rendering, setInterval as fallback when window is hidden
+  // GPU render function (called imperatively, not dependent on React)
+  const gpuRender = useCallback(
+    (time: number) => {
+      if (!renderer.ready) return;
+      renderer.resize(width, height);
+
+      const commands = buildRenderList(
+        timelineRef.current,
+        time,
+        width,
+        height,
+        (clip) => coordinator.getIntrinsicSize(clip),
+      );
+
+      renderer.render(commands, (clip) => coordinator.getFrame(clip));
+    },
+    [renderer, coordinator, width, height],
+  );
+
+  // Wire up frame-available callback for re-renders on async seek
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+
+  useEffect(() => {
+    coordinator.onFrameAvailable = () => {
+      gpuRender(currentTimeRef.current);
+    };
+    return () => {
+      coordinator.onFrameAvailable = null;
+    };
+  }, [coordinator, gpuRender]);
+
+  // Playback loop — rAF only (no setInterval to avoid tick accumulation)
   useEffect(() => {
     if (!isPlaying) return;
 
@@ -95,33 +137,18 @@ export default function Timeline({
       }
 
       coordinator.tick(t, true, duration, loopRef.current);
+      gpuRender(t);
       setCurrentTime(t);
 
       rafRef.current = requestAnimationFrame(tick);
     };
 
-    intervalRef.current = setInterval(() => tick(), 16);
+    rafRef.current = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
-      if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [isPlaying, audioScheduler, coordinator]);
-
-  // ResizeObserver for scaling
-  useEffect(() => {
-    const el = outerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width);
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const scale = containerWidth > 0 ? containerWidth / width : 1;
+  }, [isPlaying, audioScheduler, coordinator, gpuRender]);
 
   const play = useCallback(() => {
     setCurrentTime((prev) => {
@@ -138,7 +165,8 @@ export default function Timeline({
     const t = audioScheduler.currentTime;
     setCurrentTime(t);
     setIsPlaying(false);
-  }, [audioScheduler]);
+    gpuRender(t);
+  }, [audioScheduler, gpuRender]);
 
   const restart = useCallback(() => {
     setCurrentTime(0);
@@ -152,17 +180,9 @@ export default function Timeline({
       setCurrentTime(time);
       coordinator.onSeek(time, timeline.duration, loopRef.current);
       audioScheduler.seekAll(time);
+      gpuRender(time);
     },
-    [audioScheduler, coordinator, timeline.duration]
-  );
-
-  const getFrame = useCallback(
-    (clip: Parameters<typeof coordinator.getFrame>[0]) => coordinator.getFrame(clip),
-    [coordinator]
-  );
-  const getIntrinsicSize = useCallback(
-    (clip: Parameters<typeof coordinator.getIntrinsicSize>[0]) => coordinator.getIntrinsicSize(clip),
-    [coordinator]
+    [audioScheduler, coordinator, timeline.duration, gpuRender],
   );
 
   const ctx = {
@@ -173,8 +193,8 @@ export default function Timeline({
     basePath,
     canvasWidth: width,
     canvasHeight: height,
-    getFrame,
-    getIntrinsicSize,
+    getFrame: () => null,
+    getIntrinsicSize: () => null,
     play,
     pause,
     restart,
@@ -204,32 +224,16 @@ export default function Timeline({
             overflow: "hidden",
           }}
         >
-          <div
-            ref={outerRef}
+          <canvas
+            ref={canvasRef}
+            width={width}
+            height={height}
             style={{
-              position: "relative",
-              aspectRatio: `${width} / ${height}`,
               maxWidth: "100%",
               maxHeight: "100%",
-              width: "100%",
               background: "#000",
-              overflow: "hidden",
             }}
-          >
-            <div
-              style={{
-                width: `${width}px`,
-                height: `${height}px`,
-                transform: `scale(${scale})`,
-                transformOrigin: "0 0",
-                position: "relative",
-              }}
-            >
-              {timeline.children.map((child, i) => (
-                <NodeRenderer key={i} node={child} />
-              ))}
-            </div>
-          </div>
+          />
         </div>
 
         {/* Transport controls slot */}
