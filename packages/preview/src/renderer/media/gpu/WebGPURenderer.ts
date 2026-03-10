@@ -2,26 +2,38 @@
  * WebGPU renderer for the preview timeline. Renders all visible clips
  * to a single canvas using textured quads with proper objectFit/scissoring.
  *
- * Phase 1: Blit-only (no filter shaders).
+ * Phase 1: Blit-only — done.
  * Phase 2: Per-clip filter shaders (YUV-space, matching FFmpeg).
  * Phase 3: FBO render-to-texture for composition-level filters.
  */
 
-import type { ResolvedClip } from "@seam/core";
+import type { ResolvedClip, Filter } from "@seam/core";
 import { TextureManager } from "./TextureManager.js";
 import type { DrawCommand } from "./RenderList.js";
 
 // ── WGSL Shader ──
+//
+// Combined blit + filter shader. Applies all filters in one pass.
+// With identity values the filter math is a no-op (output = input).
+//
+// FFmpeg eq operates on YUV (BT.601):
+//   Y_out = clamp((pow(Y, 1/gamma) - 0.5) * contrast + 0.5 + brightness)
+//   U_out = clamp((U - 0.5) * saturation + 0.5)
+//   V_out = clamp((V - 0.5) * saturation + 0.5)
 
-const BLIT_SHADER = /* wgsl */ `
+const SHADER = /* wgsl */ `
 struct Uniforms {
-  // dest rect in pixels: x, y, w, h
-  dest: vec4f,
-  // canvas dimensions + opacity
-  canvas_w: f32,
-  canvas_h: f32,
-  opacity: f32,
-  _pad: f32,
+  // Geometry
+  dest: vec4f,                       //  0: x, y, w, h in pixels
+  canvas_opacity: vec4f,             // 16: canvas_w, canvas_h, opacity, _pad
+  // adjust (eq) filter — identity: brightness=0, contrast=1, saturation=1, gamma=1
+  eq: vec4f,                         // 32: brightness, contrast, saturation, gamma
+  // colorbalance — identity: all zeros
+  cb_shadows: vec4f,                 // 48: rs, gs, bs, _pad
+  cb_midtones: vec4f,                // 64: rm, gm, bm, _pad
+  cb_highlights: vec4f,              // 80: rh, gh, bh, _pad
+  // colortemperature — identity: 1,1,1
+  ct_scale: vec4f,                   // 96: r_scale, g_scale, b_scale, _pad
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -33,7 +45,6 @@ struct VSOut {
   @location(0) uv: vec2f,
 }
 
-// Two-triangle fullscreen quad via vertex index
 var<private> quad: array<vec2f, 6> = array(
   vec2f(0, 0), vec2f(1, 0), vec2f(0, 1),
   vec2f(0, 1), vec2f(1, 0), vec2f(1, 1),
@@ -42,23 +53,77 @@ var<private> quad: array<vec2f, 6> = array(
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   let p = quad[vi];
-  // Map [0,1] quad to dest rect in pixels, then to NDC
   let px = u.dest.x + p.x * u.dest.z;
   let py = u.dest.y + p.y * u.dest.w;
-  let ndc_x = (px / u.canvas_w) * 2.0 - 1.0;
-  let ndc_y = 1.0 - (py / u.canvas_h) * 2.0;
+  let ndc_x = (px / u.canvas_opacity.x) * 2.0 - 1.0;
+  let ndc_y = 1.0 - (py / u.canvas_opacity.y) * 2.0;
   return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), p);
+}
+
+// ── BT.601 conversion ──
+
+fn rgb_to_yuv(rgb: vec3f) -> vec3f {
+  let y = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+  let u = -0.169 * rgb.r - 0.331 * rgb.g + 0.500 * rgb.b + 0.5;
+  let v =  0.500 * rgb.r - 0.419 * rgb.g - 0.081 * rgb.b + 0.5;
+  return vec3f(y, u, v);
+}
+
+fn yuv_to_rgb(yuv: vec3f) -> vec3f {
+  let y = yuv.x;
+  let u = yuv.y - 0.5;
+  let v = yuv.z - 0.5;
+  let r = y + 1.402 * v;
+  let g = y - 0.344 * u - 0.714 * v;
+  let b = y + 1.772 * u;
+  return vec3f(r, g, b);
 }
 
 @fragment
 fn fs(input: VSOut) -> @location(0) vec4f {
   let color = textureSample(tex, tex_sampler, input.uv);
-  return vec4f(color.rgb, color.a * u.opacity);
+  var rgb = color.rgb;
+
+  // ── adjust (eq) filter ──
+  // Convert to YUV, apply eq formula, convert back
+  var yuv = rgb_to_yuv(rgb);
+
+  // Luma: Y_out = (pow(Y, 1/gamma) - 0.5) * contrast + 0.5 + brightness
+  let gamma_inv = 1.0 / u.eq.w;  // eq.w = gamma
+  let y_gamma = pow(clamp(yuv.x, 0.0, 1.0), gamma_inv);
+  yuv.x = (y_gamma - 0.5) * u.eq.y + 0.5 + u.eq.x;  // eq.x = brightness, eq.y = contrast
+
+  // Chroma: saturation
+  yuv.y = (yuv.y - 0.5) * u.eq.z + 0.5;  // eq.z = saturation
+  yuv.z = (yuv.z - 0.5) * u.eq.z + 0.5;
+
+  rgb = clamp(yuv_to_rgb(yuv), vec3f(0.0), vec3f(1.0));
+
+  // ── colorbalance ──
+  // Exact match of FFmpeg vf_colorbalance.c get_component().
+  // Lightness = max(R,G,B) + min(R,G,B)  (range [0,2], NOT divided by 2).
+  // Constants: a=4, b=0.333, scale=0.7.
+  let cb_l = max(max(rgb.r, rgb.g), rgb.b) + min(min(rgb.r, rgb.g), rgb.b);
+  let sw = clamp((0.333 - cb_l) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
+  let mw = clamp((cb_l - 0.333) * 4.0 + 0.5, 0.0, 1.0)
+         * clamp((1.0 - cb_l - 0.333) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
+  let hw = clamp((cb_l + 0.333 - 1.0) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
+  rgb.r = clamp(rgb.r + u.cb_shadows.x * sw + u.cb_midtones.x * mw + u.cb_highlights.x * hw, 0.0, 1.0);
+  rgb.g = clamp(rgb.g + u.cb_shadows.y * sw + u.cb_midtones.y * mw + u.cb_highlights.y * hw, 0.0, 1.0);
+  rgb.b = clamp(rgb.b + u.cb_shadows.z * sw + u.cb_midtones.z * mw + u.cb_highlights.z * hw, 0.0, 1.0);
+
+  // ── colortemperature ──
+  // Pre-computed RGB scale factors relative to 6500K reference (identity = 1,1,1).
+  rgb *= u.ct_scale.xyz;
+  rgb = clamp(rgb, vec3f(0.0), vec3f(1.0));
+
+  return vec4f(rgb, color.a * u.canvas_opacity.z);
 }
 `;
 
-const UNIFORM_SIZE = 32; // bytes: 2 × vec4f
-const UNIFORM_ALIGN = 256; // minUniformBufferOffsetAlignment
+// 7 × vec4f = 112 bytes
+const UNIFORM_SIZE = 112;
+const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 64;
 
 export class WebGPURenderer {
@@ -74,16 +139,12 @@ export class WebGPURenderer {
   private canvasHeight = 0;
   private _ready = false;
 
-  // Cached per-slot uniform bind groups (stable across frames)
   private uniformBindGroups: GPUBindGroup[] = [];
-  // Cached texture bind groups per clip (invalidated on texture resize)
   private texBindGroupCache = new Map<
     ResolvedClip,
     { view: GPUTextureView; bg: GPUBindGroup }
   >();
-  // Reusable uniform staging buffer
   private uniformStaging = new ArrayBuffer(MAX_DRAWS * UNIFORM_ALIGN);
-  // Frame counter for pruning (don't prune every frame)
   private frameCount = 0;
 
   get ready(): boolean {
@@ -105,7 +166,6 @@ export class WebGPURenderer {
       alphaMode: "premultiplied",
     });
 
-    // Bind group layouts
     this.uniformBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         {
@@ -138,9 +198,7 @@ export class WebGPURenderer {
       ],
     });
 
-    const shaderModule = this.device.createShaderModule({
-      code: BLIT_SHADER,
-    });
+    const shaderModule = this.device.createShaderModule({ code: SHADER });
 
     this.pipeline = this.device.createRenderPipeline({
       layout: pipelineLayout,
@@ -174,13 +232,11 @@ export class WebGPURenderer {
       minFilter: "linear",
     });
 
-    // Pre-allocate uniform buffer
     this.uniformBuffer = this.device.createBuffer({
       size: MAX_DRAWS * UNIFORM_ALIGN,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Pre-create uniform bind groups for each slot
     for (let i = 0; i < MAX_DRAWS; i++) {
       this.uniformBindGroups.push(
         this.device.createBindGroup({
@@ -219,8 +275,6 @@ export class WebGPURenderer {
     this.frameCount++;
     const drawCount = Math.min(commands.length, MAX_DRAWS);
     const activeClips = new Set<ResolvedClip>();
-
-    // Pre-upload textures and write uniform data
     const texBGs: (GPUBindGroup | null)[] = [];
 
     for (let i = 0; i < drawCount; i++) {
@@ -233,10 +287,8 @@ export class WebGPURenderer {
         continue;
       }
 
-      // Upload texture (TextureManager skips if dimensions unchanged internally)
       const textureView = this.textures.upload(cmd.clip, frame);
 
-      // Cache texture bind group — only recreate if the view changed (texture resized)
       let cached = this.texBindGroupCache.get(cmd.clip);
       if (!cached || cached.view !== textureView) {
         cached = {
@@ -253,16 +305,50 @@ export class WebGPURenderer {
       }
       texBGs.push(cached.bg);
 
-      // Write uniforms into reusable staging buffer
-      const f32 = new Float32Array(this.uniformStaging, i * UNIFORM_ALIGN, 8);
+      // Write uniforms
+      const f32 = new Float32Array(
+        this.uniformStaging,
+        i * UNIFORM_ALIGN,
+        UNIFORM_SIZE / 4,
+      );
+      // dest (vec4f)
       f32[0] = cmd.quadX;
       f32[1] = cmd.quadY;
       f32[2] = cmd.quadW;
       f32[3] = cmd.quadH;
+      // Extract filter params from clip
+      const filterParams = extractFilterParams(cmd.clip.filters);
+
+      // canvas_opacity (vec4f) — combine structural opacity with filter opacity
       f32[4] = this.canvasWidth;
       f32[5] = this.canvasHeight;
-      f32[6] = cmd.opacity;
+      f32[6] = cmd.opacity * filterParams.opacity;
       f32[7] = 0;
+      // eq (vec4f)
+      f32[8] = filterParams.brightness;
+      f32[9] = filterParams.contrast;
+      f32[10] = filterParams.saturation;
+      f32[11] = filterParams.gamma;
+      // cb_shadows (vec4f): rs, gs, bs
+      f32[12] = filterParams.cb_rs;
+      f32[13] = filterParams.cb_gs;
+      f32[14] = filterParams.cb_bs;
+      f32[15] = 0;
+      // cb_midtones (vec4f): rm, gm, bm
+      f32[16] = filterParams.cb_rm;
+      f32[17] = filterParams.cb_gm;
+      f32[18] = filterParams.cb_bm;
+      f32[19] = 0;
+      // cb_highlights (vec4f): rh, gh, bh
+      f32[20] = filterParams.cb_rh;
+      f32[21] = filterParams.cb_gh;
+      f32[22] = filterParams.cb_bh;
+      f32[23] = 0;
+      // ct_scale (vec4f): pre-computed RGB multipliers
+      f32[24] = filterParams.ct_r;
+      f32[25] = filterParams.ct_g;
+      f32[26] = filterParams.ct_b;
+      f32[27] = 0;
     }
 
     if (drawCount > 0) {
@@ -275,10 +361,8 @@ export class WebGPURenderer {
       );
     }
 
-    // Prune stale textures every 60 frames (~1s)
     if (this.frameCount % 60 === 0) {
       this.textures.prune(activeClips);
-      // Also prune stale bind group cache entries
       for (const clip of this.texBindGroupCache.keys()) {
         if (!activeClips.has(clip)) {
           this.texBindGroupCache.delete(clip);
@@ -308,8 +392,6 @@ export class WebGPURenderer {
       if (!texBG) continue;
 
       const cmd = commands[i];
-
-      // Scissor to container bounds (clamped to canvas)
       const sx = Math.max(0, Math.round(cmd.scissorX));
       const sy = Math.max(0, Math.round(cmd.scissorY));
       const sw = Math.min(
@@ -338,4 +420,103 @@ export class WebGPURenderer {
     this.texBindGroupCache.clear();
     this._ready = false;
   }
+}
+
+// ── Filter param extraction ──
+
+interface FilterParams {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  gamma: number;
+  opacity: number;
+  cb_rs: number; cb_gs: number; cb_bs: number;
+  cb_rm: number; cb_gm: number; cb_bm: number;
+  cb_rh: number; cb_gh: number; cb_bh: number;
+  ct_r: number; ct_g: number; ct_b: number;
+}
+
+const IDENTITY_PARAMS: FilterParams = {
+  brightness: 0, contrast: 1, saturation: 1, gamma: 1, opacity: 1,
+  cb_rs: 0, cb_gs: 0, cb_bs: 0,
+  cb_rm: 0, cb_gm: 0, cb_bm: 0,
+  cb_rh: 0, cb_gh: 0, cb_bh: 0,
+  ct_r: 1, ct_g: 1, ct_b: 1,
+};
+
+function extractFilterParams(filters?: Filter[]): FilterParams {
+  if (!filters?.length) return IDENTITY_PARAMS;
+
+  const p = { ...IDENTITY_PARAMS };
+
+  for (const f of filters) {
+    switch (f.type) {
+      case "adjust":
+        if (f.brightness != null) p.brightness += f.brightness;
+        if (f.contrast != null) p.contrast *= f.contrast;
+        if (f.saturation != null) p.saturation *= f.saturation;
+        if (f.gamma != null) p.gamma *= f.gamma;
+        break;
+      case "opacity":
+        p.opacity *= f.value;
+        break;
+      case "colorbalance":
+        p.cb_rs += f.rs ?? 0; p.cb_gs += f.gs ?? 0; p.cb_bs += f.bs ?? 0;
+        p.cb_rm += f.rm ?? 0; p.cb_gm += f.gm ?? 0; p.cb_bm += f.bm ?? 0;
+        p.cb_rh += f.rh ?? 0; p.cb_gh += f.gh ?? 0; p.cb_bh += f.bh ?? 0;
+        break;
+      case "colortemperature": {
+        const { r, g, b } = tempToScale(f.temperature ?? 6500);
+        p.ct_r *= r; p.ct_g *= g; p.ct_b *= b;
+        break;
+      }
+    }
+  }
+
+  return p;
+}
+
+/**
+ * Convert color temperature (Kelvin) to RGB scale factors relative to 6500K.
+ * Planckian locus approximation (Tanner Helland algorithm).
+ */
+function tempToRGB(temp: number): { r: number; g: number; b: number } {
+  const t = temp / 100;
+  let r: number, g: number, b: number;
+
+  if (t <= 66) {
+    r = 255;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+  }
+
+  if (t <= 66) {
+    g = 99.4708025861 * Math.log(t) - 161.1195681661;
+  } else {
+    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  }
+
+  if (t >= 66) {
+    b = 255;
+  } else if (t <= 19) {
+    b = 0;
+  } else {
+    b = 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  }
+
+  return {
+    r: Math.max(0, Math.min(255, r)),
+    g: Math.max(0, Math.min(255, g)),
+    b: Math.max(0, Math.min(255, b)),
+  };
+}
+
+function tempToScale(temp: number): { r: number; g: number; b: number } {
+  const target = tempToRGB(temp);
+  const ref = tempToRGB(6500);
+  return {
+    r: target.r / ref.r,
+    g: target.g / ref.g,
+    b: target.b / ref.b,
+  };
 }
