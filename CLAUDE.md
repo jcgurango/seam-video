@@ -30,8 +30,11 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `packages/core/src/layout/resolve.ts` | `resolveComposition()` + `resolveOverlay()` — the layout engine |
 | `packages/renderer/src/ffmpeg-builder.ts` | ResolvedTimeline → FFmpeg filter graph + args |
 | `packages/renderer/src/ffmpeg-runner.ts` | Executes FFmpeg commands |
-| `packages/preview/src/renderer/components/Timeline.tsx` | Root player — rAF clock, context provider |
-| `packages/preview/src/renderer/components/Clip.tsx` | Video element with play/scrub sync |
+| `packages/preview/src/renderer/components/Timeline.tsx` | Root player — rAF clock, single WebGPU canvas |
+| `packages/preview/src/renderer/media/gpu/WebGPURenderer.ts` | GPU compositor — blit + filter shaders (eq, colorbalance, colortemp, opacity), FBO for group filters |
+| `packages/preview/src/renderer/media/gpu/RenderList.ts` | Walks resolved timeline tree → draw/group commands for GPU |
+| `packages/preview/src/renderer/media/FrameCoordinator.ts` | Manages ClipPlayers, decodes video frames via mediabunny |
+| `packages/preview/src/renderer/media/AudioScheduler.ts` | Web Audio API master clock + per-clip audio scheduling |
 | `FILE-FORMAT.md` | User-facing file format documentation |
 
 ## Conventions
@@ -42,7 +45,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 - **`ChildTimingFields`** shared interface for `in`, `out`, `flex`, `overflow`, `underflow` — used by Clip, Composition, and Overlay
 - **Node types**: `clip`, `empty`, `composition` (sequential), `overlay` (stacked z-order)
 - Schema is the single source of truth; types mirror it exactly
-- Preview components use a context-override pattern: `<Composition>`/`<Overlay>` re-provides `TimelineContext` with local time so children don't know their nesting depth
+- Preview renders via a single WebGPU canvas — `RenderList` walks the resolved tree into draw/group commands, `WebGPURenderer` executes them. Compositions with filters use FBO render-to-texture; without filters, children are flattened
 
 ## Tech
 
