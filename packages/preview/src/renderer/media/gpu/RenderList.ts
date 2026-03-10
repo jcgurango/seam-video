@@ -1,31 +1,59 @@
 /**
- * Walks the resolved timeline tree at a given time and produces a flat list
- * of DrawCommands — one per visible clip — with absolute pixel positions
- * computed through nested composition/overlay transforms.
+ * Walks the resolved timeline tree at a given time and produces a command
+ * list for the GPU renderer. Clips become DrawCommands with absolute pixel
+ * positions. Compositions/overlays with filters become GroupCommands whose
+ * children are rendered to an intermediate texture (FBO) so the group's
+ * filters can be applied to the composite.
  */
 
 import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
+  ResolvedComposition,
+  ResolvedOverlay,
   SpatialAnchor,
   ObjectFit,
+  Filter,
 } from "@seam/core";
 
 export interface DrawCommand {
+  type: "draw";
   clip: ResolvedClip;
-  /** Scissor rectangle (absolute canvas pixels, clamped to ancestors). */
   scissorX: number;
   scissorY: number;
   scissorW: number;
   scissorH: number;
-  /** Textured quad position (absolute canvas pixels). May extend beyond scissor. */
   quadX: number;
   quadY: number;
   quadW: number;
   quadH: number;
   opacity: number;
 }
+
+export interface GroupCommand {
+  type: "group";
+  /** Where to draw the FBO result on the parent target. */
+  destX: number;
+  destY: number;
+  destW: number;
+  destH: number;
+  /** Scissor for the dest (from ancestor clipping). */
+  scissorX: number;
+  scissorY: number;
+  scissorW: number;
+  scissorH: number;
+  /** FBO dimensions (content resolution). */
+  fboW: number;
+  fboH: number;
+  /** Filters applied when compositing the FBO to the parent. */
+  filters: Filter[];
+  opacity: number;
+  /** Commands to render into the FBO. */
+  children: RenderCommand[];
+}
+
+export type RenderCommand = DrawCommand | GroupCommand;
 
 /** Internal viewport tracking during tree walk. */
 interface Viewport {
@@ -52,8 +80,8 @@ export function buildRenderList(
   canvasW: number,
   canvasH: number,
   getIntrinsicSize: SizeGetter,
-): DrawCommand[] {
-  const commands: DrawCommand[] = [];
+): RenderCommand[] {
+  const commands: RenderCommand[] = [];
 
   const rootViewport: Viewport = {
     x: 0,
@@ -86,7 +114,7 @@ function walkChildren(
   clipRect: ClipRect,
   opacity: number,
   getIntrinsicSize: SizeGetter,
-  commands: DrawCommand[],
+  commands: RenderCommand[],
 ): void {
   for (const child of children) {
     if (child.type === "empty") continue;
@@ -112,6 +140,7 @@ function walkChildren(
       );
 
       commands.push({
+        type: "draw",
         clip: child,
         scissorX: scissor.x,
         scissorY: scissor.y,
@@ -134,24 +163,72 @@ function walkChildren(
       const childClip = intersect(clipRect, container);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
-      const childViewport: Viewport = {
-        x: container.x,
-        y: container.y,
-        w: container.w,
-        h: container.h,
-        contentW: child.contentWidth ?? container.w,
-        contentH: child.contentHeight ?? container.h,
-      };
+      const hasFilters = child.filters && child.filters.length > 0;
 
-      walkChildren(
-        child.children,
-        childLocalTime,
-        childViewport,
-        childClip,
-        opacity, // Phase 3 will multiply composition opacity here
-        getIntrinsicSize,
-        commands,
-      );
+      if (hasFilters) {
+        // Render children to FBO, apply filters when compositing
+        const fboW = child.contentWidth ?? Math.round(container.w);
+        const fboH = child.contentHeight ?? Math.round(container.h);
+
+        // Children are positioned relative to FBO origin (0,0)
+        const fboViewport: Viewport = {
+          x: 0,
+          y: 0,
+          w: fboW,
+          h: fboH,
+          contentW: fboW,
+          contentH: fboH,
+        };
+        const fboClip: ClipRect = { x: 0, y: 0, w: fboW, h: fboH };
+
+        const groupChildren: RenderCommand[] = [];
+        walkChildren(
+          child.children,
+          childLocalTime,
+          fboViewport,
+          fboClip,
+          1, // opacity inside FBO is 1; group opacity applied when compositing
+          getIntrinsicSize,
+          groupChildren,
+        );
+
+        commands.push({
+          type: "group",
+          destX: container.x,
+          destY: container.y,
+          destW: container.w,
+          destH: container.h,
+          scissorX: childClip.x,
+          scissorY: childClip.y,
+          scissorW: childClip.w,
+          scissorH: childClip.h,
+          fboW,
+          fboH,
+          filters: child.filters!,
+          opacity,
+          children: groupChildren,
+        });
+      } else {
+        // No filters — flatten children directly (no FBO overhead)
+        const childViewport: Viewport = {
+          x: container.x,
+          y: container.y,
+          w: container.w,
+          h: container.h,
+          contentW: child.contentWidth ?? container.w,
+          contentH: child.contentHeight ?? container.h,
+        };
+
+        walkChildren(
+          child.children,
+          childLocalTime,
+          childViewport,
+          childClip,
+          opacity,
+          getIntrinsicSize,
+          commands,
+        );
+      }
     }
   }
 }
@@ -183,11 +260,6 @@ function intersect(a: ClipRect, b: ClipRect): ClipRect {
   return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
 }
 
-/**
- * Compute the drawn quad position for a video frame within a container,
- * accounting for objectFit and anchor edges. The quad may extend beyond the
- * container (clipped by scissor).
- */
 function objectFitQuad(
   container: ClipRect,
   videoW: number,

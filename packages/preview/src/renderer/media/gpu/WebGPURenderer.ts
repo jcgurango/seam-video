@@ -1,39 +1,30 @@
 /**
  * WebGPU renderer for the preview timeline. Renders all visible clips
- * to a single canvas using textured quads with proper objectFit/scissoring.
+ * to a single canvas using textured quads. Compositions with filters are
+ * rendered to intermediate textures (FBO) so filters apply to the composite.
  *
- * Phase 1: Blit-only — done.
- * Phase 2: Per-clip filter shaders (YUV-space, matching FFmpeg).
- * Phase 3: FBO render-to-texture for composition-level filters.
+ * The shader handles all filter types in a single pass per quad:
+ *   adjust (eq) — BT.601 YUV, matching FFmpeg's eq formula
+ *   colorbalance — FFmpeg's exact weight functions (a=4, b=0.333, scale=0.7)
+ *   colortemperature — Planckian locus RGB scaling
+ *   opacity — alpha multiply
  */
 
 import type { ResolvedClip, Filter } from "@seam/core";
 import { TextureManager } from "./TextureManager.js";
-import type { DrawCommand } from "./RenderList.js";
+import type { RenderCommand, DrawCommand, GroupCommand } from "./RenderList.js";
 
 // ── WGSL Shader ──
-//
-// Combined blit + filter shader. Applies all filters in one pass.
-// With identity values the filter math is a no-op (output = input).
-//
-// FFmpeg eq operates on YUV (BT.601):
-//   Y_out = clamp((pow(Y, 1/gamma) - 0.5) * contrast + 0.5 + brightness)
-//   U_out = clamp((U - 0.5) * saturation + 0.5)
-//   V_out = clamp((V - 0.5) * saturation + 0.5)
 
 const SHADER = /* wgsl */ `
 struct Uniforms {
-  // Geometry
-  dest: vec4f,                       //  0: x, y, w, h in pixels
-  canvas_opacity: vec4f,             // 16: canvas_w, canvas_h, opacity, _pad
-  // adjust (eq) filter — identity: brightness=0, contrast=1, saturation=1, gamma=1
-  eq: vec4f,                         // 32: brightness, contrast, saturation, gamma
-  // colorbalance — identity: all zeros
-  cb_shadows: vec4f,                 // 48: rs, gs, bs, _pad
-  cb_midtones: vec4f,                // 64: rm, gm, bm, _pad
-  cb_highlights: vec4f,              // 80: rh, gh, bh, _pad
-  // colortemperature — identity: 1,1,1
-  ct_scale: vec4f,                   // 96: r_scale, g_scale, b_scale, _pad
+  dest: vec4f,
+  canvas_opacity: vec4f,
+  eq: vec4f,
+  cb_shadows: vec4f,
+  cb_midtones: vec4f,
+  cb_highlights: vec4f,
+  ct_scale: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -60,8 +51,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), p);
 }
 
-// ── BT.601 conversion ──
-
 fn rgb_to_yuv(rgb: vec3f) -> vec3f {
   let y = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
   let u = -0.169 * rgb.r - 0.331 * rgb.g + 0.500 * rgb.b + 0.5;
@@ -84,25 +73,20 @@ fn fs(input: VSOut) -> @location(0) vec4f {
   let color = textureSample(tex, tex_sampler, input.uv);
   var rgb = color.rgb;
 
-  // ── adjust (eq) filter ──
-  // Convert to YUV, apply eq formula, convert back
+  // ── adjust (eq) — matches FFmpeg's create_lut order ──
   var yuv = rgb_to_yuv(rgb);
-
-  // Luma: Y_out = (pow(Y, 1/gamma) - 0.5) * contrast + 0.5 + brightness
-  let gamma_inv = 1.0 / u.eq.w;  // eq.w = gamma
-  let y_gamma = pow(clamp(yuv.x, 0.0, 1.0), gamma_inv);
-  yuv.x = (y_gamma - 0.5) * u.eq.y + 0.5 + u.eq.x;  // eq.x = brightness, eq.y = contrast
-
-  // Chroma: saturation
-  yuv.y = (yuv.y - 0.5) * u.eq.z + 0.5;  // eq.z = saturation
+  // Step 1: contrast + brightness (before gamma)
+  var y = u.eq.y * (yuv.x - 0.5) + 0.5 + u.eq.x;
+  // Step 2: gamma (applied to the contrast/brightness result)
+  y = max(y, 0.0);
+  let gamma_inv = 1.0 / u.eq.w;
+  y = pow(y, gamma_inv);
+  yuv.x = y;
+  yuv.y = (yuv.y - 0.5) * u.eq.z + 0.5;
   yuv.z = (yuv.z - 0.5) * u.eq.z + 0.5;
-
   rgb = clamp(yuv_to_rgb(yuv), vec3f(0.0), vec3f(1.0));
 
   // ── colorbalance ──
-  // Exact match of FFmpeg vf_colorbalance.c get_component().
-  // Lightness = max(R,G,B) + min(R,G,B)  (range [0,2], NOT divided by 2).
-  // Constants: a=4, b=0.333, scale=0.7.
   let cb_l = max(max(rgb.r, rgb.g), rgb.b) + min(min(rgb.r, rgb.g), rgb.b);
   let sw = clamp((0.333 - cb_l) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
   let mw = clamp((cb_l - 0.333) * 4.0 + 0.5, 0.0, 1.0)
@@ -113,23 +97,22 @@ fn fs(input: VSOut) -> @location(0) vec4f {
   rgb.b = clamp(rgb.b + u.cb_shadows.z * sw + u.cb_midtones.z * mw + u.cb_highlights.z * hw, 0.0, 1.0);
 
   // ── colortemperature ──
-  // Pre-computed RGB scale factors relative to 6500K reference (identity = 1,1,1).
-  rgb *= u.ct_scale.xyz;
-  rgb = clamp(rgb, vec3f(0.0), vec3f(1.0));
+  rgb = clamp(rgb * u.ct_scale.xyz, vec3f(0.0), vec3f(1.0));
 
   return vec4f(rgb, color.a * u.canvas_opacity.z);
 }
 `;
 
-// 7 × vec4f = 112 bytes
-const UNIFORM_SIZE = 112;
+const UNIFORM_SIZE = 112; // 7 × vec4f
 const UNIFORM_ALIGN = 256;
-const MAX_DRAWS = 64;
+const MAX_DRAWS = 128;
+const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
 
 export class WebGPURenderer {
   private device!: GPUDevice;
   private context!: GPUCanvasContext;
   private pipeline!: GPURenderPipeline;
+  private fboPipeline!: GPURenderPipeline; // same shader, targets FBO_FORMAT
   private sampler!: GPUSampler;
   private uniformBuffer!: GPUBuffer;
   private uniformBindGroupLayout!: GPUBindGroupLayout;
@@ -141,11 +124,17 @@ export class WebGPURenderer {
 
   private uniformBindGroups: GPUBindGroup[] = [];
   private texBindGroupCache = new Map<
-    ResolvedClip,
+    ResolvedClip | symbol,
     { view: GPUTextureView; bg: GPUBindGroup }
   >();
   private uniformStaging = new ArrayBuffer(MAX_DRAWS * UNIFORM_ALIGN);
   private frameCount = 0;
+  private drawSlot = 0;
+  private activeClips = new Set<ResolvedClip>();
+
+  // FBO pool: keyed by "WxH", reused across frames
+  private fboPool = new Map<string, GPUTexture[]>();
+  private fboInUse: GPUTexture[] = [];
 
   get ready(): boolean {
     return this._ready;
@@ -200,32 +189,36 @@ export class WebGPURenderer {
 
     const shaderModule = this.device.createShaderModule({ code: SHADER });
 
-    this.pipeline = this.device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: { module: shaderModule, entryPoint: "vs" },
-      fragment: {
-        module: shaderModule,
-        entryPoint: "fs",
-        targets: [
-          {
-            format,
-            blend: {
-              color: {
-                srcFactor: "src-alpha",
-                dstFactor: "one-minus-src-alpha",
-                operation: "add",
-              },
-              alpha: {
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-                operation: "add",
+    const makePipeline = (targetFormat: GPUTextureFormat) =>
+      this.device.createRenderPipeline({
+        layout: pipelineLayout,
+        vertex: { module: shaderModule, entryPoint: "vs" },
+        fragment: {
+          module: shaderModule,
+          entryPoint: "fs",
+          targets: [
+            {
+              format: targetFormat,
+              blend: {
+                color: {
+                  srcFactor: "src-alpha",
+                  dstFactor: "one-minus-src-alpha",
+                  operation: "add",
+                },
+                alpha: {
+                  srcFactor: "one",
+                  dstFactor: "one-minus-src-alpha",
+                  operation: "add",
+                },
               },
             },
-          },
-        ],
-      },
-      primitive: { topology: "triangle-list" },
-    });
+          ],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+
+    this.pipeline = makePipeline(format);
+    this.fboPipeline = makePipeline(FBO_FORMAT);
 
     this.sampler = this.device.createSampler({
       magFilter: "linear",
@@ -265,7 +258,7 @@ export class WebGPURenderer {
   }
 
   render(
-    commands: DrawCommand[],
+    commands: RenderCommand[],
     getFrame: (
       clip: ResolvedClip,
     ) => HTMLCanvasElement | OffscreenCanvas | null,
@@ -273,151 +266,358 @@ export class WebGPURenderer {
     if (!this._ready) return;
 
     this.frameCount++;
-    const drawCount = Math.min(commands.length, MAX_DRAWS);
-    const activeClips = new Set<ResolvedClip>();
-    const texBGs: (GPUBindGroup | null)[] = [];
+    this.drawSlot = 0;
+    this.activeClips.clear();
 
-    for (let i = 0; i < drawCount; i++) {
-      const cmd = commands[i];
-      activeClips.add(cmd.clip);
-
-      const frame = getFrame(cmd.clip);
-      if (!frame) {
-        texBGs.push(null);
-        continue;
+    // Return all FBOs to pool
+    for (const tex of this.fboInUse) {
+      const key = `${tex.width}x${tex.height}`;
+      let pool = this.fboPool.get(key);
+      if (!pool) {
+        pool = [];
+        this.fboPool.set(key, pool);
       }
-
-      const textureView = this.textures.upload(cmd.clip, frame);
-
-      let cached = this.texBindGroupCache.get(cmd.clip);
-      if (!cached || cached.view !== textureView) {
-        cached = {
-          view: textureView,
-          bg: this.device.createBindGroup({
-            layout: this.textureBindGroupLayout,
-            entries: [
-              { binding: 0, resource: this.sampler },
-              { binding: 1, resource: textureView },
-            ],
-          }),
-        };
-        this.texBindGroupCache.set(cmd.clip, cached);
-      }
-      texBGs.push(cached.bg);
-
-      // Write uniforms
-      const f32 = new Float32Array(
-        this.uniformStaging,
-        i * UNIFORM_ALIGN,
-        UNIFORM_SIZE / 4,
-      );
-      // dest (vec4f)
-      f32[0] = cmd.quadX;
-      f32[1] = cmd.quadY;
-      f32[2] = cmd.quadW;
-      f32[3] = cmd.quadH;
-      // Extract filter params from clip
-      const filterParams = extractFilterParams(cmd.clip.filters);
-
-      // canvas_opacity (vec4f) — combine structural opacity with filter opacity
-      f32[4] = this.canvasWidth;
-      f32[5] = this.canvasHeight;
-      f32[6] = cmd.opacity * filterParams.opacity;
-      f32[7] = 0;
-      // eq (vec4f)
-      f32[8] = filterParams.brightness;
-      f32[9] = filterParams.contrast;
-      f32[10] = filterParams.saturation;
-      f32[11] = filterParams.gamma;
-      // cb_shadows (vec4f): rs, gs, bs
-      f32[12] = filterParams.cb_rs;
-      f32[13] = filterParams.cb_gs;
-      f32[14] = filterParams.cb_bs;
-      f32[15] = 0;
-      // cb_midtones (vec4f): rm, gm, bm
-      f32[16] = filterParams.cb_rm;
-      f32[17] = filterParams.cb_gm;
-      f32[18] = filterParams.cb_bm;
-      f32[19] = 0;
-      // cb_highlights (vec4f): rh, gh, bh
-      f32[20] = filterParams.cb_rh;
-      f32[21] = filterParams.cb_gh;
-      f32[22] = filterParams.cb_bh;
-      f32[23] = 0;
-      // ct_scale (vec4f): pre-computed RGB multipliers
-      f32[24] = filterParams.ct_r;
-      f32[25] = filterParams.ct_g;
-      f32[26] = filterParams.ct_b;
-      f32[27] = 0;
+      pool.push(tex);
     }
+    this.fboInUse.length = 0;
 
-    if (drawCount > 0) {
+    // Phase 1: Prepare all draws recursively (upload textures, write uniforms)
+    this.prepareCommands(commands, getFrame);
+
+    // Phase 2: Flush uniform buffer
+    if (this.drawSlot > 0) {
       this.device.queue.writeBuffer(
         this.uniformBuffer,
         0,
         this.uniformStaging,
         0,
-        drawCount * UNIFORM_ALIGN,
+        this.drawSlot * UNIFORM_ALIGN,
       );
     }
 
+    // Phase 3: Encode render passes
+    const encoder = this.device.createCommandEncoder();
+    const swapView = this.context.getCurrentTexture().createView();
+    this.encodeCommands(
+      encoder,
+      commands,
+      swapView,
+      this.canvasWidth,
+      this.canvasHeight,
+      true,
+      this.pipeline,
+    );
+    this.device.queue.submit([encoder.finish()]);
+
+    // Prune stale textures periodically
     if (this.frameCount % 60 === 0) {
-      this.textures.prune(activeClips);
+      this.textures.prune(this.activeClips);
       for (const clip of this.texBindGroupCache.keys()) {
-        if (!activeClips.has(clip)) {
+        if (typeof clip !== "symbol" && !this.activeClips.has(clip)) {
           this.texBindGroupCache.delete(clip);
         }
       }
     }
+  }
 
-    // Render pass
-    const swapChainView = this.context.getCurrentTexture().createView();
-    const encoder = this.device.createCommandEncoder();
+  // ── Phase 1: Prepare ──
 
+  private prepareCommands(
+    commands: RenderCommand[],
+    getFrame: (
+      clip: ResolvedClip,
+    ) => HTMLCanvasElement | OffscreenCanvas | null,
+  ): void {
+    for (const cmd of commands) {
+      if (cmd.type === "draw") {
+        this.prepareDraw(cmd, getFrame);
+      } else {
+        this.prepareGroup(cmd, getFrame);
+      }
+    }
+  }
+
+  private prepareDraw(
+    cmd: DrawCommand,
+    getFrame: (
+      clip: ResolvedClip,
+    ) => HTMLCanvasElement | OffscreenCanvas | null,
+  ): void {
+    const slot = this.drawSlot++;
+    if (slot >= MAX_DRAWS) return;
+
+    this.activeClips.add(cmd.clip);
+    (cmd as any)._slot = slot;
+
+    const frame = getFrame(cmd.clip);
+    if (!frame) {
+      (cmd as any)._hasFrame = false;
+      return;
+    }
+    (cmd as any)._hasFrame = true;
+
+    const textureView = this.textures.upload(cmd.clip, frame);
+    this.cacheTexBindGroup(cmd.clip, textureView);
+    this.writeUniforms(slot, cmd, cmd.clip.filters);
+  }
+
+  private prepareGroup(
+    cmd: GroupCommand,
+    getFrame: (
+      clip: ResolvedClip,
+    ) => HTMLCanvasElement | OffscreenCanvas | null,
+  ): void {
+    // Prepare children first (they render into the FBO)
+    this.prepareCommands(cmd.children, getFrame);
+
+    // Reserve a slot for the FBO composite draw
+    const slot = this.drawSlot++;
+    if (slot >= MAX_DRAWS) return;
+    (cmd as any)._slot = slot;
+
+    // Acquire FBO
+    const fbo = this.acquireFBO(
+      Math.round(cmd.fboW),
+      Math.round(cmd.fboH),
+    );
+    (cmd as any)._fbo = fbo;
+
+    // Create texture bind group for sampling the FBO
+    const fboView = fbo.createView();
+    const fboKey = Symbol();
+    (cmd as any)._fboKey = fboKey;
+    this.cacheTexBindGroup(fboKey, fboView);
+
+    // Write uniforms for the FBO→parent composite draw
+    this.writeGroupUniforms(slot, cmd);
+  }
+
+  private writeUniforms(
+    slot: number,
+    cmd: DrawCommand,
+    filters?: Filter[],
+  ): void {
+    const fp = extractFilterParams(filters);
+    const f32 = new Float32Array(
+      this.uniformStaging,
+      slot * UNIFORM_ALIGN,
+      UNIFORM_SIZE / 4,
+    );
+    f32[0] = cmd.quadX;
+    f32[1] = cmd.quadY;
+    f32[2] = cmd.quadW;
+    f32[3] = cmd.quadH;
+    f32[4] = 0; // canvas_w — set during encode
+    f32[5] = 0; // canvas_h — set during encode
+    f32[6] = cmd.opacity * fp.opacity;
+    f32[7] = 0;
+    f32[8] = fp.brightness;
+    f32[9] = fp.contrast;
+    f32[10] = fp.saturation;
+    f32[11] = fp.gamma;
+    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
+    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
+    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
+    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
+  }
+
+  private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
+    const fp = extractFilterParams(cmd.filters);
+    const f32 = new Float32Array(
+      this.uniformStaging,
+      slot * UNIFORM_ALIGN,
+      UNIFORM_SIZE / 4,
+    );
+    // The FBO quad is drawn at the group's dest rect on the parent
+    f32[0] = cmd.destX;
+    f32[1] = cmd.destY;
+    f32[2] = cmd.destW;
+    f32[3] = cmd.destH;
+    f32[4] = 0; // canvas_w — set during encode
+    f32[5] = 0; // canvas_h — set during encode
+    f32[6] = cmd.opacity * fp.opacity;
+    f32[7] = 0;
+    f32[8] = fp.brightness;
+    f32[9] = fp.contrast;
+    f32[10] = fp.saturation;
+    f32[11] = fp.gamma;
+    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
+    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
+    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
+    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
+  }
+
+  // ── Phase 3: Encode ──
+
+  private encodeCommands(
+    encoder: GPUCommandEncoder,
+    commands: RenderCommand[],
+    targetView: GPUTextureView,
+    targetW: number,
+    targetH: number,
+    clear: boolean,
+    pipeline: GPURenderPipeline,
+  ): void {
+    // First: recursively encode all group children into their FBOs
+    for (const cmd of commands) {
+      if (cmd.type === "group") {
+        const fbo = (cmd as any)._fbo as GPUTexture;
+        if (!fbo) continue;
+        this.encodeCommands(
+          encoder,
+          cmd.children,
+          fbo.createView(),
+          Math.round(cmd.fboW),
+          Math.round(cmd.fboH),
+          true,
+          this.fboPipeline,
+        );
+      }
+    }
+
+    // Then: single render pass for this level
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
-          view: swapChainView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: "clear",
+          view: targetView,
+          clearValue: { r: 0, g: 0, b: 0, a: clear ? 1 : 0 },
+          loadOp: clear ? "clear" : "load",
           storeOp: "store",
         },
       ],
     });
 
-    pass.setPipeline(this.pipeline);
+    pass.setPipeline(pipeline);
 
-    for (let i = 0; i < drawCount; i++) {
-      const texBG = texBGs[i];
-      if (!texBG) continue;
+    for (const cmd of commands) {
+      const slot = (cmd as any)._slot as number;
+      if (slot == null || slot >= MAX_DRAWS) continue;
 
-      const cmd = commands[i];
-      const sx = Math.max(0, Math.round(cmd.scissorX));
-      const sy = Math.max(0, Math.round(cmd.scissorY));
-      const sw = Math.min(
-        Math.round(cmd.scissorW),
-        this.canvasWidth - sx,
-      );
-      const sh = Math.min(
-        Math.round(cmd.scissorH),
-        this.canvasHeight - sy,
-      );
-      if (sw <= 0 || sh <= 0) continue;
+      if (cmd.type === "draw") {
+        if (!(cmd as any)._hasFrame) continue;
 
-      pass.setScissorRect(sx, sy, sw, sh);
-      pass.setBindGroup(0, this.uniformBindGroups[i]);
-      pass.setBindGroup(1, texBG);
-      pass.draw(6);
+        const cached = this.texBindGroupCache.get(cmd.clip);
+        if (!cached) continue;
+
+        // Patch canvas size into uniform staging (written during prepare,
+        // but canvas size depends on the render target)
+        const f32 = new Float32Array(
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN,
+          UNIFORM_SIZE / 4,
+        );
+        f32[4] = targetW;
+        f32[5] = targetH;
+        // Re-upload just this slot
+        this.device.queue.writeBuffer(
+          this.uniformBuffer,
+          slot * UNIFORM_ALIGN + 16, // offset to canvas_opacity.x
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN + 16,
+          8, // 2 floats
+        );
+
+        const sx = Math.max(0, Math.round(cmd.scissorX));
+        const sy = Math.max(0, Math.round(cmd.scissorY));
+        const sw = Math.min(Math.round(cmd.scissorW), targetW - sx);
+        const sh = Math.min(Math.round(cmd.scissorH), targetH - sy);
+        if (sw <= 0 || sh <= 0) continue;
+
+        pass.setScissorRect(sx, sy, sw, sh);
+        pass.setBindGroup(0, this.uniformBindGroups[slot]);
+        pass.setBindGroup(1, cached.bg);
+        pass.draw(6);
+      } else {
+        // Group: draw FBO texture with filters
+        const fboKey = (cmd as any)._fboKey as symbol;
+        const cached = this.texBindGroupCache.get(fboKey);
+        if (!cached) continue;
+
+        // Patch canvas size
+        const f32 = new Float32Array(
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN,
+          UNIFORM_SIZE / 4,
+        );
+        f32[4] = targetW;
+        f32[5] = targetH;
+        this.device.queue.writeBuffer(
+          this.uniformBuffer,
+          slot * UNIFORM_ALIGN + 16,
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN + 16,
+          8,
+        );
+
+        const sx = Math.max(0, Math.round(cmd.scissorX));
+        const sy = Math.max(0, Math.round(cmd.scissorY));
+        const sw = Math.min(Math.round(cmd.scissorW), targetW - sx);
+        const sh = Math.min(Math.round(cmd.scissorH), targetH - sy);
+        if (sw <= 0 || sh <= 0) continue;
+
+        pass.setScissorRect(sx, sy, sw, sh);
+        pass.setBindGroup(0, this.uniformBindGroups[slot]);
+        pass.setBindGroup(1, cached.bg);
+        pass.draw(6);
+      }
     }
 
     pass.end();
-    this.device.queue.submit([encoder.finish()]);
+  }
+
+  // ── FBO Pool ──
+
+  private acquireFBO(w: number, h: number): GPUTexture {
+    const key = `${w}x${h}`;
+    const pool = this.fboPool.get(key);
+    let tex: GPUTexture | undefined;
+    if (pool?.length) {
+      tex = pool.pop()!;
+    } else {
+      tex = this.device.createTexture({
+        size: [w, h],
+        format: FBO_FORMAT,
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.TEXTURE_BINDING,
+      });
+    }
+    this.fboInUse.push(tex);
+    return tex;
+  }
+
+  // ── Helpers ──
+
+  private cacheTexBindGroup(
+    key: ResolvedClip | symbol,
+    view: GPUTextureView,
+  ): void {
+    let cached = this.texBindGroupCache.get(key);
+    if (!cached || cached.view !== view) {
+      cached = {
+        view,
+        bg: this.device.createBindGroup({
+          layout: this.textureBindGroupLayout,
+          entries: [
+            { binding: 0, resource: this.sampler },
+            { binding: 1, resource: view },
+          ],
+        }),
+      };
+      this.texBindGroupCache.set(key, cached);
+    }
   }
 
   dispose(): void {
     this.textures?.dispose();
     this.uniformBuffer?.destroy();
     this.texBindGroupCache.clear();
+    for (const pool of this.fboPool.values()) {
+      for (const tex of pool) tex.destroy();
+    }
+    for (const tex of this.fboInUse) tex.destroy();
+    this.fboPool.clear();
+    this.fboInUse.length = 0;
     this._ready = false;
   }
 }
@@ -476,10 +676,6 @@ function extractFilterParams(filters?: Filter[]): FilterParams {
   return p;
 }
 
-/**
- * Convert color temperature (Kelvin) to RGB scale factors relative to 6500K.
- * Planckian locus approximation (Tanner Helland algorithm).
- */
 function tempToRGB(temp: number): { r: number; g: number; b: number } {
   const t = temp / 100;
   let r: number, g: number, b: number;
