@@ -1,24 +1,27 @@
-Our next big thing: layouts. This is actually the reason we built the video element the way we did. Compositions can now have positional and sizing parameters, as well as "fit".
+The next thing I'd like to implement is filters. Filters can be applied on clips or compositions. Now, filters are applied like this:
 
-```json
+```
 {
-  "fit": "none",
-  "position": "absolute",
-  "top": "10px",
-  "width": "100%",
-  "height": "50px",
-  ...composition
+  ...clip data,
+  "filters": [
+    {
+      "type": "adjust",
+      "brightness": 0,
+      "contrast": 1,
+      "saturation": 0,
+      "gamma": 1
+    }
+  ]
 }
 ```
 
-Possible values for fit:
-- `none` - Default. Does nothing to the children.
-- `fit` - Fits the entire child into the composition, centered.
-- `cover` - Covers the composition with the child, centered.
-- `center` - Centers the child without scaling it.
+And are always evaluated in order.
 
-The big change here is that compositions, overlays, and clips now have explicit dimensions that they report back to the parent. We've already loaded clip dimensions and set them, we now have to pass that up the tree. We should apply fit using CSS transforms rather than relying on CSS's fitting parameters, this will ensure WYSIWYG when we do more complicated things with it later.
+Here's the filters I'd like to implement:
 
-Now you might have also noticed the "position" attribute can be absolute and relative. This just changes the behavior of everything downstream. "position": "relative" with "top": "10px" is different from "position": "absolute" with "top": "0px". In ffmpeg these things will be applied via filters and we have to take care that the result in the preview and the result in the render are the same. Percentage units are understood as percentage of the parent width/height. If scaling/cropping is what we do on the FFMPEG side - that's also what we should do on the preview side.
+`adjust` - maps to FFMPEG's "eq". Brightness (-1 - 1), Contrast (-1000 to 1000), Saturation (0 to 3.0, default 1.0), gamma (0.1 - 10.0, default 1.0)
+`opacity` - single parameter, 0-1. Maps to FFMPEG's "format=rgba,colorchannelmixer=aa=0.5"
+`colorbalance` - FFMPEG colorbalance. rs/gs/bs, rm/gm/bm, rh/gh/bh.
+`colortemperature` - FFMPEG colortemperature.
 
-Again, have a look and let me know of any concerns.
+You'll need to think about how these will be applied in the preview.

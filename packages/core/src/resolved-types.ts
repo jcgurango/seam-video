@@ -1,4 +1,4 @@
-import type { ObjectFit, Position } from "./types.js";
+import type { ObjectFit, Position, Filter } from "./types.js";
 
 export type { ObjectFit, Position };
 
@@ -35,6 +35,7 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   position?: Position;
@@ -55,6 +56,7 @@ export interface ResolvedComposition {
   duration: number;
   speed: number;
   children: ResolvedChild[];
+  filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   position?: Position;
@@ -71,6 +73,7 @@ export interface ResolvedOverlay {
   duration: number;
   speed: number;
   children: ResolvedChild[];
+  filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   position?: Position;

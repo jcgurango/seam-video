@@ -2,6 +2,7 @@ import React from "react";
 import type { ResolvedComposition } from "@seam/core";
 import { useTimeline, TimelineContext } from "./TimelineContext.js";
 import NodeRenderer from "./NodeRenderer.js";
+import { buildCSSFilter } from "../media/filterUtils.js";
 
 interface CompositionProps {
   composition: ResolvedComposition;
@@ -36,6 +37,7 @@ export default function Composition({ composition }: CompositionProps) {
     canvasHeight: innerH,
   };
 
+  const cssFilter = buildCSSFilter(composition.filters);
   const style: React.CSSProperties = s
     ? {
         position: "absolute",
@@ -44,10 +46,12 @@ export default function Composition({ composition }: CompositionProps) {
         width: s.width,
         height: s.height,
         overflow: "hidden",
+        ...(cssFilter ? { filter: cssFilter } : {}),
       }
     : {
         position: "absolute",
         inset: 0,
+        ...(cssFilter ? { filter: cssFilter } : {}),
       };
 
   const needsInnerScale = innerW !== displayW || innerH !== displayH;

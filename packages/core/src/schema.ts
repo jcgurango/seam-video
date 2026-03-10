@@ -2,6 +2,48 @@ import { z } from "zod";
 
 export const PositionSchema = z.enum(["absolute", "relative"]);
 export const ObjectFitSchema = z.enum(["center", "fit", "cover"]);
+
+// ── Filters ────────────────────────────────────────────────────────
+
+export const AdjustFilterSchema = z.object({
+  type: z.literal("adjust"),
+  brightness: z.number().min(-1).max(1).default(0),
+  contrast: z.number().min(-1000).max(1000).default(1),
+  saturation: z.number().min(0).max(3).default(1),
+  gamma: z.number().min(0.1).max(10).default(1),
+});
+
+export const OpacityFilterSchema = z.object({
+  type: z.literal("opacity"),
+  value: z.number().min(0).max(1),
+});
+
+export const ColorBalanceFilterSchema = z.object({
+  type: z.literal("colorbalance"),
+  rs: z.number().min(-1).max(1).default(0),
+  gs: z.number().min(-1).max(1).default(0),
+  bs: z.number().min(-1).max(1).default(0),
+  rm: z.number().min(-1).max(1).default(0),
+  gm: z.number().min(-1).max(1).default(0),
+  bm: z.number().min(-1).max(1).default(0),
+  rh: z.number().min(-1).max(1).default(0),
+  gh: z.number().min(-1).max(1).default(0),
+  bh: z.number().min(-1).max(1).default(0),
+});
+
+export const ColorTemperatureFilterSchema = z.object({
+  type: z.literal("colortemperature"),
+  temperature: z.number().min(1000).max(40000).default(6500),
+});
+
+export const FilterSchema = z.discriminatedUnion("type", [
+  AdjustFilterSchema,
+  OpacityFilterSchema,
+  ColorBalanceFilterSchema,
+  ColorTemperatureFilterSchema,
+]);
+
+export const FiltersArraySchema = z.array(FilterSchema).optional();
 export const DimensionStringSchema = z.string().regex(
   /^-?\d+(?:\.\d+)?(?:px|%)?$/,
   "Must be a CSS dimension string (e.g. '10px', '50%', '100')"
@@ -54,6 +96,7 @@ export const ClipSchema = z.object({
   flex: z.number().positive().optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
+  filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
 }).refine(
   (data) => !(data.speed != null && data.duration != null),
@@ -79,6 +122,7 @@ export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
     flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
+    filters: FiltersArraySchema,
     contentWidth: z.number().positive().optional(),
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,
@@ -101,6 +145,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
+    filters: FiltersArraySchema,
     contentWidth: z.number().positive().optional(),
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,

@@ -106,6 +106,7 @@ function resolveChild(
         speed,
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },
@@ -150,6 +151,7 @@ function resolveChild(
       timelineEnd: 0,
       speed,
       ...(spatialInput ? { spatialInput } : {}),
+      ...(clip.filters?.length ? { filters: clip.filters } : {}),
     },
     actualDuration: clipDur,
   };

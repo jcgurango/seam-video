@@ -60,6 +60,7 @@ A clip references a segment of a source media file.
 | `position` | string | no | `"relative"` or `"absolute"` (see [Spatial Layout](#spatial-layout)) |
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `top`, `left`, `right`, `bottom`, `width`, `height` | string | no | Box properties (see [Spatial Layout](#spatial-layout)) |
+| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 
 The **natural duration** of a clip is `out - in`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
 
@@ -112,6 +113,7 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | `underflow` | string | no | Strategy when composition must be lengthened |
 | `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
+| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 
 #### Nested Compositions and Windowing
 
@@ -165,6 +167,7 @@ An overlay stacks its children visually — all playing at the same time, layere
 | `underflow` | string | no | Strategy when overlay must be lengthened |
 | `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
+| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 
 #### alignItems
 
@@ -358,6 +361,76 @@ Applied when the target duration is greater than the natural duration. No defaul
 ```
 
 If this clip's flex allocation is 10 seconds, `"stretch"` plays the 5-10s range at 0.5x speed.
+
+## Filters
+
+Filters apply visual effects to clips, compositions, and overlays. They are specified as an ordered array — each filter is applied in sequence.
+
+```json
+{
+  "type": "clip",
+  "source": "footage.mp4",
+  "in": 0, "out": 10,
+  "filters": [
+    { "type": "adjust", "brightness": 0.2, "contrast": 1.1 },
+    { "type": "opacity", "value": 0.8 }
+  ]
+}
+```
+
+### Filter Types
+
+#### adjust
+
+Color and tone adjustments. Maps to FFmpeg's `eq` filter.
+
+| Field | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `brightness` | number | `0` | -1 to 1 | Brightness adjustment (additive) |
+| `contrast` | number | `1` | -1000 to 1000 | Contrast multiplier |
+| `saturation` | number | `1` | 0 to 3 | Saturation multiplier (0 = grayscale) |
+| `gamma` | number | `1` | 0.1 to 10 | Gamma correction |
+
+#### opacity
+
+Sets the opacity of the node. Maps to FFmpeg's `colorchannelmixer` alpha channel.
+
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `value` | number | 0 to 1 | Opacity (0 = fully transparent, 1 = fully opaque) |
+
+#### colorbalance
+
+Adjusts color balance for shadows, midtones, and highlights independently. Maps to FFmpeg's `colorbalance` filter.
+
+| Field | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `rs`, `gs`, `bs` | number | `0` | -1 to 1 | Shadow red/green/blue adjustment |
+| `rm`, `gm`, `bm` | number | `0` | -1 to 1 | Midtone red/green/blue adjustment |
+| `rh`, `gh`, `bh` | number | `0` | -1 to 1 | Highlight red/green/blue adjustment |
+
+#### colortemperature
+
+Shifts the color temperature. Maps to FFmpeg's `colortemperature` filter.
+
+| Field | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `temperature` | number | `6500` | 1000 to 40000 | Color temperature in Kelvin (lower = warmer/orange, higher = cooler/blue) |
+
+### Filters on Compositions and Overlays
+
+Filters can also be applied to compositions and overlays, affecting all children as a group:
+
+```json
+{
+  "type": "overlay",
+  "filters": [{ "type": "adjust", "saturation": 0 }],
+  "children": [
+    { "type": "clip", "source": "bg.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "fg.mp4", "in": 0, "out": 5 }
+  ]
+}
+```
 
 ## Spatial Layout
 

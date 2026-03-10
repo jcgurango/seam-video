@@ -850,4 +850,45 @@ describe("resolveOverlay", () => {
       expect(inner.children).toHaveLength(2);
     }
   });
+
+  it("passes filters through to resolved clips", () => {
+    const filters = [
+      { type: "adjust" as const, brightness: 0.5 },
+      { type: "opacity" as const, value: 0.8 },
+    ];
+    const result = resolveComposition(
+      comp({
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5, filters },
+        ],
+      })
+    );
+    const clip = result.children[0];
+    expect(clip.type).toBe("clip");
+    if (clip.type === "clip") {
+      expect(clip.filters).toEqual(filters);
+    }
+  });
+
+  it("passes filters through to resolved compositions", () => {
+    const filters = [{ type: "adjust" as const, saturation: 0 }];
+    const result = resolveComposition(
+      comp({
+        children: [
+          {
+            type: "composition",
+            filters,
+            children: [
+              { type: "clip", source: "v.mp4", in: 0, out: 5 },
+            ],
+          },
+        ],
+      })
+    );
+    const child = result.children[0];
+    expect(child.type).toBe("composition");
+    if (child.type === "composition") {
+      expect(child.filters).toEqual(filters);
+    }
+  });
 });

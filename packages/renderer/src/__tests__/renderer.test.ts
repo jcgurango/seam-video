@@ -466,6 +466,166 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).toContain("crop=1920:1080:(iw-ow)/2:0");
   });
 
+  it("applies adjust filter as eq", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [{ type: "adjust", brightness: 0.2, contrast: 1.5, saturation: 0.8 }],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("eq=brightness=0.2:contrast=1.5:saturation=0.8");
+  });
+
+  it("applies opacity filter as colorchannelmixer", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [{ type: "opacity", value: 0.5 }],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("format=rgba,colorchannelmixer=aa=0.5");
+  });
+
+  it("applies colorbalance filter", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [{ type: "colorbalance", rs: 0.3, bh: -0.2 }],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("colorbalance=rs=0.3:bh=-0.2");
+  });
+
+  it("applies colortemperature filter", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [{ type: "colortemperature", temperature: 3200 }],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("colortemperature=temperature=3200");
+  });
+
+  it("chains multiple filters in order", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [
+            { type: "adjust", brightness: 0.1 },
+            { type: "opacity", value: 0.7 },
+          ],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    // Filters should appear in order, comma-separated
+    expect(cmd.filterComplex).toContain("eq=brightness=0.1,format=rgba,colorchannelmixer=aa=0.7");
+  });
+
+  it("skips adjust filter with all defaults", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "video.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+          filters: [{ type: "adjust", brightness: 0, contrast: 1, saturation: 1, gamma: 1 }],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).not.toContain("eq=");
+  });
+
+  it("applies filters on compositions", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          filters: [{ type: "adjust", saturation: 0 }],
+          children: [
+            {
+              type: "clip",
+              source: "video.mp4",
+              sourceIn: 0,
+              sourceOut: 5,
+              timelineStart: 0,
+              timelineEnd: 5,
+              speed: 1,
+            },
+          ],
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("eq=saturation=0");
+  });
+
   it("handles slow speed with pitch-shifted audio", () => {
     const timeline: ResolvedTimeline = {
       duration: 40,

@@ -5,6 +5,7 @@ import type {
   SpatialRect,
   SpatialAnchor,
   ObjectFit,
+  Filter,
 } from "@seam/core";
 
 export interface FfmpegCommand {
@@ -182,7 +183,7 @@ function buildSingleSegment(
   const displayH = child.spatial ? child.spatial.height : parentH;
   const innerW = child.contentWidth ?? displayW;
   const innerH = child.contentHeight ?? displayH;
-  const result = buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed, innerW, innerH);
+  let result = buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed, innerW, innerH);
 
   // Scale from inner to display size if they differ
   if (innerW !== displayW || innerH !== displayH) {
@@ -191,8 +192,20 @@ function buildSingleSegment(
     ctx.filters.push(
       `${result.v}scale=${Math.round(displayW)}:${Math.round(displayH)}${scaledV}`
     );
-    return { v: scaledV, a: result.a };
+    result = { v: scaledV, a: result.a };
   }
+
+  // Apply filters to the composite result
+  if (child.filters?.length) {
+    const filterStr = buildFilterChain(child.filters);
+    if (filterStr) {
+      const seg = ctx.segmentIndex++;
+      const filteredV = `[filt${seg}]`;
+      ctx.filters.push(`${result.v}${filterStr}${filteredV}`);
+      result = { v: filteredV, a: result.a };
+    }
+  }
+
   return result;
 }
 
@@ -228,6 +241,12 @@ function buildClipSegment(
   } else if (clip.spatial) {
     // Explicit spatial but no objectFit: stretch to exact dimensions
     vChain += `,scale=${clip.spatial.width}:${clip.spatial.height}`;
+  }
+
+  // Apply filters
+  if (clip.filters?.length) {
+    const filterStr = buildFilterChain(clip.filters);
+    if (filterStr) vChain += `,${filterStr}`;
   }
 
   const vLabel = `[v${seg}]`;
@@ -293,6 +312,35 @@ function buildObjectFitFilters(objectFit: ObjectFit, spatial: SpatialRect, ancho
     case "cover":
       return `,scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}:${cropX}:${cropY}`;
   }
+}
+
+/**
+ * Convert a filters array to an FFmpeg filter chain string.
+ */
+function buildFilterChain(filters: Filter[]): string {
+  return filters.map(f => {
+    switch (f.type) {
+      case "adjust": {
+        const parts: string[] = [];
+        if (f.brightness != null && f.brightness !== 0) parts.push(`brightness=${f.brightness}`);
+        if (f.contrast != null && f.contrast !== 1) parts.push(`contrast=${f.contrast}`);
+        if (f.saturation != null && f.saturation !== 1) parts.push(`saturation=${f.saturation}`);
+        if (f.gamma != null && f.gamma !== 1) parts.push(`gamma=${f.gamma}`);
+        return parts.length > 0 ? `eq=${parts.join(":")}` : "";
+      }
+      case "opacity":
+        return `format=rgba,colorchannelmixer=aa=${f.value}`;
+      case "colorbalance": {
+        const parts: string[] = [];
+        for (const key of ["rs","gs","bs","rm","gm","bm","rh","gh","bh"] as const) {
+          if (f[key] != null && f[key] !== 0) parts.push(`${key}=${f[key]}`);
+        }
+        return parts.length > 0 ? `colorbalance=${parts.join(":")}` : "";
+      }
+      case "colortemperature":
+        return `colortemperature=temperature=${f.temperature ?? 6500}`;
+    }
+  }).filter(s => s.length > 0).join(",");
 }
 
 /**

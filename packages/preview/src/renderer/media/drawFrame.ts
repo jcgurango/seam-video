@@ -1,4 +1,5 @@
-import type { ObjectFit, SpatialAnchor } from "@seam/core";
+import type { ObjectFit, SpatialAnchor, Filter } from "@seam/core";
+import { buildCSSFilter } from "./filterUtils.js";
 
 export function drawFrame(
   ctx: CanvasRenderingContext2D,
@@ -8,9 +9,15 @@ export function drawFrame(
   videoW: number,
   videoH: number,
   objectFit?: ObjectFit,
-  anchor?: SpatialAnchor
+  anchor?: SpatialAnchor,
+  filters?: Filter[]
 ): void {
   ctx.clearRect(0, 0, containerW, containerH);
+
+  const cssFilter = buildCSSFilter(filters);
+  if (cssFilter) {
+    ctx.filter = cssFilter;
+  }
 
   let scaledW: number;
   let scaledH: number;
@@ -18,6 +25,7 @@ export function drawFrame(
   if (!objectFit || objectFit === "fill") {
     // Fill: stretch to container
     ctx.drawImage(source, 0, 0, containerW, containerH);
+    ctx.filter = "none";
     return;
   }
 
@@ -56,4 +64,5 @@ export function drawFrame(
   }
 
   ctx.drawImage(source, offsetX, offsetY, scaledW, scaledH);
+  ctx.filter = "none";
 }

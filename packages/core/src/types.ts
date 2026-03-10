@@ -9,6 +9,35 @@ export type Underflow =
 export type Position = "absolute" | "relative";
 export type ObjectFit = "center" | "fit" | "cover";
 
+// ── Filters ────────────────────────────────────────────────────────
+
+export interface AdjustFilter {
+  type: "adjust";
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  gamma?: number;
+}
+
+export interface OpacityFilter {
+  type: "opacity";
+  value: number;
+}
+
+export interface ColorBalanceFilter {
+  type: "colorbalance";
+  rs?: number; gs?: number; bs?: number;
+  rm?: number; gm?: number; bm?: number;
+  rh?: number; gh?: number; bh?: number;
+}
+
+export interface ColorTemperatureFilter {
+  type: "colortemperature";
+  temperature?: number;
+}
+
+export type Filter = AdjustFilter | OpacityFilter | ColorBalanceFilter | ColorTemperatureFilter;
+
 export interface CompositionLayout {
   justify: Justify;
   gap: number;
@@ -31,6 +60,7 @@ export interface ChildTimingFields extends SpatialFields {
   flex?: number;
   overflow?: Overflow;
   underflow?: Underflow;
+  filters?: Filter[];
 }
 
 export interface Clip extends ChildTimingFields {

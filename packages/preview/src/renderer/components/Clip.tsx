@@ -40,7 +40,7 @@ export default function Clip({ clip }: ClipProps) {
     const videoW = intrinsicSize?.w ?? containerW;
     const videoH = intrinsicSize?.h ?? containerH;
 
-    drawFrame(ctx, frame, containerW, containerH, videoW, videoH, clip.objectFit, clip.anchor);
+    drawFrame(ctx, frame, containerW, containerH, videoW, videoH, clip.objectFit, clip.anchor, clip.filters);
   }, [canvasRef, frame]);
 
   if (!frame || !isActive) return null;
