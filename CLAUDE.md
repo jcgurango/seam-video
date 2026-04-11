@@ -4,12 +4,13 @@ Video editor where edits are defined as JSON (`.seam` files). No absolute timeco
 
 ## Repo Structure
 
-pnpm monorepo with 4 packages:
+pnpm monorepo with 5 packages:
 
 - **`@seam/core`** — Schema (Zod), types, layout resolver. Pure logic, no I/O.
 - **`@seam/renderer`** — Builds FFmpeg filter graphs from resolved timelines and executes them.
 - **`@seam/cli`** — `render` and `preview` commands (Commander).
-- **`@seam/preview`** — Electron + React live preview with file watching.
+- **`@seam/preview`** — Electron + React live preview with file watching. Exports Player, Timeline, TransportControls components for reuse.
+- **`@seam/editor`** — Electron + React editing app. Uses exported components from `@seam/preview`.
 
 ## Commands
 
@@ -17,6 +18,7 @@ pnpm monorepo with 4 packages:
 pnpm test              # all tests (core + renderer, Vitest)
 pnpm build             # build all packages
 pnpm --filter @seam/preview build && pnpm --filter @seam/preview dev   # preview dev
+pnpm --filter @seam/editor build && pnpm --filter @seam/editor dev    # editor dev
 npx tsx packages/cli/src/index.ts render <file.seam>                   # render via ffmpeg
 ```
 

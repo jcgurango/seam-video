@@ -46,6 +46,37 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@25.3.3)
 
+  packages/editor:
+    dependencies:
+      '@seam/core':
+        specifier: workspace:*
+        version: link:../core
+      '@seam/preview':
+        specifier: workspace:*
+        version: link:../preview
+      react:
+        specifier: ^19.0.0
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.4(react@19.2.4)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.14
+      '@vitejs/plugin-react':
+        specifier: ^4.0.0
+        version: 4.7.0(vite@5.4.21(@types/node@25.3.3))
+      electron:
+        specifier: ^33.0.0
+        version: 33.4.11
+      electron-vite:
+        specifier: ^2.0.0
+        version: 2.3.0(vite@5.4.21(@types/node@25.3.3))
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
   packages/preview:
     dependencies:
       '@seam/core':
