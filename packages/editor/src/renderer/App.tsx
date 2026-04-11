@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Player } from "@seam/preview";
+import { Timeline, TransportControls } from "@seam/preview";
 import type { ResolvedTimeline } from "@seam/core";
+import TimelinePanel from "./TimelinePanel.js";
 
 declare global {
   interface Window {
@@ -71,5 +72,10 @@ export default function App() {
     );
   }
 
-  return <Player timeline={timeline} basePath={basePath} />;
+  return (
+    <Timeline timeline={timeline} basePath={basePath}>
+      <TransportControls />
+      <TimelinePanel timeline={timeline} />
+    </Timeline>
+  );
 }
