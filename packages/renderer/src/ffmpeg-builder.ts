@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type {
   ResolvedTimeline,
   ResolvedChild,
@@ -18,13 +19,15 @@ export interface FfmpegOptions {
   width?: number;
   height?: number;
   fps?: number;
+  basePath?: string;
 }
 
 interface BuildContext {
   inputs: string[];
   filters: string[];
   segmentIndex: number;
-  options: Required<FfmpegOptions>;
+  options: Required<Omit<FfmpegOptions, "basePath">>;
+  basePath: string | undefined;
 }
 
 export function buildFfmpegCommand(
@@ -32,7 +35,7 @@ export function buildFfmpegCommand(
   outputPath: string,
   options: FfmpegOptions = {}
 ): FfmpegCommand {
-  const opts: Required<FfmpegOptions> = {
+  const opts: Required<Omit<FfmpegOptions, "basePath">> = {
     width: options.width ?? 1920,
     height: options.height ?? 1080,
     fps: options.fps ?? 30,
@@ -43,6 +46,7 @@ export function buildFfmpegCommand(
     filters: [],
     segmentIndex: 0,
     options: opts,
+    basePath: options.basePath,
   };
 
   const { v, a } = buildCompositeSegment(ctx, timeline.children, timeline.duration, 1);
@@ -217,7 +221,8 @@ function buildClipSegment(
   parentH: number
 ): { v: string; a: string } {
   const idx = ctx.inputs.length;
-  ctx.inputs.push(clip.source);
+  const source = ctx.basePath ? resolve(ctx.basePath, clip.source) : clip.source;
+  ctx.inputs.push(source);
   const seg = ctx.segmentIndex++;
   const { fps } = ctx.options;
 
