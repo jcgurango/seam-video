@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld("seamApi", {
     ipcRenderer.on("timeline-error", (_event, errors) => callback(errors));
   },
   getInitialTimeline: () => ipcRenderer.invoke("get-initial-timeline"),
+  getMobileEmulation: () => ipcRenderer.invoke("get-mobile-emulation") as Promise<boolean>,
 });

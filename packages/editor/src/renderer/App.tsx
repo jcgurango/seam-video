@@ -14,6 +14,7 @@ declare global {
         timeline: ResolvedTimeline;
         basePath: string;
       } | null>;
+      getMobileEmulation: () => Promise<boolean>;
     };
   }
 }
@@ -22,8 +23,10 @@ export default function App() {
   const [timeline, setTimeline] = useState<ResolvedTimeline | null>(null);
   const [basePath, setBasePath] = useState<string>("");
   const [errors, setErrors] = useState<string[]>([]);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
+    window.seamApi.getMobileEmulation().then(setIsMobile);
     window.seamApi.getInitialTimeline().then((data) => {
       if (data) {
         setTimeline(data.timeline);
@@ -75,7 +78,7 @@ export default function App() {
   return (
     <Timeline timeline={timeline} basePath={basePath}>
       <TransportControls />
-      <TimelinePanel timeline={timeline} />
+      <TimelinePanel timeline={timeline} isMobile={isMobile} />
     </Timeline>
   );
 }
