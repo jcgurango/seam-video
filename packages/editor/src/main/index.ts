@@ -1,91 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol } from "electron";
 import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
-import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
-import type { SeamFile } from "@seam/core";
+import { join, resolve } from "node:path";
 
 let mainWindow: BrowserWindow | null = null;
-let seamFilePath: string | null = null;
-let currentDocument: SeamFile = { type: "composition", children: [] };
 let mobileEmulation = false;
-
-const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
-
-function updateTitle() {
-  if (!mainWindow) return;
-  const title = seamFilePath
-    ? `Seam Editor — ${seamFilePath}`
-    : "Seam Editor — Untitled";
-  mainWindow.setTitle(title);
-}
-
-function resolveAndSend() {
-  if (!mainWindow) return;
-  try {
-    const temporal = resolveComposition(currentDocument);
-    const timeline = resolveSpatial(temporal, 1920, 1080);
-    const basePath = seamFilePath ? dirname(seamFilePath) : "";
-    mainWindow.webContents.send("timeline-update", { timeline, basePath });
-  } catch (err) {
-    mainWindow.webContents.send("timeline-error", [String(err)]);
-  }
-}
-
-function openFile(filePath: string) {
-  if (!existsSync(filePath)) {
-    dialog.showErrorBox("File not found", filePath);
-    return;
-  }
-  try {
-    const json = readFileSync(filePath, "utf-8");
-    const result = parseSeamFile(json);
-    if (!result.success) {
-      dialog.showErrorBox("Invalid .seam file", result.errors.join("\n"));
-      return;
-    }
-    seamFilePath = filePath;
-    currentDocument = result.data;
-    updateTitle();
-    resolveAndSend();
-  } catch (err) {
-    dialog.showErrorBox("Could not read file", String(err));
-  }
-}
-
-function newFile() {
-  seamFilePath = null;
-  currentDocument = { ...EMPTY_DOCUMENT, children: [] };
-  updateTitle();
-  resolveAndSend();
-}
-
-async function saveFile() {
-  if (!seamFilePath) {
-    return saveFileAs();
-  }
-  writeFileSync(seamFilePath, JSON.stringify(currentDocument, null, 2), "utf-8");
-}
-
-async function saveFileAs() {
-  if (!mainWindow) return;
-  const result = await dialog.showSaveDialog(mainWindow, {
-    filters: [{ name: "Seam Files", extensions: ["seam"] }],
-  });
-  if (result.canceled || !result.filePath) return;
-  seamFilePath = result.filePath;
-  updateTitle();
-  writeFileSync(seamFilePath, JSON.stringify(currentDocument, null, 2), "utf-8");
-}
-
-async function showOpenDialog() {
-  if (!mainWindow) return;
-  const result = await dialog.showOpenDialog(mainWindow, {
-    filters: [{ name: "Seam Files", extensions: ["seam"] }],
-    properties: ["openFile"],
-  });
-  if (result.canceled || result.filePaths.length === 0) return;
-  openFile(result.filePaths[0]);
-}
 
 function buildMenu() {
   const isMac = process.platform === "darwin";
@@ -99,22 +17,22 @@ function buildMenu() {
         {
           label: "New",
           accelerator: "CmdOrCtrl+N",
-          click: () => newFile(),
+          click: () => mainWindow?.webContents.send("menu-new"),
         },
         {
           label: "Open…",
           accelerator: "CmdOrCtrl+O",
-          click: () => showOpenDialog(),
+          click: () => mainWindow?.webContents.send("menu-open"),
         },
         {
           label: "Save",
           accelerator: "CmdOrCtrl+S",
-          click: () => saveFile(),
+          click: () => mainWindow?.webContents.send("menu-save"),
         },
         {
           label: "Save As…",
           accelerator: "CmdOrCtrl+Shift+S",
-          click: () => saveFileAs(),
+          click: () => mainWindow?.webContents.send("menu-save-as"),
         },
         { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
@@ -262,25 +180,65 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
 
-  // Load initial file from CLI arg or env var (optional — editor can start empty)
-  const args = process.argv.slice(2);
-  const fileArg = args[0] || process.env.SEAM_FILE;
-  if (fileArg) {
-    openFile(resolve(fileArg));
-  } else {
-    updateTitle();
-  }
+  // ── IPC: file I/O ────────────────────────────────────────────────
 
   ipcMain.handle("get-mobile-emulation", () => mobileEmulation);
 
-  ipcMain.handle("get-initial-timeline", () => {
+  ipcMain.handle("set-title", (_event, title: string) => {
+    mainWindow?.setTitle(title);
+  });
+
+  ipcMain.handle("read-file", (_event, filePath: string) => {
+    if (!existsSync(filePath)) return { error: `File not found: ${filePath}` };
     try {
-      const temporal = resolveComposition(currentDocument);
-      const timeline = resolveSpatial(temporal, 1920, 1080);
-      return {
-        timeline,
-        basePath: seamFilePath ? dirname(seamFilePath) : "",
-      };
+      return { json: readFileSync(filePath, "utf-8") };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle("write-file", (_event, filePath: string, json: string) => {
+    try {
+      writeFileSync(filePath, json, "utf-8");
+      return { success: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle("show-open-dialog", async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      filters: [{ name: "Seam Files", extensions: ["seam"] }],
+      properties: ["openFile"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const filePath = result.filePaths[0];
+    try {
+      return { filePath, json: readFileSync(filePath, "utf-8") };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle("show-save-dialog", async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showSaveDialog(mainWindow, {
+      filters: [{ name: "Seam Files", extensions: ["seam"] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    return result.filePath;
+  });
+
+  // Initial file from CLI arg or env var
+  ipcMain.handle("get-initial-file", () => {
+    const args = process.argv.slice(2);
+    const fileArg = args[0] || process.env.SEAM_FILE;
+    if (!fileArg) return null;
+    const filePath = resolve(fileArg);
+    if (!existsSync(filePath)) return null;
+    try {
+      return { filePath, json: readFileSync(filePath, "utf-8") };
     } catch {
       return null;
     }

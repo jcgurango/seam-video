@@ -1,11 +1,15 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
-import { flattenResolved } from "@seam/core";
-import type { ResolvedTimeline, ResolvedClip } from "@seam/core";
+import { flattenResolved, resolveComposition } from "@seam/core";
+import type { ResolvedTimeline, ResolvedClip, SeamFile, Clip } from "@seam/core";
+import { dirname, isAbsolute, relative } from "./pathUtils.js";
 
 interface TimelinePanelProps {
   timeline: ResolvedTimeline;
+  document: SeamFile;
+  filePath: string | null;
   isMobile: boolean;
+  onDocumentChange: (doc: SeamFile) => void;
 }
 
 const ROW_HEIGHT = 32;
@@ -318,7 +322,7 @@ function ClipLayer({
           2
         );
         const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
-        const label = clip.source.split("/").pop() ?? clip.source;
+        const label = (clip.source ?? "").split("/").pop() || "untitled";
 
         return (
           <div
@@ -342,7 +346,7 @@ function ClipLayer({
               boxSizing: "border-box",
               border: "1px solid #4a8ed0",
             }}
-            title={`${clip.source} [${clip.sourceIn.toFixed(2)}–${clip.sourceOut.toFixed(2)}]`}
+            title={`${clip.source ?? ""} [${clip.sourceIn.toFixed(2)}–${clip.sourceOut.toFixed(2)}]`}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
               {label}
@@ -387,12 +391,136 @@ function Playhead({ x, height }: { x: number; height: number }) {
   );
 }
 
+// ── Import helpers ───────────────────────────────────────────────────
+
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
+
+function isVideoFile(name: string): boolean {
+  return VIDEO_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
+}
+
+/** Probe video duration by loading into a temporary <video> element. */
+function probeDuration(file: File): Promise<number> {
+  return new Promise((res, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      URL.revokeObjectURL(url);
+      video.remove();
+      res(duration);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      video.remove();
+      reject(new Error(`Could not read metadata for ${file.name}`));
+    };
+    video.src = url;
+  });
+}
+
+function toRelativeSource(absPath: string, baseDir: string): string {
+  const rel = relative(baseDir, absPath);
+  if (!rel.startsWith("..") && !isAbsolute(rel)) return rel;
+  return absPath;
+}
+
+/** Find the insertion index in children closest to currentTime. */
+function findInsertionIndex(doc: SeamFile, currentTime: number): number {
+  if (doc.children.length === 0) return 0;
+
+  const resolved = resolveComposition(doc);
+  const boundaries = [0, ...resolved.children.map((c) => c.timelineEnd)];
+
+  let bestIdx = 0;
+  let bestDist = Math.abs(currentTime - boundaries[0]);
+  for (let i = 1; i < boundaries.length; i++) {
+    const dist = Math.abs(currentTime - boundaries[i]);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 // ── Root component ───────────────────────────────────────────────────
 
-export default function TimelinePanel({ timeline, isMobile }: TimelinePanelProps) {
+export default function TimelinePanel({
+  timeline,
+  document: doc,
+  filePath,
+  isMobile,
+  onDocumentChange,
+}: TimelinePanelProps) {
+  const { currentTime } = useTimeline();
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const importFiles = useCallback(
+    async (fileList: FileList | File[]) => {
+      const files = Array.from(fileList).filter((f) => isVideoFile(f.name));
+      if (files.length === 0) return;
+
+      const baseDir = filePath ? dirname(filePath) : null;
+      const newClips: Clip[] = [];
+      for (const file of files) {
+        const duration = await probeDuration(file);
+        const absPath = window.seamApi.getPathForFile(file);
+        const source = baseDir
+          ? toRelativeSource(absPath, baseDir)
+          : absPath;
+        newClips.push({ type: "clip", source, in: 0, out: duration });
+      }
+
+      const insertAt = findInsertionIndex(doc, currentTime);
+      const newChildren = [...doc.children];
+      newChildren.splice(insertAt, 0, ...newClips);
+      onDocumentChange({ ...doc, children: newChildren });
+    },
+    [doc, filePath, currentTime, onDocumentChange]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      if (e.dataTransfer.files.length > 0) {
+        importFiles(e.dataTransfer.files);
+      }
+    },
+    [importFiles]
+  );
+
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files.length > 0) {
+        importFiles(e.target.files);
+        e.target.value = "";
+      }
+    },
+    [importFiles]
+  );
 
   return (
     <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       style={{
         background: "#1e1e1e",
         borderTop: "1px solid #333",
@@ -401,8 +529,58 @@ export default function TimelinePanel({ timeline, isMobile }: TimelinePanelProps
         minHeight: 120,
         maxHeight: 300,
         userSelect: "none",
+        position: "relative",
       }}
     >
+      {/* Import button */}
+      <div style={{ position: "absolute", top: 4, right: 8, zIndex: 5 }}>
+        <button
+          onClick={handleImportClick}
+          style={{
+            background: "#3a6ea5",
+            border: "none",
+            color: "#fff",
+            padding: "4px 10px",
+            borderRadius: 3,
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+        >
+          + Import
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/*"
+          multiple
+          onChange={handleFileInput}
+          style={{ display: "none" }}
+        />
+      </div>
+
+      {/* Drop overlay */}
+      {dragOver && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(74, 158, 255, 0.15)",
+            border: "2px dashed #4a9eff",
+            borderRadius: 4,
+            zIndex: 10,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#4a9eff",
+            fontSize: 14,
+            fontWeight: 600,
+            pointerEvents: "none",
+          }}
+        >
+          Drop video files to import
+        </div>
+      )}
+
       {isMobile ? (
         <MobileTimeline timeline={timeline} />
       ) : (
