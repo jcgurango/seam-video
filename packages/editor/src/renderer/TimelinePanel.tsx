@@ -1,15 +1,16 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
-import { flattenResolved, resolveComposition } from "@seam/core";
-import type { ResolvedTimeline, ResolvedClip, SeamFile, Clip } from "@seam/core";
-import { dirname, isAbsolute, relative } from "./pathUtils.js";
+import type { ResolvedTimeline, ResolvedChild, SeamFile } from "@seam/core";
+import { useImport } from "./useImport.js";
 
-interface TimelinePanelProps {
+export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
-  document: SeamFile;
-  filePath: string | null;
+  document?: SeamFile;
+  filePath?: string | null;
   isMobile: boolean;
-  onDocumentChange: (doc: SeamFile) => void;
+  selectedIndex: number | null;
+  onSelect: (index: number | null) => void;
+  onDocumentChange?: (doc: SeamFile) => void;
 }
 
 const ROW_HEIGHT = 32;
@@ -19,30 +20,37 @@ const MIN_PX_PER_SEC = 10;
 const MAX_PX_PER_SEC = 1000;
 const DEFAULT_PX_PER_SEC = 100;
 
-/** Assign each clip to a row so overlapping clips stack vertically. */
-function layoutRows(clips: ResolvedClip[]): { clip: ResolvedClip; row: number }[] {
-  const sorted = [...clips].sort((a, b) => a.timelineStart - b.timelineStart);
+interface ChildBlock {
+  child: ResolvedChild;
+  index: number; // top-level index in the document
+  row: number;
+}
+
+/** Assign top-level children to rows so overlapping ones stack. */
+function layoutChildren(children: ResolvedChild[]): ChildBlock[] {
+  const items = children.map((child, index) => ({ child, index }));
+  const sorted = [...items].sort(
+    (a, b) => a.child.timelineStart - b.child.timelineStart
+  );
   const rowEnds: number[] = [];
-  return sorted.map((clip) => {
-    let row = rowEnds.findIndex((end) => end <= clip.timelineStart);
+  return sorted.map(({ child, index }) => {
+    let row = rowEnds.findIndex((end) => end <= child.timelineStart);
     if (row === -1) {
       row = rowEnds.length;
-      rowEnds.push(clip.timelineEnd);
+      rowEnds.push(child.timelineEnd);
     } else {
-      rowEnds[row] = clip.timelineEnd;
+      rowEnds[row] = child.timelineEnd;
     }
-    return { clip, row };
+    return { child, index, row };
   });
 }
 
-/** Format seconds as m:ss.t */
 function formatTime(s: number): string {
   const mins = Math.floor(s / 60);
   const secs = s % 60;
   return `${mins}:${secs.toFixed(1).padStart(4, "0")}`;
 }
 
-/** Pick a nice ruler interval for the given scale. */
 function rulerInterval(pxPerSec: number): number {
   const candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60];
   for (const c of candidates) {
@@ -51,39 +59,57 @@ function rulerInterval(pxPerSec: number): number {
   return 60;
 }
 
+function childLabel(child: ResolvedChild): string {
+  if (child.type === "clip") {
+    return (child.source ?? "").split("/").pop() || "untitled";
+  }
+  if (child.type === "empty") return "empty";
+  return child.type;
+}
+
+const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
+  clip: { bg: "#3a6ea5", border: "#4a8ed0" },
+  composition: { bg: "#6a5acd", border: "#8470ff" },
+  overlay: { bg: "#2e8b57", border: "#3cb371" },
+  empty: { bg: "#555", border: "#666" },
+};
+
+const SELECTED_BORDER = "#ffcc00";
+
 // ── Desktop mode ─────────────────────────────────────────────────────
 
-function DesktopTimeline({ timeline }: TimelinePanelProps) {
+interface InnerProps {
+  timeline: ResolvedTimeline;
+  selectedIndex: number | null;
+  onSelect: (index: number | null) => void;
+}
+
+function DesktopTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
 
-  const clips = useMemo(() => {
-    const flat = flattenResolved(timeline.children);
-    return flat.filter((c): c is ResolvedClip => c.type === "clip");
-  }, [timeline]);
-
-  const rows = useMemo(() => layoutRows(clips), [clips]);
-  const rowCount = rows.length > 0 ? Math.max(...rows.map((r) => r.row)) + 1 : 1;
+  const blocks = useMemo(() => layoutChildren(timeline.children), [timeline]);
+  const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
 
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
   const contentHeight = RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
 
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        setPxPerSec((prev) =>
-          Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
-        );
-      }
-    },
-    []
-  );
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      setPxPerSec((prev) =>
+        Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
+      );
+    }
+  }, []);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // Deselect when clicking empty area
+      onSelect(null);
+
       const container = scrollRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
@@ -103,10 +129,9 @@ function DesktopTimeline({ timeline }: TimelinePanelProps) {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [pxPerSec, totalDuration, seek]
+    [pxPerSec, totalDuration, seek, onSelect]
   );
 
-  // Auto-scroll to keep playhead centered (only while playing)
   useEffect(() => {
     if (!isPlaying) return;
     const container = scrollRef.current;
@@ -128,16 +153,11 @@ function DesktopTimeline({ timeline }: TimelinePanelProps) {
       ref={scrollRef}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
-      style={{
-        flex: 1,
-        overflow: "auto",
-        position: "relative",
-        cursor: "crosshair",
-      }}
+      style={{ flex: 1, overflow: "auto", position: "relative", cursor: "crosshair" }}
     >
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-        <ClipLayer rows={rows} pxPerSec={pxPerSec} />
+        <ChildrenLayer blocks={blocks} pxPerSec={pxPerSec} selectedIndex={selectedIndex} onSelect={onSelect} />
         <Playhead x={playheadX} height={contentHeight} />
       </div>
     </div>
@@ -145,28 +165,17 @@ function DesktopTimeline({ timeline }: TimelinePanelProps) {
 }
 
 // ── Mobile mode ──────────────────────────────────────────────────────
-// Playhead is fixed at center. Scroll position drives time when paused;
-// playback drives scroll position when playing. Native scroll gives us
-// momentum and rubber-banding for free.
 
-function MobileTimeline({ timeline }: TimelinePanelProps) {
+function MobileTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
   const [padding, setPadding] = useState(0);
-  // Tracks whether we're programmatically setting scrollLeft so we can
-  // ignore the resulting scroll event.
   const programmaticScroll = useRef(false);
 
-  const clips = useMemo(() => {
-    const flat = flattenResolved(timeline.children);
-    return flat.filter((c): c is ResolvedClip => c.type === "clip");
-  }, [timeline]);
+  const blocks = useMemo(() => layoutChildren(timeline.children), [timeline]);
+  const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
 
-  const rows = useMemo(() => layoutRows(clips), [clips]);
-  const rowCount = rows.length > 0 ? Math.max(...rows.map((r) => r.row)) + 1 : 1;
-
-  // Half-viewport padding on each side so t=0 and t=end can center
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -180,7 +189,6 @@ function MobileTimeline({ timeline }: TimelinePanelProps) {
   const contentWidth = padding + totalDuration * pxPerSec + padding;
   const contentHeight = RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
 
-  // When playing, drive scroll from currentTime
   useEffect(() => {
     if (!isPlaying) return;
     const container = scrollRef.current;
@@ -189,7 +197,6 @@ function MobileTimeline({ timeline }: TimelinePanelProps) {
     container.scrollLeft = currentTime * pxPerSec;
   }, [currentTime, pxPerSec, isPlaying]);
 
-  // When paused, derive time from scroll position
   const handleScroll = useCallback(() => {
     if (programmaticScroll.current) {
       programmaticScroll.current = false;
@@ -198,28 +205,20 @@ function MobileTimeline({ timeline }: TimelinePanelProps) {
     if (isPlaying) return;
     const container = scrollRef.current;
     if (!container) return;
-    const time = Math.max(
-      0,
-      Math.min(container.scrollLeft / pxPerSec, totalDuration)
-    );
+    const time = Math.max(0, Math.min(container.scrollLeft / pxPerSec, totalDuration));
     seek(time);
   }, [isPlaying, pxPerSec, totalDuration, seek]);
 
-  // Pinch-to-zoom
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        setPxPerSec((prev) =>
-          Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
-        );
-      }
-    },
-    []
-  );
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      setPxPerSec((prev) =>
+        Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
+      );
+    }
+  }, []);
 
-  // Sync scroll position when zoom changes (keep same time centered)
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -238,31 +237,15 @@ function MobileTimeline({ timeline }: TimelinePanelProps) {
       ref={scrollRef}
       onScroll={handleScroll}
       onWheel={handleWheel}
-      style={{
-        flex: 1,
-        overflow: "auto",
-        position: "relative",
-      }}
+      style={{ flex: 1, overflow: "auto", position: "relative" }}
     >
-      {/* Fixed playhead overlay */}
-      <div
-        style={{
-          position: "sticky",
-          left: 0,
-          width: "100%",
-          height: 0,
-          zIndex: 4,
-          pointerEvents: "none",
-        }}
-      >
+      <div style={{ position: "sticky", left: 0, width: "100%", height: 0, zIndex: 4, pointerEvents: "none" }}>
         <Playhead x={padding} height={contentHeight} />
       </div>
-
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
-        {/* Offset all content by padding so t=0 starts at center */}
         <div style={{ position: "absolute", left: padding, top: 0, right: padding }}>
           <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-          <ClipLayer rows={rows} pxPerSec={pxPerSec} />
+          <ChildrenLayer blocks={blocks} pxPerSec={pxPerSec} selectedIndex={selectedIndex} onSelect={onSelect} />
         </div>
       </div>
     </div>
@@ -306,34 +289,44 @@ function RulerLayer({ pxPerSec, ticks }: { pxPerSec: number; ticks: number[] }) 
   );
 }
 
-function ClipLayer({
-  rows,
+function ChildrenLayer({
+  blocks,
   pxPerSec,
+  selectedIndex,
+  onSelect,
 }: {
-  rows: { clip: ResolvedClip; row: number }[];
+  blocks: ChildBlock[];
   pxPerSec: number;
+  selectedIndex: number | null;
+  onSelect: (index: number | null) => void;
 }) {
   return (
     <>
-      {rows.map(({ clip, row }, i) => {
-        const left = clip.timelineStart * pxPerSec;
+      {blocks.map(({ child, index, row }) => {
+        const left = child.timelineStart * pxPerSec;
         const width = Math.max(
-          (clip.timelineEnd - clip.timelineStart) * pxPerSec,
+          (child.timelineEnd - child.timelineStart) * pxPerSec,
           2
         );
         const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
-        const label = (clip.source ?? "").split("/").pop() || "untitled";
+        const label = childLabel(child);
+        const isSelected = selectedIndex === index;
+        const colors = BLOCK_COLORS[child.type] ?? BLOCK_COLORS.clip;
 
         return (
           <div
-            key={i}
+            key={index}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSelect(isSelected ? null : index);
+            }}
             style={{
               position: "absolute",
               left,
               top,
               width,
               height: ROW_HEIGHT,
-              background: "#3a6ea5",
+              background: isSelected ? "#4a7eb8" : colors.bg,
               borderRadius: 3,
               overflow: "hidden",
               display: "flex",
@@ -344,9 +337,9 @@ function ClipLayer({
               color: "#fff",
               whiteSpace: "nowrap",
               boxSizing: "border-box",
-              border: "1px solid #4a8ed0",
+              border: `2px solid ${isSelected ? SELECTED_BORDER : colors.border}`,
+              cursor: "pointer",
             }}
-            title={`${clip.source ?? ""} [${clip.sourceIn.toFixed(2)}–${clip.sourceOut.toFixed(2)}]`}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
               {label}
@@ -391,60 +384,6 @@ function Playhead({ x, height }: { x: number; height: number }) {
   );
 }
 
-// ── Import helpers ───────────────────────────────────────────────────
-
-const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
-
-function isVideoFile(name: string): boolean {
-  return VIDEO_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
-}
-
-/** Probe video duration by loading into a temporary <video> element. */
-function probeDuration(file: File): Promise<number> {
-  return new Promise((res, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      const duration = video.duration;
-      URL.revokeObjectURL(url);
-      video.remove();
-      res(duration);
-    };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      video.remove();
-      reject(new Error(`Could not read metadata for ${file.name}`));
-    };
-    video.src = url;
-  });
-}
-
-function toRelativeSource(absPath: string, baseDir: string): string {
-  const rel = relative(baseDir, absPath);
-  if (!rel.startsWith("..") && !isAbsolute(rel)) return rel;
-  return absPath;
-}
-
-/** Find the insertion index in children closest to currentTime. */
-function findInsertionIndex(doc: SeamFile, currentTime: number): number {
-  if (doc.children.length === 0) return 0;
-
-  const resolved = resolveComposition(doc);
-  const boundaries = [0, ...resolved.children.map((c) => c.timelineEnd)];
-
-  let bestIdx = 0;
-  let bestDist = Math.abs(currentTime - boundaries[0]);
-  for (let i = 1; i < boundaries.length; i++) {
-    const dist = Math.abs(currentTime - boundaries[i]);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIdx = i;
-    }
-  }
-  return bestIdx;
-}
-
 // ── Root component ───────────────────────────────────────────────────
 
 export default function TimelinePanel({
@@ -452,35 +391,37 @@ export default function TimelinePanel({
   document: doc,
   filePath,
   isMobile,
+  selectedIndex,
+  onSelect,
   onDocumentChange,
 }: TimelinePanelProps) {
-  const { currentTime } = useTimeline();
   const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const importFiles = useCallback(
-    async (fileList: FileList | File[]) => {
-      const files = Array.from(fileList).filter((f) => isVideoFile(f.name));
-      if (files.length === 0) return;
-
-      const baseDir = filePath ? dirname(filePath) : null;
-      const newClips: Clip[] = [];
-      for (const file of files) {
-        const duration = await probeDuration(file);
-        const absPath = window.seamApi.getPathForFile(file);
-        const source = baseDir
-          ? toRelativeSource(absPath, baseDir)
-          : absPath;
-        newClips.push({ type: "clip", source, in: 0, out: duration });
-      }
-
-      const insertAt = findInsertionIndex(doc, currentTime);
-      const newChildren = [...doc.children];
-      newChildren.splice(insertAt, 0, ...newClips);
-      onDocumentChange({ ...doc, children: newChildren });
-    },
-    [doc, filePath, currentTime, onDocumentChange]
+  const emptyDoc: SeamFile = { type: "composition", children: [] };
+  const importFiles = useImport(
+    doc ?? emptyDoc,
+    filePath ?? null,
+    onDocumentChange ?? (() => {})
   );
+
+  // Delete/Backspace to remove selected child
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        selectedIndex != null &&
+        doc &&
+        onDocumentChange
+      ) {
+        e.preventDefault();
+        const newChildren = [...doc.children];
+        newChildren.splice(selectedIndex, 1);
+        onDocumentChange({ ...doc, children: newChildren });
+        onSelect(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedIndex, doc, onDocumentChange, onSelect]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -502,20 +443,6 @@ export default function TimelinePanel({
     [importFiles]
   );
 
-  const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files.length > 0) {
-        importFiles(e.target.files);
-        e.target.value = "";
-      }
-    },
-    [importFiles]
-  );
-
   return (
     <div
       onDragOver={handleDragOver}
@@ -532,33 +459,6 @@ export default function TimelinePanel({
         position: "relative",
       }}
     >
-      {/* Import button */}
-      <div style={{ position: "absolute", top: 4, right: 8, zIndex: 5 }}>
-        <button
-          onClick={handleImportClick}
-          style={{
-            background: "#3a6ea5",
-            border: "none",
-            color: "#fff",
-            padding: "4px 10px",
-            borderRadius: 3,
-            fontSize: 11,
-            cursor: "pointer",
-          }}
-        >
-          + Import
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/*"
-          multiple
-          onChange={handleFileInput}
-          style={{ display: "none" }}
-        />
-      </div>
-
-      {/* Drop overlay */}
       {dragOver && (
         <div
           style={{
@@ -582,9 +482,9 @@ export default function TimelinePanel({
       )}
 
       {isMobile ? (
-        <MobileTimeline timeline={timeline} />
+        <MobileTimeline timeline={timeline} selectedIndex={selectedIndex} onSelect={onSelect} />
       ) : (
-        <DesktopTimeline timeline={timeline} />
+        <DesktopTimeline timeline={timeline} selectedIndex={selectedIndex} onSelect={onSelect} />
       )}
     </div>
   );

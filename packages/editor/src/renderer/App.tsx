@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Timeline, TransportControls } from "@seam/preview";
+import { Timeline } from "@seam/preview";
 import {
   parseSeamFile,
   resolveComposition,
   resolveSpatial,
 } from "@seam/core";
 import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
 
@@ -75,6 +76,7 @@ export default function App() {
   const [timeline, setTimeline] = useState<ResolvedTimeline | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   // Keep refs for menu callbacks
   const docRef = useRef(document);
@@ -118,6 +120,7 @@ export default function App() {
   // Resolve whenever document changes
   const updateDocument = useCallback((doc: SeamFile) => {
     setDocument(doc);
+    setSelectedIndex(null);
     try {
       setTimeline(resolve(doc));
       setErrors([]);
@@ -228,13 +231,21 @@ export default function App() {
   }
 
   return (
-    <Timeline timeline={timeline} basePath={basePath}>
-      <TransportControls />
+    <Timeline timeline={timeline} basePath={basePath} preserveTime>
+      <ControlsBar
+        document={document}
+        filePath={filePath}
+        selectedIndex={selectedIndex}
+        onSelect={setSelectedIndex}
+        onDocumentChange={updateDocument}
+      />
       <TimelinePanel
         timeline={timeline}
         document={document}
         filePath={filePath}
         isMobile={isMobile}
+        selectedIndex={selectedIndex}
+        onSelect={setSelectedIndex}
         onDocumentChange={updateDocument}
       />
     </Timeline>

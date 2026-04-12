@@ -12,6 +12,7 @@ interface TimelineProps {
   basePath: string;
   width?: number;
   height?: number;
+  preserveTime?: boolean;
   children?: React.ReactNode;
 }
 
@@ -20,6 +21,7 @@ export default function Timeline({
   basePath,
   width = 1920,
   height = 1080,
+  preserveTime = false,
   children,
 }: TimelineProps) {
   const [currentTime, setCurrentTime] = useState(0);
@@ -68,11 +70,13 @@ export default function Timeline({
 
   // Initialize coordinator when timeline changes
   useEffect(() => {
-    setCurrentTime(0);
+    if (!preserveTime) {
+      setCurrentTime(0);
+    }
     setIsPlaying(false);
     audioScheduler.pause();
     void coordinator.setTimeline(timeline, basePath, mediaStore, audioScheduler);
-  }, [timeline, basePath, mediaStore, audioScheduler, coordinator]);
+  }, [timeline, basePath, mediaStore, audioScheduler, coordinator, preserveTime]);
 
   // Refs for rAF access to latest state
   const loopRef = useRef(loop);
