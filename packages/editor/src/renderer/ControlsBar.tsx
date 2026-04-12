@@ -10,6 +10,8 @@ import {
   Scissors,
   FolderOpen,
   Trash2,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 
@@ -19,6 +21,10 @@ interface ControlsBarProps {
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
   onDocumentChange: (doc: SeamFile) => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 // ── Slice logic ──────────────────────────────────────────────────────
@@ -141,6 +147,10 @@ export default function ControlsBar({
   selectedIndex,
   onSelect,
   onDocumentChange,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
 }: ControlsBarProps) {
   const {
     currentTime,
@@ -252,6 +262,26 @@ export default function ControlsBar({
         <span style={TIME_STYLE}>
           {currentTime.toFixed(1)}s / {totalDuration.toFixed(1)}s
         </span>
+
+        <div style={SEPARATOR} />
+
+        {/* Undo / Redo */}
+        <button
+          onClick={onUndo}
+          style={{ ...BTN_STYLE, opacity: canUndo ? 1 : 0.3 }}
+          disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 size={ICON_SIZE} />
+        </button>
+        <button
+          onClick={onRedo}
+          style={{ ...BTN_STYLE, opacity: canRedo ? 1 : 0.3 }}
+          disabled={!canRedo}
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          <Redo2 size={ICON_SIZE} />
+        </button>
 
         <div style={SEPARATOR} />
 

@@ -9,6 +9,7 @@ import type { ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
+import { useHistory } from "./useHistory.js";
 
 declare global {
   interface Window {
@@ -65,24 +66,33 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
   };
 }
 
-function resolve(doc: SeamFile): ResolvedTimeline {
+function resolveDoc(doc: SeamFile): ResolvedTimeline {
   const temporal = resolveComposition(doc);
   return resolveSpatial(temporal, 1920, 1080);
 }
 
 export default function App() {
-  const [document, setDocument] = useState<SeamFile>(EMPTY_DOCUMENT);
+  const history = useHistory<SeamFile>(EMPTY_DOCUMENT);
+  const document = history.current;
+
   const [filePath, setFilePath] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<ResolvedTimeline | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
-  // Keep refs for menu callbacks
-  const docRef = useRef(document);
-  docRef.current = document;
   const filePathRef = useRef(filePath);
   filePathRef.current = filePath;
+
+  // Re-resolve whenever document changes
+  useEffect(() => {
+    try {
+      setTimeline(resolveDoc(document));
+      setErrors([]);
+    } catch (err) {
+      setErrors([String(err)]);
+    }
+  }, [document]);
 
   const updateTitle = useCallback((fp: string | null) => {
     window.seamApi.setTitle(
@@ -92,17 +102,13 @@ export default function App() {
 
   const loadDocument = useCallback(
     (doc: SeamFile, fp: string | null) => {
-      setDocument(doc);
+      history.reset(doc);
       setFilePath(fp);
       setErrors([]);
+      setSelectedIndex(null);
       updateTitle(fp);
-      try {
-        setTimeline(resolve(doc));
-      } catch (err) {
-        setErrors([String(err)]);
-      }
     },
-    [updateTitle]
+    [history, updateTitle]
   );
 
   const openFromJson = useCallback(
@@ -117,36 +123,56 @@ export default function App() {
     [loadDocument]
   );
 
-  // Resolve whenever document changes
-  const updateDocument = useCallback((doc: SeamFile) => {
-    setDocument(doc);
-    setSelectedIndex(null);
-    try {
-      setTimeline(resolve(doc));
-      setErrors([]);
-    } catch (err) {
-      setErrors([String(err)]);
-    }
-  }, []);
+  const updateDocument = useCallback(
+    (doc: SeamFile) => {
+      history.push(doc);
+      setSelectedIndex(null);
+    },
+    [history]
+  );
+
+  // ── Undo / Redo ────────────────────────────────────────────────
+
+  const handleUndo = useCallback(() => {
+    const prev = history.undo();
+    if (prev != null) setSelectedIndex(null);
+  }, [history]);
+
+  const handleRedo = useCallback(() => {
+    const next = history.redo();
+    if (next != null) setSelectedIndex(null);
+  }, [history]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if (mod && e.key === "z" && e.shiftKey) {
+        e.preventDefault();
+        handleRedo();
+      } else if (mod && e.key === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleUndo, handleRedo]);
 
   // ── Save helpers ────────────────────────────────────────────────
 
   const saveToFile = useCallback(
     async (fp: string) => {
-      const doc = remapSourcesToRelative(docRef.current, dirname(fp));
-      setDocument(doc);
+      const doc = remapSourcesToRelative(history.current, dirname(fp));
+      history.replace(doc);
       const json = JSON.stringify(doc, null, 2);
       await window.seamApi.writeFile(fp, json);
       setFilePath(fp);
       updateTitle(fp);
-      // Re-resolve with remapped paths
-      try {
-        setTimeline(resolve(doc));
-      } catch (err) {
-        setErrors([String(err)]);
-      }
     },
-    [updateTitle]
+    [history, updateTitle]
   );
 
   const handleSave = useCallback(async () => {
@@ -238,6 +264,10 @@ export default function App() {
         selectedIndex={selectedIndex}
         onSelect={setSelectedIndex}
         onDocumentChange={updateDocument}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
       />
       <TimelinePanel
         timeline={timeline}
