@@ -22,7 +22,7 @@ interface FlatClip {
 export class FrameCoordinator {
   private buffers = new Map<ResolvedClip, ClipBuffer>();
   private flatClips: FlatClip[] = [];
-  private frames = new Map<ResolvedClip, HTMLCanvasElement | OffscreenCanvas>();
+  private flatByClip = new Map<ResolvedClip, FlatClip>();
   private sizes = new Map<ResolvedClip, { w: number; h: number }>();
   private playingClips = new Set<ResolvedClip>();
   private audioScheduler: AudioScheduler | null = null;
@@ -35,7 +35,8 @@ export class FrameCoordinator {
     timeline: ResolvedTimeline,
     basePath: string,
     mediaStore: MediaStore,
-    audioScheduler: AudioScheduler
+    audioScheduler: AudioScheduler,
+    initialTime: number = 0
   ): Promise<void> {
     this.dispose();
     this.audioScheduler = audioScheduler;
@@ -54,6 +55,10 @@ export class FrameCoordinator {
         audioScheduler.setSampleRate(audioTrack.sampleRate);
         break;
       }
+    }
+
+    for (const flat of this.flatClips) {
+      this.flatByClip.set(flat.clip, flat);
     }
 
     const initAll = this.flatClips.map(async (flat) => {
@@ -78,8 +83,9 @@ export class FrameCoordinator {
     await Promise.all(initAll);
     this.ready = true;
 
-    // Prime at t=0 so the initial frame is available
-    this.reconcile(0, false, timeline.duration, false);
+    // Prime at the actual playhead so the paused frame becomes available
+    // without having to wait for a tick or seek.
+    this.reconcile(initialTime, false, timeline.duration, false);
   }
 
   tick(
@@ -104,8 +110,24 @@ export class FrameCoordinator {
     this.reconcile(currentTime, false, duration, loop);
   }
 
-  getFrame(clip: ResolvedClip): HTMLCanvasElement | OffscreenCanvas | null {
-    return this.frames.get(clip) ?? null;
+  /**
+   * Returns the buffered frame that should be shown for `clip` at
+   * `timelineTime`. Reads straight from the clip's buffer rather than from a
+   * cached Map, so async frame arrivals (via onFrameAvailable) immediately
+   * become visible on the next gpuRender call without needing a reconcile.
+   */
+  getFrame(
+    clip: ResolvedClip,
+    timelineTime: number
+  ): HTMLCanvasElement | OffscreenCanvas | null {
+    const flat = this.flatByClip.get(clip);
+    if (!flat) return null;
+    if (timelineTime < flat.absoluteStart || timelineTime >= flat.absoluteEnd) {
+      return null;
+    }
+    const buffer = this.buffers.get(clip);
+    if (!buffer) return null;
+    return buffer.getFrame(flat.toSourceTime(timelineTime));
   }
 
   getIntrinsicSize(clip: ResolvedClip): { w: number; h: number } | null {
@@ -118,7 +140,7 @@ export class FrameCoordinator {
     }
     this.buffers.clear();
     this.flatClips = [];
-    this.frames.clear();
+    this.flatByClip.clear();
     this.sizes.clear();
     this.playingClips.clear();
     this.ready = false;
@@ -148,7 +170,6 @@ export class FrameCoordinator {
       if (overlapEnd <= overlapStart) {
         // Clip is outside the window: drop its buffer and stop audio
         buffer.clear();
-        this.frames.delete(flat.clip);
         if (this.playingClips.has(flat.clip)) {
           this.playingClips.delete(flat.clip);
           if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
@@ -177,25 +198,17 @@ export class FrameCoordinator {
         currentTime >= flat.absoluteStart && currentTime < flat.absoluteEnd;
 
       if (isActive) {
-        const sourceTime = flat.toSourceTime(currentTime);
-
-        // Start audio if it's time
         if (isPlaying && !this.playingClips.has(flat.clip)) {
           this.playingClips.add(flat.clip);
           if (flat.audioId) {
+            const sourceTime = flat.toSourceTime(currentTime);
             this.audioScheduler?.startClip(flat.audioId, sourceTime);
           }
         }
-
-        const frame = buffer.getFrame(sourceTime);
-        if (frame) this.frames.set(flat.clip, frame);
-      } else {
-        // Clip no longer active — stop audio but keep buffer (it may still be in window)
-        if (this.playingClips.has(flat.clip)) {
-          this.playingClips.delete(flat.clip);
-          if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
-        }
-        this.frames.delete(flat.clip);
+      } else if (this.playingClips.has(flat.clip)) {
+        // Clip no longer active — stop audio (buffer may still be in window)
+        this.playingClips.delete(flat.clip);
+        if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
       }
     }
 

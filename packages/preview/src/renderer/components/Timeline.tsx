@@ -70,14 +70,26 @@ export default function Timeline({
     });
   }, [renderer]);
 
+  // Ref for latest currentTime — used by setTimeline to prime buffers at the
+  // actual playhead on document changes, and by the frame-available callback.
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+
   // Initialize coordinator when timeline changes
   useEffect(() => {
+    const priming = preserveTime ? currentTimeRef.current : 0;
     if (!preserveTime) {
       setCurrentTime(0);
     }
     setIsPlaying(false);
     audioScheduler.pause();
-    void coordinator.setTimeline(timeline, basePath, mediaStore, audioScheduler);
+    void coordinator.setTimeline(
+      timeline,
+      basePath,
+      mediaStore,
+      audioScheduler,
+      priming
+    );
   }, [timeline, basePath, mediaStore, audioScheduler, coordinator, preserveTime]);
 
   // Refs for rAF access to latest state
@@ -102,15 +114,12 @@ export default function Timeline({
         (clip) => coordinator.getIntrinsicSize(clip),
       );
 
-      renderer.render(commands, (clip) => coordinator.getFrame(clip));
+      renderer.render(commands, (clip) => coordinator.getFrame(clip, time));
     },
     [renderer, coordinator, width, height],
   );
 
-  // Wire up frame-available callback for re-renders on async seek
-  const currentTimeRef = useRef(currentTime);
-  currentTimeRef.current = currentTime;
-
+  // Wire up frame-available callback for re-renders on async seek / reload
   useEffect(() => {
     coordinator.onFrameAvailable = () => {
       gpuRender(currentTimeRef.current);
