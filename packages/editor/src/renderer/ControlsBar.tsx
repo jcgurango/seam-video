@@ -12,8 +12,10 @@ import {
   Trash2,
   Undo2,
   Redo2,
+  ArrowLeft,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
+import type { View } from "./views.js";
 
 interface ControlsBarProps {
   document: SeamFile;
@@ -25,6 +27,8 @@ interface ControlsBarProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  view: View;
+  onExit: (viewTime: number) => void;
 }
 
 // ── Slice logic ──────────────────────────────────────────────────────
@@ -151,6 +155,8 @@ export default function ControlsBar({
   onRedo,
   canUndo,
   canRedo,
+  view,
+  onExit,
 }: ControlsBarProps) {
   const {
     currentTime,
@@ -176,16 +182,27 @@ export default function ControlsBar({
     }
   }, [doc, currentTime, onDocumentChange]);
 
-  // S key shortcut
+  // S key shortcut (disabled in non-root views)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (view.type !== "root") return;
       if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         handleSlice();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSlice]);
+  }, [handleSlice, view]);
+
+  // Escape to exit a nested view
+  useEffect(() => {
+    if (view.type === "root") return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onExit(currentTime);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [view, currentTime, onExit]);
 
   // ── Import ─────────────────────────────────────────────────────
 
@@ -286,30 +303,42 @@ export default function ControlsBar({
         <div style={SEPARATOR} />
 
         {/* Edit tools */}
-        <button onClick={handleSlice} style={BTN_STYLE} title="Slice (S)">
-          <Scissors size={ICON_SIZE} />
-        </button>
-        <button
-          onClick={() => {
-            if (selectedIndex != null) {
-              const newChildren = [...doc.children];
-              newChildren.splice(selectedIndex, 1);
-              onDocumentChange({ ...doc, children: newChildren });
-              onSelect(null);
-            }
-          }}
-          style={{
-            ...BTN_STYLE,
-            opacity: selectedIndex != null ? 1 : 0.3,
-          }}
-          disabled={selectedIndex == null}
-          title="Delete (Del)"
-        >
-          <Trash2 size={ICON_SIZE} />
-        </button>
-        <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
-          <FolderOpen size={ICON_SIZE} />
-        </button>
+        {view.type === "root" ? (
+          <>
+            <button onClick={handleSlice} style={BTN_STYLE} title="Slice (S)">
+              <Scissors size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={() => {
+                if (selectedIndex != null) {
+                  const newChildren = [...doc.children];
+                  newChildren.splice(selectedIndex, 1);
+                  onDocumentChange({ ...doc, children: newChildren });
+                  onSelect(null);
+                }
+              }}
+              style={{
+                ...BTN_STYLE,
+                opacity: selectedIndex != null ? 1 : 0.3,
+              }}
+              disabled={selectedIndex == null}
+              title="Delete (Del)"
+            >
+              <Trash2 size={ICON_SIZE} />
+            </button>
+            <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
+              <FolderOpen size={ICON_SIZE} />
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => onExit(currentTime)}
+            style={BTN_STYLE}
+            title="Back (Esc)"
+          >
+            <ArrowLeft size={ICON_SIZE} />
+          </button>
+        )}
         <input
           ref={fileInputRef}
           type="file"

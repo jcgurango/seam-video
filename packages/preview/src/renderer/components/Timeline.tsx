@@ -13,6 +13,7 @@ interface TimelineProps {
   width?: number;
   height?: number;
   preserveTime?: boolean;
+  initialTime?: number;
   children?: React.ReactNode;
 }
 
@@ -22,9 +23,10 @@ export default function Timeline({
   width = 1920,
   height = 1080,
   preserveTime = false,
+  initialTime = 0,
   children,
 }: TimelineProps) {
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTime, setCurrentTime] = useState(initialTime);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loop, setLoop] = useState(false);
   const rafRef = useRef<number>(0);

@@ -1,7 +1,9 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
-import type { ResolvedTimeline, ResolvedChild, SeamFile } from "@seam/core";
+import type { ResolvedTimeline, ResolvedChild, SeamFile, Clip } from "@seam/core";
 import { useImport } from "./useImport.js";
+import type { View } from "./views.js";
+import type { History } from "./useHistory.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -11,6 +13,9 @@ export interface TimelinePanelProps {
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
   onDocumentChange?: (doc: SeamFile) => void;
+  view: View;
+  onEnterClip: (rootIndex: number, currentParentTime: number) => void;
+  history: History<SeamFile>;
 }
 
 const ROW_HEIGHT = 32;
@@ -19,14 +24,16 @@ const RULER_HEIGHT = 24;
 const MIN_PX_PER_SEC = 10;
 const MAX_PX_PER_SEC = 1000;
 const DEFAULT_PX_PER_SEC = 100;
+const HANDLE_WIDTH = 10;
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP_PX = 6;
 
 interface ChildBlock {
   child: ResolvedChild;
-  index: number; // top-level index in the document
+  index: number;
   row: number;
 }
 
-/** Assign top-level children to rows so overlapping ones stack. */
 function layoutChildren(children: ResolvedChild[]): ChildBlock[] {
   const items = children.map((child, index) => ({ child, index }));
   const sorted = [...items].sort(
@@ -76,15 +83,27 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
 
 const SELECTED_BORDER = "#ffcc00";
 
-// ── Desktop mode ─────────────────────────────────────────────────────
+// ── Trim overlay spec (used in clip view) ────────────────────────────
+
+interface TrimOverlay {
+  inTime: number;
+  outTime: number;
+  sourceDuration: number;
+  onDragStart: () => void;
+  onDrag: (newIn: number, newOut: number) => void;
+}
+
+// ── Inner timelines ──────────────────────────────────────────────────
 
 interface InnerProps {
   timeline: ResolvedTimeline;
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
+  onEnter?: (index: number) => void;
+  trim?: TrimOverlay;
 }
 
-function DesktopTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
+function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -107,9 +126,7 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      // Deselect when clicking empty area
       onSelect(null);
-
       const container = scrollRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
@@ -157,16 +174,21 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
     >
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-        <ChildrenLayer blocks={blocks} pxPerSec={pxPerSec} selectedIndex={selectedIndex} onSelect={onSelect} />
+        <ChildrenLayer
+          blocks={blocks}
+          pxPerSec={pxPerSec}
+          selectedIndex={selectedIndex}
+          onSelect={onSelect}
+          onEnter={onEnter}
+        />
+        {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
       </div>
     </div>
   );
 }
 
-// ── Mobile mode ──────────────────────────────────────────────────────
-
-function MobileTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
+function MobileTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -245,7 +267,14 @@ function MobileTimeline({ timeline, selectedIndex, onSelect }: InnerProps) {
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <div style={{ position: "absolute", left: padding, top: 0, right: padding }}>
           <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-          <ChildrenLayer blocks={blocks} pxPerSec={pxPerSec} selectedIndex={selectedIndex} onSelect={onSelect} />
+          <ChildrenLayer
+            blocks={blocks}
+            pxPerSec={pxPerSec}
+            selectedIndex={selectedIndex}
+            onSelect={onSelect}
+            onEnter={onEnter}
+          />
+          {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
       </div>
     </div>
@@ -294,60 +323,131 @@ function ChildrenLayer({
   pxPerSec,
   selectedIndex,
   onSelect,
+  onEnter,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
+  onEnter?: (index: number) => void;
 }) {
   return (
     <>
-      {blocks.map(({ child, index, row }) => {
-        const left = child.timelineStart * pxPerSec;
-        const width = Math.max(
-          (child.timelineEnd - child.timelineStart) * pxPerSec,
-          2
-        );
-        const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
-        const label = childLabel(child);
-        const isSelected = selectedIndex === index;
-        const colors = BLOCK_COLORS[child.type] ?? BLOCK_COLORS.clip;
-
-        return (
-          <div
-            key={index}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              onSelect(isSelected ? null : index);
-            }}
-            style={{
-              position: "absolute",
-              left,
-              top,
-              width,
-              height: ROW_HEIGHT,
-              background: isSelected ? "#4a7eb8" : colors.bg,
-              borderRadius: 3,
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-              paddingLeft: 6,
-              paddingRight: 6,
-              fontSize: 11,
-              color: "#fff",
-              whiteSpace: "nowrap",
-              boxSizing: "border-box",
-              border: `2px solid ${isSelected ? SELECTED_BORDER : colors.border}`,
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-              {label}
-            </span>
-          </div>
-        );
-      })}
+      {blocks.map(({ child, index, row }) => (
+        <ChildBlockView
+          key={index}
+          child={child}
+          index={index}
+          row={row}
+          pxPerSec={pxPerSec}
+          isSelected={selectedIndex === index}
+          onSelect={onSelect}
+          onEnter={onEnter}
+        />
+      ))}
     </>
+  );
+}
+
+function ChildBlockView({
+  child,
+  index,
+  row,
+  pxPerSec,
+  isSelected,
+  onSelect,
+  onEnter,
+}: {
+  child: ResolvedChild;
+  index: number;
+  row: number;
+  pxPerSec: number;
+  isSelected: boolean;
+  onSelect: (index: number | null) => void;
+  onEnter?: (index: number) => void;
+}) {
+  const left = child.timelineStart * pxPerSec;
+  const width = Math.max((child.timelineEnd - child.timelineStart) * pxPerSec, 2);
+  const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
+  const label = childLabel(child);
+  const colors = BLOCK_COLORS[child.type] ?? BLOCK_COLORS.clip;
+
+  // Long-press detection for touch — fires onEnter after sustained hold.
+  const longPressTimer = useRef<number | null>(null);
+  const pointerStart = useRef<{ x: number; y: number } | null>(null);
+  const longPressFired = useRef(false);
+
+  const clearLongPress = () => {
+    if (longPressTimer.current != null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    pointerStart.current = null;
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    longPressFired.current = false;
+    if (onEnter && e.pointerType !== "mouse") {
+      pointerStart.current = { x: e.clientX, y: e.clientY };
+      longPressTimer.current = window.setTimeout(() => {
+        longPressFired.current = true;
+        onEnter(index);
+      }, LONG_PRESS_MS);
+    }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!pointerStart.current) return;
+    const dx = e.clientX - pointerStart.current.x;
+    const dy = e.clientY - pointerStart.current.y;
+    if (Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX) clearLongPress();
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    clearLongPress();
+    if (longPressFired.current) return; // don't toggle selection after long-press enter
+    e.stopPropagation();
+    onSelect(isSelected ? null : index);
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onEnter) onEnter(index);
+  };
+
+  return (
+    <div
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={clearLongPress}
+      onDoubleClick={handleDoubleClick}
+      style={{
+        position: "absolute",
+        left,
+        top,
+        width,
+        height: ROW_HEIGHT,
+        background: isSelected ? "#4a7eb8" : colors.bg,
+        borderRadius: 3,
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+        paddingLeft: 6,
+        paddingRight: 6,
+        fontSize: 11,
+        color: "#fff",
+        whiteSpace: "nowrap",
+        boxSizing: "border-box",
+        border: `2px solid ${isSelected ? SELECTED_BORDER : colors.border}`,
+        cursor: "pointer",
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -384,6 +484,138 @@ function Playhead({ x, height }: { x: number; height: number }) {
   );
 }
 
+// ── Trim overlay (clip view) ─────────────────────────────────────────
+
+function TrimOverlayLayer({
+  trim,
+  pxPerSec,
+  height,
+}: {
+  trim: TrimOverlay;
+  pxPerSec: number;
+  height: number;
+}) {
+  const inX = trim.inTime * pxPerSec;
+  const outX = trim.outTime * pxPerSec;
+  const widthSec = trim.sourceDuration;
+  const totalWidth = widthSec * pxPerSec;
+
+  const startDrag = (which: "in" | "out") => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    trim.onDragStart();
+    const startX = e.clientX;
+    const startIn = trim.inTime;
+    const startOut = trim.outTime;
+
+    const onMove = (me: PointerEvent) => {
+      const dx = me.clientX - startX;
+      const dt = dx / pxPerSec;
+      if (which === "in") {
+        const newIn = Math.max(0, Math.min(startOut - 0.05, startIn + dt));
+        trim.onDrag(newIn, startOut);
+      } else {
+        const newOut = Math.max(startIn + 0.05, Math.min(widthSec, startOut + dt));
+        trim.onDrag(startIn, newOut);
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  return (
+    <>
+      {/* Dim regions outside the trim window */}
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          top: RULER_HEIGHT,
+          width: inX,
+          height: height - RULER_HEIGHT,
+          background: "rgba(0,0,0,0.55)",
+          zIndex: 2,
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: outX,
+          top: RULER_HEIGHT,
+          width: Math.max(0, totalWidth - outX),
+          height: height - RULER_HEIGHT,
+          background: "rgba(0,0,0,0.55)",
+          zIndex: 2,
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* In handle */}
+      <div
+        onPointerDown={startDrag("in")}
+        style={{
+          position: "absolute",
+          left: inX - HANDLE_WIDTH / 2,
+          top: RULER_HEIGHT,
+          width: HANDLE_WIDTH,
+          height: height - RULER_HEIGHT,
+          background: "#ffcc00",
+          borderRadius: 2,
+          cursor: "ew-resize",
+          zIndex: 5,
+          touchAction: "none",
+        }}
+        title={`In: ${trim.inTime.toFixed(2)}s`}
+      />
+
+      {/* Out handle */}
+      <div
+        onPointerDown={startDrag("out")}
+        style={{
+          position: "absolute",
+          left: outX - HANDLE_WIDTH / 2,
+          top: RULER_HEIGHT,
+          width: HANDLE_WIDTH,
+          height: height - RULER_HEIGHT,
+          background: "#ffcc00",
+          borderRadius: 2,
+          cursor: "ew-resize",
+          zIndex: 5,
+          touchAction: "none",
+        }}
+        title={`Out: ${trim.outTime.toFixed(2)}s`}
+      />
+    </>
+  );
+}
+
+// ── Clip-view playback constraint ────────────────────────────────────
+// Keeps the playhead between in..out: on reaching out, loops to in (if loop)
+// or pauses (otherwise). Also snaps the playhead forward if it's before `in`.
+function ClipPlaybackConstraint({
+  inTime,
+  outTime,
+}: {
+  inTime: number;
+  outTime: number;
+}) {
+  const { currentTime, isPlaying, loop, seek, pause } = useTimeline();
+  useEffect(() => {
+    if (!isPlaying) return;
+    if (currentTime >= outTime) {
+      if (loop) seek(inTime);
+      else pause();
+    } else if (currentTime < inTime) {
+      seek(inTime);
+    }
+  }, [currentTime, isPlaying, loop, inTime, outTime, seek, pause]);
+  return null;
+}
+
 // ── Root component ───────────────────────────────────────────────────
 
 export default function TimelinePanel({
@@ -394,7 +626,11 @@ export default function TimelinePanel({
   selectedIndex,
   onSelect,
   onDocumentChange,
+  view,
+  onEnterClip,
+  history,
 }: TimelinePanelProps) {
+  const { currentTime } = useTimeline();
   const [dragOver, setDragOver] = useState(false);
   const emptyDoc: SeamFile = { type: "composition", children: [] };
   const importFiles = useImport(
@@ -403,8 +639,9 @@ export default function TimelinePanel({
     onDocumentChange ?? (() => {})
   );
 
-  // Delete/Backspace to remove selected child
+  // Delete/Backspace to remove selected child (root view only)
   useEffect(() => {
+    if (view.type !== "root") return;
     const handler = (e: KeyboardEvent) => {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
@@ -421,7 +658,7 @@ export default function TimelinePanel({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIndex, doc, onDocumentChange, onSelect]);
+  }, [selectedIndex, doc, onDocumentChange, onSelect, view]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -436,12 +673,50 @@ export default function TimelinePanel({
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
+      if (view.type !== "root") return; // no import in nested views
       if (e.dataTransfer.files.length > 0) {
         importFiles(e.dataTransfer.files);
       }
     },
-    [importFiles]
+    [importFiles, view]
   );
+
+  // Build trim overlay if we're in clip view
+  const trim: TrimOverlay | undefined = useMemo(() => {
+    if (view.type !== "clip" || !doc) return undefined;
+    const target = doc.children[view.rootIndex];
+    if (!target || target.type !== "clip") return undefined;
+    const origClip = target as Clip;
+
+    return {
+      inTime: origClip.in,
+      outTime: origClip.out,
+      sourceDuration: view.sourceDuration,
+      onDragStart: () => {
+        // Snapshot the current doc as a single undo entry for this drag
+        history.pushPast(history.current);
+      },
+      onDrag: (newIn, newOut) => {
+        const updated: Clip = { ...origClip, in: newIn, out: newOut };
+        // Strip duration so in/out define the natural length
+        const { duration: _d, ...clean } = updated as Clip & { duration?: number };
+        const newChildren = [...doc.children];
+        newChildren[view.rootIndex] = clean as Clip;
+        history.replace({ ...doc, children: newChildren });
+      },
+    };
+  }, [view, doc, history]);
+
+  // Enter handler: double-click / long-press
+  const handleEnter = useCallback(
+    (index: number) => {
+      onEnterClip(index, currentTime);
+    },
+    [onEnterClip, currentTime]
+  );
+
+  // Clip view: the `onEnter` doesn't apply (already inside)
+  const onEnterProp = view.type === "root" ? handleEnter : undefined;
 
   return (
     <div
@@ -459,7 +734,7 @@ export default function TimelinePanel({
         position: "relative",
       }}
     >
-      {dragOver && (
+      {dragOver && view.type === "root" && (
         <div
           style={{
             position: "absolute",
@@ -481,10 +756,25 @@ export default function TimelinePanel({
         </div>
       )}
 
+      {/* Playback constraint (clip view only) */}
+      {trim && <ClipPlaybackConstraint inTime={trim.inTime} outTime={trim.outTime} />}
+
       {isMobile ? (
-        <MobileTimeline timeline={timeline} selectedIndex={selectedIndex} onSelect={onSelect} />
+        <MobileTimeline
+          timeline={timeline}
+          selectedIndex={selectedIndex}
+          onSelect={onSelect}
+          onEnter={onEnterProp}
+          trim={trim}
+        />
       ) : (
-        <DesktopTimeline timeline={timeline} selectedIndex={selectedIndex} onSelect={onSelect} />
+        <DesktopTimeline
+          timeline={timeline}
+          selectedIndex={selectedIndex}
+          onSelect={onSelect}
+          onEnter={onEnterProp}
+          trim={trim}
+        />
       )}
     </div>
   );

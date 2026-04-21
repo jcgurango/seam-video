@@ -6,6 +6,7 @@ export interface History<T> {
   current: T;
   push: (value: T) => void;
   replace: (value: T) => void;
+  pushPast: (snapshot: T) => void;
   undo: () => T | null;
   redo: () => T | null;
   canUndo: boolean;
@@ -36,6 +37,14 @@ export function useHistory<T>(initial: T): History<T> {
 
   const replace = useCallback((value: T) => {
     setCurrent(value);
+  }, []);
+
+  // Push a snapshot into past without modifying current. Used with `replace`
+  // during drag: snapshot before drag starts, replace during, no commit at end.
+  const pushPast = useCallback((snapshot: T) => {
+    pastRef.current.push(snapshot);
+    if (pastRef.current.length > MAX_HISTORY) pastRef.current.shift();
+    futureRef.current = [];
   }, []);
 
   const undo = useCallback((): T | null => {
@@ -70,6 +79,7 @@ export function useHistory<T>(initial: T): History<T> {
     current,
     push,
     replace,
+    pushPast,
     undo,
     redo,
     canUndo: pastRef.current.length > 0,

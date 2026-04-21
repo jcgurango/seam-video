@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Timeline } from "@seam/preview";
 import {
   parseSeamFile,
@@ -10,6 +10,13 @@ import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
 import { useHistory } from "./useHistory.js";
+import {
+  getViewDocument,
+  timeOnEnter,
+  translateTimeOnExit,
+  type View,
+} from "./views.js";
+import { probeSourceDuration } from "./probeSource.js";
 
 declare global {
   interface Window {
@@ -38,6 +45,7 @@ declare global {
 }
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
+const ROOT_VIEW: View = { type: "root" };
 
 function toRelative(absPath: string, baseDir: string): string {
   const rel = relative(baseDir, absPath);
@@ -76,23 +84,61 @@ export default function App() {
   const document = history.current;
 
   const [filePath, setFilePath] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<ResolvedTimeline | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [view, setView] = useState<View>(ROOT_VIEW);
+  const [initialTime, setInitialTime] = useState(0);
 
-  const filePathRef = useRef(filePath);
-  filePathRef.current = filePath;
+  // Resolve root (always based on real document). View timeline is derived.
+  const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
+    try {
+      return resolveDoc(document);
+    } catch {
+      return null;
+    }
+  }, [document]);
 
-  // Re-resolve whenever document changes
+  const viewTimeline = useMemo<ResolvedTimeline | null>(() => {
+    if (!rootTimeline) return null;
+    if (view.type === "root") return rootTimeline;
+    try {
+      return resolveDoc(getViewDocument(document, view));
+    } catch {
+      return null;
+    }
+  }, [document, view, rootTimeline]);
+
+  // Update errors when resolution fails
   useEffect(() => {
     try {
-      setTimeline(resolveDoc(document));
+      resolveDoc(document);
       setErrors([]);
     } catch (err) {
       setErrors([String(err)]);
     }
   }, [document]);
+
+  // Guard: if the clip we're viewing no longer exists, bounce to root
+  useEffect(() => {
+    if (view.type === "clip") {
+      const target = document.children[view.rootIndex];
+      if (!target || target.type !== "clip") {
+        setView(ROOT_VIEW);
+        setInitialTime(0);
+      }
+    }
+  }, [document, view]);
+
+  const filePathRef = useRef(filePath);
+  filePathRef.current = filePath;
+
+  const handleSaveRef = useRef<() => void>(() => {});
+  const handleSaveAsRef = useRef<() => void>(() => {});
+  const loadDocumentRef = useRef<(doc: SeamFile, fp: string | null) => void>(
+    () => {}
+  );
+  const openFromJsonRef = useRef<(json: string, fp: string) => void>(() => {});
 
   const updateTitle = useCallback((fp: string | null) => {
     window.seamApi.setTitle(
@@ -106,6 +152,8 @@ export default function App() {
       setFilePath(fp);
       setErrors([]);
       setSelectedIndex(null);
+      setView(ROOT_VIEW);
+      setInitialTime(0);
       updateTitle(fp);
     },
     [history, updateTitle]
@@ -129,6 +177,41 @@ export default function App() {
       setSelectedIndex(null);
     },
     [history]
+  );
+
+  // ── View navigation ────────────────────────────────────────────
+
+  const handleEnterClip = useCallback(
+    async (rootIndex: number, currentParentTime: number) => {
+      if (!rootTimeline) return;
+      const target = document.children[rootIndex];
+      if (!target || target.type !== "clip") return;
+      const basePath = filePathRef.current
+        ? dirname(filePathRef.current)
+        : "";
+      try {
+        const sourceDuration = await probeSourceDuration(
+          target.source,
+          basePath
+        );
+        const initT = timeOnEnter(document, rootTimeline, rootIndex, currentParentTime);
+        setInitialTime(initT);
+        setView({ type: "clip", rootIndex, sourceDuration });
+      } catch (err) {
+        setErrors([String(err)]);
+      }
+    },
+    [document, rootTimeline]
+  );
+
+  const handleExit = useCallback(
+    (viewTime: number) => {
+      if (!rootTimeline) return;
+      const t = translateTimeOnExit(document, rootTimeline, view, viewTime);
+      setInitialTime(t);
+      setView(ROOT_VIEW);
+    },
+    [document, rootTimeline, view]
   );
 
   // ── Undo / Redo ────────────────────────────────────────────────
@@ -189,6 +272,11 @@ export default function App() {
     if (fp) await saveToFile(fp);
   }, [saveToFile]);
 
+  handleSaveRef.current = handleSave;
+  handleSaveAsRef.current = handleSaveAs;
+  loadDocumentRef.current = loadDocument;
+  openFromJsonRef.current = openFromJson;
+
   // ── Init + menu wiring ─────────────────────────────────────────
 
   useEffect(() => {
@@ -196,14 +284,14 @@ export default function App() {
 
     window.seamApi.getInitialFile().then((data) => {
       if (data) {
-        openFromJson(data.json, data.filePath);
+        openFromJsonRef.current(data.json, data.filePath);
       } else {
-        loadDocument(EMPTY_DOCUMENT, null);
+        loadDocumentRef.current(EMPTY_DOCUMENT, null);
       }
     });
 
     window.seamApi.onMenuNew(() => {
-      loadDocument({ type: "composition", children: [] }, null);
+      loadDocumentRef.current({ type: "composition", children: [] }, null);
     });
 
     window.seamApi.onMenuOpen(async () => {
@@ -213,16 +301,11 @@ export default function App() {
         setErrors([result.error]);
         return;
       }
-      openFromJson(result.json, result.filePath);
+      openFromJsonRef.current(result.json, result.filePath);
     });
 
-    window.seamApi.onMenuSave(() => {
-      handleSave();
-    });
-
-    window.seamApi.onMenuSaveAs(() => {
-      handleSaveAs();
-    });
+    window.seamApi.onMenuSave(() => handleSaveRef.current());
+    window.seamApi.onMenuSaveAs(() => handleSaveAsRef.current());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const basePath = filePath ? dirname(filePath) : "";
@@ -240,7 +323,7 @@ export default function App() {
     );
   }
 
-  if (!timeline) {
+  if (!viewTimeline) {
     return (
       <div
         style={{
@@ -256,8 +339,18 @@ export default function App() {
     );
   }
 
+  // Remount Timeline on view change so initialTime takes effect
+  const viewKey =
+    view.type === "root" ? "root" : `clip-${view.rootIndex}`;
+
   return (
-    <Timeline timeline={timeline} basePath={basePath} preserveTime>
+    <Timeline
+      key={viewKey}
+      timeline={viewTimeline}
+      basePath={basePath}
+      preserveTime
+      initialTime={initialTime}
+    >
       <ControlsBar
         document={document}
         filePath={filePath}
@@ -268,15 +361,20 @@ export default function App() {
         onRedo={handleRedo}
         canUndo={history.canUndo}
         canRedo={history.canRedo}
+        view={view}
+        onExit={handleExit}
       />
       <TimelinePanel
-        timeline={timeline}
+        timeline={viewTimeline}
         document={document}
         filePath={filePath}
         isMobile={isMobile}
         selectedIndex={selectedIndex}
         onSelect={setSelectedIndex}
         onDocumentChange={updateDocument}
+        view={view}
+        onEnterClip={handleEnterClip}
+        history={history}
       />
     </Timeline>
   );
