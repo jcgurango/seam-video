@@ -111,6 +111,28 @@ export class FrameCoordinator {
   }
 
   /**
+   * Play a brief burst of audio at the given timeline position and then stop
+   * after `durationMs`. Used to give the user audible feedback while scrubbing
+   * the playhead when not in normal playback. Repeated calls cancel any
+   * previous scrub.
+   */
+  scrub(currentTime: number, durationMs: number = 30): void {
+    if (!this.ready || !this.audioScheduler) return;
+    const targets: Array<{ id: string; sourceTime: number }> = [];
+    for (const flat of this.flatClips) {
+      if (!flat.audioId) continue;
+      if (currentTime < flat.absoluteStart || currentTime >= flat.absoluteEnd) {
+        continue;
+      }
+      targets.push({
+        id: flat.audioId,
+        sourceTime: flat.toSourceTime(currentTime),
+      });
+    }
+    this.audioScheduler.scrub(targets, durationMs);
+  }
+
+  /**
    * Returns the buffered frame that should be shown for `clip` at
    * `timelineTime`. Reads straight from the clip's buffer rather than from a
    * cached Map, so async frame arrivals (via onFrameAvailable) immediately

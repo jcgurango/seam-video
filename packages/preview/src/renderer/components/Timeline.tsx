@@ -99,6 +99,8 @@ export default function Timeline({
   durationRef.current = timeline.duration;
   const timelineRef = useRef(timeline);
   timelineRef.current = timeline;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
 
   // GPU render function (called imperatively, not dependent on React)
   const gpuRender = useCallback(
@@ -196,6 +198,12 @@ export default function Timeline({
       coordinator.onSeek(time, timeline.duration, loopRef.current);
       audioScheduler.seekAll(time);
       gpuRender(time);
+      // Audible scrub feedback while paused. seekAll() above already cancelled
+      // any previous scrub, so repeated fast seeks just keep replacing the
+      // current one.
+      if (!isPlayingRef.current) {
+        coordinator.scrub(time);
+      }
     },
     [audioScheduler, coordinator, timeline.duration, gpuRender],
   );

@@ -58,6 +58,7 @@ export class AudioScheduler {
   pause(): void {
     this.timelineStartTime = this.currentTime;
     this.playing = false;
+    this.clearScrub();
     for (const state of this.clips.values()) {
       this.doStop(state);
     }
@@ -67,6 +68,7 @@ export class AudioScheduler {
   seekAll(timelineTime: number): void {
     this.timelineStartTime = timelineTime;
     this.audioStartTime = this.audioContext.currentTime;
+    this.clearScrub();
     for (const state of this.clips.values()) {
       this.doStop(state);
     }
@@ -99,9 +101,14 @@ export class AudioScheduler {
     if (!state) return;
     this.doStop(state);
 
+    // Clear any leftover scrub automation so we start at full gain.
+    const now = this.audioContext.currentTime;
+    state.gainNode.gain.cancelScheduledValues(now);
+    state.gainNode.gain.setValueAtTime(1, now);
+
     state.asyncId++;
     const myAsyncId = state.asyncId;
-    const startedAt = this.audioContext.currentTime;
+    const startedAt = now;
 
     state.iterator = state.sink.buffers(sourceTime)[Symbol.asyncIterator]();
     void this.pump(state, myAsyncId, sourceTime, startedAt);
@@ -113,12 +120,135 @@ export class AudioScheduler {
     this.doStop(state);
   }
 
-  private doStop(state: ClipState): void {
+  // ── Scrubbing ────────────────────────────────────────────────────
+
+  private scrubStopTimer: number | null = null;
+  private scrubActiveIds = new Set<string>();
+
+  /**
+   * Briefly play audio from the given per-clip source times, then stop after
+   * `durationMs`. Apply a tiny ramp (≈5 samples) at both ends on each clip's
+   * gain node so starts and stops don't click. Calling scrub() again fades
+   * out any previous scrub before starting the new one.
+   */
+  scrub(
+    targets: Array<{ id: string; sourceTime: number }>,
+    durationMs: number
+  ): void {
+    if (this.playing) return;
+    this.clearScrub();
+    if (targets.length === 0) return;
+
+    if (this.audioContext.state === "suspended") {
+      void this.audioContext.resume();
+    }
+
+    const ctx = this.audioContext;
+    const fadeTime = 0.001;
+    const durationSec = durationMs / 1000;
+    const startedAt = ctx.currentTime;
+    const endsAt = startedAt + durationSec;
+    // Steady-state start time; clamped so very short scrubs still get both fades
+    const steadyEnd = Math.max(startedAt + fadeTime, endsAt - fadeTime);
+
+    for (const { id, sourceTime } of targets) {
+      const state = this.clips.get(id);
+      if (!state) continue;
+      this.doStop(state);
+
+      // Fade in → hold → fade out on the clip's gain node, then restore to 1
+      // so future normal playback isn't silenced by leftover automation.
+      const g = state.gainNode.gain;
+      g.cancelScheduledValues(startedAt);
+      g.setValueAtTime(0, startedAt);
+      g.linearRampToValueAtTime(1, startedAt + fadeTime);
+      g.setValueAtTime(1, steadyEnd);
+      g.linearRampToValueAtTime(0, endsAt);
+      g.setValueAtTime(1, endsAt + 0.001);
+
+      state.asyncId++;
+      const myAsyncId = state.asyncId;
+      state.iterator = state.sink
+        .buffers(sourceTime)
+        [Symbol.asyncIterator]();
+      void this.pump(state, myAsyncId, sourceTime, startedAt);
+      this.scrubActiveIds.add(id);
+    }
+
+    // Hard stop slightly after the scheduled fade-out ends so nothing lingers.
+    this.scrubStopTimer = window.setTimeout(() => {
+      this.finalizeScrub();
+    }, durationMs + 2);
+  }
+
+  /**
+   * Clean up after a scrub whose fade-out has already played to 0. Simply
+   * cancels pending automation and hard-stops source nodes (which are now
+   * silent).
+   */
+  private finalizeScrub(): void {
+    if (this.scrubStopTimer != null) {
+      clearTimeout(this.scrubStopTimer);
+      this.scrubStopTimer = null;
+    }
+    const now = this.audioContext.currentTime;
+    for (const id of this.scrubActiveIds) {
+      const state = this.clips.get(id);
+      if (!state) continue;
+      const g = state.gainNode.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(1, now);
+      this.doStop(state);
+    }
+    this.scrubActiveIds.clear();
+  }
+
+  /**
+   * Interrupt an in-flight scrub: schedule a short fade-out, delay the
+   * source-node stop until the fade completes, then reset the gain. Used when
+   * a new scrub (or a play/pause/seek) supersedes the current one.
+   */
+  private clearScrub(): void {
+    if (this.scrubStopTimer != null) {
+      clearTimeout(this.scrubStopTimer);
+      this.scrubStopTimer = null;
+    }
+    if (this.scrubActiveIds.size === 0) return;
+
+    const ctx = this.audioContext;
+    const now = ctx.currentTime;
+    const fadeTime = 5 / ctx.sampleRate;
+    const stopAt = now + fadeTime;
+
+    for (const id of this.scrubActiveIds) {
+      const state = this.clips.get(id);
+      if (!state) continue;
+      const g = state.gainNode.gain;
+      // Hold whatever value the ramp is at right now, then ramp it to 0.
+      // cancelAndHoldAtTime is the modern API; fall back if unsupported.
+      if (typeof g.cancelAndHoldAtTime === "function") {
+        g.cancelAndHoldAtTime(now);
+      } else {
+        g.cancelScheduledValues(now);
+      }
+      g.linearRampToValueAtTime(0, stopAt);
+      g.setValueAtTime(1, stopAt + 0.001);
+      this.doStop(state, stopAt);
+    }
+    this.scrubActiveIds.clear();
+  }
+
+  private doStop(state: ClipState, when?: number): void {
     state.asyncId++;
     void state.iterator?.return?.();
     state.iterator = null;
     for (const node of state.queuedNodes) {
-      node.stop();
+      try {
+        if (when != null) node.stop(when);
+        else node.stop();
+      } catch {
+        // stop() throws if already stopped; ignore.
+      }
     }
     state.queuedNodes.clear();
   }
