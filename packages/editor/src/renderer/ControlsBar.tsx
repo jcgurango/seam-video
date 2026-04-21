@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef } from "react";
 import { useTimeline } from "@seam/preview";
-import { resolveComposition } from "@seam/core";
-import type { SeamFile, Clip, Child, Composition } from "@seam/core";
+import { resolveComposition, resolveOverlay } from "@seam/core";
+import type { SeamFile, Clip, Child } from "@seam/core";
 import {
   Play,
   Pause,
@@ -80,7 +80,10 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): Child[] | null {
   }
 
   if (child.type === "composition" || child.type === "overlay") {
-    const innerDuration = resolveComposition(child as Composition).duration;
+    const innerDuration =
+      child.type === "composition"
+        ? resolveComposition(child).duration
+        : resolveOverlay(child).duration;
     const childIn = child.in ?? 0;
     const childOut = child.out ?? innerDuration;
     const splitPoint = childIn + offset;
