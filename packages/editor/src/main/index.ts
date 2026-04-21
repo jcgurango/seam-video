@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol } from "electron";
 import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import JSZip from "jszip";
 
 let mainWindow: BrowserWindow | null = null;
 let mobileEmulation = false;
@@ -33,6 +35,12 @@ function buildMenu() {
           label: "Save As…",
           accelerator: "CmdOrCtrl+Shift+S",
           click: () => mainWindow?.webContents.send("menu-save-as"),
+        },
+        { type: "separator" },
+        {
+          label: "Export…",
+          accelerator: "CmdOrCtrl+E",
+          click: () => mainWindow?.webContents.send("menu-export"),
         },
         { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
@@ -229,6 +237,79 @@ app.whenReady().then(() => {
     if (result.canceled || !result.filePath) return null;
     return result.filePath;
   });
+
+  ipcMain.handle(
+    "export-project",
+    async (
+      _event,
+      payload: {
+        seamFileName: string;
+        docJson: string;
+        clips: Array<{ sourcePath: string; exportName: string }>;
+        defaultName: string;
+      }
+    ): Promise<{ success: true } | { canceled: true } | { error: string }> => {
+      if (!mainWindow) return { error: "No active window." };
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: "Export Project",
+        defaultPath: `${payload.defaultName}.zip`,
+        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+
+      const send = (
+        phase: "read" | "zip" | "write",
+        progress: number,
+        detail?: string
+      ) => {
+        mainWindow?.webContents.send("export-progress", {
+          phase,
+          progress,
+          detail,
+        });
+      };
+
+      try {
+        const zip = new JSZip();
+        zip.file(payload.seamFileName, payload.docJson);
+
+        const total = payload.clips.length;
+        for (let i = 0; i < payload.clips.length; i++) {
+          const clip = payload.clips[i];
+          send("read", total === 0 ? 1 : i / total, clip.exportName);
+          try {
+            const bytes = await readFile(clip.sourcePath);
+            zip.file(clip.exportName, bytes);
+          } catch (err) {
+            console.warn(
+              `export-project: skipping missing clip "${clip.sourcePath}":`,
+              err
+            );
+          }
+        }
+        send("read", 1);
+
+        const buf = await zip.generateAsync(
+          { type: "nodebuffer" },
+          (metadata) => {
+            send(
+              "zip",
+              metadata.percent / 100,
+              metadata.currentFile ?? undefined
+            );
+          }
+        );
+
+        send("write", 0.5);
+        writeFileSync(result.filePath, buf);
+        send("write", 1);
+
+        return { success: true };
+      } catch (err) {
+        return { error: String(err) };
+      }
+    }
+  );
 
   // Initial file from CLI arg or env var
   ipcMain.handle("get-initial-file", () => {

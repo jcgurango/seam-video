@@ -1,12 +1,11 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { setSourceResolver } from "@seam/preview";
-import App from "./App.js";
-import { detectPlatform } from "./platform/index.js";
+import App from "@seam/editor/App";
+import { WebPlatform } from "@seam/editor/platform";
 
-const platform = detectPlatform();
+const platform = new WebPlatform();
 
-// Let the media layer resolve clip sources via the selected platform
 setSourceResolver((source, basePath) =>
   platform.resolveSource(source, basePath)
 );

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
+import type { Platform } from "./platform/index.js";
 
 interface ControlsBarProps {
   document: SeamFile;
@@ -28,6 +29,7 @@ interface ControlsBarProps {
   canUndo: boolean;
   canRedo: boolean;
   view: View;
+  platform: Platform;
   onExit: (viewTime: number) => void;
 }
 
@@ -157,6 +159,7 @@ export default function ControlsBar({
   canRedo,
   view,
   onExit,
+  platform,
 }: ControlsBarProps) {
   const {
     currentTime,
@@ -171,7 +174,7 @@ export default function ControlsBar({
   } = useTimeline();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const importFiles = useImport(doc, filePath, onDocumentChange);
+  const importFiles = useImport(doc, filePath, onDocumentChange, platform);
 
   // ── Slice ──────────────────────────────────────────────────────
 

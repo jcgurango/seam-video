@@ -223,10 +223,11 @@ export default function Timeline({
         style={{
           display: "flex",
           flexDirection: "column",
-          height: "100vh",
+          height: "100%",
           background: "#1a1a1a",
           color: "#fff",
           fontFamily: "sans-serif",
+          minHeight: 0,
         }}
       >
         {/* Video area */}

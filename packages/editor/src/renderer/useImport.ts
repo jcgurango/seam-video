@@ -3,6 +3,7 @@ import { useTimeline } from "@seam/preview";
 import { resolveComposition } from "@seam/core";
 import type { SeamFile, Clip } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
+import type { Platform } from "./platform/index.js";
 
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
 
@@ -54,7 +55,8 @@ function findInsertionIndex(doc: SeamFile, currentTime: number): number {
 export function useImport(
   doc: SeamFile,
   filePath: string | null,
-  onDocumentChange: (doc: SeamFile) => void
+  onDocumentChange: (doc: SeamFile) => void,
+  platform: Platform
 ): (files: FileList | File[]) => Promise<void> {
   const { currentTime } = useTimeline();
 
@@ -67,10 +69,14 @@ export function useImport(
       const newClips: Clip[] = [];
       for (const file of files) {
         const duration = await probeDuration(file);
-        const absPath = window.seamApi.getPathForFile(file);
-        const source = baseDir
-          ? toRelativeSource(absPath, baseDir)
-          : absPath;
+        const stored = await platform.importClip(file);
+        // On Electron, `stored` is an absolute path; collapse to relative if
+        // it lives under the .seam file's directory. On Web, it's already
+        // just a filename inside clips/ and stays as-is.
+        const source =
+          platform.kind === "electron" && baseDir && isAbsolute(stored)
+            ? toRelativeSource(stored, baseDir)
+            : stored;
         newClips.push({ type: "clip", source, in: 0, out: duration });
       }
 
@@ -79,6 +85,6 @@ export function useImport(
       newChildren.splice(insertAt, 0, ...newClips);
       onDocumentChange({ ...doc, children: newChildren });
     },
-    [doc, filePath, currentTime, onDocumentChange]
+    [doc, filePath, currentTime, onDocumentChange, platform]
   );
 }

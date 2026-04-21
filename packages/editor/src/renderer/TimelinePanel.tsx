@@ -4,6 +4,7 @@ import type { ResolvedTimeline, ResolvedChild, SeamFile, Clip } from "@seam/core
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
+import type { Platform } from "./platform/index.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -16,6 +17,7 @@ export interface TimelinePanelProps {
   view: View;
   onEnterClip: (rootIndex: number, currentParentTime: number) => void;
   history: History<SeamFile>;
+  platform: Platform;
 }
 
 const ROW_HEIGHT = 32;
@@ -640,6 +642,7 @@ export default function TimelinePanel({
   view,
   onEnterClip,
   history,
+  platform,
 }: TimelinePanelProps) {
   const { currentTime } = useTimeline();
   const [dragOver, setDragOver] = useState(false);
@@ -647,7 +650,8 @@ export default function TimelinePanel({
   const importFiles = useImport(
     doc ?? emptyDoc,
     filePath ?? null,
-    onDocumentChange ?? (() => {})
+    onDocumentChange ?? (() => {}),
+    platform
   );
 
   // Delete/Backspace to remove selected child (root view only)

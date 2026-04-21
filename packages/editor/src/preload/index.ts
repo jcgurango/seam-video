@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld("seamApi", {
   onMenuSaveAs: (cb: () => void) => {
     ipcRenderer.on("menu-save-as", () => cb());
   },
+  onMenuExport: (cb: () => void) => {
+    ipcRenderer.on("menu-export", () => cb());
+  },
 
   // File I/O
   getInitialFile: () =>
@@ -32,4 +35,25 @@ contextBridge.exposeInMainWorld("seamApi", {
   getMobileEmulation: () =>
     ipcRenderer.invoke("get-mobile-emulation") as Promise<boolean>,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
+
+  // Export
+  exportProject: (payload: {
+    seamFileName: string;
+    docJson: string;
+    clips: Array<{ sourcePath: string; exportName: string }>;
+    defaultName: string;
+  }) =>
+    ipcRenderer.invoke("export-project", payload) as Promise<
+      { success: true } | { canceled: true } | { error: string }
+    >,
+  onExportProgress: (
+    cb: (p: { phase: "read" | "zip" | "write"; progress: number; detail?: string }) => void
+  ) => {
+    const handler = (
+      _evt: unknown,
+      p: { phase: "read" | "zip" | "write"; progress: number; detail?: string }
+    ) => cb(p);
+    ipcRenderer.on("export-progress", handler);
+    return () => ipcRenderer.removeListener("export-progress", handler);
+  },
 });

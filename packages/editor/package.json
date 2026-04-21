@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "main": "dist/main/index.js",
+  "exports": {
+    "./App": "./src/renderer/App.tsx",
+    "./platform": "./src/renderer/platform/index.ts"
+  },
   "scripts": {
     "build": "electron-vite build",
     "dev": "electron-vite dev"
@@ -10,11 +14,13 @@
   "dependencies": {
     "@seam/core": "workspace:*",
     "@seam/preview": "workspace:*",
+    "jszip": "^3.10.1",
     "lucide-react": "^1.8.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.1",
     "@types/react": "^19.2.14",
     "@vitejs/plugin-react": "^4.0.0",
     "electron": "^33.0.0",
