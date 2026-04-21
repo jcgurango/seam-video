@@ -15,6 +15,14 @@ const EVICT_TOLERANCE = 0.25;
  * avoids seeking the decoder on every tiny backward scrub.
  */
 const BACKWARD_HYSTERESIS = 0.5;
+/**
+ * Maximum distance the decoder can lag behind wantedStart before we abort the
+ * iterator. This is intentionally larger than one keyframe interval so the
+ * normal "decoder seeks to keyframe just before wantedStart" pattern doesn't
+ * look like a stale iterator; but small enough that a truly stale iterator
+ * (from e.g. a big forward seek) gets cut off quickly.
+ */
+const DECODER_LAG_ABORT = 2.0;
 
 /**
  * A per-clip source-time-indexed frame cache.
@@ -114,6 +122,15 @@ export class ClipBuffer {
     const firstTs = this.frames[0]?.timestamp ?? Infinity;
     const lastTs = this.frames[this.frames.length - 1]?.timestamp ?? -Infinity;
 
+    // Pivot coverage: if our earliest buffered frame is past the pivot, the
+    // user can't see a frame at the current playhead. That outranks the
+    // backward hysteresis (which exists to prevent expensive small-scrub
+    // restarts, not to leave the playhead black).
+    if (hasFrames && firstTs > this.pivot) {
+      void this.restartIterator(this.wantedStart);
+      return;
+    }
+
     // Backward seek is expensive — only restart if we have frames but they
     // start too far past wantedStart. Empty buffers are handled by the forward
     // branch below.
@@ -153,10 +170,16 @@ export class ClipBuffer {
         // Stop if we've gone past what's wanted (with a bit of overshoot slack)
         if (timestamp > this.wantedEnd + EVICT_TOLERANCE) return;
 
-        // Abort if the decoder is now far behind the wanted range — this
-        // happens on a large forward seek. Reconcile will restart at the new
-        // wantedStart rather than plod forward frame-by-frame.
-        if (timestamp + EVICT_TOLERANCE < this.wantedStart) return;
+        // Abort only if the decoder is *grossly* behind — that's the
+        // large-forward-seek case where it'd take forever to plod forward
+        // one frame at a time. A modest lag (typical for keyframe-seek
+        // overshoot into wantedStart) should NOT abort.
+        if (timestamp + DECODER_LAG_ABORT < this.wantedStart) return;
+
+        // Decoder is slightly behind wantedStart (keyframe-decoded forward
+        // from the nearest I-frame). Drop the frame but keep decoding —
+        // subsequent frames will cross into the wanted region.
+        if (timestamp + EVICT_TOLERANCE < this.wantedStart) continue;
 
         // Skip duplicates (can happen when restarting iterator near existing frames)
         if (
