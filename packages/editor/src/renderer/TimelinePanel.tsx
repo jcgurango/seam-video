@@ -114,14 +114,21 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: I
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
   const contentHeight = RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
+  // Attach wheel listener with { passive: false } so preventDefault works
+  // (React's onWheel is passive by default).
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       setPxPerSec((prev) =>
         Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
       );
-    }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
   }, []);
 
   const handlePointerDown = useCallback(
@@ -168,7 +175,6 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: I
   return (
     <div
       ref={scrollRef}
-      onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       style={{ flex: 1, overflow: "auto", position: "relative", cursor: "crosshair" }}
     >
@@ -231,14 +237,20 @@ function MobileTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: In
     seek(time);
   }, [isPlaying, pxPerSec, totalDuration, seek]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
+  // Non-passive wheel listener so Ctrl/Cmd+wheel zoom can preventDefault.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       setPxPerSec((prev) =>
         Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
       );
-    }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
   }, []);
 
   useEffect(() => {
@@ -258,7 +270,6 @@ function MobileTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: In
     <div
       ref={scrollRef}
       onScroll={handleScroll}
-      onWheel={handleWheel}
       style={{ flex: 1, overflow: "auto", position: "relative" }}
     >
       <div style={{ position: "sticky", left: 0, width: "100%", height: 0, zIndex: 4, pointerEvents: "none" }}>
