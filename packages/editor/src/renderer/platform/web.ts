@@ -248,6 +248,13 @@ export class WebPlatform implements Platform {
     this.actionHandlers.set(action, cb);
   }
 
+  async isMobileLayout(): Promise<boolean> {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(pointer: coarse)").matches
+    );
+  }
+
   // ── Web-specific helpers ─────────────────────────────────────────
 
   /** App-supplied UI for the "open" flow (project picker modal). */

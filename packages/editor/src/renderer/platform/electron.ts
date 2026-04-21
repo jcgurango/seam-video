@@ -147,7 +147,8 @@ export class ElectronPlatform implements Platform {
     }
   }
 
-  getMobileEmulation() {
+  isMobileLayout() {
+    // On Electron the "mobile" layout follows the debug emulation toggle.
     return window.seamApi.getMobileEmulation();
   }
 }

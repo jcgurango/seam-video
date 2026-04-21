@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Seam Editor</title>
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <style>
       html, body, #root {
         margin: 0;
@@ -12,6 +15,14 @@
         background: #1a1a1a;
         overflow: hidden;
         overscroll-behavior-x: none;
+      }
+      /* Suppress the default grey/blue flash on tap in mobile browsers. */
+      * {
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* Prevent double-tap zoom and similar gestures on interactive chrome. */
+      button, [role="button"] {
+        touch-action: manipulation;
       }
     </style>
   </head>

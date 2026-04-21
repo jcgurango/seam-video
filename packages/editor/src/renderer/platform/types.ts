@@ -101,8 +101,13 @@ export interface Platform {
     file: File
   ) => Promise<{ filePath: string; json: string } | null>;
 
-  // ── Optional / platform-specific ─────────────────────────────────
+  // ── Layout hints ─────────────────────────────────────────────────
 
-  /** Electron only: whether mobile device emulation is active. */
-  getMobileEmulation?(): Promise<boolean>;
+  /**
+   * Whether the editor should render its mobile-optimized layout. Determined
+   * at platform construction — on Web it's the device's actual touch
+   * capability (pointer: coarse); on Electron it reflects the user-toggled
+   * mobile emulation. Not expected to change within a session.
+   */
+  isMobileLayout?(): Promise<boolean>;
 }

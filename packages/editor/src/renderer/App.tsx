@@ -388,8 +388,8 @@ export default function App({ platform }: AppProps) {
   // ── Init + menu / action wiring ────────────────────────────────
 
   useEffect(() => {
-    if (platform.getMobileEmulation) {
-      platform.getMobileEmulation().then(setIsMobile);
+    if (platform.isMobileLayout) {
+      platform.isMobileLayout().then(setIsMobile);
     }
 
     platform.getInitial().then((data) => {
