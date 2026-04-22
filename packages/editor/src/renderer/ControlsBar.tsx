@@ -13,6 +13,7 @@ import {
   Undo2,
   Redo2,
   ArrowLeft,
+  LogIn,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
@@ -21,8 +22,8 @@ import type { Platform } from "./platform/index.js";
 interface ControlsBarProps {
   document: SeamFile;
   filePath: string | null;
-  selectedIndex: number | null;
-  onSelect: (index: number | null) => void;
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
   onDocumentChange: (doc: SeamFile) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -31,6 +32,7 @@ interface ControlsBarProps {
   view: View;
   platform: Platform;
   onExit: (viewTime: number) => void;
+  onEnterClip: (rootIndex: number, currentParentTime: number) => void;
 }
 
 // ── Slice logic ──────────────────────────────────────────────────────
@@ -208,8 +210,8 @@ const ICON_SIZE = 20;
 export default function ControlsBar({
   document: doc,
   filePath,
-  selectedIndex,
-  onSelect,
+  selectedIndices,
+  onSelectionChange,
   onDocumentChange,
   onUndo,
   onRedo,
@@ -217,6 +219,7 @@ export default function ControlsBar({
   canRedo,
   view,
   onExit,
+  onEnterClip,
   platform,
 }: ControlsBarProps) {
   const {
@@ -369,18 +372,41 @@ export default function ControlsBar({
             </button>
             <button
               onClick={() => {
-                if (selectedIndex != null) {
+                const clipIdx = [...selectedIndices]
+                  .sort((a, b) => a - b)
+                  .find((i) => doc.children[i]?.type === "clip");
+                if (clipIdx != null) onEnterClip(clipIdx, currentTime);
+              }}
+              style={{
+                ...BTN_STYLE,
+                opacity: selectedIndices.some(
+                  (i) => doc.children[i]?.type === "clip"
+                )
+                  ? 1
+                  : 0.3,
+              }}
+              disabled={
+                !selectedIndices.some((i) => doc.children[i]?.type === "clip")
+              }
+              title="Enter clip (double-click)"
+            >
+              <LogIn size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={() => {
+                if (selectedIndices.length > 0) {
+                  const sortedDesc = [...selectedIndices].sort((a, b) => b - a);
                   const newChildren = [...doc.children];
-                  newChildren.splice(selectedIndex, 1);
+                  for (const i of sortedDesc) newChildren.splice(i, 1);
                   onDocumentChange({ ...doc, children: newChildren });
-                  onSelect(null);
+                  onSelectionChange([]);
                 }
               }}
               style={{
                 ...BTN_STYLE,
-                opacity: selectedIndex != null ? 1 : 0.3,
+                opacity: selectedIndices.length > 0 ? 1 : 0.3,
               }}
-              disabled={selectedIndex == null}
+              disabled={selectedIndices.length === 0}
               title="Delete (Del)"
             >
               <Trash2 size={ICON_SIZE} />

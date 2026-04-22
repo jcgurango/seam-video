@@ -105,6 +105,47 @@ function resolveDoc(doc: SeamFile): ResolvedTimeline {
   return resolveSpatial(temporal, 1920, 1080);
 }
 
+function SelectionBar({
+  count,
+  onDeselect,
+}: {
+  count: number;
+  onDeselect: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "8px 16px",
+        background: "#2a2a2a",
+        borderTop: "1px solid #333",
+        color: "#ddd",
+        fontSize: 13,
+      }}
+    >
+      <span>
+        {count} {count === 1 ? "item" : "items"} selected
+      </span>
+      <button
+        onClick={onDeselect}
+        style={{
+          background: "none",
+          border: "1px solid #555",
+          color: "#fff",
+          borderRadius: 4,
+          padding: "6px 12px",
+          cursor: "pointer",
+          fontSize: 12,
+        }}
+      >
+        Deselect all
+      </button>
+    </div>
+  );
+}
+
 export default function App({ platform }: AppProps) {
   const history = useHistory<SeamFile>(EMPTY_DOCUMENT);
   const document = history.current;
@@ -112,7 +153,8 @@ export default function App({ platform }: AppProps) {
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(false);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [view, setView] = useState<View>(ROOT_VIEW);
   const [initialTime, setInitialTime] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -224,7 +266,8 @@ export default function App({ platform }: AppProps) {
       history.reset(doc);
       setFilePath(fp);
       setErrors([]);
-      setSelectedIndex(null);
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
       setView(ROOT_VIEW);
       setInitialTime(0);
       updateTitle(fp);
@@ -247,10 +290,23 @@ export default function App({ platform }: AppProps) {
   const updateDocument = useCallback(
     (doc: SeamFile) => {
       history.push(doc);
-      setSelectedIndex(null);
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
     },
     [history]
   );
+
+  const onSelectionChange = useCallback((next: number[]) => {
+    setSelectedIndices(next);
+    if (next.length === 0) setMultiSelectMode(false);
+  }, []);
+
+  const onMultiSelectStart = useCallback((index: number) => {
+    setMultiSelectMode(true);
+    setSelectedIndices((prev) =>
+      prev.includes(index) ? prev : [...prev, index]
+    );
+  }, []);
 
   // ── View navigation ────────────────────────────────────────────
 
@@ -296,12 +352,18 @@ export default function App({ platform }: AppProps) {
 
   const handleUndo = useCallback(() => {
     const prev = history.undo();
-    if (prev != null) setSelectedIndex(null);
+    if (prev != null) {
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
+    }
   }, [history]);
 
   const handleRedo = useCallback(() => {
     const next = history.redo();
-    if (next != null) setSelectedIndex(null);
+    if (next != null) {
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
+    }
   }, [history]);
 
   useEffect(() => {
@@ -446,6 +508,12 @@ export default function App({ platform }: AppProps) {
   const viewKey =
     view.type === "root" ? "root" : `clip-${view.rootIndex}`;
 
+  // Selection bar: desktop shows when 2+ selected; mobile shows throughout
+  // the explicit multi-select mode (started by a long-press).
+  const showSelectionBar = isMobile
+    ? multiSelectMode
+    : selectedIndices.length >= 2;
+
   const handleOpenFromBrowser = useCallback(
     (fp: string, json: string) => {
       openFromJsonRef.current(json, fp);
@@ -531,8 +599,8 @@ export default function App({ platform }: AppProps) {
         <ControlsBar
           document={document}
           filePath={filePath}
-          selectedIndex={selectedIndex}
-          onSelect={setSelectedIndex}
+          selectedIndices={selectedIndices}
+          onSelectionChange={onSelectionChange}
           onDocumentChange={updateDocument}
           onUndo={handleUndo}
           onRedo={handleRedo}
@@ -540,6 +608,7 @@ export default function App({ platform }: AppProps) {
           canRedo={history.canRedo}
           view={view}
           onExit={handleExit}
+          onEnterClip={handleEnterClip}
           platform={platform}
         />
         <TimelinePanel
@@ -547,14 +616,22 @@ export default function App({ platform }: AppProps) {
           document={document}
           filePath={filePath}
           isMobile={isMobile}
-          selectedIndex={selectedIndex}
-          onSelect={setSelectedIndex}
+          selectedIndices={selectedIndices}
+          onSelectionChange={onSelectionChange}
+          multiSelectMode={multiSelectMode}
+          onMultiSelectStart={onMultiSelectStart}
           onDocumentChange={updateDocument}
           view={view}
           onEnterClip={handleEnterClip}
           history={history}
           platform={platform}
         />
+        {showSelectionBar && (
+          <SelectionBar
+            count={selectedIndices.length}
+            onDeselect={() => onSelectionChange([])}
+          />
+        )}
       </Timeline>
     );
   };

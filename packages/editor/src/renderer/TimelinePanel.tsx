@@ -11,8 +11,12 @@ export interface TimelinePanelProps {
   document?: SeamFile;
   filePath?: string | null;
   isMobile: boolean;
-  selectedIndex: number | null;
-  onSelect: (index: number | null) => void;
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
+  /** Mobile long-press triggers this to enter multi-select mode with index added. */
+  onMultiSelectStart: (index: number) => void;
+  /** True while mobile multi-select mode is active; taps toggle membership. */
+  multiSelectMode: boolean;
   onDocumentChange?: (doc: SeamFile) => void;
   view: View;
   onEnterClip: (rootIndex: number, currentParentTime: number) => void;
@@ -136,13 +140,24 @@ interface InnerProps {
    * tree).
    */
   docRoot?: { children: import("@seam/core").Child[]; refs?: Record<string, import("@seam/core").Child> };
-  selectedIndex: number | null;
-  onSelect: (index: number | null) => void;
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
+  onMultiSelectStart: (index: number) => void;
+  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   trim?: TrimOverlay;
 }
 
-function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
+function DesktopTimeline({
+  timeline,
+  docRoot,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
+  onEnter,
+  trim,
+}: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -172,7 +187,7 @@ function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, 
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      onSelect(null);
+      onSelectionChange([]);
       const container = scrollRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
@@ -192,7 +207,7 @@ function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [pxPerSec, totalDuration, seek, onSelect]
+    [pxPerSec, totalDuration, seek, onSelectionChange]
   );
 
   useEffect(() => {
@@ -222,8 +237,10 @@ function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, 
         <ChildrenLayer
           blocks={blocks}
           pxPerSec={pxPerSec}
-          selectedIndex={selectedIndex}
-          onSelect={onSelect}
+          selectedIndices={selectedIndices}
+          onSelectionChange={onSelectionChange}
+          onMultiSelectStart={onMultiSelectStart}
+          multiSelectMode={multiSelectMode}
           onEnter={onEnter}
           docRoot={docRoot}
         />
@@ -234,7 +251,16 @@ function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, 
   );
 }
 
-function MobileTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
+function MobileTimeline({
+  timeline,
+  docRoot,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
+  onEnter,
+  trim,
+}: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -321,9 +347,12 @@ function MobileTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, t
           <ChildrenLayer
             blocks={blocks}
             pxPerSec={pxPerSec}
-            selectedIndex={selectedIndex}
-            onSelect={onSelect}
+            selectedIndices={selectedIndices}
+            onSelectionChange={onSelectionChange}
+            onMultiSelectStart={onMultiSelectStart}
+            multiSelectMode={multiSelectMode}
             onEnter={onEnter}
+            docRoot={docRoot}
           />
           {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
@@ -372,15 +401,19 @@ function RulerLayer({ pxPerSec, ticks }: { pxPerSec: number; ticks: number[] }) 
 function ChildrenLayer({
   blocks,
   pxPerSec,
-  selectedIndex,
-  onSelect,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
   onEnter,
   docRoot,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
-  selectedIndex: number | null;
-  onSelect: (index: number | null) => void;
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
+  onMultiSelectStart: (index: number) => void;
+  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   docRoot?: {
     children: import("@seam/core").Child[];
@@ -402,8 +435,11 @@ function ChildrenLayer({
             index={index}
             row={row}
             pxPerSec={pxPerSec}
-            isSelected={selectedIndex === index}
-            onSelect={onSelect}
+            isSelected={selectedIndices.includes(index)}
+            selectedIndices={selectedIndices}
+            onSelectionChange={onSelectionChange}
+            onMultiSelectStart={onMultiSelectStart}
+            multiSelectMode={multiSelectMode}
             onEnter={onEnter}
           />
         );
@@ -419,7 +455,10 @@ function ChildBlockView({
   row,
   pxPerSec,
   isSelected,
-  onSelect,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
   onEnter,
 }: {
   child: ResolvedChild;
@@ -428,7 +467,10 @@ function ChildBlockView({
   row: number;
   pxPerSec: number;
   isSelected: boolean;
-  onSelect: (index: number | null) => void;
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
+  onMultiSelectStart: (index: number) => void;
+  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
 }) {
   const left = child.timelineStart * pxPerSec;
@@ -438,7 +480,8 @@ function ChildBlockView({
   const displayType = displayChild?.type ?? child.type;
   const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
 
-  // Long-press detection for touch — fires onEnter after sustained hold.
+  // Long-press (touch/pen) now starts mobile multi-select mode and adds this
+  // block to the selection. Desktop uses Ctrl/Cmd+click (handled on pointer-up).
   const longPressTimer = useRef<number | null>(null);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
   const longPressFired = useRef(false);
@@ -451,14 +494,22 @@ function ChildBlockView({
     pointerStart.current = null;
   };
 
+  const toggleMembership = () => {
+    if (selectedIndices.includes(index)) {
+      onSelectionChange(selectedIndices.filter((i) => i !== index));
+    } else {
+      onSelectionChange([...selectedIndices, index]);
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     longPressFired.current = false;
-    if (onEnter && e.pointerType !== "mouse") {
+    if (e.pointerType !== "mouse") {
       pointerStart.current = { x: e.clientX, y: e.clientY };
       longPressTimer.current = window.setTimeout(() => {
         longPressFired.current = true;
-        onEnter(index);
+        onMultiSelectStart(index);
       }, LONG_PRESS_MS);
     }
   };
@@ -472,9 +523,22 @@ function ChildBlockView({
 
   const handlePointerUp = (e: React.PointerEvent) => {
     clearLongPress();
-    if (longPressFired.current) return; // don't toggle selection after long-press enter
+    if (longPressFired.current) return; // long-press handled selection already
     e.stopPropagation();
-    onSelect(isSelected ? null : index);
+    const isTouch = e.pointerType !== "mouse";
+    const modifier = e.ctrlKey || e.metaKey;
+    if (isTouch && multiSelectMode) {
+      toggleMembership();
+    } else if (!isTouch && modifier) {
+      toggleMembership();
+    } else {
+      // Single select: replace selection, or deselect if this was the only one.
+      if (selectedIndices.length === 1 && selectedIndices[0] === index) {
+        onSelectionChange([]);
+      } else {
+        onSelectionChange([index]);
+      }
+    }
   };
 
   const handleDoubleClick = (e: React.MouseEvent) => {
@@ -489,6 +553,7 @@ function ChildBlockView({
       onPointerUp={handlePointerUp}
       onPointerCancel={clearLongPress}
       onDoubleClick={handleDoubleClick}
+      onContextMenu={(e) => e.preventDefault()}
       style={{
         position: "absolute",
         left,
@@ -689,8 +754,10 @@ export default function TimelinePanel({
   document: doc,
   filePath,
   isMobile,
-  selectedIndex,
-  onSelect,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
   onDocumentChange,
   view,
   onEnterClip,
@@ -707,26 +774,27 @@ export default function TimelinePanel({
     platform
   );
 
-  // Delete/Backspace to remove selected child (root view only)
+  // Delete/Backspace to remove selected children (root view only)
   useEffect(() => {
     if (view.type !== "root") return;
     const handler = (e: KeyboardEvent) => {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
-        selectedIndex != null &&
+        selectedIndices.length > 0 &&
         doc &&
         onDocumentChange
       ) {
         e.preventDefault();
+        const sortedDesc = [...selectedIndices].sort((a, b) => b - a);
         const newChildren = [...doc.children];
-        newChildren.splice(selectedIndex, 1);
+        for (const i of sortedDesc) newChildren.splice(i, 1);
         onDocumentChange({ ...doc, children: newChildren });
-        onSelect(null);
+        onSelectionChange([]);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIndex, doc, onDocumentChange, onSelect, view]);
+  }, [selectedIndices, doc, onDocumentChange, onSelectionChange, view]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -831,8 +899,10 @@ export default function TimelinePanel({
         <MobileTimeline
           timeline={timeline}
           docRoot={view.type === "root" ? doc : undefined}
-          selectedIndex={selectedIndex}
-          onSelect={onSelect}
+          selectedIndices={selectedIndices}
+          onSelectionChange={onSelectionChange}
+          onMultiSelectStart={onMultiSelectStart}
+          multiSelectMode={multiSelectMode}
           onEnter={onEnterProp}
           trim={trim}
         />
@@ -840,8 +910,10 @@ export default function TimelinePanel({
         <DesktopTimeline
           timeline={timeline}
           docRoot={view.type === "root" ? doc : undefined}
-          selectedIndex={selectedIndex}
-          onSelect={onSelect}
+          selectedIndices={selectedIndices}
+          onSelectionChange={onSelectionChange}
+          onMultiSelectStart={onMultiSelectStart}
+          multiSelectMode={multiSelectMode}
           onEnter={onEnterProp}
           trim={trim}
         />
