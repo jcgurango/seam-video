@@ -130,6 +130,11 @@ function rewriteClipSources(
   if (Array.isArray(n.children)) {
     for (const child of n.children) rewriteClipSources(child, map);
   }
+  if (n.refs && typeof n.refs === "object") {
+    for (const def of Object.values(n.refs as Record<string, unknown>)) {
+      rewriteClipSources(def, map);
+    }
+  }
 }
 
 /**

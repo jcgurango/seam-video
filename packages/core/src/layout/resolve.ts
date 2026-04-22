@@ -8,6 +8,7 @@ import { distributeFlex } from "./flex.js";
 import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
 import { computeJustifyOffsets } from "./justify.js";
+import { inlineRefs } from "../inline.js";
 
 function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration?: number }): number {
   if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
@@ -24,14 +25,18 @@ function naturalDuration(child: Child): number {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
       }
-      return resolveComposition(child).duration;
+      return resolveCompositionInner(child).duration;
     }
     case "overlay": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
       }
-      return resolveOverlay(child).duration;
+      return resolveOverlayInner(child).duration;
     }
+    case "ref":
+      throw new Error(
+        `internal: ref "${child.source}" reached layout; refs must be inlined before resolve`
+      );
   }
 }
 
@@ -62,12 +67,18 @@ function resolveChild(
     };
   }
 
+  if (child.type === "ref") {
+    throw new Error(
+      `internal: ref "${child.source}" reached layout; refs must be inlined before resolve`
+    );
+  }
+
   const spatialInput = collectSpatialInput(child);
 
   if (child.type === "composition" || child.type === "overlay") {
     const inner = child.type === "composition"
-      ? resolveComposition(child)
-      : resolveOverlay(child);
+      ? resolveCompositionInner(child)
+      : resolveOverlayInner(child);
     const compIn = child.in ?? 0;
     const compOut = child.out ?? inner.duration;
     const compNatural = compOut - compIn;
@@ -157,7 +168,17 @@ function resolveChild(
   };
 }
 
+/**
+ * Public entry point: inlines any `ref` children and `refs` dicts before
+ * running layout. Call this on top-level (or subtree) inputs that may
+ * contain refs.
+ */
 export function resolveComposition(composition: Composition): ResolvedTimeline {
+  return resolveCompositionInner(inlineRefs(composition));
+}
+
+/** Inner resolver — assumes the input has already been inlined. */
+function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   const { children, layout, unitDuration } = composition;
   const duration = composition.duration;
   const justify = layout?.justify ?? "start";
@@ -228,6 +249,10 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
 }
 
 export function resolveOverlay(overlay: Overlay): ResolvedTimeline {
+  return resolveOverlayInner(inlineRefs(overlay));
+}
+
+function resolveOverlayInner(overlay: Overlay): ResolvedTimeline {
   const { children, alignItems = "start" } = overlay;
 
   const naturals = children.map((c) => naturalDuration(c));

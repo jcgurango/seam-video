@@ -46,36 +46,57 @@ function toRelative(absPath: string, baseDir: string): string {
 }
 
 function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
+  const walk = (child: import("@seam/core").Child): import("@seam/core").Child => {
+    if (child.type === "clip" && isAbsolute(child.source)) {
+      return { ...child, source: toRelative(child.source, baseDir) };
+    }
+    if (
+      (child.type === "composition" || child.type === "overlay") &&
+      child.children
+    ) {
+      const remapped = {
+        ...child,
+        children: child.children.map(walk),
+        ...(child.refs
+          ? {
+              refs: Object.fromEntries(
+                Object.entries(child.refs).map(([k, v]) => [k, walk(v)])
+              ),
+            }
+          : {}),
+      };
+      return remapped as typeof child;
+    }
+    return child;
+  };
   return {
     ...doc,
-    children: doc.children.map((child) => {
-      if (child.type === "clip" && isAbsolute(child.source)) {
-        return { ...child, source: toRelative(child.source, baseDir) };
-      }
-      if (
-        (child.type === "composition" || child.type === "overlay") &&
-        child.children
-      ) {
-        return remapSourcesToRelative(
-          child as unknown as SeamFile,
-          baseDir
-        ) as unknown as typeof child;
-      }
-      return child;
-    }),
+    children: doc.children.map(walk),
+    ...(doc.refs
+      ? {
+          refs: Object.fromEntries(
+            Object.entries(doc.refs).map(([k, v]) => [k, walk(v)])
+          ),
+        }
+      : {}),
   };
 }
 
 function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
-  for (const child of doc.children) {
+  const visit = (child: import("@seam/core").Child) => {
     if (child.type === "clip") out.push(child.source);
     else if (
       (child.type === "composition" || child.type === "overlay") &&
       child.children
     ) {
-      collectClipSources(child as unknown as SeamFile, out);
+      child.children.forEach(visit);
+      if (child.refs) Object.values(child.refs).forEach(visit);
     }
-  }
+    // ref nodes don't carry a source of their own — the referenced def's
+    // clips are collected when we visit `refs` above.
+  };
+  doc.children.forEach(visit);
+  if (doc.refs) Object.values(doc.refs).forEach(visit);
   return out;
 }
 

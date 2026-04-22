@@ -6,3 +6,4 @@ export { resolveComposition, resolveOverlay } from "./layout/resolve.js";
 export { resolveSpatial } from "./layout/resolve-spatial.js";
 export { parseDimension, resolveDimension } from "./layout/units.js";
 export { flattenResolved } from "./flatten.js";
+export { inlineRefs } from "./inline.js";

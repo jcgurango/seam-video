@@ -68,12 +68,42 @@ function rulerInterval(pxPerSec: number): number {
   return 60;
 }
 
-function childLabel(child: ResolvedChild): string {
-  if (child.type === "clip") {
-    return (child.source ?? "").split("/").pop() || "untitled";
+/**
+ * For refs, walk through the enclosing scope's `refs` dict until we reach a
+ * non-ref child so the editor can label and color split refs by their
+ * underlying definition's type (not the resolved "composition" wrapper
+ * produced by inlining).
+ */
+function resolveDocChild<T extends { refs?: Record<string, import("@seam/core").Child> }>(
+  child: import("@seam/core").Child,
+  scope: T | undefined
+): import("@seam/core").Child {
+  let cur = child;
+  const seen = new Set<string>();
+  while (cur.type === "ref") {
+    if (seen.has(cur.source)) return cur;
+    seen.add(cur.source);
+    const def = scope?.refs?.[cur.source];
+    if (!def) return cur;
+    cur = def;
   }
-  if (child.type === "empty") return "empty";
-  return child.type;
+  return cur;
+}
+
+function childLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
+  if (docChild) {
+    if (docChild.type === "clip") {
+      return (docChild.source ?? "").split("/").pop() || "untitled";
+    }
+    if (docChild.type === "empty") return "empty";
+    return docChild.type;
+  }
+  // Fallback to resolved tree (shouldn't happen given we always pass docChild)
+  if (resolved.type === "clip") {
+    return (resolved.source ?? "").split("/").pop() || "untitled";
+  }
+  if (resolved.type === "empty") return "empty";
+  return resolved.type;
 }
 
 const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
@@ -99,13 +129,20 @@ interface TrimOverlay {
 
 interface InnerProps {
   timeline: ResolvedTimeline;
+  /**
+   * The document subtree whose `children` correspond 1:1 to `timeline.children`
+   * by index. Used to recover the real type of a top-level child when it's a
+   * ref (which otherwise shows up as a "composition" wrapper in the resolved
+   * tree).
+   */
+  docRoot?: { children: import("@seam/core").Child[]; refs?: Record<string, import("@seam/core").Child> };
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
   onEnter?: (index: number) => void;
   trim?: TrimOverlay;
 }
 
-function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
+function DesktopTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -188,6 +225,7 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: I
           selectedIndex={selectedIndex}
           onSelect={onSelect}
           onEnter={onEnter}
+          docRoot={docRoot}
         />
         {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
@@ -196,7 +234,7 @@ function DesktopTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: I
   );
 }
 
-function MobileTimeline({ timeline, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
+function MobileTimeline({ timeline, docRoot, selectedIndex, onSelect, onEnter, trim }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -337,33 +375,46 @@ function ChildrenLayer({
   selectedIndex,
   onSelect,
   onEnter,
+  docRoot,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
   onEnter?: (index: number) => void;
+  docRoot?: {
+    children: import("@seam/core").Child[];
+    refs?: Record<string, import("@seam/core").Child>;
+  };
 }) {
   return (
     <>
-      {blocks.map(({ child, index, row }) => (
-        <ChildBlockView
-          key={index}
-          child={child}
-          index={index}
-          row={row}
-          pxPerSec={pxPerSec}
-          isSelected={selectedIndex === index}
-          onSelect={onSelect}
-          onEnter={onEnter}
-        />
-      ))}
+      {blocks.map(({ child, index, row }) => {
+        const docChild = docRoot?.children[index];
+        const displayChild = docChild
+          ? resolveDocChild(docChild, docRoot)
+          : undefined;
+        return (
+          <ChildBlockView
+            key={index}
+            child={child}
+            displayChild={displayChild}
+            index={index}
+            row={row}
+            pxPerSec={pxPerSec}
+            isSelected={selectedIndex === index}
+            onSelect={onSelect}
+            onEnter={onEnter}
+          />
+        );
+      })}
     </>
   );
 }
 
 function ChildBlockView({
   child,
+  displayChild,
   index,
   row,
   pxPerSec,
@@ -372,6 +423,7 @@ function ChildBlockView({
   onEnter,
 }: {
   child: ResolvedChild;
+  displayChild?: import("@seam/core").Child;
   index: number;
   row: number;
   pxPerSec: number;
@@ -382,8 +434,9 @@ function ChildBlockView({
   const left = child.timelineStart * pxPerSec;
   const width = Math.max((child.timelineEnd - child.timelineStart) * pxPerSec, 2);
   const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
-  const label = childLabel(child);
-  const colors = BLOCK_COLORS[child.type] ?? BLOCK_COLORS.clip;
+  const label = childLabel(displayChild, child);
+  const displayType = displayChild?.type ?? child.type;
+  const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
 
   // Long-press detection for touch — fires onEnter after sustained hold.
   const longPressTimer = useRef<number | null>(null);
@@ -777,6 +830,7 @@ export default function TimelinePanel({
       {isMobile ? (
         <MobileTimeline
           timeline={timeline}
+          docRoot={view.type === "root" ? doc : undefined}
           selectedIndex={selectedIndex}
           onSelect={onSelect}
           onEnter={onEnterProp}
@@ -785,6 +839,7 @@ export default function TimelinePanel({
       ) : (
         <DesktopTimeline
           timeline={timeline}
+          docRoot={view.type === "root" ? doc : undefined}
           selectedIndex={selectedIndex}
           onSelect={onSelect}
           onEnter={onEnterProp}

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef } from "react";
 import { useTimeline } from "@seam/preview";
 import { resolveComposition, resolveOverlay } from "@seam/core";
-import type { SeamFile, Clip, Child } from "@seam/core";
+import type { SeamFile, Clip, Child, RefChild } from "@seam/core";
 import {
   Play,
   Pause,
@@ -45,7 +45,15 @@ function clipBaseSpeed(clip: {
   return clip.speed ?? 1;
 }
 
-function sliceAtPlayhead(doc: SeamFile, currentTime: number): Child[] | null {
+/** Pick a ref name not yet used in the given refs dict. */
+function uniqueRefName(refs: Record<string, Child> | undefined, base: string): string {
+  if (!refs) return `${base}_1`;
+  let i = 1;
+  while (refs[`${base}_${i}`] != null) i++;
+  return `${base}_${i}`;
+}
+
+function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
   const resolved = resolveComposition(doc);
   const children = doc.children;
 
@@ -69,6 +77,7 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): Child[] | null {
   const offset = currentTime - timelineStart;
   const newChildren = [...children];
 
+  // Clip: split via source in/out.
   if (child.type === "clip") {
     const speed = clipBaseSpeed(child);
     const splitSource = child.in + offset * speed;
@@ -76,9 +85,27 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): Child[] | null {
     const first: Clip = { ...base, out: splitSource };
     const second: Clip = { ...base, in: splitSource };
     newChildren.splice(targetIdx, 1, first, second);
-    return newChildren;
+    return { ...doc, children: newChildren };
   }
 
+  // Ref: already a shared definition; just split the window.
+  if (child.type === "ref") {
+    // The ref's in/out windows the def's resolved duration. Resolve the
+    // current document with the ref expanded to find the effective duration.
+    const effectiveDuration =
+      resolved.children[targetIdx].timelineEnd -
+      resolved.children[targetIdx].timelineStart;
+    const refIn = child.in ?? 0;
+    const refOut = child.out ?? refIn + effectiveDuration;
+    const splitPoint = refIn + offset;
+    const first: RefChild = { ...child, in: refIn, out: splitPoint };
+    const second: RefChild = { ...child, in: splitPoint, out: refOut };
+    newChildren.splice(targetIdx, 1, first, second);
+    return { ...doc, children: newChildren };
+  }
+
+  // Composition or overlay: promote to a ref before splitting so both
+  // halves share a single underlying definition.
   if (child.type === "composition" || child.type === "overlay") {
     const innerDuration =
       child.type === "composition"
@@ -87,10 +114,38 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): Child[] | null {
     const childIn = child.in ?? 0;
     const childOut = child.out ?? innerDuration;
     const splitPoint = childIn + offset;
-    const first = { ...child, in: childIn, out: splitPoint } as typeof child;
-    const second = { ...child, in: splitPoint, out: childOut } as typeof child;
+
+    // Strip the child's own `in`/`out`/`flex` before making it a ref def;
+    // those lived on the original child as its usage-level window. The
+    // definition itself should be "naked" so ref siblings can window it.
+    const {
+      in: _i,
+      out: _o,
+      flex: _f,
+      overflow: _ov,
+      underflow: _uf,
+      ...defBase
+    } = child as typeof child & { flex?: number };
+    const def = defBase as Child;
+
+    const refName = uniqueRefName(doc.refs, "split");
+    const newRefs = { ...(doc.refs ?? {}), [refName]: def };
+
+    const first: RefChild = {
+      type: "ref",
+      source: refName,
+      in: childIn,
+      out: splitPoint,
+    };
+    const second: RefChild = {
+      type: "ref",
+      source: refName,
+      in: splitPoint,
+      out: childOut,
+    };
     newChildren.splice(targetIdx, 1, first, second);
-    return newChildren;
+
+    return { ...doc, refs: newRefs, children: newChildren };
   }
 
   return null;
@@ -182,10 +237,8 @@ export default function ControlsBar({
   // ── Slice ──────────────────────────────────────────────────────
 
   const handleSlice = useCallback(() => {
-    const newChildren = sliceAtPlayhead(doc, currentTime);
-    if (newChildren) {
-      onDocumentChange({ ...doc, children: newChildren });
-    }
+    const nextDoc = sliceAtPlayhead(doc, currentTime);
+    if (nextDoc) onDocumentChange(nextDoc);
   }, [doc, currentTime, onDocumentChange]);
 
   // S key shortcut (disabled in non-root views)

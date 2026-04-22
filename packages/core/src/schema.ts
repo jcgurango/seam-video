@@ -111,10 +111,23 @@ export const EmptySchema = z.object({
 
 export const AlignItemsSchema = z.enum(["start", "end", "center"]);
 
+export const RefChildSchema = z.object({
+  type: z.literal("ref"),
+  source: z.string().min(1),
+  in: z.number().nonnegative().optional(),
+  out: z.number().positive().optional(),
+  flex: z.number().positive().optional(),
+  overflow: OverflowSchema.optional(),
+  underflow: UnderflowSchema.optional(),
+  filters: FiltersArraySchema,
+  ...SpatialFieldsSchema,
+});
+
 export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("overlay"),
     children: z.array(ChildSchema).min(1),
+    refs: z.record(z.string(), ChildSchema).optional(),
     duration: z.number().positive().optional(),
     alignItems: AlignItemsSchema.default("start"),
     in: z.number().nonnegative().optional(),
@@ -130,13 +143,20 @@ export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
 );
 
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
-  z.union([ClipSchema, EmptySchema, CompositionSchema, OverlaySchema])
+  z.union([
+    ClipSchema,
+    EmptySchema,
+    CompositionSchema,
+    OverlaySchema,
+    RefChildSchema,
+  ])
 );
 
 export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
     children: z.array(ChildSchema).min(1),
+    refs: z.record(z.string(), ChildSchema).optional(),
     duration: z.number().positive().optional(),
     unitDuration: z.number().positive().optional(),
     layout: LayoutSchema.optional(),

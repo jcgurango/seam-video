@@ -81,6 +81,7 @@ export interface Empty {
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
+  refs?: Record<string, Child>;
   duration?: number;
   unitDuration?: number;
   layout?: CompositionLayout;
@@ -93,11 +94,23 @@ export type AlignItems = "start" | "end" | "center";
 export interface Overlay extends ChildTimingFields {
   type: "overlay";
   children: Child[];
+  refs?: Record<string, Child>;
   duration?: number;
   alignItems: AlignItems;
   contentWidth?: number;
   contentHeight?: number;
 }
 
-export type Child = Clip | Empty | Composition | Overlay;
+/**
+ * A reference to a child defined in an enclosing composition/overlay's `refs`
+ * dict. The ref's own `in`/`out`/`flex`/spatial fields window and position the
+ * *resolved* duration of the definition. Lookup walks the enclosing scope
+ * chain and takes the shallowest match (inner composition wins).
+ */
+export interface RefChild extends ChildTimingFields {
+  type: "ref";
+  source: string; // the ref's name (the key in some ancestor's `refs` dict)
+}
+
+export type Child = Clip | Empty | Composition | Overlay | RefChild;
 export type SeamFile = Composition;

@@ -43,23 +43,38 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     return candidate;
   };
 
-  const rewriteChildren = (children: Child[]): Child[] =>
-    children.map((child) => {
-      if (child.type === "clip") {
-        return { ...child, source: pickExportName(child.source) };
-      }
-      if (child.type === "composition" || child.type === "overlay") {
-        return {
-          ...child,
-          children: rewriteChildren(child.children),
-        } as typeof child;
-      }
-      return child;
-    });
+  const rewriteRefs = (
+    refs: Record<string, Child> | undefined
+  ): Record<string, Child> | undefined => {
+    if (!refs) return undefined;
+    const out: Record<string, Child> = {};
+    for (const [name, def] of Object.entries(refs)) out[name] = rewriteChild(def);
+    return out;
+  };
+
+  const rewriteChild = (child: Child): Child => {
+    if (child.type === "clip") {
+      return { ...child, source: pickExportName(child.source) };
+    }
+    if (child.type === "composition" || child.type === "overlay") {
+      const rewritten = {
+        ...child,
+        children: rewriteChildren(child.children),
+      } as typeof child;
+      const rewrittenRefs = rewriteRefs(child.refs);
+      if (rewrittenRefs) rewritten.refs = rewrittenRefs;
+      return rewritten;
+    }
+    // ref children don't reference a source file; leave as-is
+    return child;
+  };
+
+  const rewriteChildren = (children: Child[]): Child[] => children.map(rewriteChild);
 
   const document: SeamFile = {
     ...doc,
     children: rewriteChildren(doc.children),
+    ...(doc.refs ? { refs: rewriteRefs(doc.refs) } : {}),
   };
 
   const entries: Array<{ originalSource: string; exportName: string }> = [];
