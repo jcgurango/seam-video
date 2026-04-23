@@ -149,8 +149,6 @@ export const EmptySchema = z.object({
   ...AnchorFieldsSchema,
 });
 
-export const AlignItemsSchema = z.enum(["start", "end", "center"]);
-
 export const RefChildSchema = z.object({
   type: z.literal("ref"),
   source: z.string().min(1),
@@ -164,32 +162,11 @@ export const RefChildSchema = z.object({
   ...AnchorFieldsSchema,
 });
 
-export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    type: z.literal("overlay"),
-    children: z.array(ChildSchema).min(1),
-    refs: z.record(z.string(), ChildSchema).optional(),
-    duration: z.number().positive().optional(),
-    alignItems: AlignItemsSchema.default("start"),
-    in: z.number().nonnegative().optional(),
-    out: z.number().positive().optional(),
-    flex: z.number().positive().optional(),
-    overflow: OverflowSchema.optional(),
-    underflow: UnderflowSchema.optional(),
-    filters: FiltersArraySchema,
-    contentWidth: z.number().positive().optional(),
-    contentHeight: z.number().positive().optional(),
-    ...SpatialFieldsSchema,
-    ...AnchorFieldsSchema,
-  })
-);
-
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
     EmptySchema,
     CompositionSchema,
-    OverlaySchema,
     RefChildSchema,
   ])
 );

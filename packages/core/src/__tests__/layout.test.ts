@@ -1,18 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { resolveComposition, resolveOverlay } from "../layout/resolve.js";
-import type { Composition, Overlay } from "../types.js";
+import { resolveComposition } from "../layout/resolve.js";
+import type { Composition } from "../types.js";
 
 function comp(overrides: Partial<Composition> & { children: Composition["children"] }): Composition {
   return {
     type: "composition",
-    ...overrides,
-  };
-}
-
-function overlay(overrides: Partial<Overlay> & { children: Overlay["children"] }): Overlay {
-  return {
-    type: "overlay",
-    alignItems: "start",
     ...overrides,
   };
 }
@@ -560,176 +552,7 @@ describe("resolveComposition", () => {
   });
 });
 
-describe("resolveOverlay", () => {
-  it("duration defaults to longest child", () => {
-    const result = resolveOverlay(
-      overlay({
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 3 },
-          { type: "clip", source: "b.mp4", in: 0, out: 5 },
-        ],
-      })
-    );
-
-    expect(result.duration).toBe(5);
-    expect(result.children).toHaveLength(2);
-  });
-
-  it("alignItems start places all children at t=0", () => {
-    const result = resolveOverlay(
-      overlay({
-        alignItems: "start",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 5 },
-          { type: "clip", source: "b.mp4", in: 0, out: 3 },
-        ],
-      })
-    );
-
-    expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
-    expect(result.children[1]).toMatchObject({ timelineStart: 0, timelineEnd: 3 });
-  });
-
-  it("alignItems end places shorter children at the end", () => {
-    const result = resolveOverlay(
-      overlay({
-        alignItems: "end",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 5 },
-          { type: "clip", source: "b.mp4", in: 0, out: 3 },
-        ],
-      })
-    );
-
-    expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
-    expect(result.children[1]).toMatchObject({ timelineStart: 2, timelineEnd: 5 });
-  });
-
-  it("alignItems center centers shorter children", () => {
-    const result = resolveOverlay(
-      overlay({
-        alignItems: "center",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 10 },
-          { type: "clip", source: "b.mp4", in: 0, out: 4 },
-        ],
-      })
-    );
-
-    expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 10 });
-    expect(result.children[1]).toMatchObject({ timelineStart: 3, timelineEnd: 7 });
-  });
-
-  it("explicit duration shorter than children applies overflow", () => {
-    const result = resolveOverlay(
-      overlay({
-        duration: 3,
-        alignItems: "start",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 5 },
-          { type: "clip", source: "b.mp4", in: 0, out: 3 },
-        ],
-      })
-    );
-
-    expect(result.duration).toBe(3);
-    // a.mp4 is 5s, overflow trim-end (default for start) → trimmed to 3s
-    const clipA = result.children[0];
-    if (clipA.type === "clip") {
-      expect(clipA.sourceIn).toBe(0);
-      expect(clipA.sourceOut).toBe(3);
-    }
-  });
-
-  it("overflow default depends on alignItems", () => {
-    // alignItems=end → default overflow is trim-start
-    const result = resolveOverlay(
-      overlay({
-        duration: 3,
-        alignItems: "end",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 5 },
-        ],
-      })
-    );
-
-    const clip = result.children[0];
-    if (clip.type === "clip") {
-      // trim-start: keeps the end
-      expect(clip.sourceIn).toBe(2);
-      expect(clip.sourceOut).toBe(5);
-    }
-  });
-
-  it("per-child overflow override", () => {
-    const result = resolveOverlay(
-      overlay({
-        duration: 5,
-        alignItems: "start",
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 10, overflow: "stretch" },
-        ],
-      })
-    );
-
-    const clip = result.children[0];
-    if (clip.type === "clip") {
-      expect(clip.sourceIn).toBe(0);
-      expect(clip.sourceOut).toBe(10);
-      expect(clip.speed).toBe(2); // 10s in 5s = 2x
-    }
-  });
-
-  it("flex forces child to match overlay duration", () => {
-    const result = resolveOverlay(
-      overlay({
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 10 },
-          { type: "clip", source: "b.mp4", in: 0, out: 3, flex: 1, underflow: "stretch" },
-          { type: "clip", source: "c.mp4", in: 0, out: 3, flex: 2, underflow: "stretch" },
-        ],
-      })
-    );
-
-    // Duration = longest = 10s
-    expect(result.duration).toBe(10);
-
-    // b and c both have flex → both target 10s (flex is boolean-like)
-    const clipB = result.children[1];
-    if (clipB.type === "clip") {
-      expect(clipB.speed).toBeCloseTo(0.3); // 3s over 10s
-    }
-    const clipC = result.children[2];
-    if (clipC.type === "clip") {
-      expect(clipC.speed).toBeCloseTo(0.3); // same regardless of flex value
-    }
-  });
-
-  it("overlay as child of composition", () => {
-    const result = resolveComposition(
-      comp({
-        children: [
-          { type: "clip", source: "a.mp4", in: 0, out: 2 },
-          overlay({
-            children: [
-              { type: "clip", source: "bg.mp4", in: 0, out: 5 },
-              { type: "clip", source: "fg.mp4", in: 0, out: 3 },
-            ],
-          }),
-        ],
-      })
-    );
-
-    // clip 2s + overlay 5s = 7s
-    expect(result.duration).toBe(7);
-    expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 2 });
-    expect(result.children[1]).toMatchObject({
-      type: "overlay",
-      timelineStart: 2,
-      timelineEnd: 7,
-    });
-  });
-
+describe("resolveComposition (speed & filters)", () => {
   describe("clip speed and duration", () => {
     it("clip speed changes natural duration", () => {
       const result = resolveComposition(
@@ -825,30 +648,6 @@ describe("resolveOverlay", () => {
       expect(result.children[1].timelineStart).toBe(5);
       expect(result.children[1].timelineEnd).toBe(7);
     });
-  });
-
-  it("composition inside overlay", () => {
-    const result = resolveOverlay(
-      overlay({
-        children: [
-          { type: "clip", source: "bg.mp4", in: 0, out: 10 },
-          comp({
-            children: [
-              { type: "clip", source: "a.mp4", in: 0, out: 3 },
-              { type: "clip", source: "b.mp4", in: 0, out: 3 },
-            ],
-          }),
-        ],
-      })
-    );
-
-    expect(result.duration).toBe(10);
-    const inner = result.children[1];
-    expect(inner.type).toBe("composition");
-    if (inner.type === "composition") {
-      expect(inner.duration).toBe(6);
-      expect(inner.children).toHaveLength(2);
-    }
   });
 
   it("passes filters through to resolved clips", () => {

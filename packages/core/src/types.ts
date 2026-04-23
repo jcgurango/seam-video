@@ -64,7 +64,7 @@ export interface SpatialFields {
  *   anchor's *output* duration (0% = start, 100% = end).
  * - `"source"`: `anchorPoint` is a number of seconds in the anchor's *source*
  *   timeline — the pre-trim/pre-speed media time for clips, or the pre-window
- *   inner timeline for compositions/overlays. The resolver reverses the
+ *   inner timeline for compositions. The resolver reverses the
  *   clip's in/out+speed (or the composition's windowing) to find the
  *   corresponding output time, so values can land outside the anchor's
  *   visible range (negative output times are legal).
@@ -120,8 +120,9 @@ export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
   /**
-   * Anchored overlays on top of `children`. Each attachment's `start`/`end`
-   * may reference child IDs. Attachments render in array order, last on top.
+   * Anchored children rendered on top of `children`. Each attachment's
+   * `start`/`end` may reference child IDs. Attachments render in array
+   * order, last on top.
    */
   attachments?: Child[];
   refs?: Record<string, Child>;
@@ -132,21 +133,9 @@ export interface Composition extends ChildTimingFields {
   contentHeight?: number;
 }
 
-export type AlignItems = "start" | "end" | "center";
-
-export interface Overlay extends ChildTimingFields {
-  type: "overlay";
-  children: Child[];
-  refs?: Record<string, Child>;
-  duration?: number;
-  alignItems: AlignItems;
-  contentWidth?: number;
-  contentHeight?: number;
-}
-
 /**
- * A reference to a child defined in an enclosing composition/overlay's `refs`
- * dict. The ref's own `in`/`out`/`flex`/spatial fields window and position the
+ * A reference to a child defined in an enclosing composition's `refs` dict.
+ * The ref's own `in`/`out`/`flex`/spatial fields window and position the
  * *resolved* duration of the definition. Lookup walks the enclosing scope
  * chain and takes the shallowest match (inner composition wins).
  */
@@ -155,5 +144,5 @@ export interface RefChild extends ChildTimingFields {
   source: string; // the ref's name (the key in some ancestor's `refs` dict)
 }
 
-export type Child = Clip | Empty | Composition | Overlay | RefChild;
+export type Child = Clip | Empty | Composition | RefChild;
 export type SeamFile = Composition;

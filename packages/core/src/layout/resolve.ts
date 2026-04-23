@@ -1,6 +1,5 @@
 import type {
   Composition,
-  Overlay,
   Child,
   Overflow,
   TimeAnchor,
@@ -32,12 +31,6 @@ function naturalDuration(child: Child): number {
         return child.out - child.in;
       }
       return resolveCompositionInner(child).duration;
-    }
-    case "overlay": {
-      if (child.in != null && child.out != null) {
-        return child.out - child.in;
-      }
-      return resolveOverlayInner(child).duration;
     }
     case "ref":
       throw new Error(
@@ -81,10 +74,8 @@ function resolveChild(
 
   const spatialInput = collectSpatialInput(child);
 
-  if (child.type === "composition" || child.type === "overlay") {
-    const inner = child.type === "composition"
-      ? resolveCompositionInner(child)
-      : resolveOverlayInner(child);
+  if (child.type === "composition") {
+    const inner = resolveCompositionInner(child);
     const compIn = child.in ?? 0;
     const compOut = child.out ?? inner.duration;
     const compNatural = compOut - compIn;
@@ -116,7 +107,7 @@ function resolveChild(
 
     return {
       resolved: {
-        type: child.type as "composition",
+        type: "composition" as const,
         timelineStart: 0,
         timelineEnd: 0,
         duration: windowDur,
@@ -304,11 +295,9 @@ function buildIdMapEntry(original: Child, resolved: ResolvedChild): IdMapEntry {
   if (resolved.type === "empty") {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
-  // composition or overlay — source time is the pre-window inner timeline
+  // composition — source time is the pre-window inner timeline
   const baseSourceTime =
-    original.type === "composition" || original.type === "overlay"
-      ? original.in ?? 0
-      : 0;
+    original.type === "composition" ? original.in ?? 0 : 0;
   return { start, end, baseSourceTime, speed: resolved.speed };
 }
 
@@ -383,8 +372,8 @@ function parsePercent(s: string): number {
 
 /**
  * Force a child to render at exactly `target` timeline seconds. Clips adjust
- * via `duration` (which implies speed); composition/overlay windows use
- * stretch overflow/underflow so their effective speed scales to fit.
+ * via `duration` (which implies speed); composition windows use stretch
+ * overflow/underflow so their effective speed scales to fit.
  */
 function forceTimelineDuration(child: Child, target: number): Child {
   if (child.type === "clip") {
@@ -394,7 +383,7 @@ function forceTimelineDuration(child: Child, target: number): Child {
   if (child.type === "empty") {
     return { ...child, duration: target };
   }
-  if (child.type === "composition" || child.type === "overlay") {
+  if (child.type === "composition") {
     return { ...child, overflow: "stretch", underflow: "stretch" };
   }
   // ref should've been inlined already
@@ -447,62 +436,6 @@ function resolveAttachment(
   };
 }
 
-export function resolveOverlay(overlay: Overlay): ResolvedTimeline {
-  return resolveOverlayInner(inlineRefs(overlay));
-}
-
-function resolveOverlayInner(overlay: Overlay): ResolvedTimeline {
-  const { children, alignItems = "start" } = overlay;
-
-  const naturals = children.map((c) => naturalDuration(c));
-  const containerDuration = overlay.duration ?? Math.max(...naturals);
-
-  // Default overflow depends on alignItems
-  const defaultOverflow: Overflow =
-    alignItems === "end" ? "trim-start" :
-    alignItems === "center" ? "trim-center" :
-    "trim-end";
-
-  const resolvedChildren: ResolvedChild[] = [];
-
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i];
-    const nat = naturals[i];
-
-    // Flex in overlay: any flex > 0 forces target = containerDuration
-    // Without flex, children can't exceed the container duration
-    const hasFlex = child.type !== "empty" && child.flex && child.flex > 0;
-    const target = hasFlex ? containerDuration : Math.min(nat, containerDuration);
-
-    const { resolved, actualDuration } = resolveChild(child, nat, target, defaultOverflow);
-
-    // Position based on alignItems
-    let offset: number;
-    switch (alignItems) {
-      case "end":
-        offset = containerDuration - actualDuration;
-        break;
-      case "center":
-        offset = (containerDuration - actualDuration) / 2;
-        break;
-      default:
-        offset = 0;
-        break;
-    }
-
-    resolvedChildren.push({
-      ...resolved,
-      timelineStart: offset,
-      timelineEnd: offset + actualDuration,
-    });
-  }
-
-  return {
-    duration: containerDuration,
-    children: resolvedChildren,
-  };
-}
-
 /**
  * Crop resolved children to the visible window [windowIn, windowOut]
  * of the inner timeline, preserving nesting. Timeline positions are
@@ -545,7 +478,7 @@ function cropChildrenToWindow(
         timelineEnd: rebasedEnd,
       });
     } else {
-      // Nested composition or overlay — crop recursively
+      // Nested composition — crop recursively
       const innerWindowIn = visibleStart - child.timelineStart;
       const innerWindowOut = innerWindowIn + (visibleEnd - visibleStart);
       const croppedInner = cropChildrenToWindow(child.children, innerWindowIn, innerWindowOut);

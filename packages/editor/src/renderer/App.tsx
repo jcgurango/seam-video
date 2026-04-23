@@ -50,13 +50,13 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
     if (child.type === "clip" && isAbsolute(child.source)) {
       return { ...child, source: toRelative(child.source, baseDir) };
     }
-    if (
-      (child.type === "composition" || child.type === "overlay") &&
-      child.children
-    ) {
+    if (child.type === "composition") {
       const remapped = {
         ...child,
         children: child.children.map(walk),
+        ...(child.attachments
+          ? { attachments: child.attachments.map(walk) }
+          : {}),
         ...(child.refs
           ? {
               refs: Object.fromEntries(
@@ -65,13 +65,14 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
             }
           : {}),
       };
-      return remapped as typeof child;
+      return remapped;
     }
     return child;
   };
   return {
     ...doc,
     children: doc.children.map(walk),
+    ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
     ...(doc.refs
       ? {
           refs: Object.fromEntries(
@@ -85,17 +86,16 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
 function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
   const visit = (child: import("@seam/core").Child) => {
     if (child.type === "clip") out.push(child.source);
-    else if (
-      (child.type === "composition" || child.type === "overlay") &&
-      child.children
-    ) {
+    else if (child.type === "composition") {
       child.children.forEach(visit);
+      if (child.attachments) child.attachments.forEach(visit);
       if (child.refs) Object.values(child.refs).forEach(visit);
     }
     // ref nodes don't carry a source of their own — the referenced def's
     // clips are collected when we visit `refs` above.
   };
   doc.children.forEach(visit);
+  if (doc.attachments) doc.attachments.forEach(visit);
   if (doc.refs) Object.values(doc.refs).forEach(visit);
   return out;
 }

@@ -113,7 +113,6 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
 const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   clip: { bg: "#3a6ea5", border: "#4a8ed0" },
   composition: { bg: "#6a5acd", border: "#8470ff" },
-  overlay: { bg: "#2e8b57", border: "#3cb371" },
   empty: { bg: "#555", border: "#666" },
 };
 

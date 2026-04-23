@@ -66,24 +66,7 @@ export interface ResolvedComposition {
   contentHeight?: number;
 }
 
-export interface ResolvedOverlay {
-  type: "overlay";
-  timelineStart: number;
-  timelineEnd: number;
-  duration: number;
-  speed: number;
-  children: ResolvedChild[];
-  filters?: Filter[];
-  spatial?: SpatialRect;
-  objectFit?: ObjectFit;
-  position?: Position;
-  anchor?: SpatialAnchor;
-  spatialInput?: SpatialInput;
-  contentWidth?: number;
-  contentHeight?: number;
-}
-
-export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition | ResolvedOverlay;
+export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition;
 
 export interface ResolvedTimeline {
   duration: number;

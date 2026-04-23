@@ -36,7 +36,7 @@ export function flattenResolved(
         timelineEnd: end,
       });
     } else {
-      // Composition or overlay: recurse with compounded speed and offset
+      // Composition: recurse with compounded speed and offset
       const compoundSpeed = child.speed * parentSpeed;
       const innerFlat = flattenResolved(child.children, start, compoundSpeed);
       result.push(...innerFlat);

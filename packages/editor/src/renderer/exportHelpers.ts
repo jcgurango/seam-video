@@ -56,13 +56,16 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     if (child.type === "clip") {
       return { ...child, source: pickExportName(child.source) };
     }
-    if (child.type === "composition" || child.type === "overlay") {
-      const rewritten = {
+    if (child.type === "composition") {
+      const rewritten: Child = {
         ...child,
         children: rewriteChildren(child.children),
-      } as typeof child;
+      };
+      if (child.attachments) {
+        (rewritten as typeof child).attachments = rewriteChildren(child.attachments);
+      }
       const rewrittenRefs = rewriteRefs(child.refs);
-      if (rewrittenRefs) rewritten.refs = rewrittenRefs;
+      if (rewrittenRefs) (rewritten as typeof child).refs = rewrittenRefs;
       return rewritten;
     }
     // ref children don't reference a source file; leave as-is
@@ -74,6 +77,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
   const document: SeamFile = {
     ...doc,
     children: rewriteChildren(doc.children),
+    ...(doc.attachments ? { attachments: rewriteChildren(doc.attachments) } : {}),
     ...(doc.refs ? { refs: rewriteRefs(doc.refs) } : {}),
   };
 

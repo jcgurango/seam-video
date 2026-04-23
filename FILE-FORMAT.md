@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are five types of nodes: **clip**, **empty**, **composition**, **overlay**, and **ref**.
+There are four types of nodes: **clip**, **empty**, **composition**, and **ref**.
 
 ### Clip
 
@@ -106,8 +106,8 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | yes | One or more child nodes (clips, empties, compositions, overlays, or refs) |
-| `attachments` | array | no | Anchored overlay children (see [Attachments](#attachments)) |
+| `children` | array | yes | One or more child nodes (clips, empties, compositions, or refs) |
+| `attachments` | array | no | Anchored children rendered on top of `children` (see [Attachments](#attachments)) |
 | `refs` | object | no | Reusable child definitions keyed by name (see [Refs](#refs)) |
 | `duration` | number | no | Fixes the total container duration in seconds (mutually exclusive with `unitDuration`) |
 | `unitDuration` | number | no | Duration per unit of flex (see [unitDuration](#unitduration)); mutually exclusive with `duration` |
@@ -148,72 +148,11 @@ The inner composition has two 3-second clips (6 seconds total). Setting `in: 1, 
 
 If `in` and `out` are omitted, the full inner timeline is used.
 
-### Overlay
-
-An overlay stacks its children visually — all playing at the same time, layered on top of each other. The first child is the base layer, and each subsequent child is drawn on top.
-
-```json
-{
-  "type": "overlay",
-  "children": [
-    { "type": "clip", "source": "background.mp4", "in": 0, "out": 10 },
-    { "type": "clip", "source": "foreground.mp4", "in": 0, "out": 5 }
-  ]
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `"overlay"` | yes | Must be `"overlay"` |
-| `children` | array | yes | One or more child nodes, stacked bottom to top |
-| `refs` | object | no | Reusable child definitions keyed by name (see [Refs](#refs)) |
-| `duration` | number | no | Total duration (defaults to the longest child's natural duration) |
-| `alignItems` | string | no | Where shorter children sit within the overlay's duration (default: `"start"`) |
-| `in` | number | no | Window start when used as a child (seconds, >= 0) |
-| `out` | number | no | Window end when used as a child (seconds, > 0) |
-| `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
-| `overflow` | string | no | Strategy when overlay must be shortened |
-| `underflow` | string | no | Strategy when overlay must be lengthened |
-| `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
-| `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
-| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
-
-#### alignItems
-
-When children have different durations, `alignItems` controls where the shorter children are placed in time:
-
-| Value | Effect |
-|-------|--------|
-| `"start"` | Shorter children start at the beginning |
-| `"end"` | Shorter children end at the overlay's end |
-| `"center"` | Shorter children are centered |
-
-```json
-{
-  "type": "overlay",
-  "alignItems": "center",
-  "children": [
-    { "type": "clip", "source": "background.mp4", "in": 0, "out": 10 },
-    { "type": "clip", "source": "title.mp4", "in": 0, "out": 4 }
-  ]
-}
-```
-
-The background plays for 10 seconds. The title appears centered at seconds 3-7.
-
-#### Overflow in overlays
-
-If `duration` is set shorter than a child, that child is overflowed. The default overflow strategy depends on `alignItems`: `"start"` uses `"trim-end"`, `"end"` uses `"trim-start"`, `"center"` uses `"trim-center"`. You can override this per-child with the `overflow` field.
-
-#### Flex in overlays
-
-In an overlay, `flex` works as a boolean: any `flex` value greater than 0 forces the child to match the overlay's duration (triggering overflow or underflow as needed). Unlike compositions, relative flex values don't matter — `flex: 1` and `flex: 2` have the same effect.
+To stack content visually — multiple things playing at the same time — use a composition's [`attachments`](#attachments) array. Each attachment is a child whose position on the timeline is anchored by id to another node rather than appended sequentially.
 
 ### Ref
 
-A ref is a placeholder that stands in for a definition stored in some enclosing composition or overlay's `refs` dict. See [Refs](#refs) for the full model.
+A ref is a placeholder that stands in for a definition stored in some enclosing composition's `refs` dict. See [Refs](#refs) for the full model.
 
 ```json
 { "type": "ref", "source": "title_card" }
@@ -359,7 +298,7 @@ When a clip or composition needs to be shorter or longer than its natural durati
 
 ### Overflow (making things shorter)
 
-Applied when the target duration is less than the natural duration. Default: `"trim-end"` for clips and compositions. In overlays, the default depends on `alignItems` (see [Overlay](#overlay)).
+Applied when the target duration is less than the natural duration. Default: `"trim-end"` for clips and compositions.
 
 | Strategy | Effect |
 |----------|--------|
@@ -393,7 +332,7 @@ If this clip's flex allocation is 10 seconds, `"stretch"` plays the 5-10s range 
 
 ## Refs
 
-Refs let you define a piece of content once and reference it from multiple places. A composition or overlay can declare a `refs` dict, and any descendant can use a `ref` node to insert a resolved copy of the named definition.
+Refs let you define a piece of content once and reference it from multiple places. A composition can declare a `refs` dict, and any descendant can use a `ref` node to insert a resolved copy of the named definition.
 
 ```json
 {
@@ -446,7 +385,7 @@ A ref cannot (transitively) reference itself. The resolver throws if it detects 
 
 ## Attachments
 
-Attachments are overlay children of a composition whose timeline position is expressed relative to other nodes by `id`, not by sequential layout. They render on top of `children` in array order (last on top).
+Attachments are a composition's stacked/overlapping children — they render on top of `children`, positioned by anchoring to other nodes via `id` instead of by sequential layout. Within `attachments`, array order sets z-order (last on top).
 
 ```json
 {
@@ -491,14 +430,14 @@ The anchor's resolved duration is its `timelineEnd - timelineStart` on the outpu
 `timeSource` controls what coordinate space `anchorPoint` lives in. It must be provided whenever `anchor` is — there is no default, so the coordinate space is always explicit at the authoring site.
 
 - **`"output"`**: `anchorPoint` is a percentage string measuring into the anchor's output span — `"0%"` is `timelineStart`, `"100%"` is `timelineEnd`.
-- **`"source"`**: `anchorPoint` is a number of seconds in the anchor's *source* timeline. For a clip, that's the raw media-file time, ignoring `in`/`out`/`speed` trimming. For a composition or overlay, it's the pre-window inner timeline (before any `in`/`out`). The resolver inverts the anchor's source→output mapping to find the corresponding output time:
+- **`"source"`**: `anchorPoint` is a number of seconds in the anchor's *source* timeline. For a clip, that's the raw media-file time, ignoring `in`/`out`/`speed` trimming. For a composition, it's the pre-window inner timeline (before any `in`/`out`). The resolver inverts the anchor's source→output mapping to find the corresponding output time:
 
   ```
   output_time = anchor.timelineStart
               + (anchorPoint − anchor.sourceBase) / anchor.outputSpeed
   ```
 
-  where `sourceBase` is the clip's `sourceIn` (or the composition's windowed-in). The result can land *before* `timelineStart` or *after* `timelineEnd` — negative or past-end values are legal and useful for things like "start an overlay 2 seconds into the original footage, even if the first second of the clip was trimmed."
+  where `sourceBase` is the clip's `sourceIn` (or the composition's windowed-in). The result can land *before* `timelineStart` or *after* `timelineEnd` — negative or past-end values are legal and useful for things like "start a caption 2 seconds into the original footage, even if the first second of the clip was trimmed."
 
 Example — if `myclip` has `in: 2, out: 4` (speed 1) and therefore occupies output `[0, 2]`, then `{ anchor: "myclip", timeSource: "source", anchorPoint: 1 }` resolves to output `-1` (source second 1 is 1 second before the clip's sourceIn).
 
@@ -511,7 +450,7 @@ Example — if `myclip` has `in: 2, out: 4` (speed 1) and therefore occupies out
 | Neither `start` nor `end` | The attachment starts at t=0 of the composition and plays for its natural duration. |
 | `start` only | The attachment starts at the resolved start time and plays for its natural duration. |
 | `end` only | The attachment ends at the resolved end time; its start is back-computed from natural duration. |
-| Both `start` and `end` | Timeline duration is `end - start`. The attachment is forced to fit: clips adjust their speed to span the window; compositions and overlays stretch (equivalent to `overflow: "stretch", underflow: "stretch"`). |
+| Both `start` and `end` | Timeline duration is `end - start`. The attachment is forced to fit: clips adjust their speed to span the window; compositions stretch (equivalent to `overflow: "stretch", underflow: "stretch"`). |
 
 If `end` resolves before `start`, the resolver throws.
 
@@ -536,7 +475,7 @@ When both anchors are given, the attachment's own `duration`, `speed`, `in`/`out
 
 ## Filters
 
-Filters apply visual effects to clips, compositions, and overlays. They are specified as an ordered array — each filter is applied in sequence.
+Filters apply visual effects to clips and compositions. They are specified as an ordered array — each filter is applied in sequence.
 
 ```json
 {
@@ -589,17 +528,17 @@ Shifts the color temperature. Maps to FFmpeg's `colortemperature` filter.
 |-------|------|---------|-------|-------------|
 | `temperature` | number | `6500` | 1000 to 40000 | Color temperature in Kelvin (lower = warmer/orange, higher = cooler/blue) |
 
-### Filters on Compositions and Overlays
+### Filters on Compositions
 
-Filters can also be applied to compositions and overlays, affecting all children as a group:
+Filters can also be applied to compositions, affecting all children as a group:
 
 ```json
 {
-  "type": "overlay",
+  "type": "composition",
   "filters": [{ "type": "adjust", "saturation": 0 }],
   "children": [
-    { "type": "clip", "source": "bg.mp4", "in": 0, "out": 10 },
-    { "type": "clip", "source": "fg.mp4", "in": 0, "out": 5 }
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 5 }
   ]
 }
 ```
@@ -645,7 +584,7 @@ Negative values are allowed (e.g. `"-10px"`).
 
 The default is `"fit"`, which applies at every level — even with no spatial properties at all, clips are scaled to fit the canvas. A child can specify its own `objectFit`, but that only affects *its own children*, not its own sizing within the parent.
 
-Compositions and overlays have intrinsic dimensions equal to the canvas size (1920x1080 by default), which can be overridden with `contentWidth`/`contentHeight`. See [Content Dimensions](#content-dimensions).
+Compositions have intrinsic dimensions equal to the canvas size (1920x1080 by default), which can be overridden with `contentWidth`/`contentHeight`. See [Content Dimensions](#content-dimensions).
 
 ### Position
 
@@ -665,7 +604,7 @@ The box properties follow CSS-like rules:
 
 ### Content Dimensions
 
-By default, compositions and overlays have intrinsic dimensions equal to the canvas (1920x1080). `contentWidth` and `contentHeight` override this, defining the container's internal coordinate space.
+By default, compositions have intrinsic dimensions equal to the canvas (1920x1080). `contentWidth` and `contentHeight` override this, defining the container's internal coordinate space.
 
 When a container has custom content dimensions, two things happen:
 
@@ -677,7 +616,7 @@ When a container has custom content dimensions, two things happen:
   "type": "composition",
   "children": [
     {
-      "type": "overlay",
+      "type": "composition",
       "contentWidth": 800,
       "contentHeight": 600,
       "children": [
@@ -688,7 +627,7 @@ When a container has custom content dimensions, two things happen:
 }
 ```
 
-The overlay has an 800x600 coordinate space. The parent's default `"fit"` scales it to fit the 1920x1080 canvas: `min(1920/800, 1080/600) = 1.8`, giving a 1440x1080 display area centered horizontally with 240px of black on each side. The clip inside is fit within 800x600.
+The inner composition has an 800x600 coordinate space. The parent's default `"fit"` scales it to fit the 1920x1080 canvas: `min(1920/800, 1080/600) = 1.8`, giving a 1440x1080 display area centered horizontally with 240px of black on each side. The clip inside is fit within 800x600.
 
 To stretch a container (breaking its aspect ratio), give it explicit `width` + `height` that don't match the content aspect ratio. The content space maps to the forced display size.
 
@@ -747,14 +686,17 @@ With the default `"fit"`, the same clip would be letterboxed (black bars on the 
 
 ```json
 {
-  "type": "overlay",
+  "type": "composition",
   "children": [
-    { "type": "clip", "source": "main.mp4", "in": 0, "out": 30 },
+    { "id": "main", "type": "clip", "source": "main.mp4", "in": 0, "out": 30 }
+  ],
+  "attachments": [
     {
       "type": "clip",
       "source": "camera.mp4",
       "in": 0,
       "out": 30,
+      "start": { "anchor": "main", "timeSource": "output", "anchorPoint": "0%" },
       "position": "absolute",
       "right": "20px",
       "bottom": "20px",

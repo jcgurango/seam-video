@@ -206,12 +206,12 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts spatial fields on overlays", () => {
+  it("accepts spatial fields on nested compositions", () => {
     const result = validate({
       type: "composition",
       children: [
         {
-          type: "overlay",
+          type: "composition",
           position: "relative",
           width: "100%",
           height: "100%",
@@ -322,12 +322,12 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts filters on overlays", () => {
+  it("accepts filters on nested compositions", () => {
     const result = validate({
       type: "composition",
       children: [
         {
-          type: "overlay",
+          type: "composition",
           filters: [{ type: "colorbalance", rs: 0.5, bh: -0.3 }],
           children: [
             { type: "clip", source: "v.mp4", in: 0, out: 5 },

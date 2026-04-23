@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef } from "react";
 import { useTimeline } from "@seam/preview";
-import { resolveComposition, resolveOverlay } from "@seam/core";
+import { resolveComposition } from "@seam/core";
 import type { SeamFile, Clip, Child, RefChild } from "@seam/core";
 import {
   Play,
@@ -106,13 +106,10 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
     return { ...doc, children: newChildren };
   }
 
-  // Composition or overlay: promote to a ref before splitting so both
-  // halves share a single underlying definition.
-  if (child.type === "composition" || child.type === "overlay") {
-    const innerDuration =
-      child.type === "composition"
-        ? resolveComposition(child).duration
-        : resolveOverlay(child).duration;
+  // Composition: promote to a ref before splitting so both halves share a
+  // single underlying definition.
+  if (child.type === "composition") {
+    const innerDuration = resolveComposition(child).duration;
     const childIn = child.in ?? 0;
     const childOut = child.out ?? innerDuration;
     const splitPoint = childIn + offset;

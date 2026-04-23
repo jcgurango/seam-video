@@ -31,7 +31,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `packages/core/src/schema.ts` | Zod schemas — uses `z.lazy` + `z.union` for recursive compositions |
 | `packages/core/src/types.ts` | TypeScript types matching the schema |
 | `packages/core/src/resolved-types.ts` | Output types after layout resolution |
-| `packages/core/src/layout/resolve.ts` | `resolveComposition()` + `resolveOverlay()` — the layout engine |
+| `packages/core/src/layout/resolve.ts` | `resolveComposition()` — the layout engine (sequential `children` + anchored `attachments`) |
 | `packages/renderer/src/ffmpeg-builder.ts` | ResolvedTimeline → FFmpeg filter graph + args |
 | `packages/renderer/src/ffmpeg-runner.ts` | Executes FFmpeg commands |
 | `packages/preview/src/renderer/components/Timeline.tsx` | Root player — rAF clock, single WebGPU canvas |
@@ -45,9 +45,9 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 
 - **Seconds everywhere** — frames only at the FFmpeg boundary (default 30fps)
 - **`children`** not `segments` for composition arrays
-- **`overflow`/`underflow`** for flex adjustment strategies (trim-end, stretch, etc.). `overflow` is optional in schema; defaults applied at resolution time (compositions: `"trim-end"`, overlays: depends on `alignItems`)
-- **`ChildTimingFields`** shared interface for `in`, `out`, `flex`, `overflow`, `underflow` — used by Clip, Composition, and Overlay
-- **Node types**: `clip`, `empty`, `composition` (sequential), `overlay` (stacked z-order)
+- **`overflow`/`underflow`** for flex adjustment strategies (trim-end, stretch, etc.). `overflow` is optional in schema; default is `"trim-end"` for composition children
+- **`ChildTimingFields`** shared interface for `in`, `out`, `flex`, `overflow`, `underflow`, `id`, `start`, `end` — used by Clip, Composition, and RefChild
+- **Node types**: `clip`, `empty`, `composition` (sequential `children` + anchored `attachments` that render on top), `ref`
 - Schema is the single source of truth; types mirror it exactly
 - Preview renders via a single WebGPU canvas — `RenderList` walks the resolved tree into draw/group commands, `WebGPURenderer` executes them. Compositions with filters use FBO render-to-texture; without filters, children are flattened
 

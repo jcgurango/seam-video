@@ -70,8 +70,8 @@ export function buildFfmpegCommand(
 
 /**
  * Build a list of children into a single {v, a} pair by creating a black base
- * and overlaying each child at its timelineStart offset. Works for both
- * sequential compositions and stacked overlays.
+ * and overlaying each child at its timelineStart offset. Overlapping
+ * children (from composition attachments) are stacked in array order.
  */
 function buildCompositeSegment(
   ctx: BuildContext,
@@ -181,7 +181,7 @@ function buildSingleSegment(
   if (child.type === "empty") {
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
-  // Composition or overlay: recurse into children
+  // Composition: recurse into children
   const compoundSpeed = child.speed * parentSpeed;
   const displayW = child.spatial ? child.spatial.width : parentW;
   const displayH = child.spatial ? child.spatial.height : parentH;

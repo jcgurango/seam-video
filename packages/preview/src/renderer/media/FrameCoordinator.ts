@@ -268,7 +268,7 @@ function collectClips(
           return capturedChild.sourceIn + clipLocal * capturedChild.speed;
         },
       });
-    } else if (child.type === "composition" || child.type === "overlay") {
+    } else if (child.type === "composition") {
       const parentToLocal = toLocalTime;
       const parentToAbsolute = toAbsoluteTime;
       const comp = child;

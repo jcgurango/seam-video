@@ -97,7 +97,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         {
-          type: "overlay",
+          type: "composition",
           timelineStart: 0,
           timelineEnd: 5,
           duration: 5,
@@ -279,7 +279,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         {
-          type: "overlay",
+          type: "composition",
           timelineStart: 0,
           timelineEnd: 5,
           duration: 5,
@@ -356,7 +356,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         {
-          type: "overlay",
+          type: "composition",
           timelineStart: 0,
           timelineEnd: 5,
           duration: 5,

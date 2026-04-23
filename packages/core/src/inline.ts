@@ -5,7 +5,6 @@ import type {
   Empty,
   Filter,
   ObjectFit,
-  Overlay,
   Overflow,
   Position,
   RefChild,
@@ -18,8 +17,8 @@ import type {
  * an equivalent tree containing no `ref` nodes and no `refs` dicts.
  *
  * Semantics:
- * - A ref looks up its name in the enclosing scope chain (nearest composition
- *   or overlay's `refs` dict first, then outward). Shallowest wins.
+ * - A ref looks up its name in the enclosing scope chain (nearest composition's
+ *   `refs` dict first, then outward). Shallowest wins.
  * - The ref's own timing/spatial/filter fields window the *resolved duration*
  *   of the definition. To express that uniformly across def types, we wrap
  *   the inlined def in a 1-child composition carrying those fields.
@@ -30,7 +29,7 @@ import type {
  *   higher up.
  * - Cycle detection: track the set of ref names currently being expanded.
  */
-export function inlineRefs<T extends Composition | Overlay>(root: T): T {
+export function inlineRefs<T extends Composition>(root: T): T {
   return inlineNode(root, [], new Set<string>()) as T;
 }
 
@@ -49,25 +48,21 @@ function inlineNode(
     case "ref":
       return inlineRef(node, stack, active);
 
-    case "composition":
-    case "overlay": {
+    case "composition": {
       const newStack: Scope[] = node.refs ? [node.refs, ...stack] : stack;
       const newChildren = node.children.map((c) =>
         inlineNode(c, newStack, active)
       );
-      const newAttachments =
-        node.type === "composition" && node.attachments
-          ? node.attachments.map((c) => inlineNode(c, newStack, active))
-          : undefined;
+      const newAttachments = node.attachments
+        ? node.attachments.map((c) => inlineNode(c, newStack, active))
+        : undefined;
       // Strip `refs` from the output — after inlining there's nothing left
       // to reference them.
-      const { refs: _refs, ...rest } = node as Composition & {
-        refs?: unknown;
-      };
+      const { refs: _refs, ...rest } = node;
       void _refs;
-      const result = { ...rest, children: newChildren } as Child;
-      if (newAttachments && result.type === "composition") {
-        (result as Composition).attachments = newAttachments;
+      const result: Composition = { ...rest, children: newChildren };
+      if (newAttachments) {
+        result.attachments = newAttachments;
       }
       return result;
     }
@@ -141,7 +136,7 @@ interface RefFields {
 function wrapWithRefFields(def: Child, ref: RefFields): Composition {
   return {
     type: "composition",
-    children: [def as Clip | Empty | Composition | Overlay],
+    children: [def as Clip | Empty | Composition],
     ...(ref.in != null ? { in: ref.in } : {}),
     ...(ref.out != null ? { out: ref.out } : {}),
     ...(ref.flex != null ? { flex: ref.flex } : {}),

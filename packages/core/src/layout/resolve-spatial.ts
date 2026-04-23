@@ -41,7 +41,7 @@ function resolveNode(
 
   if (!input) {
     // No spatial props — still propagate objectFit
-    if (node.type === "composition" || node.type === "overlay") {
+    if (node.type === "composition") {
       const intrinsicW = node.contentWidth ?? parentW;
       const intrinsicH = node.contentHeight ?? parentH;
       const hasCustomIntrinsic = intrinsicW !== parentW || intrinsicH !== parentH;

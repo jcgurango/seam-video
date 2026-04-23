@@ -1,17 +1,15 @@
 /**
  * Walks the resolved timeline tree at a given time and produces a command
  * list for the GPU renderer. Clips become DrawCommands with absolute pixel
- * positions. Compositions/overlays with filters become GroupCommands whose
- * children are rendered to an intermediate texture (FBO) so the group's
- * filters can be applied to the composite.
+ * positions. Compositions with filters become GroupCommands whose children
+ * are rendered to an intermediate texture (FBO) so the group's filters can
+ * be applied to the composite.
  */
 
 import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
-  ResolvedComposition,
-  ResolvedOverlay,
   SpatialAnchor,
   ObjectFit,
   Filter,
@@ -153,7 +151,7 @@ function walkChildren(
         opacity,
       });
     } else {
-      // composition or overlay
+      // composition
       const childLocalTime = Math.min(
         (localTime - child.timelineStart) * child.speed,
         child.duration,
