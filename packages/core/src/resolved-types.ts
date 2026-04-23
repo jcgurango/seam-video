@@ -35,6 +35,7 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  id?: string;
   filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
@@ -47,6 +48,7 @@ export interface ResolvedEmpty {
   type: "empty";
   timelineStart: number;
   timelineEnd: number;
+  id?: string;
 }
 
 export interface ResolvedComposition {
@@ -56,6 +58,14 @@ export interface ResolvedComposition {
   duration: number;
   speed: number;
   children: ResolvedChild[];
+  id?: string;
+  /**
+   * The inner-timeline offset at which this composition's cropped `children`
+   * begin — i.e. `child.in ?? 0` after any overflow/underflow trimming. Used
+   * by attachments anchoring to this composition in `timeSource: "source"`
+   * mode, so anchorPoint is interpreted in the pre-window inner timeline.
+   */
+  sourceWindowStart?: number;
   filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;

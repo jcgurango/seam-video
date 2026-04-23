@@ -61,7 +61,12 @@ function resolveChild(
 ): { resolved: ResolvedChild; actualDuration: number } {
   if (child.type === "empty") {
     return {
-      resolved: { type: "empty" as const, timelineStart: 0, timelineEnd: 0 },
+      resolved: {
+        type: "empty" as const,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(child.id != null ? { id: child.id } : {}),
+      },
       actualDuration: target,
     };
   }
@@ -113,6 +118,8 @@ function resolveChild(
         duration: windowDur,
         speed,
         children: croppedChildren,
+        sourceWindowStart: windowIn,
+        ...(child.id != null ? { id: child.id } : {}),
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
@@ -158,6 +165,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(clip.id != null ? { id: clip.id } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(clip.filters?.length ? { filters: clip.filters } : {}),
     },
@@ -225,8 +233,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     containerDuration
   );
 
-  // Assign timeline positions + build id map for attachment anchors
-  const idMap = new Map<string, IdMapEntry>();
+  // Assign timeline positions to each resolved child
   for (let i = 0; i < resolvedChildren.length; i++) {
     const start = offsets[i];
     const end = start + actualDurations[i];
@@ -235,28 +242,24 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
       timelineStart: start,
       timelineEnd: end,
     };
-    const id = getId(children[i]);
-    if (id != null) {
-      if (idMap.has(id)) {
-        throw new Error(`duplicate id "${id}" in composition`);
-      }
-      idMap.set(id, buildIdMapEntry(children[i], resolvedChildren[i]));
-    }
   }
 
-  // Resolve attachments in array order. Each attachment can reference IDs of
-  // children or earlier attachments. Rendered as regular resolved children
-  // appended after the sequential ones — later = on top.
+  // Build an id map by deep-walking the entire resolved children subtree.
+  // Attachments can anchor to any id anywhere in the tree rooted at this
+  // composition — not just direct siblings. IDs are required to be unique
+  // across the walked subtree.
+  const idMap = new Map<string, IdMapEntry>();
+  collectIds(resolvedChildren, 0, 1, idMap);
+
+  // Resolve attachments in array order. Each attachment's own id (and any
+  // nested ids inside it, if it's a composition) are added to the map after
+  // resolution, so later attachments can anchor to it. Attachments render
+  // as regular resolved children appended after the sequential ones — later
+  // in the array means on top.
   for (const att of composition.attachments ?? []) {
     const resolvedAtt = resolveAttachment(att, idMap);
     resolvedChildren.push(resolvedAtt);
-    const id = getId(att);
-    if (id != null) {
-      if (idMap.has(id)) {
-        throw new Error(`duplicate id "${id}" in composition`);
-      }
-      idMap.set(id, buildIdMapEntry(att, resolvedAtt));
-    }
+    collectIds([resolvedAtt], 0, 1, idMap);
   }
 
   return {
@@ -268,14 +271,12 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   };
 }
 
-function getId(child: Child): string | undefined {
-  return (child as { id?: string }).id;
-}
-
 /**
  * Per-id data used to resolve both "output"-mode (percentage of output span)
  * and "source"-mode (pre-trim/pre-window source time) anchors.
  *
+ * All fields are in the OUTER coordinate space of the composition that owns
+ * the attachment — nested children are translated up into that space.
  * Inverse mapping from source time to output time, used in source mode:
  *   output_time = start + (source_time - baseSourceTime) / speed
  */
@@ -286,19 +287,59 @@ interface IdMapEntry {
   speed: number;
 }
 
-function buildIdMapEntry(original: Child, resolved: ResolvedChild): IdMapEntry {
-  const start = resolved.timelineStart;
-  const end = resolved.timelineEnd;
-  if (resolved.type === "clip") {
-    return { start, end, baseSourceTime: resolved.sourceIn, speed: resolved.speed };
+/**
+ * Deep-walk the resolved children subtree, collecting every node's id into
+ * `idMap`. Positions are translated from each node's local timeline into the
+ * outer composition's timeline via `parentOffset` + `parentSpeed` (cumulative
+ * speed from the outer composition to this level).
+ */
+function collectIds(
+  children: ResolvedChild[],
+  parentOffset: number,
+  parentSpeed: number,
+  idMap: Map<string, IdMapEntry>
+): void {
+  for (const child of children) {
+    const start = parentOffset + child.timelineStart / parentSpeed;
+    const end = parentOffset + child.timelineEnd / parentSpeed;
+
+    if (child.id != null) {
+      if (idMap.has(child.id)) {
+        throw new Error(`duplicate id "${child.id}" in composition`);
+      }
+      if (child.type === "clip") {
+        idMap.set(child.id, {
+          start,
+          end,
+          baseSourceTime: child.sourceIn,
+          speed: child.speed * parentSpeed,
+        });
+      } else if (child.type === "empty") {
+        idMap.set(child.id, {
+          start,
+          end,
+          baseSourceTime: 0,
+          speed: parentSpeed,
+        });
+      } else {
+        idMap.set(child.id, {
+          start,
+          end,
+          baseSourceTime: child.sourceWindowStart ?? 0,
+          speed: child.speed * parentSpeed,
+        });
+      }
+    }
+
+    if (child.type === "composition") {
+      collectIds(
+        child.children,
+        start,
+        child.speed * parentSpeed,
+        idMap
+      );
+    }
   }
-  if (resolved.type === "empty") {
-    return { start, end, baseSourceTime: 0, speed: 1 };
-  }
-  // composition — source time is the pre-window inner timeline
-  const baseSourceTime =
-    original.type === "composition" ? original.in ?? 0 : 0;
-  return { start, end, baseSourceTime, speed: resolved.speed };
 }
 
 function resolveAnchorTime(
