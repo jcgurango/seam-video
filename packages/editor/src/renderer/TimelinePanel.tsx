@@ -38,24 +38,56 @@ interface ChildBlock {
   child: ResolvedChild;
   index: number;
   row: number;
+  isAttachment: boolean;
 }
 
-function layoutChildren(children: ResolvedChild[]): ChildBlock[] {
-  const items = children.map((child, index) => ({ child, index }));
-  const sorted = [...items].sort(
-    (a, b) => a.child.timelineStart - b.child.timelineStart
-  );
-  const rowEnds: number[] = [];
-  return sorted.map(({ child, index }) => {
-    let row = rowEnds.findIndex((end) => end <= child.timelineStart);
-    if (row === -1) {
-      row = rowEnds.length;
-      rowEnds.push(child.timelineEnd);
-    } else {
-      rowEnds[row] = child.timelineEnd;
+/**
+ * Greedy row-packer. Items past `attachmentStartIndex` are laid out into a
+ * separate band below the children band, each band packed independently —
+ * attachments only collide (and thus stack onto a new row) with other
+ * attachments, never with the sequential children above them.
+ */
+function layoutBlocks(
+  children: ResolvedChild[],
+  attachmentStartIndex: number
+): ChildBlock[] {
+  const pack = (
+    items: { child: ResolvedChild; index: number }[],
+    baseRow: number,
+    isAttachment: boolean
+  ): { blocks: ChildBlock[]; rows: number } => {
+    const sorted = [...items].sort(
+      (a, b) => a.child.timelineStart - b.child.timelineStart
+    );
+    const rowEnds: number[] = [];
+    const blocks: ChildBlock[] = [];
+    for (const { child, index } of sorted) {
+      let row = rowEnds.findIndex((end) => end <= child.timelineStart);
+      if (row === -1) {
+        row = rowEnds.length;
+        rowEnds.push(child.timelineEnd);
+      } else {
+        rowEnds[row] = child.timelineEnd;
+      }
+      blocks.push({ child, index, row: baseRow + row, isAttachment });
     }
-    return { child, index, row };
-  });
+    return { blocks, rows: rowEnds.length };
+  };
+
+  const childItems = children
+    .slice(0, attachmentStartIndex)
+    .map((child, i) => ({ child, index: i }));
+  const attachmentItems = children
+    .slice(attachmentStartIndex)
+    .map((child, i) => ({ child, index: attachmentStartIndex + i }));
+
+  const { blocks: childBlocks, rows: childRows } = pack(childItems, 0, false);
+  const { blocks: attachmentBlocks } = pack(
+    attachmentItems,
+    childRows,
+    true
+  );
+  return [...childBlocks, ...attachmentBlocks];
 }
 
 function formatTime(s: number): string {
@@ -133,12 +165,24 @@ interface TrimOverlay {
 interface InnerProps {
   timeline: ResolvedTimeline;
   /**
-   * The document subtree whose `children` correspond 1:1 to `timeline.children`
-   * by index. Used to recover the real type of a top-level child when it's a
-   * ref (which otherwise shows up as a "composition" wrapper in the resolved
-   * tree).
+   * The document subtree whose `children` and `attachments` correspond 1:1
+   * to the first N and remaining entries of `timeline.children` (after the
+   * resolver appends resolved attachments to the children array). Used to
+   * recover the original document node — the real type of a child when it's
+   * a ref, the attachment-vs-child distinction for layout, etc.
    */
-  docRoot?: { children: import("@seam/core").Child[]; refs?: Record<string, import("@seam/core").Child> };
+  docRoot?: {
+    children: import("@seam/core").Child[];
+    attachments?: import("@seam/core").Child[];
+    refs?: Record<string, import("@seam/core").Child>;
+  };
+  /**
+   * Index into `timeline.children` at which resolved attachments begin. Items
+   * before this are sequential children (top band); items from this index
+   * onward are attachments (bottom band). When undefined everything is
+   * treated as children.
+   */
+  attachmentStartIndex?: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
   onMultiSelectStart: (index: number) => void;
@@ -150,6 +194,7 @@ interface InnerProps {
 function DesktopTimeline({
   timeline,
   docRoot,
+  attachmentStartIndex,
   selectedIndices,
   onSelectionChange,
   onMultiSelectStart,
@@ -161,7 +206,11 @@ function DesktopTimeline({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
 
-  const blocks = useMemo(() => layoutChildren(timeline.children), [timeline]);
+  const splitIndex = attachmentStartIndex ?? timeline.children.length;
+  const blocks = useMemo(
+    () => layoutBlocks(timeline.children, splitIndex),
+    [timeline, splitIndex]
+  );
   const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
 
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
@@ -242,6 +291,7 @@ function DesktopTimeline({
           multiSelectMode={multiSelectMode}
           onEnter={onEnter}
           docRoot={docRoot}
+          attachmentStartIndex={splitIndex}
         />
         {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
@@ -253,6 +303,7 @@ function DesktopTimeline({
 function MobileTimeline({
   timeline,
   docRoot,
+  attachmentStartIndex,
   selectedIndices,
   onSelectionChange,
   onMultiSelectStart,
@@ -266,7 +317,11 @@ function MobileTimeline({
   const [padding, setPadding] = useState(0);
   const programmaticScroll = useRef(false);
 
-  const blocks = useMemo(() => layoutChildren(timeline.children), [timeline]);
+  const splitIndex = attachmentStartIndex ?? timeline.children.length;
+  const blocks = useMemo(
+    () => layoutBlocks(timeline.children, splitIndex),
+    [timeline, splitIndex]
+  );
   const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
 
   useEffect(() => {
@@ -352,6 +407,7 @@ function MobileTimeline({
             multiSelectMode={multiSelectMode}
             onEnter={onEnter}
             docRoot={docRoot}
+            attachmentStartIndex={splitIndex}
           />
           {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
@@ -406,6 +462,7 @@ function ChildrenLayer({
   multiSelectMode,
   onEnter,
   docRoot,
+  attachmentStartIndex,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
@@ -416,13 +473,17 @@ function ChildrenLayer({
   onEnter?: (index: number) => void;
   docRoot?: {
     children: import("@seam/core").Child[];
+    attachments?: import("@seam/core").Child[];
     refs?: Record<string, import("@seam/core").Child>;
   };
+  attachmentStartIndex: number;
 }) {
   return (
     <>
-      {blocks.map(({ child, index, row }) => {
-        const docChild = docRoot?.children[index];
+      {blocks.map(({ child, index, row, isAttachment }) => {
+        const docChild = isAttachment
+          ? docRoot?.attachments?.[index - attachmentStartIndex]
+          : docRoot?.children[index];
         const displayChild = docChild
           ? resolveDocChild(docChild, docRoot)
           : undefined;
@@ -434,6 +495,7 @@ function ChildrenLayer({
             index={index}
             row={row}
             pxPerSec={pxPerSec}
+            isAttachment={isAttachment}
             isSelected={selectedIndices.includes(index)}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
@@ -453,6 +515,7 @@ function ChildBlockView({
   index,
   row,
   pxPerSec,
+  isAttachment,
   isSelected,
   selectedIndices,
   onSelectionChange,
@@ -465,6 +528,7 @@ function ChildBlockView({
   index: number;
   row: number;
   pxPerSec: number;
+  isAttachment: boolean;
   isSelected: boolean;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
@@ -545,14 +609,22 @@ function ChildBlockView({
     if (onEnter) onEnter(index);
   };
 
+  // Attachments render but are not yet interactive — selection/delete/enter
+  // only operate on doc.children indices today.
+  const interactiveHandlers = isAttachment
+    ? {}
+    : {
+        onPointerDown: handlePointerDown,
+        onPointerMove: handlePointerMove,
+        onPointerUp: handlePointerUp,
+        onPointerCancel: clearLongPress,
+        onDoubleClick: handleDoubleClick,
+        onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+      };
+
   return (
     <div
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={clearLongPress}
-      onDoubleClick={handleDoubleClick}
-      onContextMenu={(e) => e.preventDefault()}
+      {...interactiveHandlers}
       style={{
         position: "absolute",
         left,
@@ -571,7 +643,8 @@ function ChildBlockView({
         whiteSpace: "nowrap",
         boxSizing: "border-box",
         border: `2px solid ${isSelected ? SELECTED_BORDER : colors.border}`,
-        cursor: "pointer",
+        cursor: isAttachment ? "default" : "pointer",
+        opacity: isAttachment ? 0.85 : 1,
       }}
     >
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -898,6 +971,9 @@ export default function TimelinePanel({
         <MobileTimeline
           timeline={timeline}
           docRoot={view.type === "root" ? doc : undefined}
+          attachmentStartIndex={
+            view.type === "root" && doc ? doc.children.length : undefined
+          }
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
           onMultiSelectStart={onMultiSelectStart}
@@ -909,6 +985,9 @@ export default function TimelinePanel({
         <DesktopTimeline
           timeline={timeline}
           docRoot={view.type === "root" ? doc : undefined}
+          attachmentStartIndex={
+            view.type === "root" && doc ? doc.children.length : undefined
+          }
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
           onMultiSelectStart={onMultiSelectStart}
