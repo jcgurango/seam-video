@@ -461,7 +461,7 @@ Attachments are overlay children of a composition whose timeline position is exp
       "source": "lower_third.mp4",
       "in": 0,
       "out": 3,
-      "start": { "anchor": "intro", "anchorPoint": "100%", "offset": -3 }
+      "start": { "anchor": "intro", "timeSource": "output", "anchorPoint": "100%", "offset": -3 }
     }
   ]
 }
@@ -480,10 +480,29 @@ Both `start` and `end` on an attachment are objects shaped like:
 | Field | Type | Description |
 |-------|------|-------------|
 | `anchor` | string | `id` of another node in the same composition. Optional. |
-| `anchorPoint` | string | Percentage into the anchor's resolved duration, e.g. `"50%"`. Defaults to `"0%"` when `anchor` is set. Requires `anchor`. |
-| `offset` | number \| string | Shift from the anchor point. A number is absolute seconds. A string like `"25%"` is that fraction of the anchor's length. When no `anchor` is given, `offset` is absolute seconds measured from the composition's start, and the `%` form is not allowed. |
+| `timeSource` | `"output"` \| `"source"` | Coordinate space for `anchorPoint`. **Required when `anchor` is set; forbidden when it isn't.** See [timeSource](#timesource). |
+| `anchorPoint` | string \| number | Position within the anchor. In `"output"` mode: a percentage string (e.g. `"50%"`). In `"source"` mode: a number of seconds. Defaults to `"0%"` / `0` when `anchor` is set. Requires `anchor`. |
+| `offset` | number \| string | Shift from the resolved anchor point, always in *output* time. A number is absolute seconds. A string like `"25%"` is that fraction of the anchor's output length. When no `anchor` is given, `offset` is absolute seconds measured from the composition's start, and the `%` form is not allowed. |
 
 The anchor's resolved duration is its `timelineEnd - timelineStart` on the output timeline (after all flex/overflow resolution).
+
+#### timeSource
+
+`timeSource` controls what coordinate space `anchorPoint` lives in. It must be provided whenever `anchor` is — there is no default, so the coordinate space is always explicit at the authoring site.
+
+- **`"output"`**: `anchorPoint` is a percentage string measuring into the anchor's output span — `"0%"` is `timelineStart`, `"100%"` is `timelineEnd`.
+- **`"source"`**: `anchorPoint` is a number of seconds in the anchor's *source* timeline. For a clip, that's the raw media-file time, ignoring `in`/`out`/`speed` trimming. For a composition or overlay, it's the pre-window inner timeline (before any `in`/`out`). The resolver inverts the anchor's source→output mapping to find the corresponding output time:
+
+  ```
+  output_time = anchor.timelineStart
+              + (anchorPoint − anchor.sourceBase) / anchor.outputSpeed
+  ```
+
+  where `sourceBase` is the clip's `sourceIn` (or the composition's windowed-in). The result can land *before* `timelineStart` or *after* `timelineEnd` — negative or past-end values are legal and useful for things like "start an overlay 2 seconds into the original footage, even if the first second of the clip was trimmed."
+
+Example — if `myclip` has `in: 2, out: 4` (speed 1) and therefore occupies output `[0, 2]`, then `{ anchor: "myclip", timeSource: "source", anchorPoint: 1 }` resolves to output `-1` (source second 1 is 1 second before the clip's sourceIn).
+
+`offset` is always output-time regardless of `timeSource`.
 
 ### How start and end interact
 
@@ -504,7 +523,7 @@ Attachments are resolved in array order. Each attachment's `id`, once resolved, 
 {
   "attachments": [
     { "id": "a", "type": "clip", "source": "x.mp4", "in": 0, "out": 2, "start": { "offset": 5 } },
-    { "type": "clip", "source": "y.mp4", "in": 0, "out": 1, "start": { "anchor": "a", "anchorPoint": "100%" } }
+    { "type": "clip", "source": "y.mp4", "in": 0, "out": 1, "start": { "anchor": "a", "timeSource": "output", "anchorPoint": "100%" } }
   ]
 }
 ```

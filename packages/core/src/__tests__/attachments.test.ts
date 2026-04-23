@@ -61,7 +61,7 @@ describe("attachments", () => {
             source: "c.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "target" },
+            start: { anchor: "target", timeSource: "output" },
           },
         ],
       })
@@ -87,7 +87,7 @@ describe("attachments", () => {
             source: "b.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "target", anchorPoint: "50%" },
+            start: { anchor: "target", timeSource: "output", anchorPoint: "50%" },
           },
         ],
       })
@@ -112,7 +112,7 @@ describe("attachments", () => {
             source: "b.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "target", anchorPoint: "100%", offset: -3 },
+            start: { anchor: "target", timeSource: "output", anchorPoint: "100%", offset: -3 },
           },
         ],
       })
@@ -137,7 +137,7 @@ describe("attachments", () => {
             source: "b.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "target", offset: "25%" },
+            start: { anchor: "target", timeSource: "output", offset: "25%" },
           },
         ],
       })
@@ -162,8 +162,8 @@ describe("attachments", () => {
             source: "b.mp4",
             in: 0,
             out: 4,
-            start: { anchor: "target", anchorPoint: "0%" },
-            end: { anchor: "target", anchorPoint: "100%" },
+            start: { anchor: "target", timeSource: "output", anchorPoint: "0%" },
+            end: { anchor: "target", timeSource: "output", anchorPoint: "100%" },
           },
         ],
       })
@@ -192,7 +192,7 @@ describe("attachments", () => {
             source: "b.mp4",
             in: 0,
             out: 3,
-            end: { anchor: "target", anchorPoint: "100%" },
+            end: { anchor: "target", timeSource: "output", anchorPoint: "100%" },
           },
         ],
       })
@@ -234,7 +234,7 @@ describe("attachments", () => {
               source: "b.mp4",
               in: 0,
               out: 2,
-              start: { anchor: "missing" },
+              start: { anchor: "missing", timeSource: "output" },
             },
           ],
         })
@@ -268,13 +268,34 @@ describe("attachments", () => {
               source: "b.mp4",
               in: 0,
               out: 2,
-              start: { anchor: "target", anchorPoint: "80%" },
-              end: { anchor: "target", anchorPoint: "20%" },
+              start: { anchor: "target", timeSource: "output", anchorPoint: "80%" },
+              end: { anchor: "target", timeSource: "output", anchorPoint: "20%" },
             },
           ],
         })
       )
     ).toThrow(/end .* must be after start/);
+  });
+
+  it("throws when an anchor is given without timeSource", () => {
+    expect(() =>
+      resolveComposition(
+        comp({
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 5 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 2,
+              start: { anchor: "target", anchorPoint: "50%" },
+            },
+          ],
+        })
+      )
+    ).toThrow(/'timeSource' is required/);
   });
 
   it("resolves attachments inside a ref def (inlined wrapper preserves id/start/end)", () => {
@@ -290,7 +311,7 @@ describe("attachments", () => {
           {
             type: "ref",
             source: "overlay_clip",
-            start: { anchor: "base", anchorPoint: "50%" },
+            start: { anchor: "base", timeSource: "output", anchorPoint: "50%" },
           },
         ],
       })
@@ -302,6 +323,199 @@ describe("attachments", () => {
       type: "composition",
       timelineStart: 5,
       timelineEnd: 7,
+    });
+  });
+
+  describe("timeSource: source", () => {
+    it("reverse-engineers source time to negative timeline when anchorPoint is before the clip's sourceIn", () => {
+      // The user's example: myclip is in=2 out=4 (source window [2,4]);
+      // anchoring to source time 1 should land at output t=-1.
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "myclip", type: "clip", source: "video.mp4", in: 2, out: 4 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "othervideo.mp4",
+              in: 0,
+              out: 5,
+              start: {
+                anchor: "myclip",
+                timeSource: "source",
+                anchorPoint: 1,
+                offset: 0,
+              },
+            },
+          ],
+        })
+      );
+
+      expect(result.children[1]).toMatchObject({
+        source: "othervideo.mp4",
+        timelineStart: -1,
+        timelineEnd: 4,
+      });
+    });
+
+    it("maps source seconds to output time, accounting for speed", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            // clip plays source [0, 10] at 2x speed → output [0, 5]
+            {
+              id: "fast",
+              type: "clip",
+              source: "a.mp4",
+              in: 0,
+              out: 10,
+              speed: 2,
+            },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 1,
+              start: {
+                anchor: "fast",
+                timeSource: "source",
+                anchorPoint: 6,
+              },
+            },
+          ],
+        })
+      );
+
+      // source_time 6 on a 2x clip → output_time = 0 + (6 - 0) / 2 = 3
+      expect(result.children[1]).toMatchObject({
+        source: "b.mp4",
+        timelineStart: 3,
+        timelineEnd: 4,
+      });
+    });
+
+    it("anchors to a source time inside a composition's inner timeline (pre-window)", () => {
+      // Inner comp has children summing to 10s. Windowed to [2, 8] on inner.
+      // Source time 4 should land at output (4 - 2) / 1 = 2 of the windowed
+      // composition's visible range.
+      const result = resolveComposition(
+        comp({
+          children: [
+            {
+              id: "comp",
+              type: "composition",
+              in: 2,
+              out: 8,
+              children: [
+                { type: "clip", source: "a.mp4", in: 0, out: 5 },
+                { type: "clip", source: "b.mp4", in: 0, out: 5 },
+              ],
+            },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "x.mp4",
+              in: 0,
+              out: 1,
+              start: {
+                anchor: "comp",
+                timeSource: "source",
+                anchorPoint: 4,
+              },
+            },
+          ],
+        })
+      );
+
+      // comp output = [0, 6]. source 4 → output 0 + (4-2)/1 = 2
+      expect(result.children[1]).toMatchObject({
+        timelineStart: 2,
+        timelineEnd: 3,
+      });
+    });
+
+    it("offset still applies in output seconds regardless of timeSource", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "x", type: "clip", source: "a.mp4", in: 0, out: 10, speed: 2 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 1,
+              start: {
+                anchor: "x",
+                timeSource: "source",
+                anchorPoint: 6,
+                offset: 0.5,
+              },
+            },
+          ],
+        })
+      );
+
+      // anchorPoint maps to output 3 (see earlier test); + 0.5 output-seconds
+      expect(result.children[1]).toMatchObject({
+        timelineStart: 3.5,
+        timelineEnd: 4.5,
+      });
+    });
+
+    it("defaults anchorPoint to 0 seconds when omitted in source mode", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "x", type: "clip", source: "a.mp4", in: 2, out: 5 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 1,
+              start: { anchor: "x", timeSource: "source" },
+            },
+          ],
+        })
+      );
+
+      // source time 0 on a clip with sourceIn=2, speed=1 → output = 0 + (0-2)/1 = -2
+      expect(result.children[1]).toMatchObject({
+        timelineStart: -2,
+        timelineEnd: -1,
+      });
+    });
+
+    it("throws when source-mode anchorPoint is not a number", () => {
+      expect(() =>
+        resolveComposition(
+          comp({
+            children: [
+              { id: "x", type: "clip", source: "a.mp4", in: 0, out: 5 },
+            ],
+            attachments: [
+              {
+                type: "clip",
+                source: "b.mp4",
+                in: 0,
+                out: 1,
+                start: {
+                  anchor: "x",
+                  timeSource: "source",
+                  anchorPoint: "50%" as unknown as number,
+                },
+              },
+            ],
+          })
+        )
+      ).toThrow(/anchorPoint must be a number/);
     });
   });
 
@@ -323,7 +537,7 @@ describe("attachments", () => {
             source: "c.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "first", anchorPoint: "100%" },
+            start: { anchor: "first", timeSource: "output", anchorPoint: "100%" },
           },
         ],
       })

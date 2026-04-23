@@ -235,7 +235,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   );
 
   // Assign timeline positions + build id map for attachment anchors
-  const idMap = new Map<string, { start: number; end: number }>();
+  const idMap = new Map<string, IdMapEntry>();
   for (let i = 0; i < resolvedChildren.length; i++) {
     const start = offsets[i];
     const end = start + actualDurations[i];
@@ -249,7 +249,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
       if (idMap.has(id)) {
         throw new Error(`duplicate id "${id}" in composition`);
       }
-      idMap.set(id, { start, end });
+      idMap.set(id, buildIdMapEntry(children[i], resolvedChildren[i]));
     }
   }
 
@@ -264,10 +264,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
       if (idMap.has(id)) {
         throw new Error(`duplicate id "${id}" in composition`);
       }
-      idMap.set(id, {
-        start: resolvedAtt.timelineStart,
-        end: resolvedAtt.timelineEnd,
-      });
+      idMap.set(id, buildIdMapEntry(att, resolvedAtt));
     }
   }
 
@@ -284,15 +281,49 @@ function getId(child: Child): string | undefined {
   return (child as { id?: string }).id;
 }
 
+/**
+ * Per-id data used to resolve both "output"-mode (percentage of output span)
+ * and "source"-mode (pre-trim/pre-window source time) anchors.
+ *
+ * Inverse mapping from source time to output time, used in source mode:
+ *   output_time = start + (source_time - baseSourceTime) / speed
+ */
+interface IdMapEntry {
+  start: number;
+  end: number;
+  baseSourceTime: number;
+  speed: number;
+}
+
+function buildIdMapEntry(original: Child, resolved: ResolvedChild): IdMapEntry {
+  const start = resolved.timelineStart;
+  const end = resolved.timelineEnd;
+  if (resolved.type === "clip") {
+    return { start, end, baseSourceTime: resolved.sourceIn, speed: resolved.speed };
+  }
+  if (resolved.type === "empty") {
+    return { start, end, baseSourceTime: 0, speed: 1 };
+  }
+  // composition or overlay — source time is the pre-window inner timeline
+  const baseSourceTime =
+    original.type === "composition" || original.type === "overlay"
+      ? original.in ?? 0
+      : 0;
+  return { start, end, baseSourceTime, speed: resolved.speed };
+}
+
 function resolveAnchorTime(
   spec: TimeAnchor,
-  idMap: Map<string, { start: number; end: number }>
+  idMap: Map<string, IdMapEntry>
 ): number {
-  // No anchor: offset is an absolute seconds value (percentage offset only
-  // makes sense when there's an anchor whose length the % refers to).
+  // No anchor: offset is an absolute seconds value (percentage offset and
+  // timeSource don't apply — there's nothing to be a percentage/source of).
   if (spec.anchor == null) {
     if (spec.anchorPoint != null) {
       throw new Error("'anchorPoint' requires an 'anchor'");
+    }
+    if (spec.timeSource != null) {
+      throw new Error("'timeSource' requires an 'anchor'");
     }
     if (typeof spec.offset === "string") {
       throw new Error(
@@ -307,9 +338,30 @@ function resolveAnchorTime(
     throw new Error(`anchor "${spec.anchor}" not found`);
   }
   const anchorLen = anchor.end - anchor.start;
+  if (spec.timeSource == null) {
+    throw new Error("'timeSource' is required when 'anchor' is provided");
+  }
+  const timeSource = spec.timeSource;
 
-  const pointPct = parsePercent(spec.anchorPoint ?? "0%");
-  const pointTime = anchor.start + anchorLen * pointPct;
+  let pointTime: number;
+  if (timeSource === "source") {
+    if (spec.anchorPoint != null && typeof spec.anchorPoint !== "number") {
+      throw new Error(
+        `when timeSource is "source", anchorPoint must be a number (seconds)`
+      );
+    }
+    const sourceTime = (spec.anchorPoint as number | undefined) ?? 0;
+    pointTime =
+      anchor.start + (sourceTime - anchor.baseSourceTime) / anchor.speed;
+  } else {
+    if (spec.anchorPoint != null && typeof spec.anchorPoint !== "string") {
+      throw new Error(
+        `when timeSource is "output", anchorPoint must be a percentage string`
+      );
+    }
+    const pointPct = parsePercent(spec.anchorPoint ?? "0%");
+    pointTime = anchor.start + anchorLen * pointPct;
+  }
 
   let offsetSec = 0;
   if (spec.offset != null) {
@@ -351,7 +403,7 @@ function forceTimelineDuration(child: Child, target: number): Child {
 
 function resolveAttachment(
   att: Child,
-  idMap: Map<string, { start: number; end: number }>
+  idMap: Map<string, IdMapEntry>
 ): ResolvedChild {
   const startT = att.start ? resolveAnchorTime(att.start, idMap) : null;
   const endT = att.end ? resolveAnchorTime(att.end, idMap) : null;

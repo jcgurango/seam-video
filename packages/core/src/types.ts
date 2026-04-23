@@ -56,17 +56,31 @@ export interface SpatialFields {
 
 /**
  * A timing anchor references another child (by `id`) in the enclosing
- * composition's scope. `anchorPoint` is a percentage into the anchor's
- * resolved duration (0% = start, 100% = end; default 0% when an anchor is
- * given). `offset` shifts by absolute seconds (number) or by a percentage
- * of the anchor's length (string like "25%"). When `anchor` is omitted,
- * `anchorPoint` must also be omitted and `offset` is relative to the
- * composition's start.
+ * composition's scope.
+ *
+ * When `anchor` is set, `timeSource` is required and selects the coordinate
+ * space of `anchorPoint`:
+ * - `"output"`: `anchorPoint` is a percentage string (e.g. "50%") into the
+ *   anchor's *output* duration (0% = start, 100% = end).
+ * - `"source"`: `anchorPoint` is a number of seconds in the anchor's *source*
+ *   timeline — the pre-trim/pre-speed media time for clips, or the pre-window
+ *   inner timeline for compositions/overlays. The resolver reverses the
+ *   clip's in/out+speed (or the composition's windowing) to find the
+ *   corresponding output time, so values can land outside the anchor's
+ *   visible range (negative output times are legal).
+ *
+ * `offset` always shifts in *output* time — a number is absolute seconds,
+ * a string like "25%" is that fraction of the anchor's output length.
+ *
+ * When `anchor` is omitted, `anchorPoint`/`timeSource` must also be omitted
+ * and `offset` is relative to the composition's start (and cannot be a
+ * percentage).
  */
 export interface TimeAnchor {
   anchor?: string;
-  anchorPoint?: string;
+  anchorPoint?: string | number;
   offset?: number | string;
+  timeSource?: "output" | "source";
 }
 
 export interface ChildTimingFields extends SpatialFields {

@@ -56,11 +56,29 @@ const PercentStringSchema = z.string().regex(
 
 export const TimeAnchorSchema = z.object({
   anchor: z.string().min(1).optional(),
-  anchorPoint: PercentStringSchema.optional(),
+  anchorPoint: z.union([PercentStringSchema, z.number()]).optional(),
   offset: z.union([z.number(), PercentStringSchema]).optional(),
+  timeSource: z.enum(["output", "source"]).optional(),
 }).refine(
   (data) => !(data.anchor == null && data.anchorPoint != null),
   { message: "'anchorPoint' requires an 'anchor'" }
+).refine(
+  (data) => !(data.anchor == null && data.timeSource != null),
+  { message: "'timeSource' requires an 'anchor'" }
+).refine(
+  (data) => !(data.anchor != null && data.timeSource == null),
+  { message: "'timeSource' is required when 'anchor' is provided" }
+).refine(
+  (data) => {
+    if (data.anchorPoint == null) return true;
+    const isSource = data.timeSource === "source";
+    if (isSource) return typeof data.anchorPoint === "number";
+    return typeof data.anchorPoint === "string";
+  },
+  {
+    message:
+      "anchorPoint must be a number (seconds) when timeSource is 'source', or a percentage string (e.g. '50%') otherwise",
+  }
 );
 
 const AnchorFieldsSchema = {
