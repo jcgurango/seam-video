@@ -49,6 +49,26 @@ export const DimensionStringSchema = z.string().regex(
   "Must be a CSS dimension string (e.g. '10px', '50%', '100')"
 );
 
+const PercentStringSchema = z.string().regex(
+  /^-?\d+(?:\.\d+)?%$/,
+  "Must be a percentage string (e.g. '50%', '-25%')"
+);
+
+export const TimeAnchorSchema = z.object({
+  anchor: z.string().min(1).optional(),
+  anchorPoint: PercentStringSchema.optional(),
+  offset: z.union([z.number(), PercentStringSchema]).optional(),
+}).refine(
+  (data) => !(data.anchor == null && data.anchorPoint != null),
+  { message: "'anchorPoint' requires an 'anchor'" }
+);
+
+const AnchorFieldsSchema = {
+  id: z.string().min(1).optional(),
+  start: TimeAnchorSchema.optional(),
+  end: TimeAnchorSchema.optional(),
+};
+
 const SpatialFieldsSchema = {
   position: PositionSchema.optional(),
   objectFit: ObjectFitSchema.optional(),
@@ -98,6 +118,7 @@ export const ClipSchema = z.object({
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
 }).refine(
   (data) => !(data.speed != null && data.duration != null),
   { message: "Cannot specify both 'speed' and 'duration' on a clip" }
@@ -107,6 +128,7 @@ export const EmptySchema = z.object({
   type: z.literal("empty"),
   duration: z.number().positive(),
   flex: z.number().positive().optional(),
+  ...AnchorFieldsSchema,
 });
 
 export const AlignItemsSchema = z.enum(["start", "end", "center"]);
@@ -121,6 +143,7 @@ export const RefChildSchema = z.object({
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
 });
 
 export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
@@ -139,6 +162,7 @@ export const OverlaySchema: z.ZodType<any> = z.lazy(() =>
     contentWidth: z.number().positive().optional(),
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,
+    ...AnchorFieldsSchema,
   })
 );
 
@@ -156,6 +180,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
     children: z.array(ChildSchema).min(1),
+    attachments: z.array(ChildSchema).optional(),
     refs: z.record(z.string(), ChildSchema).optional(),
     duration: z.number().positive().optional(),
     unitDuration: z.number().positive().optional(),
@@ -169,6 +194,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     contentWidth: z.number().positive().optional(),
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,
+    ...AnchorFieldsSchema,
   }).refine(
     (data) => !(data.duration != null && data.unitDuration != null),
     { message: "Cannot specify both 'duration' and 'unitDuration'" }

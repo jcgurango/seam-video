@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are four types of nodes: **clip**, **empty**, **composition**, and **overlay**.
+There are five types of nodes: **clip**, **empty**, **composition**, **overlay**, and **ref**.
 
 ### Clip
 
@@ -61,6 +61,8 @@ A clip references a segment of a source media file.
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `top`, `left`, `right`, `bottom`, `width`, `height` | string | no | Box properties (see [Spatial Layout](#spatial-layout)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 
 The **natural duration** of a clip is `out - in`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
 
@@ -84,6 +86,8 @@ An empty node is a gap — silence and black for a given duration.
 | `type` | `"empty"` | yes | Must be `"empty"` |
 | `duration` | number | yes | Length of the gap in seconds (> 0) |
 | `flex` | number | no | Proportional sizing weight (see [Flex](#flex)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 
 ### Composition
 
@@ -102,7 +106,9 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | yes | One or more child nodes (clips, empties, compositions, or overlays) |
+| `children` | array | yes | One or more child nodes (clips, empties, compositions, overlays, or refs) |
+| `attachments` | array | no | Anchored overlay children (see [Attachments](#attachments)) |
+| `refs` | object | no | Reusable child definitions keyed by name (see [Refs](#refs)) |
 | `duration` | number | no | Fixes the total container duration in seconds (mutually exclusive with `unitDuration`) |
 | `unitDuration` | number | no | Duration per unit of flex (see [unitDuration](#unitduration)); mutually exclusive with `duration` |
 | `layout` | object | no | Controls spacing and alignment (see [Layout](#layout)) |
@@ -114,6 +120,8 @@ A composition is a container that holds other nodes in sequence. The root of eve
 | `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 
 #### Nested Compositions and Windowing
 
@@ -158,6 +166,7 @@ An overlay stacks its children visually — all playing at the same time, layere
 |-------|------|----------|-------------|
 | `type` | `"overlay"` | yes | Must be `"overlay"` |
 | `children` | array | yes | One or more child nodes, stacked bottom to top |
+| `refs` | object | no | Reusable child definitions keyed by name (see [Refs](#refs)) |
 | `duration` | number | no | Total duration (defaults to the longest child's natural duration) |
 | `alignItems` | string | no | Where shorter children sit within the overlay's duration (default: `"start"`) |
 | `in` | number | no | Window start when used as a child (seconds, >= 0) |
@@ -168,6 +177,8 @@ An overlay stacks its children visually — all playing at the same time, layere
 | `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 
 #### alignItems
 
@@ -199,6 +210,24 @@ If `duration` is set shorter than a child, that child is overflowed. The default
 #### Flex in overlays
 
 In an overlay, `flex` works as a boolean: any `flex` value greater than 0 forces the child to match the overlay's duration (triggering overflow or underflow as needed). Unlike compositions, relative flex values don't matter — `flex: 1` and `flex: 2` have the same effect.
+
+### Ref
+
+A ref is a placeholder that stands in for a definition stored in some enclosing composition or overlay's `refs` dict. See [Refs](#refs) for the full model.
+
+```json
+{ "type": "ref", "source": "title_card" }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"ref"` | yes | Must be `"ref"` |
+| `source` | string | yes | Name of the definition in an enclosing `refs` dict |
+| `in`, `out` | number | no | Window into the resolved definition (same semantics as on a composition child) |
+| `flex`, `overflow`, `underflow` | — | no | Standard timing modifiers applied to the resolved definition |
+| `filters`, `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Standard spatial/filter modifiers |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 
 ## Layout
 
@@ -361,6 +390,130 @@ Applied when the target duration is greater than the natural duration. No defaul
 ```
 
 If this clip's flex allocation is 10 seconds, `"stretch"` plays the 5-10s range at 0.5x speed.
+
+## Refs
+
+Refs let you define a piece of content once and reference it from multiple places. A composition or overlay can declare a `refs` dict, and any descendant can use a `ref` node to insert a resolved copy of the named definition.
+
+```json
+{
+  "type": "composition",
+  "refs": {
+    "sting": { "type": "clip", "source": "sting.mp4", "in": 0, "out": 1.5 }
+  },
+  "children": [
+    { "type": "clip", "source": "scene1.mp4", "in": 0, "out": 8 },
+    { "type": "ref", "source": "sting" },
+    { "type": "clip", "source": "scene2.mp4", "in": 0, "out": 12 },
+    { "type": "ref", "source": "sting" }
+  ]
+}
+```
+
+Both refs resolve to the same 1.5-second clip. Editing `refs.sting` updates every usage.
+
+### Scoping
+
+Ref lookup walks the enclosing scope chain outward from the usage site. The **shallowest** matching `refs` dict wins, so an inner composition can shadow an outer name. Nested refs inside a definition resolve in the scope where the definition was *authored*, not where the enclosing ref is used — this keeps a deep composition from accidentally shadowing a name the definition expected.
+
+### Windowing a ref
+
+A ref node accepts the same timing and spatial modifiers as other children (`in`, `out`, `flex`, `overflow`, `underflow`, filters, box properties). Those window and position the *resolved duration* of the definition rather than any source-level fields.
+
+```json
+{
+  "type": "composition",
+  "refs": {
+    "full_interview": {
+      "type": "composition",
+      "children": [
+        { "type": "clip", "source": "camA.mp4", "in": 0, "out": 60 },
+        { "type": "clip", "source": "camB.mp4", "in": 0, "out": 60 }
+      ]
+    }
+  },
+  "children": [
+    { "type": "ref", "source": "full_interview", "in": 30, "out": 60 }
+  ]
+}
+```
+
+The definition resolves to a 120-second timeline; the ref windows seconds 30-60 of it.
+
+### Cycles
+
+A ref cannot (transitively) reference itself. The resolver throws if it detects a cycle or an unknown name.
+
+## Attachments
+
+Attachments are overlay children of a composition whose timeline position is expressed relative to other nodes by `id`, not by sequential layout. They render on top of `children` in array order (last on top).
+
+```json
+{
+  "type": "composition",
+  "children": [
+    { "id": "intro", "type": "clip", "source": "intro.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "body.mp4", "in": 0, "out": 30 }
+  ],
+  "attachments": [
+    {
+      "type": "clip",
+      "source": "lower_third.mp4",
+      "in": 0,
+      "out": 3,
+      "start": { "anchor": "intro", "anchorPoint": "100%", "offset": -3 }
+    }
+  ]
+}
+```
+
+The `intro` clip runs from 0 to 10 seconds. The attachment starts 3 seconds before the end of `intro` (at t=7) and plays for its natural 3 seconds.
+
+### IDs
+
+Any child can set an `id`. IDs must be unique within a composition (including across `children` and `attachments`). IDs live in a separate namespace from `refs` names.
+
+### Time anchors
+
+Both `start` and `end` on an attachment are objects shaped like:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `anchor` | string | `id` of another node in the same composition. Optional. |
+| `anchorPoint` | string | Percentage into the anchor's resolved duration, e.g. `"50%"`. Defaults to `"0%"` when `anchor` is set. Requires `anchor`. |
+| `offset` | number \| string | Shift from the anchor point. A number is absolute seconds. A string like `"25%"` is that fraction of the anchor's length. When no `anchor` is given, `offset` is absolute seconds measured from the composition's start, and the `%` form is not allowed. |
+
+The anchor's resolved duration is its `timelineEnd - timelineStart` on the output timeline (after all flex/overflow resolution).
+
+### How start and end interact
+
+| Given | Effect |
+|-------|--------|
+| Neither `start` nor `end` | The attachment starts at t=0 of the composition and plays for its natural duration. |
+| `start` only | The attachment starts at the resolved start time and plays for its natural duration. |
+| `end` only | The attachment ends at the resolved end time; its start is back-computed from natural duration. |
+| Both `start` and `end` | Timeline duration is `end - start`. The attachment is forced to fit: clips adjust their speed to span the window; compositions and overlays stretch (equivalent to `overflow: "stretch", underflow: "stretch"`). |
+
+If `end` resolves before `start`, the resolver throws.
+
+### Cross-attachment anchors
+
+Attachments are resolved in array order. Each attachment's `id`, once resolved, is added to the id map, so a later attachment can anchor to an earlier one.
+
+```json
+{
+  "attachments": [
+    { "id": "a", "type": "clip", "source": "x.mp4", "in": 0, "out": 2, "start": { "offset": 5 } },
+    { "type": "clip", "source": "y.mp4", "in": 0, "out": 1, "start": { "anchor": "a", "anchorPoint": "100%" } }
+  ]
+}
+```
+
+`a` starts at t=5 (from composition origin), running to t=7. The second attachment begins at t=7.
+
+### Over-constrained cases
+
+When both anchors are given, the attachment's own `duration`, `speed`, `in`/`out` window, and flex strategies are overridden as needed to make the clip span the anchored window. If you want a different interaction (e.g. "start here and stop at the clip's natural end regardless of where `end` anchors"), drop the conflicting side.
 
 ## Filters
 

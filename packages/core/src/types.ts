@@ -54,6 +54,21 @@ export interface SpatialFields {
   height?: string;
 }
 
+/**
+ * A timing anchor references another child (by `id`) in the enclosing
+ * composition's scope. `anchorPoint` is a percentage into the anchor's
+ * resolved duration (0% = start, 100% = end; default 0% when an anchor is
+ * given). `offset` shifts by absolute seconds (number) or by a percentage
+ * of the anchor's length (string like "25%"). When `anchor` is omitted,
+ * `anchorPoint` must also be omitted and `offset` is relative to the
+ * composition's start.
+ */
+export interface TimeAnchor {
+  anchor?: string;
+  anchorPoint?: string;
+  offset?: number | string;
+}
+
 export interface ChildTimingFields extends SpatialFields {
   in?: number;
   out?: number;
@@ -61,6 +76,12 @@ export interface ChildTimingFields extends SpatialFields {
   overflow?: Overflow;
   underflow?: Underflow;
   filters?: Filter[];
+  /** Identifier for anchor references within the enclosing composition. */
+  id?: string;
+  /** Anchor for the child's timeline start (only meaningful in attachments). */
+  start?: TimeAnchor;
+  /** Anchor for the child's timeline end (only meaningful in attachments). */
+  end?: TimeAnchor;
 }
 
 export interface Clip extends ChildTimingFields {
@@ -76,11 +97,19 @@ export interface Empty {
   type: "empty";
   duration: number;
   flex?: number;
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
 }
 
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
+  /**
+   * Anchored overlays on top of `children`. Each attachment's `start`/`end`
+   * may reference child IDs. Attachments render in array order, last on top.
+   */
+  attachments?: Child[];
   refs?: Record<string, Child>;
   duration?: number;
   unitDuration?: number;

@@ -1,4 +1,10 @@
-import type { Composition, Overlay, Child, Overflow } from "../types.js";
+import type {
+  Composition,
+  Overlay,
+  Child,
+  Overflow,
+  TimeAnchor,
+} from "../types.js";
 import type {
   ResolvedTimeline,
   ResolvedChild,
@@ -228,7 +234,8 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     containerDuration
   );
 
-  // Assign timeline positions
+  // Assign timeline positions + build id map for attachment anchors
+  const idMap = new Map<string, { start: number; end: number }>();
   for (let i = 0; i < resolvedChildren.length; i++) {
     const start = offsets[i];
     const end = start + actualDurations[i];
@@ -237,6 +244,31 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
       timelineStart: start,
       timelineEnd: end,
     };
+    const id = getId(children[i]);
+    if (id != null) {
+      if (idMap.has(id)) {
+        throw new Error(`duplicate id "${id}" in composition`);
+      }
+      idMap.set(id, { start, end });
+    }
+  }
+
+  // Resolve attachments in array order. Each attachment can reference IDs of
+  // children or earlier attachments. Rendered as regular resolved children
+  // appended after the sequential ones — later = on top.
+  for (const att of composition.attachments ?? []) {
+    const resolvedAtt = resolveAttachment(att, idMap);
+    resolvedChildren.push(resolvedAtt);
+    const id = getId(att);
+    if (id != null) {
+      if (idMap.has(id)) {
+        throw new Error(`duplicate id "${id}" in composition`);
+      }
+      idMap.set(id, {
+        start: resolvedAtt.timelineStart,
+        end: resolvedAtt.timelineEnd,
+      });
+    }
   }
 
   return {
@@ -245,6 +277,121 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     ...(composition.objectFit ? { objectFit: composition.objectFit } : {}),
     ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
     ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
+  };
+}
+
+function getId(child: Child): string | undefined {
+  return (child as { id?: string }).id;
+}
+
+function resolveAnchorTime(
+  spec: TimeAnchor,
+  idMap: Map<string, { start: number; end: number }>
+): number {
+  // No anchor: offset is an absolute seconds value (percentage offset only
+  // makes sense when there's an anchor whose length the % refers to).
+  if (spec.anchor == null) {
+    if (spec.anchorPoint != null) {
+      throw new Error("'anchorPoint' requires an 'anchor'");
+    }
+    if (typeof spec.offset === "string") {
+      throw new Error(
+        "percentage offset requires an 'anchor' (there's no anchor to take a percentage of)"
+      );
+    }
+    return spec.offset ?? 0;
+  }
+
+  const anchor = idMap.get(spec.anchor);
+  if (!anchor) {
+    throw new Error(`anchor "${spec.anchor}" not found`);
+  }
+  const anchorLen = anchor.end - anchor.start;
+
+  const pointPct = parsePercent(spec.anchorPoint ?? "0%");
+  const pointTime = anchor.start + anchorLen * pointPct;
+
+  let offsetSec = 0;
+  if (spec.offset != null) {
+    if (typeof spec.offset === "number") {
+      offsetSec = spec.offset;
+    } else {
+      offsetSec = parsePercent(spec.offset) * anchorLen;
+    }
+  }
+
+  return pointTime + offsetSec;
+}
+
+function parsePercent(s: string): number {
+  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
+  if (!m) throw new Error(`expected percentage string, got "${s}"`);
+  return parseFloat(m[1]) / 100;
+}
+
+/**
+ * Force a child to render at exactly `target` timeline seconds. Clips adjust
+ * via `duration` (which implies speed); composition/overlay windows use
+ * stretch overflow/underflow so their effective speed scales to fit.
+ */
+function forceTimelineDuration(child: Child, target: number): Child {
+  if (child.type === "clip") {
+    const { speed: _s, ...rest } = child;
+    return { ...rest, duration: target };
+  }
+  if (child.type === "empty") {
+    return { ...child, duration: target };
+  }
+  if (child.type === "composition" || child.type === "overlay") {
+    return { ...child, overflow: "stretch", underflow: "stretch" };
+  }
+  // ref should've been inlined already
+  return child;
+}
+
+function resolveAttachment(
+  att: Child,
+  idMap: Map<string, { start: number; end: number }>
+): ResolvedChild {
+  const startT = att.start ? resolveAnchorTime(att.start, idMap) : null;
+  const endT = att.end ? resolveAnchorTime(att.end, idMap) : null;
+
+  let effective: Child = att;
+  let position: number;
+  let target: number;
+
+  if (startT != null && endT != null) {
+    if (endT <= startT) {
+      throw new Error(
+        `attachment end (${endT}) must be after start (${startT})`
+      );
+    }
+    position = startT;
+    target = endT - startT;
+    effective = forceTimelineDuration(att, target);
+  } else if (startT != null) {
+    position = startT;
+    target = naturalDuration(att);
+  } else if (endT != null) {
+    target = naturalDuration(att);
+    position = endT - target;
+  } else {
+    position = 0;
+    target = naturalDuration(att);
+  }
+
+  const nat = naturalDuration(effective);
+  const { resolved, actualDuration } = resolveChild(
+    effective,
+    nat,
+    target,
+    "stretch"
+  );
+
+  return {
+    ...resolved,
+    timelineStart: position,
+    timelineEnd: position + actualDuration,
   };
 }
 

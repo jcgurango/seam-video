@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { renderCommand } from "./commands/render.js";
 import { previewCommand } from "./commands/preview.js";
+import { resolveCommand } from "./commands/resolve.js";
 
 const program = new Command();
 
@@ -23,5 +24,15 @@ program
   .command("preview <file>")
   .description("Open an Electron preview of a .seam file")
   .action(previewCommand);
+
+program
+  .command("resolve <file>")
+  .description("Print the resolved timeline JSON for a .seam file")
+  .option("-o, --output <path>", "Write to file instead of stdout")
+  .option("--width <number>", "Canvas width in pixels", "1920")
+  .option("--height <number>", "Canvas height in pixels", "1080")
+  .option("--no-spatial", "Skip spatial resolution (temporal layout only)")
+  .option("--no-pretty", "Emit minified JSON")
+  .action(resolveCommand);
 
 program.parse();

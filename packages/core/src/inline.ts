@@ -9,6 +9,7 @@ import type {
   Overflow,
   Position,
   RefChild,
+  TimeAnchor,
   Underflow,
 } from "./types.js";
 
@@ -54,13 +55,21 @@ function inlineNode(
       const newChildren = node.children.map((c) =>
         inlineNode(c, newStack, active)
       );
+      const newAttachments =
+        node.type === "composition" && node.attachments
+          ? node.attachments.map((c) => inlineNode(c, newStack, active))
+          : undefined;
       // Strip `refs` from the output — after inlining there's nothing left
       // to reference them.
       const { refs: _refs, ...rest } = node as Composition & {
         refs?: unknown;
       };
       void _refs;
-      return { ...rest, children: newChildren } as Child;
+      const result = { ...rest, children: newChildren } as Child;
+      if (newAttachments && result.type === "composition") {
+        (result as Composition).attachments = newAttachments;
+      }
+      return result;
     }
   }
 }
@@ -124,6 +133,9 @@ interface RefFields {
   bottom?: string;
   width?: string;
   height?: string;
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
 }
 
 function wrapWithRefFields(def: Child, ref: RefFields): Composition {
@@ -144,5 +156,8 @@ function wrapWithRefFields(def: Child, ref: RefFields): Composition {
     ...(ref.bottom != null ? { bottom: ref.bottom } : {}),
     ...(ref.width != null ? { width: ref.width } : {}),
     ...(ref.height != null ? { height: ref.height } : {}),
+    ...(ref.id != null ? { id: ref.id } : {}),
+    ...(ref.start != null ? { start: ref.start } : {}),
+    ...(ref.end != null ? { end: ref.end } : {}),
   };
 }
