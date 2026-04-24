@@ -201,15 +201,23 @@ export default function App({ platform }: AppProps) {
     }
   }, [document]);
 
+  // The view's effective document (i.e. what the player/timeline show).
+  // For root it's the real document; for nested views it's the subtree
+  // being drilled into, adapted per view type (see getViewDocument).
+  const viewDocument = useMemo<SeamFile>(
+    () => (view.type === "root" ? document : getViewDocument(document, view)),
+    [document, view]
+  );
+
   const viewTimeline = useMemo<ResolvedTimeline | null>(() => {
     if (!rootTimeline) return null;
     if (view.type === "root") return rootTimeline;
     try {
-      return resolveDoc(getViewDocument(document, view));
+      return resolveDoc(viewDocument);
     } catch {
       return null;
     }
-  }, [document, view, rootTimeline]);
+  }, [view, rootTimeline, viewDocument]);
 
   useEffect(() => {
     try {
@@ -220,11 +228,18 @@ export default function App({ platform }: AppProps) {
     }
   }, [document]);
 
-  // Guard: if the clip we're viewing no longer exists, bounce to root
+  // Guard: if the child we're viewing no longer exists (or changed type),
+  // bounce to root.
   useEffect(() => {
     if (view.type === "clip") {
       const target = document.children[view.rootIndex];
       if (!target || target.type !== "clip") {
+        setView(ROOT_VIEW);
+        setInitialTime(0);
+      }
+    } else if (view.type === "composition") {
+      const target = document.children[view.rootIndex];
+      if (!target || target.type !== "composition") {
         setView(ROOT_VIEW);
         setInitialTime(0);
       }
@@ -310,19 +325,36 @@ export default function App({ platform }: AppProps) {
 
   // ── View navigation ────────────────────────────────────────────
 
-  const handleEnterClip = useCallback(
+  const handleEnterChild = useCallback(
     async (rootIndex: number, currentParentTime: number) => {
       if (!rootTimeline) return;
       const target = document.children[rootIndex];
-      if (!target || target.type !== "clip") return;
-      const basePath = filePathRef.current
-        ? dirname(filePathRef.current)
-        : "";
-      try {
-        const sourceDuration = await probeSourceDuration(
-          target.source,
-          basePath
-        );
+      if (!target) return;
+
+      if (target.type === "clip") {
+        const basePath = filePathRef.current
+          ? dirname(filePathRef.current)
+          : "";
+        try {
+          const sourceDuration = await probeSourceDuration(
+            target.source,
+            basePath
+          );
+          const initT = timeOnEnter(
+            document,
+            rootTimeline,
+            rootIndex,
+            currentParentTime
+          );
+          setInitialTime(initT);
+          setView({ type: "clip", rootIndex, sourceDuration });
+        } catch (err) {
+          setErrors([String(err)]);
+        }
+        return;
+      }
+
+      if (target.type === "composition") {
         const initT = timeOnEnter(
           document,
           rootTimeline,
@@ -330,10 +362,9 @@ export default function App({ platform }: AppProps) {
           currentParentTime
         );
         setInitialTime(initT);
-        setView({ type: "clip", rootIndex, sourceDuration });
-      } catch (err) {
-        setErrors([String(err)]);
+        setView({ type: "composition", rootIndex });
       }
+      // Other types (empty, ref) aren't enterable yet.
     },
     [document, rootTimeline]
   );
@@ -506,7 +537,7 @@ export default function App({ platform }: AppProps) {
   const basePath = filePath ? dirname(filePath) : "";
 
   const viewKey =
-    view.type === "root" ? "root" : `clip-${view.rootIndex}`;
+    view.type === "root" ? "root" : `${view.type}-${view.rootIndex}`;
 
   // Selection bar: desktop shows when 2+ selected; mobile shows throughout
   // the explicit multi-select mode (started by a long-press).
@@ -608,12 +639,13 @@ export default function App({ platform }: AppProps) {
           canRedo={history.canRedo}
           view={view}
           onExit={handleExit}
-          onEnterClip={handleEnterClip}
+          onEnterClip={handleEnterChild}
           platform={platform}
         />
         <TimelinePanel
           timeline={viewTimeline}
           document={document}
+          viewDocument={viewDocument}
           filePath={filePath}
           isMobile={isMobile}
           selectedIndices={selectedIndices}
@@ -622,7 +654,7 @@ export default function App({ platform }: AppProps) {
           onMultiSelectStart={onMultiSelectStart}
           onDocumentChange={updateDocument}
           view={view}
-          onEnterClip={handleEnterClip}
+          onEnterClip={handleEnterChild}
           history={history}
           platform={platform}
         />

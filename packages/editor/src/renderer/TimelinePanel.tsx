@@ -9,6 +9,12 @@ import type { Platform } from "./platform/index.js";
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
   document?: SeamFile;
+  /**
+   * The document corresponding to `timeline` (i.e. after any view-level
+   * unwrapping, like entering a composition). Used to resolve block labels
+   * and to separate `children` vs `attachments` on the timeline.
+   */
+  viewDocument?: SeamFile;
   filePath?: string | null;
   isMobile: boolean;
   selectedIndices: number[];
@@ -824,6 +830,7 @@ function ClipPlaybackConstraint({
 export default function TimelinePanel({
   timeline,
   document: doc,
+  viewDocument,
   filePath,
   isMobile,
   selectedIndices,
@@ -967,35 +974,43 @@ export default function TimelinePanel({
       {/* Playback constraint (clip view only) */}
       {trim && <ClipPlaybackConstraint inTime={trim.inTime} outTime={trim.outTime} />}
 
-      {isMobile ? (
-        <MobileTimeline
-          timeline={timeline}
-          docRoot={view.type === "root" ? doc : undefined}
-          attachmentStartIndex={
-            view.type === "root" && doc ? doc.children.length : undefined
-          }
-          selectedIndices={selectedIndices}
-          onSelectionChange={onSelectionChange}
-          onMultiSelectStart={onMultiSelectStart}
-          multiSelectMode={multiSelectMode}
-          onEnter={onEnterProp}
-          trim={trim}
-        />
-      ) : (
-        <DesktopTimeline
-          timeline={timeline}
-          docRoot={view.type === "root" ? doc : undefined}
-          attachmentStartIndex={
-            view.type === "root" && doc ? doc.children.length : undefined
-          }
-          selectedIndices={selectedIndices}
-          onSelectionChange={onSelectionChange}
-          onMultiSelectStart={onMultiSelectStart}
-          multiSelectMode={multiSelectMode}
-          onEnter={onEnterProp}
-          trim={trim}
-        />
-      )}
+      {(() => {
+        // For root and composition views the panel renders the view-doc's
+        // children (+ attachments) as blocks; clip view is driven by the
+        // trim overlay instead, so we skip the docRoot split there.
+        const panelDoc =
+          view.type === "root"
+            ? doc
+            : view.type === "composition"
+              ? viewDocument
+              : undefined;
+        const splitIndex = panelDoc ? panelDoc.children.length : undefined;
+        return isMobile ? (
+          <MobileTimeline
+            timeline={timeline}
+            docRoot={panelDoc}
+            attachmentStartIndex={splitIndex}
+            selectedIndices={selectedIndices}
+            onSelectionChange={onSelectionChange}
+            onMultiSelectStart={onMultiSelectStart}
+            multiSelectMode={multiSelectMode}
+            onEnter={onEnterProp}
+            trim={trim}
+          />
+        ) : (
+          <DesktopTimeline
+            timeline={timeline}
+            docRoot={panelDoc}
+            attachmentStartIndex={splitIndex}
+            selectedIndices={selectedIndices}
+            onSelectionChange={onSelectionChange}
+            onMultiSelectStart={onMultiSelectStart}
+            multiSelectMode={multiSelectMode}
+            onEnter={onEnterProp}
+            trim={trim}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -572,23 +572,30 @@ export default function ControlsBar({
             </button>
             <button
               onClick={() => {
-                const clipIdx = [...selectedIndices]
+                const enterableIdx = [...selectedIndices]
                   .sort((a, b) => a - b)
-                  .find((i) => doc.children[i]?.type === "clip");
-                if (clipIdx != null) onEnterClip(clipIdx, currentTime);
+                  .find((i) => {
+                    const t = doc.children[i]?.type;
+                    return t === "clip" || t === "composition";
+                  });
+                if (enterableIdx != null) onEnterClip(enterableIdx, currentTime);
               }}
               style={{
                 ...BTN_STYLE,
-                opacity: selectedIndices.some(
-                  (i) => doc.children[i]?.type === "clip"
-                )
+                opacity: selectedIndices.some((i) => {
+                  const t = doc.children[i]?.type;
+                  return t === "clip" || t === "composition";
+                })
                   ? 1
                   : 0.3,
               }}
               disabled={
-                !selectedIndices.some((i) => doc.children[i]?.type === "clip")
+                !selectedIndices.some((i) => {
+                  const t = doc.children[i]?.type;
+                  return t === "clip" || t === "composition";
+                })
               }
-              title="Enter clip (double-click)"
+              title="Enter (double-click)"
             >
               <LogIn size={ICON_SIZE} />
             </button>
