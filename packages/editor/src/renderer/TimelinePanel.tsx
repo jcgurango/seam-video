@@ -1,10 +1,19 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
-import type { ResolvedTimeline, ResolvedChild, SeamFile, Clip } from "@seam/core";
+import { resolveComposition } from "@seam/core";
+import type {
+  ResolvedTimeline,
+  ResolvedChild,
+  SeamFile,
+  Child,
+  Clip,
+  TimeAnchor,
+} from "@seam/core";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
+import { removeSelected } from "./selection.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -136,7 +145,12 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   data: { bg: "#7a5a3a", border: "#a47a52" },
 };
 
-const SELECTED_BORDER = "#ffcc00";
+const PRIMARY_BORDER = "#ffcc00";
+// Secondary selection: dashed yellow conveys "linked to the primary" — we
+// reuse the same hue so it reads as still-selected, but the dashes signal
+// that this block is a follower, not the lead.
+const SECONDARY_BORDER = "#b8a040";
+const SELECTED_BORDER = PRIMARY_BORDER;
 
 // ── Trim overlay spec (used in clip view) ────────────────────────────
 
@@ -176,6 +190,8 @@ interface InnerProps {
   multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   trim?: TrimOverlay;
+  /** Provided only in root view, where attachment edits are writable. */
+  editHistory?: History<SeamFile>;
 }
 
 function DesktopTimeline({
@@ -188,6 +204,7 @@ function DesktopTimeline({
   multiSelectMode,
   onEnter,
   trim,
+  editHistory,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -280,6 +297,14 @@ function DesktopTimeline({
           docRoot={docRoot}
           attachmentStartIndex={splitIndex}
         />
+        <AnchorLinesLayer
+          selectedIndices={selectedIndices}
+          docRoot={docRoot}
+          timeline={timeline}
+          blocks={blocks}
+          pxPerSec={pxPerSec}
+          history={editHistory}
+        />
         {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
       </div>
@@ -297,6 +322,7 @@ function MobileTimeline({
   multiSelectMode,
   onEnter,
   trim,
+  editHistory,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -396,6 +422,13 @@ function MobileTimeline({
             docRoot={docRoot}
             attachmentStartIndex={splitIndex}
           />
+          <AnchorLinesLayer
+            selectedIndices={selectedIndices}
+            docRoot={docRoot}
+            timeline={timeline}
+            blocks={blocks}
+            pxPerSec={pxPerSec}
+          />
           {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
       </div>
@@ -471,6 +504,14 @@ function ChildrenLayer({
           ? docRoot?.attachments?.[index - attachmentStartIndex]
           : docRoot?.children[index];
         const displayChild = docChild;
+        const isSelected = selectedIndices.includes(index);
+        // Only distinguish primary vs secondary when 2+ are selected — a
+        // single selection has no "primary" relationship to highlight.
+        const isPrimary =
+          isSelected &&
+          !isAttachment &&
+          selectedIndices.length >= 2 &&
+          selectedIndices[0] === index;
         return (
           <ChildBlockView
             key={index}
@@ -480,7 +521,8 @@ function ChildrenLayer({
             row={row}
             pxPerSec={pxPerSec}
             isAttachment={isAttachment}
-            isSelected={selectedIndices.includes(index)}
+            isSelected={isSelected}
+            isPrimary={isPrimary}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
             onMultiSelectStart={onMultiSelectStart}
@@ -501,6 +543,7 @@ function ChildBlockView({
   pxPerSec,
   isAttachment,
   isSelected,
+  isPrimary,
   selectedIndices,
   onSelectionChange,
   onMultiSelectStart,
@@ -514,6 +557,7 @@ function ChildBlockView({
   pxPerSec: number;
   isAttachment: boolean;
   isSelected: boolean;
+  isPrimary: boolean;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
   onMultiSelectStart: (index: number) => void;
@@ -593,18 +637,14 @@ function ChildBlockView({
     if (onEnter) onEnter(index);
   };
 
-  // Attachments render but are not yet interactive — selection/delete/enter
-  // only operate on doc.children indices today.
-  const interactiveHandlers = isAttachment
-    ? {}
-    : {
-        onPointerDown: handlePointerDown,
-        onPointerMove: handlePointerMove,
-        onPointerUp: handlePointerUp,
-        onPointerCancel: clearLongPress,
-        onDoubleClick: handleDoubleClick,
-        onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
-      };
+  const interactiveHandlers = {
+    onPointerDown: handlePointerDown,
+    onPointerMove: handlePointerMove,
+    onPointerUp: handlePointerUp,
+    onPointerCancel: clearLongPress,
+    onDoubleClick: handleDoubleClick,
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  };
 
   return (
     <div
@@ -626,8 +666,14 @@ function ChildBlockView({
         color: "#fff",
         whiteSpace: "nowrap",
         boxSizing: "border-box",
-        border: `2px solid ${isSelected ? SELECTED_BORDER : colors.border}`,
-        cursor: isAttachment ? "default" : "pointer",
+        border: isSelected
+          ? isPrimary
+            ? `2px solid ${PRIMARY_BORDER}`
+            : selectedIndices.length >= 2
+              ? `2px dashed ${SECONDARY_BORDER}`
+              : `2px solid ${PRIMARY_BORDER}`
+          : `2px solid ${colors.border}`,
+        cursor: "pointer",
         opacity: isAttachment ? 0.85 : 1,
       }}
     >
@@ -635,6 +681,568 @@ function ChildBlockView({
         {label}
       </span>
     </div>
+  );
+}
+
+// ── Anchor-line overlay ──────────────────────────────────────────────
+//
+// When an attachment is selected, draw a line from the anchored node to the
+// attachment for each of its `start`/`end` anchors:
+//
+//   ── on the anchor's row, a circle at the anchorPoint location;
+//   ── on the attachment's row, a circle at the resolved edge (start or end);
+//   ── a straight line connecting the two.
+//
+// Each circle is labelled `s` (anchorPoint/offset is a number — seconds) or
+// `%` (a percentage string). The labels follow the actual JSON shape, with
+// timeSource-implied defaults when the field is omitted.
+
+interface AnchorLineSpec {
+  key: string;
+  topX: number;
+  topY: number;
+  bottomX: number;
+  bottomY: number;
+  topLabel: "s" | "%";
+  bottomLabel: "s" | "%";
+  edit: AnchorEditCtx;
+}
+
+function parsePct(s: string): number {
+  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
+  return m ? parseFloat(m[1]) / 100 : 0;
+}
+
+/**
+ * Resolved-output time of the anchor *point* (no offset applied). Mirrors
+ * the resolver's source/output formulas so the dot lands exactly where the
+ * resolver would put it; the attachment's edge is `pointTime + offsetSec`,
+ * which we already have on the resolved attachment as `timelineStart` /
+ * `timelineEnd`.
+ */
+function computePointTime(
+  spec: TimeAnchor,
+  anchorDoc: Child,
+  anchorResolved: ResolvedChild
+): number | null {
+  const start = anchorResolved.timelineStart;
+  const end = anchorResolved.timelineEnd;
+
+  let baseSourceTime = 0;
+  let speed = 1;
+  if (anchorResolved.type === "clip" || anchorResolved.type === "audio") {
+    baseSourceTime = anchorResolved.sourceIn;
+    speed = anchorResolved.speed;
+  } else if (anchorResolved.type === "composition") {
+    baseSourceTime =
+      anchorDoc.type === "composition" ? (anchorDoc.in ?? 0) : 0;
+    speed = anchorResolved.speed;
+  }
+
+  const timeSource = spec.timeSource ?? "output";
+  if (timeSource === "source") {
+    const sourceTime =
+      typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
+    return start + (sourceTime - baseSourceTime) / speed;
+  }
+  const pct =
+    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
+  return start + (end - start) * pct;
+}
+
+function findAnchorById(
+  id: string,
+  docRoot: { children: Child[]; attachments?: Child[] },
+  timeline: ResolvedTimeline
+): { doc: Child; resolved: ResolvedChild; blockIndex: number } | null {
+  const childCount = docRoot.children.length;
+  for (let i = 0; i < docRoot.children.length; i++) {
+    if ((docRoot.children[i] as { id?: string }).id === id) {
+      return {
+        doc: docRoot.children[i],
+        resolved: timeline.children[i],
+        blockIndex: i,
+      };
+    }
+  }
+  const atts = docRoot.attachments ?? [];
+  for (let j = 0; j < atts.length; j++) {
+    if ((atts[j] as { id?: string }).id === id) {
+      return {
+        doc: atts[j],
+        resolved: timeline.children[childCount + j],
+        blockIndex: childCount + j,
+      };
+    }
+  }
+  return null;
+}
+
+function anchorPointKind(spec: TimeAnchor): "s" | "%" {
+  if (typeof spec.anchorPoint === "string") return "%";
+  if (typeof spec.anchorPoint === "number") return "s";
+  // Omitted: follow the timeSource-implied default (source → 0sec, output → "0%")
+  return spec.timeSource === "source" ? "s" : "%";
+}
+
+function offsetKind(spec: TimeAnchor): "s" | "%" {
+  return typeof spec.offset === "string" ? "%" : "s";
+}
+
+function rowYTop(row: number): number {
+  return RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
+}
+
+// ── Anchor edit math ─────────────────────────────────────────────────
+//
+// Per-line context the handlers need to translate horizontal pixel motion
+// into anchorPoint / offset value changes (and to convert units on toggle
+// without moving the resolved point).
+
+interface AnchorEditCtx {
+  attIdx: number;
+  side: "start" | "end";
+  pointTime: number;
+  anchorStart: number;
+  anchorEnd: number;
+  anchorBase: number;
+  anchorSpeed: number;
+  attNatDur: number;
+}
+
+const SEC_DECIMALS = 1000;
+const PCT_DECIMALS = 10000;
+const fmtSec = (s: number) => Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
+const fmtPct = (frac: number) =>
+  `${Math.round(frac * 100 * PCT_DECIMALS) / PCT_DECIMALS}%`;
+
+function naturalDurOf(node: Child): number {
+  if (node.type === "clip" || node.type === "audio") {
+    if (node.duration != null) return node.duration;
+    const speed = node.speed ?? 1;
+    return (node.out - node.in) / speed;
+  }
+  if (node.type === "empty") return node.duration;
+  if (node.type === "data") return node.duration ?? 0;
+  if (node.type === "composition") {
+    if (node.in != null && node.out != null) return node.out - node.in;
+    try {
+      return resolveComposition(node).duration;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+/** Drag the anchorPoint to shift the resolved point time by `deltaSec`. */
+function dragAnchorPoint(
+  spec: TimeAnchor,
+  deltaSec: number,
+  ctx: AnchorEditCtx
+): TimeAnchor {
+  if (spec.timeSource === "source") {
+    const oldVal = typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
+    return {
+      ...spec,
+      anchorPoint: fmtSec(oldVal + deltaSec * ctx.anchorSpeed),
+      timeSource: "source",
+    };
+  }
+  // output / undefined → output mode (percentage of anchor's output range)
+  const range = ctx.anchorEnd - ctx.anchorStart;
+  const oldPct =
+    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
+  const newPct = oldPct + (range > 0 ? deltaSec / range : 0);
+  return {
+    ...spec,
+    anchorPoint: fmtPct(newPct),
+    timeSource: "output",
+  };
+}
+
+/** Drag offset by `deltaSec` (output seconds). */
+function dragOffset(
+  spec: TimeAnchor,
+  deltaSec: number,
+  ctx: AnchorEditCtx
+): TimeAnchor {
+  if (typeof spec.offset === "string") {
+    const oldPct = parsePct(spec.offset);
+    const newPct =
+      oldPct + (ctx.attNatDur > 0 ? deltaSec / ctx.attNatDur : 0);
+    return { ...spec, offset: fmtPct(newPct) };
+  }
+  const oldSec = typeof spec.offset === "number" ? spec.offset : 0;
+  return { ...spec, offset: fmtSec(oldSec + deltaSec) };
+}
+
+/**
+ * Toggle anchorPoint between source-seconds and output-percent. Recomputes
+ * from `pointTime` so the dot stays put on the timeline through the toggle.
+ */
+function toggleAnchorPoint(spec: TimeAnchor, ctx: AnchorEditCtx): TimeAnchor {
+  if (anchorPointKind(spec) === "s") {
+    const range = ctx.anchorEnd - ctx.anchorStart;
+    const pct = range > 0 ? (ctx.pointTime - ctx.anchorStart) / range : 0;
+    return { ...spec, anchorPoint: fmtPct(pct), timeSource: "output" };
+  }
+  const sourceTime =
+    ctx.anchorBase + (ctx.pointTime - ctx.anchorStart) * ctx.anchorSpeed;
+  return { ...spec, anchorPoint: fmtSec(sourceTime), timeSource: "source" };
+}
+
+/** Toggle offset between seconds and percent of attachment natural duration. */
+function toggleOffset(spec: TimeAnchor, ctx: AnchorEditCtx): TimeAnchor {
+  if (offsetKind(spec) === "s") {
+    const sec = typeof spec.offset === "number" ? spec.offset : 0;
+    const pct = ctx.attNatDur > 0 ? sec / ctx.attNatDur : 0;
+    return { ...spec, offset: fmtPct(pct) };
+  }
+  const pct = typeof spec.offset === "string" ? parsePct(spec.offset) : 0;
+  return { ...spec, offset: fmtSec(pct * ctx.attNatDur) };
+}
+
+function setAttachmentSpec(
+  doc: SeamFile,
+  attIdx: number,
+  side: "start" | "end",
+  newSpec: TimeAnchor
+): SeamFile {
+  const atts = [...(doc.attachments ?? [])];
+  const att = atts[attIdx];
+  if (!att) return doc;
+  atts[attIdx] = { ...att, [side]: newSpec } as Child;
+  return { ...doc, attachments: atts };
+}
+
+function AnchorLinesLayer({
+  selectedIndices,
+  docRoot,
+  timeline,
+  blocks,
+  pxPerSec,
+  history,
+}: {
+  selectedIndices: number[];
+  docRoot?: {
+    children: import("@seam/core").Child[];
+    attachments?: import("@seam/core").Child[];
+  };
+  timeline: ResolvedTimeline;
+  blocks: ChildBlock[];
+  pxPerSec: number;
+  /** Provided only when editing is allowed (root view). */
+  history?: History<SeamFile>;
+}) {
+  if (!docRoot) return null;
+  const childCount = docRoot.children.length;
+
+  const rowByIndex = new Map<number, number>();
+  for (const b of blocks) rowByIndex.set(b.index, b.row);
+
+  const lines: AnchorLineSpec[] = [];
+
+  for (const sel of selectedIndices) {
+    if (sel < childCount) continue; // only attachments draw lines
+    const j = sel - childCount;
+    const attDoc = docRoot.attachments?.[j];
+    const attResolved = timeline.children[sel];
+    if (!attDoc || !attResolved) continue;
+    const attRow = rowByIndex.get(sel);
+    if (attRow == null) continue;
+
+    for (const side of ["start", "end"] as const) {
+      const spec = (attDoc as { start?: TimeAnchor; end?: TimeAnchor })[side];
+      if (!spec || spec.anchor == null) continue;
+
+      const found = findAnchorById(spec.anchor, docRoot, timeline);
+      if (!found) continue;
+      const anchorRow = rowByIndex.get(found.blockIndex);
+      if (anchorRow == null) continue;
+
+      const pointTime = computePointTime(spec, found.doc, found.resolved);
+      if (pointTime == null) continue;
+
+      // The line is a plumb line dropped from the anchor point — always
+      // perfectly vertical at `pointTime * pxPerSec`, regardless of where
+      // the attachment's resolved edge lands. Offset shifts the clip
+      // sideways relative to the line, not the line.
+      const anchorY0 = rowYTop(anchorRow);
+      const attY0 = rowYTop(attRow);
+      const EXT = 10;
+      let anchorOuterY: number;
+      let attOuterY: number;
+      if (anchorRow < attRow) {
+        anchorOuterY = anchorY0 - EXT;
+        attOuterY = attY0 + ROW_HEIGHT + EXT;
+      } else if (anchorRow > attRow) {
+        anchorOuterY = anchorY0 + ROW_HEIGHT + EXT;
+        attOuterY = attY0 - EXT;
+      } else {
+        anchorOuterY = anchorY0 + ROW_HEIGHT / 2;
+        attOuterY = anchorOuterY;
+      }
+
+      // Build the per-line edit context. Source-base/speed mirror what
+      // `buildIdMapEntry` in the resolver tracks; clip/audio use the
+      // resolved sourceIn + speed, composition uses the doc's `in` (the
+      // pre-window inner-timeline base) + resolved.speed.
+      let anchorBase = 0;
+      let anchorSpeed = 1;
+      if (
+        found.resolved.type === "clip" ||
+        found.resolved.type === "audio"
+      ) {
+        anchorBase = found.resolved.sourceIn;
+        anchorSpeed = found.resolved.speed;
+      } else if (found.resolved.type === "composition") {
+        anchorBase = found.doc.type === "composition" ? found.doc.in ?? 0 : 0;
+        anchorSpeed = found.resolved.speed;
+      }
+
+      const editCtx: AnchorEditCtx = {
+        attIdx: j,
+        side,
+        pointTime,
+        anchorStart: found.resolved.timelineStart,
+        anchorEnd: found.resolved.timelineEnd,
+        anchorBase,
+        anchorSpeed,
+        attNatDur: naturalDurOf(attDoc),
+      };
+
+      const lineX = pointTime * pxPerSec;
+      lines.push({
+        key: `${sel}-${side}`,
+        topX: lineX,
+        topY: anchorOuterY,
+        bottomX: lineX,
+        bottomY: attOuterY,
+        topLabel: anchorPointKind(spec),
+        bottomLabel: offsetKind(spec),
+        edit: editCtx,
+      });
+    }
+  }
+
+  if (lines.length === 0) return null;
+
+  const RADIUS = 9;
+  const STROKE = "#ffcc00";
+  const HIT_THICKNESS = 14;
+  const CLICK_THRESHOLD_PX = 4;
+  const editable = history != null;
+
+  // Begin a drag (or click+drag from a circle). `kind` selects which field
+  // moves; `clickToggle` runs on pointerup if the user never crossed the
+  // movement threshold (used for circles, not for line halves).
+  //
+  // We use explicit pointer capture on the originating SVG element so the
+  // drag survives state-driven re-renders: each `replace` causes React to
+  // reconcile, and without explicit capture the implicit capture browsers
+  // do for pointer events can be lost mid-drag — which strands the user
+  // with no `pointerup` and the cursor "tied to the mouse".
+  const startEdit = (
+    e: React.PointerEvent,
+    ctx: AnchorEditCtx,
+    kind: "anchorPoint" | "offset",
+    clickToggle: ((spec: TimeAnchor) => TimeAnchor) | null
+  ) => {
+    e.stopPropagation();
+    if (!history) return;
+    e.preventDefault();
+    const target = e.currentTarget as Element;
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const initialDoc = history.current;
+    const initialAtt = initialDoc.attachments?.[ctx.attIdx];
+    if (!initialAtt) return;
+    const initialSpec = (initialAtt as {
+      start?: TimeAnchor;
+      end?: TimeAnchor;
+    })[ctx.side];
+    if (!initialSpec) return;
+
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      /* element gone — fall back to ambient pointer events */
+    }
+
+    let pastSnapshot = false;
+    let dragging = !clickToggle; // line halves are pure-drag
+    if (dragging) {
+      history.pushPast(initialDoc);
+      pastSnapshot = true;
+    }
+
+    const onMove = (ev: Event) => {
+      const me = ev as PointerEvent;
+      if (me.pointerId !== pointerId) return;
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+      if (!dragging && Math.hypot(dx, dy) > CLICK_THRESHOLD_PX) {
+        dragging = true;
+        if (!pastSnapshot) {
+          history.pushPast(initialDoc);
+          pastSnapshot = true;
+        }
+      }
+      if (!dragging) return;
+      const deltaSec = dx / pxPerSec;
+      const newSpec =
+        kind === "anchorPoint"
+          ? dragAnchorPoint(initialSpec, deltaSec, ctx)
+          : dragOffset(initialSpec, deltaSec, ctx);
+      history.replace(
+        setAttachmentSpec(initialDoc, ctx.attIdx, ctx.side, newSpec)
+      );
+    };
+    const onUp = (ev: Event) => {
+      const me = ev as PointerEvent;
+      if (me.pointerId !== pointerId) return;
+      target.removeEventListener("pointermove", onMove);
+      target.removeEventListener("pointerup", onUp);
+      target.removeEventListener("pointercancel", onUp);
+      try {
+        target.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (!dragging && clickToggle) {
+        const newSpec = clickToggle(initialSpec);
+        history.push(
+          setAttachmentSpec(initialDoc, ctx.attIdx, ctx.side, newSpec)
+        );
+      }
+    };
+    target.addEventListener("pointermove", onMove);
+    target.addEventListener("pointerup", onUp);
+    target.addEventListener("pointercancel", onUp);
+  };
+
+  return (
+    <svg
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: "100%",
+        height: "100%",
+        overflow: "visible",
+        pointerEvents: "none",
+        zIndex: 4,
+      }}
+    >
+      {lines.map((l) => {
+        const midX = (l.topX + l.bottomX) / 2;
+        const midY = (l.topY + l.bottomY) / 2;
+        return (
+          <g key={l.key}>
+            {/* Top-half hit area — drag anchorPoint. */}
+            <line
+              x1={l.topX}
+              y1={l.topY}
+              x2={midX}
+              y2={midY}
+              stroke="transparent"
+              strokeWidth={HIT_THICKNESS}
+              style={{
+                pointerEvents: editable ? "stroke" : "none",
+                cursor: editable ? "grab" : "default",
+              }}
+              onPointerDown={(e) => startEdit(e, l.edit, "anchorPoint", null)}
+            />
+            {/* Bottom-half hit area — drag offset. */}
+            <line
+              x1={midX}
+              y1={midY}
+              x2={l.bottomX}
+              y2={l.bottomY}
+              stroke="transparent"
+              strokeWidth={HIT_THICKNESS}
+              style={{
+                pointerEvents: editable ? "stroke" : "none",
+                cursor: editable ? "grab" : "default",
+              }}
+              onPointerDown={(e) => startEdit(e, l.edit, "offset", null)}
+            />
+            {/* Visible cosmetic line. */}
+            <line
+              x1={l.topX}
+              y1={l.topY}
+              x2={l.bottomX}
+              y2={l.bottomY}
+              stroke={STROKE}
+              strokeWidth={2}
+              style={{ pointerEvents: "none" }}
+            />
+            {/* Top circle — click to toggle anchorPoint units, drag to move. */}
+            <circle
+              cx={l.topX}
+              cy={l.topY}
+              r={RADIUS}
+              fill={STROKE}
+              stroke="#1e1e1e"
+              strokeWidth={1}
+              style={{
+                pointerEvents: editable ? "visiblePainted" : "none",
+                cursor: editable ? "pointer" : "default",
+              }}
+              onPointerDown={(e) =>
+                startEdit(e, l.edit, "anchorPoint", (spec) =>
+                  toggleAnchorPoint(spec, l.edit)
+                )
+              }
+            />
+            <text
+              x={l.topX}
+              y={l.topY}
+              textAnchor="middle"
+              dominantBaseline="central"
+              fill="#1e1e1e"
+              fontSize={10}
+              fontWeight={700}
+              style={{ userSelect: "none", pointerEvents: "none" }}
+            >
+              {l.topLabel}
+            </text>
+            {/* Bottom circle — click to toggle offset units, drag to move. */}
+            <circle
+              cx={l.bottomX}
+              cy={l.bottomY}
+              r={RADIUS}
+              fill={STROKE}
+              stroke="#1e1e1e"
+              strokeWidth={1}
+              style={{
+                pointerEvents: editable ? "visiblePainted" : "none",
+                cursor: editable ? "pointer" : "default",
+              }}
+              onPointerDown={(e) =>
+                startEdit(e, l.edit, "offset", (spec) =>
+                  toggleOffset(spec, l.edit)
+                )
+              }
+            />
+            <text
+              x={l.bottomX}
+              y={l.bottomY}
+              textAnchor="middle"
+              dominantBaseline="central"
+              fill="#1e1e1e"
+              fontSize={10}
+              fontWeight={700}
+              style={{ userSelect: "none", pointerEvents: "none" }}
+            >
+              {l.bottomLabel}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 
@@ -831,7 +1439,8 @@ export default function TimelinePanel({
     platform
   );
 
-  // Delete/Backspace to remove selected children (root view only)
+  // Delete/Backspace to remove selected blocks — handles both `children` and
+  // `attachments` indices. Root view only (nested views have their own UX).
   useEffect(() => {
     if (view.type !== "root") return;
     const handler = (e: KeyboardEvent) => {
@@ -842,10 +1451,7 @@ export default function TimelinePanel({
         onDocumentChange
       ) {
         e.preventDefault();
-        const sortedDesc = [...selectedIndices].sort((a, b) => b - a);
-        const newChildren = [...doc.children];
-        for (const i of sortedDesc) newChildren.splice(i, 1);
-        onDocumentChange({ ...doc, children: newChildren });
+        onDocumentChange(removeSelected(doc, selectedIndices));
         onSelectionChange([]);
       }
     };
@@ -963,6 +1569,10 @@ export default function TimelinePanel({
               ? viewDocument
               : undefined;
         const splitIndex = panelDoc ? panelDoc.children.length : undefined;
+        // Editing attachments writes to the root doc, so only enable it
+        // when we're actually rendering the root view (composition view's
+        // doc is a derivation that doesn't propagate back).
+        const editHistory = view.type === "root" ? history : undefined;
         return isMobile ? (
           <MobileTimeline
             timeline={timeline}
@@ -974,6 +1584,7 @@ export default function TimelinePanel({
             multiSelectMode={multiSelectMode}
             onEnter={onEnterProp}
             trim={trim}
+            editHistory={editHistory}
           />
         ) : (
           <DesktopTimeline
@@ -986,6 +1597,7 @@ export default function TimelinePanel({
             multiSelectMode={multiSelectMode}
             onEnter={onEnterProp}
             trim={trim}
+            editHistory={editHistory}
           />
         );
       })()}
