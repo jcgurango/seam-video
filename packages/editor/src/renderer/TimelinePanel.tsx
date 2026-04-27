@@ -134,14 +134,14 @@ function resolveDocChild<T extends { refs?: Record<string, import("@seam/core").
 
 function childLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
   if (docChild) {
-    if (docChild.type === "clip") {
+    if (docChild.type === "clip" || docChild.type === "audio") {
       return (docChild.source ?? "").split("/").pop() || "untitled";
     }
     if (docChild.type === "empty") return "empty";
     return docChild.type;
   }
   // Fallback to resolved tree (shouldn't happen given we always pass docChild)
-  if (resolved.type === "clip") {
+  if (resolved.type === "clip" || resolved.type === "audio") {
     return (resolved.source ?? "").split("/").pop() || "untitled";
   }
   if (resolved.type === "empty") return "empty";
@@ -150,6 +150,7 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
 
 const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   clip: { bg: "#3a6ea5", border: "#4a8ed0" },
+  audio: { bg: "#3e7a5a", border: "#52a47a" },
   composition: { bg: "#6a5acd", border: "#8470ff" },
   empty: { bg: "#555", border: "#666" },
 };

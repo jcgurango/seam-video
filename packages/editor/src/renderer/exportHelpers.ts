@@ -53,7 +53,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
   };
 
   const rewriteChild = (child: Child): Child => {
-    if (child.type === "clip") {
+    if (child.type === "clip" || child.type === "audio") {
       return { ...child, source: pickExportName(child.source) };
     }
     if (child.type === "composition") {

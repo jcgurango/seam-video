@@ -3,7 +3,6 @@ import { useTimeline } from "@seam/preview";
 import { resolveComposition } from "@seam/core";
 import type {
   SeamFile,
-  Clip,
   Child,
   RefChild,
   Composition,
@@ -116,23 +115,49 @@ function formatPercentStr(fraction: number): string {
 }
 
 /**
+ * Natural output duration of a node, treating compositions/refs by resolving
+ * (with a defensive fallback to 0). Used by the anchor rewriter to expand
+ * %-offsets, which are now sized against the *attachment's own length*.
+ */
+function nodeNaturalDuration(node: Child): number {
+  if (node.type === "clip" || node.type === "audio") {
+    if (node.duration != null) return node.duration;
+    const speed = node.speed ?? 1;
+    return (node.out - node.in) / speed;
+  }
+  if (node.type === "empty") return node.duration;
+  if (node.type === "composition") {
+    if (node.in != null && node.out != null) return node.out - node.in;
+    try {
+      return resolveComposition(node).duration;
+    } catch {
+      return 0;
+    }
+  }
+  // ref children require an enclosing scope to resolve; fall back.
+  return 0;
+}
+
+/**
  * Rewrite a single anchor spec so it still resolves to the same absolute
  * output time, pointing at whichever half of the split contains it.
  * Returns the original spec if it doesn't reference `origId`.
  */
 function rewriteAnchor(
   spec: TimeAnchor | undefined,
-  ctx: SplitContext
+  ctx: SplitContext,
+  attachmentNatDur: number
 ): TimeAnchor | undefined {
   if (!spec || spec.anchor !== ctx.origId) return spec;
 
-  // offset in absolute output seconds (regardless of number / % form)
+  // offset in absolute output seconds. % is a fraction of the attachment's
+  // own natural duration, so it's invariant under the split.
   let offsetSeconds = 0;
   if (spec.offset != null) {
     offsetSeconds =
       typeof spec.offset === "number"
         ? spec.offset
-        : parsePercentStr(spec.offset) * ctx.origLen;
+        : parsePercentStr(spec.offset) * attachmentNatDur;
   }
 
   // anchorPoint in target-local output seconds (pre-offset)
@@ -156,14 +181,14 @@ function rewriteAnchor(
   if (spec.timeSource === "source") {
     // Source time is absolute in the underlying media; the same `anchorPoint`
     // still maps correctly from either half because each half's baseSourceTime
-    // and timelineStart shift together. Fold any %-offset into seconds so its
-    // meaning doesn't silently depend on the new half's length.
+    // and timelineStart shift together. The %-offset is also unchanged in
+    // meaning (same attachment), so we preserve it as-authored.
     const rewritten: TimeAnchor = {
       anchor: newAnchorId,
       timeSource: "source",
       anchorPoint: spec.anchorPoint,
     };
-    if (offsetSeconds !== 0) rewritten.offset = offsetSeconds;
+    if (spec.offset != null) rewritten.offset = spec.offset;
     return rewritten;
   }
 
@@ -185,9 +210,10 @@ function rewriteAnchor(
 
 /** Recursively rewrite all `start`/`end` anchors in the tree. */
 function rewriteAnchorsInNode(node: Child, ctx: SplitContext): Child {
+  const natDur = nodeNaturalDuration(node);
   let next: Child = node;
-  const newStart = rewriteAnchor(node.start, ctx);
-  const newEnd = rewriteAnchor(node.end, ctx);
+  const newStart = rewriteAnchor(node.start, ctx, natDur);
+  const newEnd = rewriteAnchor(node.end, ctx, natDur);
   if (newStart !== node.start || newEnd !== node.end) {
     next = { ...node };
     if (newStart !== undefined) next.start = newStart;
@@ -264,19 +290,24 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
       splitOffset: offset,
       origLen,
       baseSourceTime:
-        child.type === "clip" ? child.in : (child as { in?: number }).in ?? 0,
-      speed: child.type === "clip" ? clipBaseSpeed(child) : 1,
+        child.type === "clip" || child.type === "audio"
+          ? child.in
+          : (child as { in?: number }).in ?? 0,
+      speed:
+        child.type === "clip" || child.type === "audio"
+          ? clipBaseSpeed(child)
+          : 1,
     };
     return rewriteSplitAnchors(nextDoc, ctx);
   };
 
-  // Clip: split via source in/out.
-  if (child.type === "clip") {
+  // Clip / Audio: split via source in/out — same shape, different leaf type.
+  if (child.type === "clip" || child.type === "audio") {
     const speed = clipBaseSpeed(child);
     const splitSource = child.in + offset * speed;
     const { duration: _d, ...base } = child;
-    const first: Clip = { ...base, out: splitSource };
-    const second: Clip = { ...base, in: splitSource };
+    const first = { ...base, out: splitSource } as typeof child;
+    const second = { ...base, in: splitSource } as typeof child;
     if (rightId != null) second.id = rightId;
     else delete (second as { id?: string }).id;
     newChildren.splice(targetIdx, 1, first, second);
@@ -371,8 +402,8 @@ const BTN_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  width: 44,
-  height: 44,
+  width: 28,
+  height: 28,
   padding: 0,
   flexShrink: 0,
 };
@@ -400,7 +431,7 @@ const TIME_STYLE: React.CSSProperties = {
   flexShrink: 0,
 };
 
-const ICON_SIZE = 20;
+const ICON_SIZE = 16;
 
 // ── Component ────────────────────────────────────────────────────────
 
@@ -516,15 +547,15 @@ export default function ControlsBar({
       {/* Button bar */}
       <div style={BAR_STYLE}>
         {/* Transport */}
-        <button onClick={restart} style={BTN_STYLE} title="Restart">
-          <SkipBack size={ICON_SIZE} />
-        </button>
         <button
           onClick={isPlaying ? pause : play}
           style={BTN_STYLE}
           title={isPlaying ? "Pause" : "Play"}
         >
           {isPlaying ? <Pause size={ICON_SIZE} /> : <Play size={ICON_SIZE} />}
+        </button>
+        <button onClick={restart} style={BTN_STYLE} title="Restart">
+          <SkipBack size={ICON_SIZE} />
         </button>
         <button
           onClick={() => setLoop(!loop)}
@@ -631,7 +662,7 @@ export default function ControlsBar({
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/*"
+          accept="video/*,audio/*"
           multiple
           onChange={handleFileInput}
           style={{ display: "none" }}

@@ -3,6 +3,7 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
+  ResolvedAudio,
   SpatialRect,
   SpatialAnchor,
   ObjectFit,
@@ -86,8 +87,15 @@ function buildCompositeSegment(
   const height = containerH ?? ctx.options.height;
   const { fps } = ctx.options;
 
-  // Collect non-empty children as built segments with their time offsets
-  const childSegments: { v: string; a: string; delay: number; spatial?: SpatialRect }[] = [];
+  // Collect non-empty children as built segments with their time offsets.
+  // Audio-only segments contribute no `v` label — the overlay chain skips
+  // them and they're mixed straight into the audio output.
+  const childSegments: {
+    v?: string;
+    a: string;
+    delay: number;
+    spatial?: SpatialRect;
+  }[] = [];
   for (const child of children) {
     if (child.type === "empty") continue;
     const delay = snapToFrame(child.timelineStart / parentSpeed, ctx.options.fps);
@@ -119,11 +127,13 @@ function buildCompositeSegment(
 
     // Delay child if it doesn't start at t=0
     if (child.delay > 0) {
-      const delayedV = `[dv${seg}]`;
-      ctx.filters.push(
-        `${childV}format=yuva420p,tpad=start_duration=${child.delay}:color=black@0${delayedV}`
-      );
-      childV = delayedV;
+      if (childV != null) {
+        const delayedV = `[dv${seg}]`;
+        ctx.filters.push(
+          `${childV}format=yuva420p,tpad=start_duration=${child.delay}:color=black@0${delayedV}`
+        );
+        childV = delayedV;
+      }
 
       const delayMs = Math.round(child.delay * 1000);
       const delayedA = `[da${seg}]`;
@@ -133,14 +143,16 @@ function buildCompositeSegment(
       childA = delayedA;
     }
 
-    // Overlay child on top of current result
-    const ox = child.spatial ? child.spatial.x : 0;
-    const oy = child.spatial ? child.spatial.y : 0;
-    const resultV = `[comp${seg}]`;
-    ctx.filters.push(
-      `${currentV}${childV}overlay=${ox}:${oy}:eof_action=pass${resultV}`
-    );
-    currentV = resultV;
+    // Overlay child on top of current result (skipped for audio-only).
+    if (childV != null) {
+      const ox = child.spatial ? child.spatial.x : 0;
+      const oy = child.spatial ? child.spatial.y : 0;
+      const resultV = `[comp${seg}]`;
+      ctx.filters.push(
+        `${currentV}${childV}overlay=${ox}:${oy}:eof_action=pass${resultV}`
+      );
+      currentV = resultV;
+    }
     audioLabels.push(childA);
   }
 
@@ -166,7 +178,8 @@ function buildCompositeSegment(
 }
 
 /**
- * Build a single resolved child into one {v, a} label pair.
+ * Build a single resolved child into one {v?, a} label pair. Audio-only
+ * segments return without a video label.
  */
 function buildSingleSegment(
   ctx: BuildContext,
@@ -174,9 +187,12 @@ function buildSingleSegment(
   parentSpeed: number,
   parentW: number,
   parentH: number
-): { v: string; a: string } {
+): { v?: string; a: string } {
   if (child.type === "clip") {
     return buildClipSegment(ctx, child, parentSpeed, parentW, parentH);
+  }
+  if (child.type === "audio") {
+    return buildAudioSegment(ctx, child, parentSpeed);
   }
   if (child.type === "empty") {
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
@@ -267,6 +283,32 @@ function buildClipSegment(
   ctx.filters.push(`${aChain}${aLabel}`);
 
   return { v: vLabel, a: aLabel };
+}
+
+/**
+ * Build a single audio-only resolved child into an `a` label. Same audio
+ * chain as buildClipSegment, but no input on the video side — the caller
+ * skips the overlay step when `v` is undefined.
+ */
+function buildAudioSegment(
+  ctx: BuildContext,
+  audio: ResolvedAudio,
+  parentSpeed: number
+): { a: string } {
+  const idx = ctx.inputs.length;
+  const source = ctx.basePath ? resolve(ctx.basePath, audio.source) : audio.source;
+  ctx.inputs.push(source);
+  const seg = ctx.segmentIndex++;
+  const effectiveSpeed = audio.speed * parentSpeed;
+
+  let aChain = `[${idx}:a]atrim=${audio.sourceIn}:${audio.sourceOut},asetpts=PTS-STARTPTS`;
+  if (effectiveSpeed !== 1) {
+    aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
+  }
+  const aLabel = `[a${seg}]`;
+  ctx.filters.push(`${aChain}${aLabel}`);
+
+  return { a: aLabel };
 }
 
 /**

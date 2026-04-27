@@ -42,6 +42,7 @@ function inlineNode(
 ): Child {
   switch (node.type) {
     case "clip":
+    case "audio":
     case "empty":
       return node;
 
@@ -136,7 +137,7 @@ interface RefFields {
 function wrapWithRefFields(def: Child, ref: RefFields): Composition {
   return {
     type: "composition",
-    children: [def as Clip | Empty | Composition],
+    children: [def as Exclude<Child, RefChild>],
     ...(ref.in != null ? { in: ref.in } : {}),
     ...(ref.out != null ? { out: ref.out } : {}),
     ...(ref.flex != null ? { flex: ref.flex } : {}),

@@ -70,11 +70,12 @@ export interface SpatialFields {
  *   visible range (negative output times are legal).
  *
  * `offset` always shifts in *output* time — a number is absolute seconds,
- * a string like "25%" is that fraction of the anchor's output length.
+ * a string like "25%" is that fraction of the *attachment's own natural
+ * output duration* (so the offset is self-contained and doesn't depend on
+ * the anchor or even require one).
  *
  * When `anchor` is omitted, `anchorPoint`/`timeSource` must also be omitted
- * and `offset` is relative to the composition's start (and cannot be a
- * percentage).
+ * and `offset` is relative to the composition's start.
  */
 export interface TimeAnchor {
   anchor?: string;
@@ -116,6 +117,27 @@ export interface Empty {
   end?: TimeAnchor;
 }
 
+/**
+ * An audio-only clip. Shares clip's temporal vocabulary (`in`/`out`/`speed`/
+ * `duration`/`flex`/`overflow`/`underflow`) and id/anchor fields, but has no
+ * spatial layout and no visual filters — audio filtering (gain/EQ/etc.) is
+ * different in kind and will get its own schema later.
+ */
+export interface Audio {
+  type: "audio";
+  source: string;
+  in: number;
+  out: number;
+  speed?: number;
+  duration?: number;
+  flex?: number;
+  overflow?: Overflow;
+  underflow?: Underflow;
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+}
+
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
@@ -144,5 +166,5 @@ export interface RefChild extends ChildTimingFields {
   source: string; // the ref's name (the key in some ancestor's `refs` dict)
 }
 
-export type Child = Clip | Empty | Composition | RefChild;
+export type Child = Clip | Audio | Empty | Composition | RefChild;
 export type SeamFile = Composition;

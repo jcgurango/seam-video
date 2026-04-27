@@ -149,6 +149,27 @@ export const EmptySchema = z.object({
   ...AnchorFieldsSchema,
 });
 
+export const AudioSchema = z.object({
+  type: z.literal("audio"),
+  source: z.string().min(1),
+  in: z.number().nonnegative(),
+  out: z.number().positive(),
+  speed: z.number().positive().optional(),
+  duration: z.number().positive().optional(),
+  flex: z.number().positive().optional(),
+  overflow: OverflowSchema.optional(),
+  underflow: UnderflowSchema.optional(),
+  ...AnchorFieldsSchema,
+})
+  // Strict: audio has no spatial fields and no `filters` (visual). Extra
+  // keys are a schema error rather than being silently dropped, so users
+  // get a clear signal when they put visual props on an audio node.
+  .strict()
+  .refine(
+    (data) => !(data.speed != null && data.duration != null),
+    { message: "Cannot specify both 'speed' and 'duration' on audio" }
+  );
+
 export const RefChildSchema = z.object({
   type: z.literal("ref"),
   source: z.string().min(1),
@@ -165,6 +186,7 @@ export const RefChildSchema = z.object({
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
+    AudioSchema,
     EmptySchema,
     CompositionSchema,
     RefChildSchema,

@@ -125,7 +125,7 @@ describe("attachments", () => {
     });
   });
 
-  it("supports percentage offset as a fraction of the anchor length", () => {
+  it("supports percentage offset as a fraction of the attachment's natural duration", () => {
     const result = resolveComposition(
       comp({
         children: [
@@ -143,10 +143,34 @@ describe("attachments", () => {
       })
     );
 
-    // anchorPoint 0% = 0, + 25% of 8 = 2
+    // anchorPoint 0% = 0, + 25% of attachment's 2s natural = 0.5
     expect(result.children[1]).toMatchObject({
+      timelineStart: 0.5,
+      timelineEnd: 2.5,
+    });
+  });
+
+  it("allows percentage offset without an anchor (relative to attachment)", () => {
+    const result = resolveComposition(
+      comp({
+        children: [{ type: "clip", source: "a.mp4", in: 0, out: 10 }],
+        attachments: [
+          {
+            type: "clip",
+            source: "b.mp4",
+            in: 0,
+            out: 4,
+            start: { offset: "50%" },
+          },
+        ],
+      })
+    );
+
+    // 50% of attachment's 4s natural = 2 → start at 2 from composition origin
+    expect(result.children[1]).toMatchObject({
+      source: "b.mp4",
       timelineStart: 2,
-      timelineEnd: 4,
+      timelineEnd: 6,
     });
   });
 

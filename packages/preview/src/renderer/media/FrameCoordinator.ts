@@ -1,4 +1,9 @@
-import type { ResolvedChild, ResolvedClip, ResolvedTimeline } from "@seam/core";
+import type {
+  ResolvedAudio,
+  ResolvedChild,
+  ResolvedClip,
+  ResolvedTimeline,
+} from "@seam/core";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
@@ -10,8 +15,12 @@ const LOOKAHEAD = 1.0;
 /** Seconds of source time to keep buffered behind the playhead per clip. */
 const LOOKBEHIND = 1.0;
 
+/**
+ * One flattened leaf — a video clip OR an audio-only clip — with its
+ * absolute parent-timeline span and a mapper to source time.
+ */
 interface FlatClip {
-  clip: ResolvedClip;
+  clip: ResolvedClip | ResolvedAudio;
   absoluteStart: number;
   absoluteEnd: number;
   source: string;
@@ -20,11 +29,12 @@ interface FlatClip {
 }
 
 export class FrameCoordinator {
+  /** Video buffers, keyed by resolved video clips only (audio nodes have none). */
   private buffers = new Map<ResolvedClip, ClipBuffer>();
   private flatClips: FlatClip[] = [];
-  private flatByClip = new Map<ResolvedClip, FlatClip>();
+  private flatByClip = new Map<ResolvedClip | ResolvedAudio, FlatClip>();
   private sizes = new Map<ResolvedClip, { w: number; h: number }>();
-  private playingClips = new Set<ResolvedClip>();
+  private playingClips = new Set<ResolvedClip | ResolvedAudio>();
   private audioScheduler: AudioScheduler | null = null;
   private ready = false;
 
@@ -62,14 +72,18 @@ export class FrameCoordinator {
     }
 
     const initAll = this.flatClips.map(async (flat) => {
-      const buffer = new ClipBuffer();
-      buffer.onFrameAvailable = () => this.onFrameAvailable?.();
-      this.buffers.set(flat.clip, buffer);
+      // Video buffer + intrinsic size only for video clips. Audio-only nodes
+      // don't have anything to draw, so no ClipBuffer / no size lookup.
+      if (flat.clip.type === "clip") {
+        const buffer = new ClipBuffer();
+        buffer.onFrameAvailable = () => this.onFrameAvailable?.();
+        this.buffers.set(flat.clip, buffer);
 
-      await buffer.init(mediaStore, flat.source);
+        await buffer.init(mediaStore, flat.source);
 
-      const size = await mediaStore.getIntrinsicSize(flat.source);
-      if (size.w > 0) this.sizes.set(flat.clip, size);
+        const size = await mediaStore.getIntrinsicSize(flat.source);
+        if (size.w > 0) this.sizes.set(flat.clip, size);
+      }
 
       const audioTrack = await mediaStore.getAudioTrack(flat.source);
       if (audioTrack && (await audioTrack.canDecode())) {
@@ -182,16 +196,18 @@ export class FrameCoordinator {
     const windowMax = currentTime + LOOKAHEAD;
 
     for (const flat of this.flatClips) {
-      const buffer = this.buffers.get(flat.clip);
-      if (!buffer) continue;
+      // Video clips have a ClipBuffer; audio-only nodes don't and just need
+      // start/stop scheduling against the audio scheduler.
+      const buffer =
+        flat.clip.type === "clip" ? this.buffers.get(flat.clip) : null;
 
       // Timeline range of this clip that overlaps the lookahead/lookbehind window
       const overlapStart = Math.max(flat.absoluteStart, windowMin);
       const overlapEnd = Math.min(flat.absoluteEnd, windowMax);
 
       if (overlapEnd <= overlapStart) {
-        // Clip is outside the window: drop its buffer and stop audio
-        buffer.clear();
+        // Outside the window: drop video buffer and stop audio
+        if (buffer) buffer.clear();
         if (this.playingClips.has(flat.clip)) {
           this.playingClips.delete(flat.clip);
           if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
@@ -199,22 +215,21 @@ export class FrameCoordinator {
         continue;
       }
 
-      // Convert timeline range to source range and set buffer target
-      const sourceStart = flat.toSourceTime(overlapStart);
-      const sourceEnd = flat.toSourceTime(overlapEnd);
-      const pivotTimeline = Math.max(
-        flat.absoluteStart,
-        Math.min(flat.absoluteEnd, currentTime)
-      );
-      const pivotSource = flat.toSourceTime(pivotTimeline);
-
-      // Sources can have reversed direction if speed is negative (unsupported),
-      // otherwise sourceStart ≤ sourceEnd.
-      buffer.setWantedRange(
-        Math.min(sourceStart, sourceEnd),
-        Math.max(sourceStart, sourceEnd),
-        pivotSource
-      );
+      // Convert timeline range to source range and set buffer target (video only)
+      if (buffer) {
+        const sourceStart = flat.toSourceTime(overlapStart);
+        const sourceEnd = flat.toSourceTime(overlapEnd);
+        const pivotTimeline = Math.max(
+          flat.absoluteStart,
+          Math.min(flat.absoluteEnd, currentTime)
+        );
+        const pivotSource = flat.toSourceTime(pivotTimeline);
+        buffer.setWantedRange(
+          Math.min(sourceStart, sourceEnd),
+          Math.max(sourceStart, sourceEnd),
+          pivotSource
+        );
+      }
 
       const isActive =
         currentTime >= flat.absoluteStart && currentTime < flat.absoluteEnd;
@@ -250,7 +265,7 @@ function collectClips(
   const result: FlatClip[] = [];
 
   for (const child of children) {
-    if (child.type === "clip") {
+    if (child.type === "clip" || child.type === "audio") {
       const absStart = toAbsoluteTime(child.timelineStart);
       const absEnd = toAbsoluteTime(child.timelineEnd);
       const capturedToLocal = toLocalTime;

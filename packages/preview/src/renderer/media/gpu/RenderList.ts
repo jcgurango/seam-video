@@ -115,7 +115,9 @@ function walkChildren(
   commands: RenderCommand[],
 ): void {
   for (const child of children) {
-    if (child.type === "empty") continue;
+    // Empty + audio nodes have no visible quad — they affect playback but
+    // never produce a draw command.
+    if (child.type === "empty" || child.type === "audio") continue;
 
     const isActive =
       localTime >= child.timelineStart && localTime < child.timelineEnd;

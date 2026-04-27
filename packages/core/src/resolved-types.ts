@@ -49,6 +49,16 @@ export interface ResolvedEmpty {
   timelineEnd: number;
 }
 
+export interface ResolvedAudio {
+  type: "audio";
+  source: string;
+  sourceIn: number;
+  sourceOut: number;
+  timelineStart: number;
+  timelineEnd: number;
+  speed: number;
+}
+
 export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
@@ -66,7 +76,11 @@ export interface ResolvedComposition {
   contentHeight?: number;
 }
 
-export type ResolvedChild = ResolvedClip | ResolvedEmpty | ResolvedComposition;
+export type ResolvedChild =
+  | ResolvedClip
+  | ResolvedAudio
+  | ResolvedEmpty
+  | ResolvedComposition;
 
 export interface ResolvedTimeline {
   duration: number;

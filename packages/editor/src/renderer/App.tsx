@@ -47,7 +47,10 @@ function toRelative(absPath: string, baseDir: string): string {
 
 function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
   const walk = (child: import("@seam/core").Child): import("@seam/core").Child => {
-    if (child.type === "clip" && isAbsolute(child.source)) {
+    if (
+      (child.type === "clip" || child.type === "audio") &&
+      isAbsolute(child.source)
+    ) {
       return { ...child, source: toRelative(child.source, baseDir) };
     }
     if (child.type === "composition") {
@@ -85,8 +88,9 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
 
 function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
   const visit = (child: import("@seam/core").Child) => {
-    if (child.type === "clip") out.push(child.source);
-    else if (child.type === "composition") {
+    if (child.type === "clip" || child.type === "audio") {
+      out.push(child.source);
+    } else if (child.type === "composition") {
       child.children.forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
       if (child.refs) Object.values(child.refs).forEach(visit);

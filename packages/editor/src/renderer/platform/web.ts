@@ -123,7 +123,10 @@ function rewriteClipSources(
 ): void {
   if (!node || typeof node !== "object") return;
   const n = node as Record<string, unknown>;
-  if (n.type === "clip" && typeof n.source === "string") {
+  if (
+    (n.type === "clip" || n.type === "audio") &&
+    typeof n.source === "string"
+  ) {
     const replaced = map.get(n.source);
     if (replaced) n.source = replaced;
   }

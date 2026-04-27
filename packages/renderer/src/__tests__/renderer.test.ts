@@ -646,4 +646,61 @@ describe("buildFfmpegCommand", () => {
     // 0.25 speed uses asetrate+aresample for pitch-shifted slowdown
     expect(cmd.filterComplex).toContain("asetrate=48000*0.25,aresample=48000");
   });
+
+  it("renders audio-only segments without an overlay step", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+        },
+        {
+          type: "audio",
+          source: "vo.mp3",
+          sourceIn: 0,
+          sourceOut: 5,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 1,
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    // Both inputs are listed
+    expect(cmd.inputs).toEqual(["v.mp4", "vo.mp3"]);
+    // Audio gets atrimmed for both. The video clip becomes a v label, the
+    // audio doesn't, so amix with two inputs handles both audio tracks.
+    expect(cmd.filterComplex).toContain("[1:a]atrim=0:5");
+    expect(cmd.filterComplex).toContain("amix=inputs=2");
+    // The clip video is overlaid; no second overlay for the audio.
+    const overlayCount = (cmd.filterComplex.match(/overlay=/g) ?? []).length;
+    expect(overlayCount).toBe(1);
+  });
+
+  it("audio with non-1 speed pitch-shifts via asetrate", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "audio",
+          source: "track.mp3",
+          sourceIn: 0,
+          sourceOut: 10,
+          timelineStart: 0,
+          timelineEnd: 5,
+          speed: 2,
+        },
+      ],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("asetrate=48000*2,aresample=48000");
+  });
 });

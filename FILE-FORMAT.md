@@ -421,7 +421,7 @@ Both `start` and `end` on an attachment are objects shaped like:
 | `anchor` | string | `id` of another node in the same composition. Optional. |
 | `timeSource` | `"output"` \| `"source"` | Coordinate space for `anchorPoint`. **Required when `anchor` is set; forbidden when it isn't.** See [timeSource](#timesource). |
 | `anchorPoint` | string \| number | Position within the anchor. In `"output"` mode: a percentage string (e.g. `"50%"`). In `"source"` mode: a number of seconds. Defaults to `"0%"` / `0` when `anchor` is set. Requires `anchor`. |
-| `offset` | number \| string | Shift from the resolved anchor point, always in *output* time. A number is absolute seconds. A string like `"25%"` is that fraction of the anchor's output length. When no `anchor` is given, `offset` is absolute seconds measured from the composition's start, and the `%` form is not allowed. |
+| `offset` | number \| string | Shift in *output* time. A number is absolute seconds. A string like `"25%"` is that fraction of the *attachment's own natural duration* — independent of the anchor (and valid even when no anchor is given). When `anchor` is omitted, `offset` is measured from the composition's start. |
 
 The anchor's resolved duration is its `timelineEnd - timelineStart` on the output timeline (after all flex/overflow resolution).
 

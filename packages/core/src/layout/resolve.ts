@@ -23,6 +23,7 @@ function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration
 function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
+    case "audio":
       return (child.out - child.in) / clipBaseSpeed(child);
     case "empty":
       return child.duration;
@@ -44,7 +45,7 @@ function naturalDuration(child: Child): number {
  * Returns the resolved child (with placeholder timeline positions) and its actual duration.
  */
 function collectSpatialInput(child: Child): SpatialInput | undefined {
-  if (child.type === "empty") return undefined;
+  if (child.type === "empty" || child.type === "audio") return undefined;
   const { position, objectFit, top, left, right, bottom, width, height } = child;
   if (position == null && objectFit == null && top == null && left == null &&
       right == null && bottom == null && width == null && height == null) {
@@ -122,22 +123,22 @@ function resolveChild(
     };
   }
 
-  // Clip
-  const clip = child;
-  let sourceIn = clip.in;
-  let sourceOut = clip.out;
-  const baseSpeed = clipBaseSpeed(clip);
+  // Clip / Audio — same temporal logic, different leaf shape.
+  const leaf = child;
+  let sourceIn = leaf.in;
+  let sourceOut = leaf.out;
+  const baseSpeed = clipBaseSpeed(leaf);
   let speed = baseSpeed;
 
   if (target < nat) {
-    const overflow = clip.overflow ?? defaultOverflow;
+    const overflow = leaf.overflow ?? defaultOverflow;
     const sourceTarget = target * baseSpeed;
     const result = applyOverflow(overflow, sourceIn, sourceOut, sourceTarget);
     sourceIn = result.sourceIn;
     sourceOut = result.sourceOut;
     speed = result.speed * baseSpeed;
   } else if (target > nat) {
-    const underflow = clip.underflow;
+    const underflow = leaf.underflow;
     if (underflow) {
       const sourceTarget = target * baseSpeed;
       const result = applyUnderflow(underflow, sourceIn, sourceOut, sourceTarget);
@@ -147,21 +148,36 @@ function resolveChild(
     }
   }
 
-  const clipDur = (sourceOut - sourceIn) / speed;
+  const leafDur = (sourceOut - sourceIn) / speed;
+
+  if (leaf.type === "audio") {
+    return {
+      resolved: {
+        type: "audio" as const,
+        source: leaf.source,
+        sourceIn,
+        sourceOut,
+        timelineStart: 0,
+        timelineEnd: 0,
+        speed,
+      },
+      actualDuration: leafDur,
+    };
+  }
 
   return {
     resolved: {
       type: "clip" as const,
-      source: clip.source,
+      source: leaf.source,
       sourceIn,
       sourceOut,
       timelineStart: 0,
       timelineEnd: 0,
       speed,
       ...(spatialInput ? { spatialInput } : {}),
-      ...(clip.filters?.length ? { filters: clip.filters } : {}),
+      ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
     },
-    actualDuration: clipDur,
+    actualDuration: leafDur,
   };
 }
 
@@ -296,7 +312,7 @@ function buildIdMapEntry(
 ): IdMapEntry {
   const start = resolved.timelineStart;
   const end = resolved.timelineEnd;
-  if (resolved.type === "clip") {
+  if (resolved.type === "clip" || resolved.type === "audio") {
     return {
       start,
       end,
@@ -315,10 +331,22 @@ function buildIdMapEntry(
 
 function resolveAnchorTime(
   spec: TimeAnchor,
-  idMap: Map<string, IdMapEntry>
+  idMap: Map<string, IdMapEntry>,
+  attachmentNatDur: number
 ): number {
-  // No anchor: offset is an absolute seconds value (percentage offset and
-  // timeSource don't apply — there's nothing to be a percentage/source of).
+  // offset is in OUTPUT seconds. A %-string is interpreted as that fraction
+  // of the *attachment's own natural duration* — independent of the anchor,
+  // so it works even when no anchor is given.
+  let offsetSec = 0;
+  if (spec.offset != null) {
+    offsetSec =
+      typeof spec.offset === "number"
+        ? spec.offset
+        : parsePercent(spec.offset) * attachmentNatDur;
+  }
+
+  // No anchor: offset is the entire position (relative to the composition's
+  // start). anchorPoint / timeSource don't apply.
   if (spec.anchor == null) {
     if (spec.anchorPoint != null) {
       throw new Error("'anchorPoint' requires an 'anchor'");
@@ -326,19 +354,13 @@ function resolveAnchorTime(
     if (spec.timeSource != null) {
       throw new Error("'timeSource' requires an 'anchor'");
     }
-    if (typeof spec.offset === "string") {
-      throw new Error(
-        "percentage offset requires an 'anchor' (there's no anchor to take a percentage of)"
-      );
-    }
-    return spec.offset ?? 0;
+    return offsetSec;
   }
 
   const anchor = idMap.get(spec.anchor);
   if (!anchor) {
     throw new Error(`anchor "${spec.anchor}" not found`);
   }
-  const anchorLen = anchor.end - anchor.start;
   if (spec.timeSource == null) {
     throw new Error("'timeSource' is required when 'anchor' is provided");
   }
@@ -361,16 +383,8 @@ function resolveAnchorTime(
       );
     }
     const pointPct = parsePercent(spec.anchorPoint ?? "0%");
+    const anchorLen = anchor.end - anchor.start;
     pointTime = anchor.start + anchorLen * pointPct;
-  }
-
-  let offsetSec = 0;
-  if (spec.offset != null) {
-    if (typeof spec.offset === "number") {
-      offsetSec = spec.offset;
-    } else {
-      offsetSec = parsePercent(spec.offset) * anchorLen;
-    }
   }
 
   return pointTime + offsetSec;
@@ -388,7 +402,7 @@ function parsePercent(s: string): number {
  * overflow/underflow so their effective speed scales to fit.
  */
 function forceTimelineDuration(child: Child, target: number): Child {
-  if (child.type === "clip") {
+  if (child.type === "clip" || child.type === "audio") {
     const { speed: _s, ...rest } = child;
     return { ...rest, duration: target };
   }
@@ -406,8 +420,11 @@ function resolveAttachment(
   att: Child,
   idMap: Map<string, IdMapEntry>
 ): ResolvedChild {
-  const startT = att.start ? resolveAnchorTime(att.start, idMap) : null;
-  const endT = att.end ? resolveAnchorTime(att.end, idMap) : null;
+  const attNatDur = naturalDuration(att);
+  const startT = att.start
+    ? resolveAnchorTime(att.start, idMap, attNatDur)
+    : null;
+  const endT = att.end ? resolveAnchorTime(att.end, idMap, attNatDur) : null;
 
   let effective: Child = att;
   let position: number;
@@ -472,14 +489,14 @@ function cropChildrenToWindow(
     const rebasedStart = visibleStart - windowIn;
     const rebasedEnd = visibleEnd - windowIn;
 
-    if (child.type === "clip") {
-      const clipStartOffset = visibleStart - child.timelineStart;
-      const clipEndOffset = child.timelineEnd - visibleEnd;
+    if (child.type === "clip" || child.type === "audio") {
+      const startOffset = visibleStart - child.timelineStart;
+      const endOffset = child.timelineEnd - visibleEnd;
 
       result.push({
         ...child,
-        sourceIn: child.sourceIn + clipStartOffset * child.speed,
-        sourceOut: child.sourceOut - clipEndOffset * child.speed,
+        sourceIn: child.sourceIn + startOffset * child.speed,
+        sourceOut: child.sourceOut - endOffset * child.speed,
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
