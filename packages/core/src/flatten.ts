@@ -3,13 +3,18 @@ import type {
   ResolvedClip,
   ResolvedAudio,
   ResolvedEmpty,
+  ResolvedData,
 } from "./resolved-types.js";
 
-export type FlatLeaf = ResolvedClip | ResolvedAudio | ResolvedEmpty;
+export type FlatLeaf =
+  | ResolvedClip
+  | ResolvedAudio
+  | ResolvedEmpty
+  | ResolvedData;
 
 /**
- * Flatten a resolved tree into a linear list of leaves (clips, audios, and
- * empties). Compounds speed and offsets through nested compositions.
+ * Flatten a resolved tree into a linear list of leaves (clips, audios,
+ * empties, data). Compounds speed and offsets through nested compositions.
  */
 export function flattenResolved(
   children: ResolvedChild[],
@@ -45,6 +50,13 @@ export function flattenResolved(
     } else if (child.type === "empty") {
       result.push({
         type: "empty",
+        timelineStart: start,
+        timelineEnd: end,
+      });
+    } else if (child.type === "data") {
+      result.push({
+        type: "data",
+        data: child.data,
         timelineStart: start,
         timelineEnd: end,
       });

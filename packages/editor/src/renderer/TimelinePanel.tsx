@@ -110,34 +110,13 @@ function rulerInterval(pxPerSec: number): number {
   return 60;
 }
 
-/**
- * For refs, walk through the enclosing scope's `refs` dict until we reach a
- * non-ref child so the editor can label and color split refs by their
- * underlying definition's type (not the resolved "composition" wrapper
- * produced by inlining).
- */
-function resolveDocChild<T extends { refs?: Record<string, import("@seam/core").Child> }>(
-  child: import("@seam/core").Child,
-  scope: T | undefined
-): import("@seam/core").Child {
-  let cur = child;
-  const seen = new Set<string>();
-  while (cur.type === "ref") {
-    if (seen.has(cur.source)) return cur;
-    seen.add(cur.source);
-    const def = scope?.refs?.[cur.source];
-    if (!def) return cur;
-    cur = def;
-  }
-  return cur;
-}
-
 function childLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
   if (docChild) {
     if (docChild.type === "clip" || docChild.type === "audio") {
       return (docChild.source ?? "").split("/").pop() || "untitled";
     }
     if (docChild.type === "empty") return "empty";
+    if (docChild.type === "data") return "data";
     return docChild.type;
   }
   // Fallback to resolved tree (shouldn't happen given we always pass docChild)
@@ -145,6 +124,7 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
     return (resolved.source ?? "").split("/").pop() || "untitled";
   }
   if (resolved.type === "empty") return "empty";
+  if (resolved.type === "data") return "data";
   return resolved.type;
 }
 
@@ -153,6 +133,7 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   audio: { bg: "#3e7a5a", border: "#52a47a" },
   composition: { bg: "#6a5acd", border: "#8470ff" },
   empty: { bg: "#555", border: "#666" },
+  data: { bg: "#7a5a3a", border: "#a47a52" },
 };
 
 const SELECTED_BORDER = "#ffcc00";
@@ -181,7 +162,6 @@ interface InnerProps {
   docRoot?: {
     children: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
-    refs?: Record<string, import("@seam/core").Child>;
   };
   /**
    * Index into `timeline.children` at which resolved attachments begin. Items
@@ -481,7 +461,6 @@ function ChildrenLayer({
   docRoot?: {
     children: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
-    refs?: Record<string, import("@seam/core").Child>;
   };
   attachmentStartIndex: number;
 }) {
@@ -491,9 +470,7 @@ function ChildrenLayer({
         const docChild = isAttachment
           ? docRoot?.attachments?.[index - attachmentStartIndex]
           : docRoot?.children[index];
-        const displayChild = docChild
-          ? resolveDocChild(docChild, docRoot)
-          : undefined;
+        const displayChild = docChild;
         return (
           <ChildBlockView
             key={index}

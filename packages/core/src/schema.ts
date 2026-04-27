@@ -98,13 +98,6 @@ const SpatialFieldsSchema = {
   height: DimensionStringSchema.optional(),
 };
 
-export const JustifySchema = z.enum([
-  "start",
-  "end",
-  "center",
-  "space-between",
-]);
-
 export const OverflowSchema = z.enum([
   "trim-end",
   "trim-start",
@@ -119,11 +112,6 @@ export const UnderflowSchema = z.enum([
   "stretch",
 ]);
 
-export const LayoutSchema = z.object({
-  justify: JustifySchema.default("start"),
-  gap: z.number().nonnegative().default(0),
-});
-
 export const ClipSchema = z.object({
   type: z.literal("clip"),
   source: z.string().min(1),
@@ -131,13 +119,12 @@ export const ClipSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  flex: z.number().positive().optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
   ...AnchorFieldsSchema,
-}).refine(
+}).strict().refine(
   (data) => !(data.speed != null && data.duration != null),
   { message: "Cannot specify both 'speed' and 'duration' on a clip" }
 );
@@ -145,9 +132,8 @@ export const ClipSchema = z.object({
 export const EmptySchema = z.object({
   type: z.literal("empty"),
   duration: z.number().positive(),
-  flex: z.number().positive().optional(),
   ...AnchorFieldsSchema,
-});
+}).strict();
 
 export const AudioSchema = z.object({
   type: z.literal("audio"),
@@ -156,7 +142,6 @@ export const AudioSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  flex: z.number().positive().optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...AnchorFieldsSchema,
@@ -170,26 +155,20 @@ export const AudioSchema = z.object({
     { message: "Cannot specify both 'speed' and 'duration' on audio" }
   );
 
-export const RefChildSchema = z.object({
-  type: z.literal("ref"),
-  source: z.string().min(1),
-  in: z.number().nonnegative().optional(),
-  out: z.number().positive().optional(),
-  flex: z.number().positive().optional(),
-  overflow: OverflowSchema.optional(),
-  underflow: UnderflowSchema.optional(),
-  filters: FiltersArraySchema,
-  ...SpatialFieldsSchema,
+export const DataSchema = z.object({
+  type: z.literal("data"),
+  data: z.unknown(),
+  duration: z.number().nonnegative().optional(),
   ...AnchorFieldsSchema,
-});
+}).strict();
 
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
     AudioSchema,
     EmptySchema,
+    DataSchema,
     CompositionSchema,
-    RefChildSchema,
   ])
 );
 
@@ -198,13 +177,8 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     type: z.literal("composition"),
     children: z.array(ChildSchema).min(1),
     attachments: z.array(ChildSchema).optional(),
-    refs: z.record(z.string(), ChildSchema).optional(),
-    duration: z.number().positive().optional(),
-    unitDuration: z.number().positive().optional(),
-    layout: LayoutSchema.optional(),
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
-    flex: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
     filters: FiltersArraySchema,
@@ -212,10 +186,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,
     ...AnchorFieldsSchema,
-  }).refine(
-    (data) => !(data.duration != null && data.unitDuration != null),
-    { message: "Cannot specify both 'duration' and 'unitDuration'" }
-  )
+  }).strict()
 );
 
 export const SeamFileSchema = CompositionSchema;

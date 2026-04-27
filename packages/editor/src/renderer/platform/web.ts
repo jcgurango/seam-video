@@ -136,11 +136,6 @@ function rewriteClipSources(
   if (Array.isArray(n.attachments)) {
     for (const att of n.attachments) rewriteClipSources(att, map);
   }
-  if (n.refs && typeof n.refs === "object") {
-    for (const def of Object.values(n.refs as Record<string, unknown>)) {
-      rewriteClipSources(def, map);
-    }
-  }
 }
 
 /**

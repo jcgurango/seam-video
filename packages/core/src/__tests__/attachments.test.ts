@@ -322,31 +322,158 @@ describe("attachments", () => {
     ).toThrow(/'timeSource' is required/);
   });
 
-  it("resolves attachments inside a ref def (inlined wrapper preserves id/start/end)", () => {
-    const result = resolveComposition(
-      comp({
-        refs: {
-          overlay_clip: { type: "clip", source: "over.mp4", in: 0, out: 2 },
-        },
-        children: [
-          { id: "base", type: "clip", source: "a.mp4", in: 0, out: 10 },
-        ],
-        attachments: [
-          {
-            type: "ref",
-            source: "overlay_clip",
-            start: { anchor: "base", timeSource: "output", anchorPoint: "50%" },
-          },
-        ],
-      })
-    );
+  describe("overflow / underflow on attachments", () => {
+    it("stretches by default when start+end overconstrain a longer attachment (overflow)", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 6,
+              start: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "0%",
+              },
+              end: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "30%",
+              },
+            },
+          ],
+        })
+      );
 
-    // ref inlines to a composition wrapper carrying start; anchor "base" is
-    // at [0, 10], 50% = 5. Wrapper's inner (the clip) is 2s long.
-    expect(result.children[1]).toMatchObject({
-      type: "composition",
-      timelineStart: 5,
-      timelineEnd: 7,
+      // target [0,10]; start 0%, end 30% → [0, 3]. Attachment natural 6s,
+      // target span 3s → default stretch speeds it up to 2x.
+      expect(result.children[1]).toMatchObject({
+        source: "b.mp4",
+        sourceIn: 0,
+        sourceOut: 6,
+        timelineStart: 0,
+        timelineEnd: 3,
+        speed: 2,
+      });
+    });
+
+    it("respects an explicit overflow strategy on the attachment", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 6,
+              overflow: "trim-end",
+              start: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "0%",
+              },
+              end: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "30%",
+              },
+            },
+          ],
+        })
+      );
+
+      // 6s natural, 3s span, trim-end: keep first 3s of source at speed 1.
+      expect(result.children[1]).toMatchObject({
+        source: "b.mp4",
+        sourceIn: 0,
+        sourceOut: 3,
+        timelineStart: 0,
+        timelineEnd: 3,
+        speed: 1,
+      });
+    });
+
+    it("stretches by default when start+end span exceeds the attachment (underflow)", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 0,
+              out: 4,
+              start: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "0%",
+              },
+              end: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "100%",
+              },
+            },
+          ],
+        })
+      );
+
+      // 4s natural, 10s span, default stretch → speed 0.4
+      expect(result.children[1]).toMatchObject({
+        sourceIn: 0,
+        sourceOut: 4,
+        timelineStart: 0,
+        timelineEnd: 10,
+        speed: 0.4,
+      });
+    });
+
+    it("respects an explicit underflow strategy on the attachment", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+          ],
+          attachments: [
+            {
+              type: "clip",
+              source: "b.mp4",
+              in: 5,
+              out: 8,
+              underflow: "extend-end",
+              start: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "0%",
+              },
+              end: {
+                anchor: "target",
+                timeSource: "output",
+                anchorPoint: "100%",
+              },
+            },
+          ],
+        })
+      );
+
+      // 3s natural, 10s span, extend-end: extend out to 15.
+      expect(result.children[1]).toMatchObject({
+        sourceIn: 5,
+        sourceOut: 15,
+        timelineStart: 0,
+        timelineEnd: 10,
+        speed: 1,
+      });
     });
   });
 

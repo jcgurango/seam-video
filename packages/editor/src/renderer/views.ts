@@ -27,11 +27,10 @@ export function getViewDocument(doc: SeamFile, view: View): SeamFile {
   const {
     in: _i,
     out: _o,
-    flex: _f,
     overflow: _ov,
     underflow: _uf,
     ...rest
-  } = target as Composition & { flex?: number };
+  } = target as Composition;
   return rest as SeamFile;
 }
 

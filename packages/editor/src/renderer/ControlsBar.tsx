@@ -4,7 +4,6 @@ import { resolveComposition } from "@seam/core";
 import type {
   SeamFile,
   Child,
-  RefChild,
   Composition,
   TimeAnchor,
 } from "@seam/core";
@@ -53,14 +52,6 @@ function clipBaseSpeed(clip: {
   return clip.speed ?? 1;
 }
 
-/** Pick a ref name not yet used in the given refs dict. */
-function uniqueRefName(refs: Record<string, Child> | undefined, base: string): string {
-  if (!refs) return `${base}_1`;
-  let i = 1;
-  while (refs[`${base}_${i}`] != null) i++;
-  return `${base}_${i}`;
-}
-
 /** Collect every `id` appearing anywhere in the document tree. */
 function collectAllIds(doc: SeamFile): Set<string> {
   const out = new Set<string>();
@@ -70,7 +61,6 @@ function collectAllIds(doc: SeamFile): Set<string> {
     if (child.type === "composition") {
       child.children.forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
-      if (child.refs) Object.values(child.refs).forEach(visit);
     }
   };
   visit(doc);
@@ -101,7 +91,7 @@ interface SplitContext {
   rightId: string;
   splitOffset: number; // split point, target-local output seconds
   origLen: number;     // original target's output duration
-  baseSourceTime: number; // for source-mode: the node's pre-trim base (clip.in or composition.in)
+  baseSourceTime: number; // for source-mode: clip.in
   speed: number;       // for source-mode: source-secs-per-output-sec at the target level
 }
 
@@ -114,11 +104,8 @@ function formatPercentStr(fraction: number): string {
   return `${Math.round(fraction * 1000000) / 10000}%`;
 }
 
-/**
- * Natural output duration of a node, treating compositions/refs by resolving
- * (with a defensive fallback to 0). Used by the anchor rewriter to expand
- * %-offsets, which are now sized against the *attachment's own length*.
- */
+/** Natural output duration of a node — used by the anchor rewriter to expand
+ *  %-offsets, which are sized against the *attachment's own length*. */
 function nodeNaturalDuration(node: Child): number {
   if (node.type === "clip" || node.type === "audio") {
     if (node.duration != null) return node.duration;
@@ -126,6 +113,7 @@ function nodeNaturalDuration(node: Child): number {
     return (node.out - node.in) / speed;
   }
   if (node.type === "empty") return node.duration;
+  if (node.type === "data") return node.duration ?? 0;
   if (node.type === "composition") {
     if (node.in != null && node.out != null) return node.out - node.in;
     try {
@@ -134,7 +122,6 @@ function nodeNaturalDuration(node: Child): number {
       return 0;
     }
   }
-  // ref children require an enclosing scope to resolve; fall back.
   return 0;
 }
 
@@ -150,8 +137,6 @@ function rewriteAnchor(
 ): TimeAnchor | undefined {
   if (!spec || spec.anchor !== ctx.origId) return spec;
 
-  // offset in absolute output seconds. % is a fraction of the attachment's
-  // own natural duration, so it's invariant under the split.
   let offsetSeconds = 0;
   if (spec.offset != null) {
     offsetSeconds =
@@ -160,7 +145,6 @@ function rewriteAnchor(
         : parsePercentStr(spec.offset) * attachmentNatDur;
   }
 
-  // anchorPoint in target-local output seconds (pre-offset)
   let pointOnTarget: number;
   if (spec.timeSource === "source") {
     const sourceTime =
@@ -179,10 +163,6 @@ function rewriteAnchor(
   const newAnchorId = onLeft ? ctx.origId : ctx.rightId;
 
   if (spec.timeSource === "source") {
-    // Source time is absolute in the underlying media; the same `anchorPoint`
-    // still maps correctly from either half because each half's baseSourceTime
-    // and timelineStart shift together. The %-offset is also unchanged in
-    // meaning (same attachment), so we preserve it as-authored.
     const rewritten: TimeAnchor = {
       anchor: newAnchorId,
       timeSource: "source",
@@ -192,8 +172,6 @@ function rewriteAnchor(
     return rewritten;
   }
 
-  // Output mode: recompute the percentage relative to the new half's length
-  // and fold the offset into the point, dropping the separate offset field.
   const leftLen = ctx.splitOffset;
   const rightLen = ctx.origLen - ctx.splitOffset;
   const newLen = onLeft ? leftLen : rightLen;
@@ -227,17 +205,8 @@ function rewriteAnchorsInNode(node: Child, ctx: SplitContext): Child {
     const rewrittenAttachments = next.attachments?.map((c) =>
       rewriteAnchorsInNode(c, ctx)
     );
-    const rewrittenRefs = next.refs
-      ? Object.fromEntries(
-          Object.entries(next.refs).map(([k, v]) => [
-            k,
-            rewriteAnchorsInNode(v, ctx),
-          ])
-        )
-      : undefined;
     const updated: Composition = { ...next, children: rewrittenChildren };
     if (rewrittenAttachments) updated.attachments = rewrittenAttachments;
-    if (rewrittenRefs) updated.refs = rewrittenRefs;
     return updated;
   }
   return next;
@@ -266,7 +235,10 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
   if (targetIdx === -1) return null;
 
   const child = children[targetIdx];
-  if (child.type === "empty") return null;
+  // Splitting is only defined for clip/audio for now. Composition splitting
+  // used to lean on refs (the .seam concept that's gone) — we'll figure out
+  // its UX once references re-emerge as an editor concept.
+  if (child.type !== "clip" && child.type !== "audio") return null;
 
   const offset = currentTime - timelineStart;
   const origLen =
@@ -276,9 +248,7 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
 
   // Both halves of a split can't share the original id — left keeps it,
   // right gets a generated `${id}_split` variant (de-duplicated against
-  // everything else already in the document). When there's an id, any
-  // anchor elsewhere in the doc that points at it gets re-routed to the
-  // correct half so it still resolves to the same absolute output time.
+  // everything else already in the document).
   const existingIds = collectAllIds(doc);
   const origId = (child as { id?: string }).id;
   const rightId = origId != null ? uniqueSplitId(existingIds, origId) : undefined;
@@ -289,96 +259,21 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
       rightId,
       splitOffset: offset,
       origLen,
-      baseSourceTime:
-        child.type === "clip" || child.type === "audio"
-          ? child.in
-          : (child as { in?: number }).in ?? 0,
-      speed:
-        child.type === "clip" || child.type === "audio"
-          ? clipBaseSpeed(child)
-          : 1,
+      baseSourceTime: child.in,
+      speed: clipBaseSpeed(child),
     };
     return rewriteSplitAnchors(nextDoc, ctx);
   };
 
-  // Clip / Audio: split via source in/out — same shape, different leaf type.
-  if (child.type === "clip" || child.type === "audio") {
-    const speed = clipBaseSpeed(child);
-    const splitSource = child.in + offset * speed;
-    const { duration: _d, ...base } = child;
-    const first = { ...base, out: splitSource } as typeof child;
-    const second = { ...base, in: splitSource } as typeof child;
-    if (rightId != null) second.id = rightId;
-    else delete (second as { id?: string }).id;
-    newChildren.splice(targetIdx, 1, first, second);
-    return applyAnchorRewrite({ ...doc, children: newChildren });
-  }
-
-  // Ref: already a shared definition; just split the window.
-  if (child.type === "ref") {
-    // The ref's in/out windows the def's resolved duration. Resolve the
-    // current document with the ref expanded to find the effective duration.
-    const refIn = child.in ?? 0;
-    const refOut = child.out ?? refIn + origLen;
-    const splitPoint = refIn + offset;
-    const first: RefChild = { ...child, in: refIn, out: splitPoint };
-    const second: RefChild = { ...child, in: splitPoint, out: refOut };
-    if (rightId != null) second.id = rightId;
-    else delete (second as { id?: string }).id;
-    newChildren.splice(targetIdx, 1, first, second);
-    return applyAnchorRewrite({ ...doc, children: newChildren });
-  }
-
-  // Composition: promote to a ref before splitting so both halves share a
-  // single underlying definition.
-  if (child.type === "composition") {
-    const innerDuration = resolveComposition(child).duration;
-    const childIn = child.in ?? 0;
-    const childOut = child.out ?? innerDuration;
-    const splitPoint = childIn + offset;
-
-    // Strip the child's own `in`/`out`/`flex`/`id` before making it a ref
-    // def — those lived on the original child as usage-site state. The
-    // definition itself should be "naked" so ref siblings can window it
-    // without inheriting a duplicate id at each inlining.
-    const {
-      in: _i,
-      out: _o,
-      flex: _f,
-      overflow: _ov,
-      underflow: _uf,
-      id: _id,
-      ...defBase
-    } = child as typeof child & { flex?: number; id?: string };
-    const def = defBase as Child;
-
-    const refName = uniqueRefName(doc.refs, "split");
-    const newRefs = { ...(doc.refs ?? {}), [refName]: def };
-
-    const first: RefChild = {
-      type: "ref",
-      source: refName,
-      in: childIn,
-      out: splitPoint,
-      ...(origId != null ? { id: origId } : {}),
-    };
-    const second: RefChild = {
-      type: "ref",
-      source: refName,
-      in: splitPoint,
-      out: childOut,
-      ...(rightId != null ? { id: rightId } : {}),
-    };
-    newChildren.splice(targetIdx, 1, first, second);
-
-    return applyAnchorRewrite({
-      ...doc,
-      refs: newRefs,
-      children: newChildren,
-    });
-  }
-
-  return null;
+  const speed = clipBaseSpeed(child);
+  const splitSource = child.in + offset * speed;
+  const { duration: _d, ...base } = child;
+  const first = { ...base, out: splitSource } as typeof child;
+  const second = { ...base, in: splitSource } as typeof child;
+  if (rightId != null) second.id = rightId;
+  else delete (second as { id?: string }).id;
+  newChildren.splice(targetIdx, 1, first, second);
+  return applyAnchorRewrite({ ...doc, children: newChildren });
 }
 
 // ── Styles ───────────────────────────────────────────────────────────
@@ -520,6 +415,15 @@ export default function ControlsBar({
     seek(pct * totalDuration);
   };
 
+  // Slice is only enabled when at least one selected (or playhead-targeted)
+  // child is a clip or audio node.
+  const canSlice = selectedIndices.length === 0
+    ? doc.children.some((c) => c.type === "clip" || c.type === "audio")
+    : selectedIndices.some((i) => {
+        const t = doc.children[i]?.type;
+        return t === "clip" || t === "audio";
+      });
+
   // ── Render ─────────────────────────────────────────────────────
 
   return (
@@ -598,7 +502,12 @@ export default function ControlsBar({
             <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
               <FolderOpen size={ICON_SIZE} />
             </button>
-            <button onClick={handleSlice} style={BTN_STYLE} title="Slice (S)">
+            <button
+              onClick={handleSlice}
+              style={{ ...BTN_STYLE, opacity: canSlice ? 1 : 0.3 }}
+              disabled={!canSlice}
+              title="Slice (S) — clip and audio only"
+            >
               <Scissors size={ICON_SIZE} />
             </button>
             <button

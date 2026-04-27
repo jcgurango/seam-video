@@ -43,15 +43,6 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     return candidate;
   };
 
-  const rewriteRefs = (
-    refs: Record<string, Child> | undefined
-  ): Record<string, Child> | undefined => {
-    if (!refs) return undefined;
-    const out: Record<string, Child> = {};
-    for (const [name, def] of Object.entries(refs)) out[name] = rewriteChild(def);
-    return out;
-  };
-
   const rewriteChild = (child: Child): Child => {
     if (child.type === "clip" || child.type === "audio") {
       return { ...child, source: pickExportName(child.source) };
@@ -64,11 +55,8 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
       if (child.attachments) {
         (rewritten as typeof child).attachments = rewriteChildren(child.attachments);
       }
-      const rewrittenRefs = rewriteRefs(child.refs);
-      if (rewrittenRefs) (rewritten as typeof child).refs = rewrittenRefs;
       return rewritten;
     }
-    // ref children don't reference a source file; leave as-is
     return child;
   };
 
@@ -78,7 +66,6 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     ...doc,
     children: rewriteChildren(doc.children),
     ...(doc.attachments ? { attachments: rewriteChildren(doc.attachments) } : {}),
-    ...(doc.refs ? { refs: rewriteRefs(doc.refs) } : {}),
   };
 
   const entries: Array<{ originalSource: string; exportName: string }> = [];

@@ -97,7 +97,7 @@ function buildCompositeSegment(
     spatial?: SpatialRect;
   }[] = [];
   for (const child of children) {
-    if (child.type === "empty") continue;
+    if (child.type === "empty" || child.type === "data") continue;
     const delay = snapToFrame(child.timelineStart / parentSpeed, ctx.options.fps);
     const label = buildSingleSegment(ctx, child, parentSpeed, width, height);
     const spatial = (child as any).spatial as SpatialRect | undefined;
@@ -194,7 +194,7 @@ function buildSingleSegment(
   if (child.type === "audio") {
     return buildAudioSegment(ctx, child, parentSpeed);
   }
-  if (child.type === "empty") {
+  if (child.type === "empty" || child.type === "data") {
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
   // Composition: recurse into children

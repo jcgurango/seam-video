@@ -41,41 +41,15 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts layout options", () => {
-    const result = validate({
-      type: "composition",
-      duration: 30,
-      layout: { justify: "center", gap: 0.5 },
-      children: [
-        { type: "clip", source: "v.mp4", in: 0, out: 5 },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts flex on children", () => {
-    const result = validate({
-      type: "composition",
-      duration: 20,
-      children: [
-        { type: "clip", source: "a.mp4", in: 0, out: 5, flex: 1 },
-        { type: "clip", source: "b.mp4", in: 0, out: 5, flex: 2 },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
   it("accepts overflow and underflow", () => {
     const result = validate({
       type: "composition",
-      duration: 10,
       children: [
         {
           type: "clip",
           source: "v.mp4",
           in: 0,
           out: 5,
-          flex: 1,
           overflow: "trim-center",
           underflow: "extend-end",
         },
@@ -84,25 +58,46 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts unitDuration", () => {
+  it("rejects flex (no longer a spec concept)", () => {
     const result = validate({
       type: "composition",
-      unitDuration: 5,
       children: [
-        { type: "clip", source: "a.mp4", in: 0, out: 10 },
-        { type: "clip", source: "b.mp4", in: 0, out: 10 },
+        { type: "clip", source: "a.mp4", in: 0, out: 5, flex: 1 },
       ],
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
-  it("rejects both duration and unitDuration", () => {
+  it("rejects unitDuration (no longer a spec concept)", () => {
     const result = validate({
       type: "composition",
-      duration: 20,
       unitDuration: 5,
       children: [
         { type: "clip", source: "a.mp4", in: 0, out: 10 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects layout (no longer a spec concept)", () => {
+    const result = validate({
+      type: "composition",
+      layout: { justify: "center", gap: 0.5 },
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects refs (no longer a spec concept)", () => {
+    const result = validate({
+      type: "composition",
+      refs: {
+        R: { type: "clip", source: "a.mp4", in: 0, out: 5 },
+      },
+      children: [
+        { type: "ref", source: "R", in: 0, out: 5 },
       ],
     });
     expect(result.success).toBe(false);
@@ -143,24 +138,6 @@ describe("validate", () => {
     const result = validate({
       type: "composition",
       children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects invalid justify value", () => {
-    const result = validate({
-      type: "composition",
-      layout: { justify: "invalid" },
-      children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects negative gap", () => {
-    const result = validate({
-      type: "composition",
-      layout: { gap: -1 },
-      children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }],
     });
     expect(result.success).toBe(false);
   });

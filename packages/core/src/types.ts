@@ -1,4 +1,3 @@
-export type Justify = "start" | "end" | "center" | "space-between";
 export type Overflow = "trim-end" | "trim-start" | "trim-center" | "stretch";
 export type Underflow =
   | "extend-end"
@@ -37,11 +36,6 @@ export interface ColorTemperatureFilter {
 }
 
 export type Filter = AdjustFilter | OpacityFilter | ColorBalanceFilter | ColorTemperatureFilter;
-
-export interface CompositionLayout {
-  justify: Justify;
-  gap: number;
-}
 
 export interface SpatialFields {
   position?: Position;
@@ -87,7 +81,6 @@ export interface TimeAnchor {
 export interface ChildTimingFields extends SpatialFields {
   in?: number;
   out?: number;
-  flex?: number;
   overflow?: Overflow;
   underflow?: Underflow;
   filters?: Filter[];
@@ -111,7 +104,6 @@ export interface Clip extends ChildTimingFields {
 export interface Empty {
   type: "empty";
   duration: number;
-  flex?: number;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
@@ -119,7 +111,7 @@ export interface Empty {
 
 /**
  * An audio-only clip. Shares clip's temporal vocabulary (`in`/`out`/`speed`/
- * `duration`/`flex`/`overflow`/`underflow`) and id/anchor fields, but has no
+ * `duration`/`overflow`/`underflow`) and id/anchor fields, but has no
  * spatial layout and no visual filters — audio filtering (gain/EQ/etc.) is
  * different in kind and will get its own schema later.
  */
@@ -130,9 +122,26 @@ export interface Audio {
   out: number;
   speed?: number;
   duration?: number;
-  flex?: number;
   overflow?: Overflow;
   underflow?: Underflow;
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+}
+
+/**
+ * A free-form JSON payload that occupies a span of time on the timeline.
+ * Renders nothing visual or audible; it's a parking spot for editor
+ * concerns (markers, captions, decorators) that travel with the document.
+ *
+ * As a child it takes up `duration` seconds of sequential time (default 0).
+ * As an attachment it can be pinned via `start`/`end`; if both are pinned
+ * its on-timeline length is `end − start` regardless of `duration`.
+ */
+export interface Data {
+  type: "data";
+  data: unknown;
+  duration?: number;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
@@ -147,24 +156,9 @@ export interface Composition extends ChildTimingFields {
    * order, last on top.
    */
   attachments?: Child[];
-  refs?: Record<string, Child>;
-  duration?: number;
-  unitDuration?: number;
-  layout?: CompositionLayout;
   contentWidth?: number;
   contentHeight?: number;
 }
 
-/**
- * A reference to a child defined in an enclosing composition's `refs` dict.
- * The ref's own `in`/`out`/`flex`/spatial fields window and position the
- * *resolved* duration of the definition. Lookup walks the enclosing scope
- * chain and takes the shallowest match (inner composition wins).
- */
-export interface RefChild extends ChildTimingFields {
-  type: "ref";
-  source: string; // the ref's name (the key in some ancestor's `refs` dict)
-}
-
-export type Child = Clip | Audio | Empty | Composition | RefChild;
+export type Child = Clip | Audio | Empty | Data | Composition;
 export type SeamFile = Composition;

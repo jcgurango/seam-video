@@ -3,17 +3,15 @@ import type {
   Child,
   Overflow,
   TimeAnchor,
+  Underflow,
 } from "../types.js";
 import type {
   ResolvedTimeline,
   ResolvedChild,
   SpatialInput,
 } from "../resolved-types.js";
-import { distributeFlex } from "./flex.js";
 import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
-import { computeJustifyOffsets } from "./justify.js";
-import { inlineRefs } from "../inline.js";
 
 function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration?: number }): number {
   if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
@@ -27,25 +25,25 @@ function naturalDuration(child: Child): number {
       return (child.out - child.in) / clipBaseSpeed(child);
     case "empty":
       return child.duration;
+    case "data":
+      return child.duration ?? 0;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
       }
       return resolveCompositionInner(child).duration;
     }
-    case "ref":
-      throw new Error(
-        `internal: ref "${child.source}" reached layout; refs must be inlined before resolve`
-      );
   }
 }
 
-/**
- * Resolve a single child to its target duration, applying overflow/underflow.
- * Returns the resolved child (with placeholder timeline positions) and its actual duration.
- */
 function collectSpatialInput(child: Child): SpatialInput | undefined {
-  if (child.type === "empty" || child.type === "audio") return undefined;
+  if (
+    child.type === "empty" ||
+    child.type === "audio" ||
+    child.type === "data"
+  ) {
+    return undefined;
+  }
   const { position, objectFit, top, left, right, bottom, width, height } = child;
   if (position == null && objectFit == null && top == null && left == null &&
       right == null && bottom == null && width == null && height == null) {
@@ -54,11 +52,18 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
   return { position, objectFit, top, left, right, bottom, width, height };
 }
 
+/**
+ * Resolve a single child to its target duration. For sequential children
+ * `target` always equals `nat`, so overflow/underflow are no-ops; for
+ * attachments with both ends pinned the caller passes a target derived from
+ * the anchors and overflow/underflow strategies kick in to fit.
+ */
 function resolveChild(
   child: Child,
   nat: number,
   target: number,
-  defaultOverflow: Overflow
+  defaultOverflow: Overflow,
+  defaultUnderflow: Underflow | null
 ): { resolved: ResolvedChild; actualDuration: number } {
   if (child.type === "empty") {
     return {
@@ -67,10 +72,16 @@ function resolveChild(
     };
   }
 
-  if (child.type === "ref") {
-    throw new Error(
-      `internal: ref "${child.source}" reached layout; refs must be inlined before resolve`
-    );
+  if (child.type === "data") {
+    return {
+      resolved: {
+        type: "data" as const,
+        data: child.data,
+        timelineStart: 0,
+        timelineEnd: 0,
+      },
+      actualDuration: target,
+    };
   }
 
   const spatialInput = collectSpatialInput(child);
@@ -92,7 +103,7 @@ function resolveChild(
       windowOut = result.sourceOut;
       speed = result.speed;
     } else if (target > compNatural) {
-      const underflow = child.underflow;
+      const underflow = child.underflow ?? defaultUnderflow;
       if (underflow) {
         const result = applyUnderflow(underflow, compIn, compOut, target);
         windowIn = result.sourceIn;
@@ -138,7 +149,7 @@ function resolveChild(
     sourceOut = result.sourceOut;
     speed = result.speed * baseSpeed;
   } else if (target > nat) {
-    const underflow = leaf.underflow;
+    const underflow = leaf.underflow ?? defaultUnderflow;
     if (underflow) {
       const sourceTarget = target * baseSpeed;
       const result = applyUnderflow(underflow, sourceIn, sourceOut, sourceTarget);
@@ -181,79 +192,48 @@ function resolveChild(
   };
 }
 
-/**
- * Public entry point: inlines any `ref` children and `refs` dicts before
- * running layout. Call this on top-level (or subtree) inputs that may
- * contain refs.
- */
 export function resolveComposition(composition: Composition): ResolvedTimeline {
-  return resolveCompositionInner(inlineRefs(composition));
+  return resolveCompositionInner(composition);
 }
 
-/** Inner resolver — assumes the input has already been inlined. */
 function resolveCompositionInner(composition: Composition): ResolvedTimeline {
-  const { children, layout, unitDuration } = composition;
-  const duration = composition.duration;
-  const justify = layout?.justify ?? "start";
-  const gap = layout?.gap ?? 0;
+  const { children } = composition;
 
+  // Sequential children: each child takes its natural duration. There's no
+  // higher-order organizer (no flex, no justify, no container duration) —
+  // the composition's length is just the sum of its children.
   const naturals = children.map((c) => naturalDuration(c));
-  const totalGap = gap * Math.max(0, children.length - 1);
-  const sumNaturals = naturals.reduce((a, b) => a + b, 0);
+  const containerDuration = naturals.reduce((a, b) => a + b, 0);
 
-  let containerDuration: number;
-  let targetDurations: number[];
-
-  if (unitDuration != null) {
-    const flexValues = children.map((c) => c.flex ?? 1);
-    const totalFlex = flexValues.reduce((a, b) => a + b, 0);
-    containerDuration = unitDuration * totalFlex + totalGap;
-    targetDurations = flexValues.map((f) => unitDuration * f);
-  } else {
-    containerDuration = duration ?? sumNaturals + totalGap;
-
-    // Compute target durations
-    const hasFlex = children.some((c) => c.flex);
-    if (hasFlex) {
-      targetDurations = distributeFlex(children, naturals, totalGap, containerDuration);
-    } else {
-      targetDurations = [...naturals];
-    }
-  }
-
-  // Resolve each child
   const resolvedChildren: ResolvedChild[] = [];
   const actualDurations: number[] = [];
-
   for (let i = 0; i < children.length; i++) {
     const { resolved, actualDuration } = resolveChild(
-      children[i], naturals[i], targetDurations[i], "trim-end"
+      children[i],
+      naturals[i],
+      naturals[i],
+      "trim-end",
+      null
     );
     resolvedChildren.push(resolved);
     actualDurations.push(actualDuration);
   }
 
-  // Apply justify to compute timeline positions
-  const offsets = computeJustifyOffsets(
-    justify,
-    actualDurations,
-    gap,
-    containerDuration
-  );
-
-  // Assign timeline positions and build the id map from this composition's
+  // Place children sequentially and build the id map from this composition's
   // direct children. Ids are scoped to the composition — we deliberately
   // don't look into nested children here, so an attachment can only anchor
   // to a sibling.
   const idMap = new Map<string, IdMapEntry>();
+  let pos = 0;
   for (let i = 0; i < resolvedChildren.length; i++) {
-    const start = offsets[i];
-    const end = start + actualDurations[i];
+    const start = pos;
+    const end = pos + actualDurations[i];
     resolvedChildren[i] = {
       ...resolvedChildren[i],
       timelineStart: start,
       timelineEnd: end,
     };
+    pos = end;
     const id = getId(children[i]);
     if (id != null) {
       if (idMap.has(id)) {
@@ -320,7 +300,7 @@ function buildIdMapEntry(
       speed: resolved.speed,
     };
   }
-  if (resolved.type === "empty") {
+  if (resolved.type === "empty" || resolved.type === "data") {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   // composition — source time is the pre-window inner timeline
@@ -396,26 +376,6 @@ function parsePercent(s: string): number {
   return parseFloat(m[1]) / 100;
 }
 
-/**
- * Force a child to render at exactly `target` timeline seconds. Clips adjust
- * via `duration` (which implies speed); composition windows use stretch
- * overflow/underflow so their effective speed scales to fit.
- */
-function forceTimelineDuration(child: Child, target: number): Child {
-  if (child.type === "clip" || child.type === "audio") {
-    const { speed: _s, ...rest } = child;
-    return { ...rest, duration: target };
-  }
-  if (child.type === "empty") {
-    return { ...child, duration: target };
-  }
-  if (child.type === "composition") {
-    return { ...child, overflow: "stretch", underflow: "stretch" };
-  }
-  // ref should've been inlined already
-  return child;
-}
-
 function resolveAttachment(
   att: Child,
   idMap: Map<string, IdMapEntry>
@@ -426,7 +386,6 @@ function resolveAttachment(
     : null;
   const endT = att.end ? resolveAnchorTime(att.end, idMap, attNatDur) : null;
 
-  let effective: Child = att;
   let position: number;
   let target: number;
 
@@ -438,23 +397,25 @@ function resolveAttachment(
     }
     position = startT;
     target = endT - startT;
-    effective = forceTimelineDuration(att, target);
   } else if (startT != null) {
     position = startT;
-    target = naturalDuration(att);
+    target = attNatDur;
   } else if (endT != null) {
-    target = naturalDuration(att);
+    target = attNatDur;
     position = endT - target;
   } else {
     position = 0;
-    target = naturalDuration(att);
+    target = attNatDur;
   }
 
-  const nat = naturalDuration(effective);
+  // For attachments, both overflow and underflow default to "stretch" so an
+  // overconstrained attachment fills its anchored span by adjusting speed.
+  // Authors can opt into trim/extend strategies on the attachment node itself.
   const { resolved, actualDuration } = resolveChild(
-    effective,
-    nat,
+    att,
+    attNatDur,
     target,
+    "stretch",
     "stretch"
   );
 
@@ -500,7 +461,7 @@ function cropChildrenToWindow(
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
-    } else if (child.type === "empty") {
+    } else if (child.type === "empty" || child.type === "data") {
       result.push({
         ...child,
         timelineStart: rebasedStart,

@@ -32,8 +32,14 @@ function resolveNode(
   parentH: number,
   parentObjectFit: ObjectFit
 ): ResolvedChild {
-  // Empty + audio have no spatial state — pass through.
-  if (node.type === "empty" || node.type === "audio") return node;
+  // Empty, audio, and data have no spatial state — pass through.
+  if (
+    node.type === "empty" ||
+    node.type === "audio" ||
+    node.type === "data"
+  ) {
+    return node;
+  }
 
   const input = node.spatialInput;
 

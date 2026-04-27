@@ -68,26 +68,29 @@ describe("audio", () => {
     }
   });
 
-  it("applies stretch overflow to audio (speed up to fit)", () => {
+  it("applies stretch overflow to audio when used as an attachment", () => {
     const result = resolveComposition(
       comp({
-        duration: 5,
         children: [
+          { id: "main", type: "clip", source: "v.mp4", in: 0, out: 5 },
+        ],
+        attachments: [
           {
             type: "audio",
             source: "a.mp3",
             in: 0,
             out: 10,
-            flex: 1,
-            overflow: "stretch",
+            start: { anchor: "main", timeSource: "output", anchorPoint: "0%" },
+            end: { anchor: "main", timeSource: "output", anchorPoint: "100%" },
           },
         ],
       })
     );
 
-    const audio = result.children[0];
+    // 10s natural, pinned to 5s span → default stretch → speed 2
+    const audio = result.children[1];
     if (audio.type === "audio") {
-      expect(audio.speed).toBe(2); // 10s of source crammed into 5s
+      expect(audio.speed).toBe(2);
       expect(audio.timelineEnd - audio.timelineStart).toBeCloseTo(5);
     }
   });

@@ -59,6 +59,13 @@ export interface ResolvedAudio {
   speed: number;
 }
 
+export interface ResolvedData {
+  type: "data";
+  data: unknown;
+  timelineStart: number;
+  timelineEnd: number;
+}
+
 export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
@@ -80,6 +87,7 @@ export type ResolvedChild =
   | ResolvedClip
   | ResolvedAudio
   | ResolvedEmpty
+  | ResolvedData
   | ResolvedComposition;
 
 export interface ResolvedTimeline {

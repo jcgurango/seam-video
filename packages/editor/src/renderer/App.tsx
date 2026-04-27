@@ -54,21 +54,13 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
       return { ...child, source: toRelative(child.source, baseDir) };
     }
     if (child.type === "composition") {
-      const remapped = {
+      return {
         ...child,
         children: child.children.map(walk),
         ...(child.attachments
           ? { attachments: child.attachments.map(walk) }
           : {}),
-        ...(child.refs
-          ? {
-              refs: Object.fromEntries(
-                Object.entries(child.refs).map(([k, v]) => [k, walk(v)])
-              ),
-            }
-          : {}),
       };
-      return remapped;
     }
     return child;
   };
@@ -76,13 +68,6 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
     ...doc,
     children: doc.children.map(walk),
     ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
-    ...(doc.refs
-      ? {
-          refs: Object.fromEntries(
-            Object.entries(doc.refs).map(([k, v]) => [k, walk(v)])
-          ),
-        }
-      : {}),
   };
 }
 
@@ -93,14 +78,10 @@ function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
     } else if (child.type === "composition") {
       child.children.forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
-      if (child.refs) Object.values(child.refs).forEach(visit);
     }
-    // ref nodes don't carry a source of their own — the referenced def's
-    // clips are collected when we visit `refs` above.
   };
   doc.children.forEach(visit);
   if (doc.attachments) doc.attachments.forEach(visit);
-  if (doc.refs) Object.values(doc.refs).forEach(visit);
   return out;
 }
 
