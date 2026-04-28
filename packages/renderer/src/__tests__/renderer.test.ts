@@ -30,7 +30,7 @@ describe("buildFfmpegCommand", () => {
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
 
-    expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["a.mp4", "b.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
     expect(cmd.filterComplex).toContain("[1:v]trim=5:10");
     // Unified assembly: black base + overlay each child
@@ -68,7 +68,7 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    expect(cmd.inputs).toEqual(["video.mp4", "video.mp4"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["video.mp4", "video.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
     expect(cmd.filterComplex).toContain("[1:v]trim=5:8");
   });
@@ -126,7 +126,7 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    expect(cmd.inputs).toEqual(["a.mp4", "b.mp4"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["a.mp4", "b.mp4"]);
     expect(cmd.filterComplex).toContain("color=c=black");
     expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
     // Empty segment is skipped, second clip delayed to t=5
@@ -168,7 +168,7 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    expect(cmd.inputs).toEqual(["a.mp4", "inner.mp4"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["a.mp4", "inner.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
     expect(cmd.filterComplex).toContain("[1:v]trim=0:5");
     // Nested composition gets its own black base, then overlaid on parent
@@ -241,7 +241,7 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    expect(cmd.inputs).toEqual(["bg.mp4", "fg.mp4"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["bg.mp4", "fg.mp4"]);
     expect(cmd.filterComplex).toContain("overlay=0:0:eof_action=pass");
     // Second child has delay=1s, so tpad should appear
     expect(cmd.filterComplex).toContain("tpad=start_duration=1");
@@ -674,7 +674,7 @@ describe("buildFfmpegCommand", () => {
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
     // Both inputs are listed
-    expect(cmd.inputs).toEqual(["v.mp4", "vo.mp3"]);
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["v.mp4", "vo.mp3"]);
     // Audio gets atrimmed for both. The video clip becomes a v label, the
     // audio doesn't, so amix with two inputs handles both audio tracks.
     expect(cmd.filterComplex).toContain("[1:a]atrim=0:5");
@@ -702,5 +702,46 @@ describe("buildFfmpegCommand", () => {
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
     expect(cmd.filterComplex).toContain("asetrate=48000*2,aresample=48000");
+  });
+
+  it("html nodes use the supplied PNG with -loop 1", () => {
+    const html = {
+      type: "html" as const,
+      source: "<b>hi</b>",
+      contentWidth: 100,
+      contentHeight: 50,
+      timelineStart: 0,
+      timelineEnd: 3,
+    };
+    const timeline: ResolvedTimeline = {
+      duration: 3,
+      children: [html],
+    };
+
+    const cmd = buildFfmpegCommand(timeline, "out.mp4", {
+      htmlAssets: new Map([[html, "/tmp/html-0.png"]]),
+    });
+
+    expect(cmd.inputs).toEqual([
+      { path: "/tmp/html-0.png", flags: ["-loop", "1"] },
+    ]);
+    expect(cmd.filterComplex).toContain("trim=0:3");
+    expect(cmd.filterComplex).toContain("anullsrc=r=48000:cl=stereo");
+  });
+
+  it("throws when an html node has no pre-rendered asset", () => {
+    const html = {
+      type: "html" as const,
+      source: "<b>hi</b>",
+      contentWidth: 100,
+      contentHeight: 50,
+      timelineStart: 0,
+      timelineEnd: 3,
+    };
+    const timeline: ResolvedTimeline = {
+      duration: 3,
+      children: [html],
+    };
+    expect(() => buildFfmpegCommand(timeline, "out.mp4")).toThrow(/pre-rendered/);
   });
 });

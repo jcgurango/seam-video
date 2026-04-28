@@ -18,20 +18,31 @@ export function checkFfmpeg(): void {
   }
 }
 
+/**
+ * Convert a built FfmpegCommand into the exact argv list the runner will
+ * pass to ffmpeg. Exposed so callers (e.g. the CLI's --dry-run mode) can
+ * preview or log the invocation.
+ */
+export function buildFfmpegArgs(command: FfmpegCommand): string[] {
+  const args: string[] = ["-y"];
+
+  for (const input of command.inputs) {
+    if (input.flags) args.push(...input.flags);
+    args.push("-i", input.path);
+  }
+
+  args.push("-filter_complex", command.filterComplex);
+  args.push(...command.outputArgs);
+
+  return args;
+}
+
 export function renderWithFfmpeg(
   command: FfmpegCommand,
   outputPath: string
 ): Promise<RenderResult> {
   return new Promise((resolve) => {
-    const args: string[] = ["-y"];
-
-    for (const input of command.inputs) {
-      args.push("-i", input);
-    }
-
-    args.push("-filter_complex", command.filterComplex);
-    args.push(...command.outputArgs);
-
+    const args = buildFfmpegArgs(command);
     const start = Date.now();
 
     execFile("ffmpeg", args, { maxBuffer: 50 * 1024 * 1024 }, (error, _stdout, stderr) => {

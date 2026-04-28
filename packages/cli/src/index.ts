@@ -18,6 +18,10 @@ program
   .option("--fps <number>", "Frames per second", "30")
   .option("--width <number>", "Output width in pixels", "1920")
   .option("--height <number>", "Output height in pixels", "1080")
+  .option(
+    "--dry-run",
+    "Print the ffmpeg command and leave the .seam-rendered/ assets dir in place"
+  )
   .action(renderCommand);
 
 program

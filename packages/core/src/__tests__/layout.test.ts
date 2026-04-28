@@ -246,4 +246,51 @@ describe("resolveComposition", () => {
       }
     });
   });
+
+  describe("html nodes", () => {
+    it("places html sequentially with its `duration` as natural span", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 2 },
+            {
+              type: "html",
+              source: "<b>hi</b>",
+              duration: 3,
+              contentWidth: 100,
+              contentHeight: 50,
+            },
+            { type: "clip", source: "b.mp4", in: 0, out: 1 },
+          ],
+        })
+      );
+
+      expect(result.duration).toBe(6);
+      expect(result.children).toHaveLength(3);
+      const html = result.children[1];
+      expect(html.type).toBe("html");
+      if (html.type === "html") {
+        expect(html.timelineStart).toBe(2);
+        expect(html.timelineEnd).toBe(5);
+        expect(html.contentWidth).toBe(100);
+        expect(html.contentHeight).toBe(50);
+        expect(html.source).toBe("<b>hi</b>");
+      }
+    });
+
+    it("preserves undefined contentWidth/contentHeight through temporal resolution", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "html", source: "<i>x</i>", duration: 2 },
+          ],
+        })
+      );
+      const html = result.children[0];
+      if (html.type === "html") {
+        expect(html.contentWidth).toBeUndefined();
+        expect(html.contentHeight).toBeUndefined();
+      }
+    });
+  });
 });

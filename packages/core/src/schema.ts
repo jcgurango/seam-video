@@ -162,12 +162,24 @@ export const DataSchema = z.object({
   ...AnchorFieldsSchema,
 }).strict();
 
+export const HtmlSchema = z.object({
+  type: z.literal("html"),
+  source: z.string().min(1),
+  duration: z.number().positive(),
+  contentWidth: z.number().positive().optional(),
+  contentHeight: z.number().positive().optional(),
+  filters: FiltersArraySchema,
+  ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
+}).strict();
+
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
     AudioSchema,
     EmptySchema,
     DataSchema,
+    HtmlSchema,
     CompositionSchema,
   ])
 );

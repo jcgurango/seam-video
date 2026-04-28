@@ -27,6 +27,8 @@ function naturalDuration(child: Child): number {
       return child.duration;
     case "data":
       return child.duration ?? 0;
+    case "html":
+      return child.duration;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
@@ -85,6 +87,26 @@ function resolveChild(
   }
 
   const spatialInput = collectSpatialInput(child);
+
+  if (child.type === "html") {
+    // HTML is static — overflow/underflow strategies all collapse to "show
+    // the same image for the target span". contentWidth/contentHeight stay
+    // as authored (possibly undefined — the spatial pass fills with the
+    // display rect, mirroring composition behaviour).
+    return {
+      resolved: {
+        type: "html" as const,
+        source: child.source,
+        contentWidth: child.contentWidth as number,
+        contentHeight: child.contentHeight as number,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
+      },
+      actualDuration: target,
+    };
+  }
 
   if (child.type === "composition") {
     const inner = resolveCompositionInner(child);
@@ -300,7 +322,11 @@ function buildIdMapEntry(
       speed: resolved.speed,
     };
   }
-  if (resolved.type === "empty" || resolved.type === "data") {
+  if (
+    resolved.type === "empty" ||
+    resolved.type === "data" ||
+    resolved.type === "html"
+  ) {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   // composition — source time is the pre-window inner timeline
@@ -461,7 +487,11 @@ function cropChildrenToWindow(
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
-    } else if (child.type === "empty" || child.type === "data") {
+    } else if (
+      child.type === "empty" ||
+      child.type === "data" ||
+      child.type === "html"
+    ) {
       result.push({
         ...child,
         timelineStart: rebasedStart,

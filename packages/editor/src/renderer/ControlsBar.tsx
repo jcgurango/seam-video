@@ -118,6 +118,7 @@ function nodeNaturalDuration(node: Child): number {
   }
   if (node.type === "empty") return node.duration;
   if (node.type === "data") return node.duration ?? 0;
+  if (node.type === "html") return node.duration;
   if (node.type === "composition") {
     if (node.in != null && node.out != null) return node.out - node.in;
     try {

@@ -4,13 +4,15 @@ import type {
   ResolvedAudio,
   ResolvedEmpty,
   ResolvedData,
+  ResolvedHtml,
 } from "./resolved-types.js";
 
 export type FlatLeaf =
   | ResolvedClip
   | ResolvedAudio
   | ResolvedEmpty
-  | ResolvedData;
+  | ResolvedData
+  | ResolvedHtml;
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
@@ -57,6 +59,12 @@ export function flattenResolved(
       result.push({
         type: "data",
         data: child.data,
+        timelineStart: start,
+        timelineEnd: end,
+      });
+    } else if (child.type === "html") {
+      result.push({
+        ...child,
         timelineStart: start,
         timelineEnd: end,
       });

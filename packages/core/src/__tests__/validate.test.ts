@@ -372,6 +372,69 @@ describe("validate", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts an html node with explicit content dims", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "html",
+          source: "<b>hi</b>",
+          duration: 5,
+          contentWidth: 100,
+          contentHeight: 100,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an html node without content dims (canvas fallback)", () => {
+    const result = validate({
+      type: "composition",
+      children: [{ type: "html", source: "<b>hi</b>", duration: 3 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an html node with spatial fields and filters", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "html",
+          source: "<b>hi</b>",
+          duration: 2,
+          contentWidth: 200,
+          contentHeight: 100,
+          top: "10px",
+          left: "20%",
+          width: "50%",
+          objectFit: "cover",
+          filters: [{ type: "opacity", value: 0.5 }],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an html node missing duration", () => {
+    const result = validate({
+      type: "composition",
+      children: [{ type: "html", source: "<b>hi</b>" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an html node with unknown extra fields", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "html", source: "<b>hi</b>", duration: 1, weird: 7 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseSeamFile", () => {

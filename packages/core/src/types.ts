@@ -147,6 +147,28 @@ export interface Data {
   end?: TimeAnchor;
 }
 
+/**
+ * A static HTML snippet rasterized to an image (via satori) and rendered
+ * for `duration` seconds. Restricted to satori-compatible markup — a
+ * layout/text subset, not arbitrary HTML.
+ *
+ * Sizing mirrors compositions: `contentWidth`/`contentHeight` are the
+ * intrinsic SVG canvas dims (what satori renders into), with canvas-dim
+ * fallback when omitted; `SpatialFields` (top/left/right/bottom/width/
+ * height/position/objectFit) place the rasterized image on the parent.
+ */
+export interface Html extends SpatialFields {
+  type: "html";
+  source: string;
+  duration: number;
+  contentWidth?: number;
+  contentHeight?: number;
+  filters?: Filter[];
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+}
+
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
@@ -160,5 +182,5 @@ export interface Composition extends ChildTimingFields {
   contentHeight?: number;
 }
 
-export type Child = Clip | Audio | Empty | Data | Composition;
+export type Child = Clip | Audio | Empty | Data | Html | Composition;
 export type SeamFile = Composition;
