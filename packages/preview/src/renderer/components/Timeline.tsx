@@ -1,6 +1,10 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ResolvedTimeline } from "@seam/core";
-import { TimelineContext } from "./TimelineContext.js";
+import {
+  TimelineContext,
+  TimelineCanvasContext,
+  type TimelineCanvasContextValue,
+} from "./TimelineContext.js";
 import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
 import { FrameCoordinator } from "../media/FrameCoordinator.js";
@@ -10,18 +14,20 @@ import { buildRenderList } from "../media/gpu/RenderList.js";
 interface TimelineProps {
   timeline: ResolvedTimeline;
   basePath: string;
-  width?: number;
-  height?: number;
   preserveTime?: boolean;
   initialTime?: number;
   children?: React.ReactNode;
 }
 
+interface CanvasMount {
+  canvas: HTMLCanvasElement;
+  width: number;
+  height: number;
+}
+
 export default function Timeline({
   timeline,
   basePath,
-  width = 1920,
-  height = 1080,
   preserveTime = false,
   initialTime = 0,
   children,
@@ -30,7 +36,13 @@ export default function Timeline({
   const [isPlaying, setIsPlaying] = useState(false);
   const [loop, setLoop] = useState(false);
   const rafRef = useRef<number>(0);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // The <VideoCanvas> registered with us, if any. Stored as state so
+  // the WebGPU init effect re-runs on (re)mount and as a ref so
+  // gpuRender can read the latest dimensions without re-binding.
+  const [canvasMount, setCanvasMount] = useState<CanvasMount | null>(null);
+  const canvasMountRef = useRef<CanvasMount | null>(null);
+  canvasMountRef.current = canvasMount;
 
   // Persistent instances
   const mediaStoreRef = useRef<MediaStore | null>(null);
@@ -60,15 +72,13 @@ export default function Timeline({
     };
   }, []);
 
-  // Initialize WebGPU when canvas mounts
+  // Initialize WebGPU when the canvas mounts
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || renderer.ready) return;
-
-    void renderer.init(canvas).catch((err) => {
+    if (!canvasMount || renderer.ready) return;
+    void renderer.init(canvasMount.canvas).catch((err) => {
       console.error("WebGPU init failed:", err);
     });
-  }, [renderer]);
+  }, [renderer, canvasMount]);
 
   // Ref for latest currentTime — used by setTimeline to prime buffers at the
   // actual playhead on document changes, and by the frame-available callback.
@@ -106,19 +116,21 @@ export default function Timeline({
   const gpuRender = useCallback(
     (time: number) => {
       if (!renderer.ready) return;
-      renderer.resize(width, height);
+      const mount = canvasMountRef.current;
+      if (!mount) return;
+      renderer.resize(mount.width, mount.height);
 
       const commands = buildRenderList(
         timelineRef.current,
         time,
-        width,
-        height,
+        mount.width,
+        mount.height,
         (clip) => coordinator.getIntrinsicSize(clip),
       );
 
       renderer.render(commands, (clip) => coordinator.getFrame(clip, time));
     },
-    [renderer, coordinator, width, height],
+    [renderer, coordinator],
   );
 
   // Wire up frame-available callback for re-renders on async seek / reload
@@ -130,6 +142,11 @@ export default function Timeline({
       coordinator.onFrameAvailable = null;
     };
   }, [coordinator, gpuRender]);
+
+  // Re-render when the canvas (re)mounts or its dimensions change.
+  useEffect(() => {
+    if (canvasMount) gpuRender(currentTimeRef.current);
+  }, [canvasMount, gpuRender]);
 
   // Playback loop — rAF only (no setInterval to avoid tick accumulation)
   useEffect(() => {
@@ -214,10 +231,6 @@ export default function Timeline({
     isPlaying,
     loop,
     basePath,
-    canvasWidth: width,
-    canvasHeight: height,
-    getFrame: () => null,
-    getIntrinsicSize: () => null,
     play,
     pause,
     restart,
@@ -225,44 +238,23 @@ export default function Timeline({
     setLoop,
   };
 
+  const canvasCtx = useMemo<TimelineCanvasContextValue>(
+    () => ({
+      registerCanvas: (canvas, width, height) => {
+        setCanvasMount({ canvas, width, height });
+      },
+      unregisterCanvas: (canvas) => {
+        setCanvasMount((cur) => (cur?.canvas === canvas ? null : cur));
+      },
+    }),
+    [],
+  );
+
   return (
     <TimelineContext.Provider value={ctx}>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          height: "100%",
-          background: "#1a1a1a",
-          color: "#fff",
-          fontFamily: "sans-serif",
-          minHeight: 0,
-        }}
-      >
-        {/* Video area */}
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            overflow: "hidden",
-          }}
-        >
-          <canvas
-            ref={canvasRef}
-            width={width}
-            height={height}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              background: "#000",
-            }}
-          />
-        </div>
-
-        {/* Transport controls slot */}
+      <TimelineCanvasContext.Provider value={canvasCtx}>
         {children}
-      </div>
+      </TimelineCanvasContext.Provider>
     </TimelineContext.Provider>
   );
 }

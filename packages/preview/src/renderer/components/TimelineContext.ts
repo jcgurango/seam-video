@@ -1,5 +1,4 @@
 import { createContext, useContext } from "react";
-import type { ResolvedClip } from "@seam/core";
 
 export interface TimelineContextValue {
   currentTime: number;
@@ -7,10 +6,6 @@ export interface TimelineContextValue {
   isPlaying: boolean;
   loop: boolean;
   basePath: string;
-  canvasWidth: number;
-  canvasHeight: number;
-  getFrame: (clip: ResolvedClip) => HTMLCanvasElement | OffscreenCanvas | null;
-  getIntrinsicSize: (clip: ResolvedClip) => { w: number; h: number } | null;
   play: () => void;
   pause: () => void;
   restart: () => void;
@@ -27,3 +22,18 @@ export function useTimeline(): TimelineContextValue {
   }
   return ctx;
 }
+
+// Internal context used by <VideoCanvas> to mount its <canvas> element with
+// <Timeline>. Not part of the public API — consumers should compose
+// <VideoCanvas> instead of touching this directly.
+export interface TimelineCanvasContextValue {
+  registerCanvas: (
+    canvas: HTMLCanvasElement,
+    width: number,
+    height: number
+  ) => void;
+  unregisterCanvas: (canvas: HTMLCanvasElement) => void;
+}
+
+export const TimelineCanvasContext =
+  createContext<TimelineCanvasContextValue | null>(null);

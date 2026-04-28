@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Timeline } from "@seam/preview";
+import { Timeline, VideoCanvas } from "@seam/preview";
 import {
   parseSeamFile,
   resolveComposition,
@@ -234,13 +234,13 @@ export default function App({ platform }: AppProps) {
   const filePathRef = useRef(filePath);
   filePathRef.current = filePath;
 
-  const handleSaveRef = useRef<() => void>(() => {});
-  const handleSaveAsRef = useRef<() => void>(() => {});
+  const handleSaveRef = useRef<() => void>(() => { });
+  const handleSaveAsRef = useRef<() => void>(() => { });
   const loadDocumentRef = useRef<
     (doc: SeamFile, fp: string | null) => Promise<void>
-  >(async () => {});
+  >(async () => { });
   const openFromJsonRef = useRef<(json: string, fp: string) => Promise<void>>(
-    async () => {}
+    async () => { }
   );
 
   const updateTitle = useCallback(
@@ -612,43 +612,60 @@ export default function App({ platform }: AppProps) {
         preserveTime
         initialTime={initialTime}
       >
-        <ControlsBar
-          document={document}
-          filePath={filePath}
-          selectedIndices={selectedIndices}
-          onSelectionChange={onSelectionChange}
-          onDocumentChange={updateDocument}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          canUndo={history.canUndo}
-          canRedo={history.canRedo}
-          view={view}
-          onExit={handleExit}
-          onEnterClip={handleEnterChild}
-          platform={platform}
-        />
-        <TimelinePanel
-          timeline={viewTimeline}
-          document={document}
-          viewDocument={viewDocument}
-          filePath={filePath}
-          isMobile={isMobile}
-          selectedIndices={selectedIndices}
-          onSelectionChange={onSelectionChange}
-          multiSelectMode={multiSelectMode}
-          onMultiSelectStart={onMultiSelectStart}
-          onDocumentChange={updateDocument}
-          view={view}
-          onEnterClip={handleEnterChild}
-          history={history}
-          platform={platform}
-        />
-        {showSelectionBar && (
-          <SelectionBar
-            count={selectedIndices.length}
-            onDeselect={() => onSelectionChange([])}
-          />
-        )}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            background: "#1a1a1a",
+            color: "#fff",
+            fontFamily: "sans-serif",
+            minHeight: 0,
+          }}
+        >
+          <div style={{ height: '65vh', display: 'flex' }}>
+            <VideoCanvas />
+          </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <ControlsBar
+              document={document}
+              filePath={filePath}
+              selectedIndices={selectedIndices}
+              onSelectionChange={onSelectionChange}
+              onDocumentChange={updateDocument}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
+              canUndo={history.canUndo}
+              canRedo={history.canRedo}
+              view={view}
+              onExit={handleExit}
+              onEnterClip={handleEnterChild}
+              platform={platform}
+            />
+            <TimelinePanel
+              timeline={viewTimeline}
+              document={document}
+              viewDocument={viewDocument}
+              filePath={filePath}
+              isMobile={isMobile}
+              selectedIndices={selectedIndices}
+              onSelectionChange={onSelectionChange}
+              multiSelectMode={multiSelectMode}
+              onMultiSelectStart={onMultiSelectStart}
+              onDocumentChange={updateDocument}
+              view={view}
+              onEnterClip={handleEnterChild}
+              history={history}
+              platform={platform}
+            />
+            {showSelectionBar && (
+              <SelectionBar
+                count={selectedIndices.length}
+                onDeselect={() => onSelectionChange([])}
+              />
+            )}
+          </div>
+        </div>
       </Timeline>
     );
   };

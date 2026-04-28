@@ -1527,6 +1527,7 @@ export default function TimelinePanel({
         borderTop: "1px solid #333",
         display: "flex",
         flexDirection: "column",
+        flex: 1,
         minHeight: 120,
         maxHeight: 300,
         userSelect: "none",
