@@ -4,10 +4,12 @@ import {
   parseSeamFile,
   resolveComposition,
   resolveSpatial,
+  validate as validateSeamFile,
 } from "@seam/core";
-import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
+import InspectorTabs from "./InspectorTabs.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
@@ -294,6 +296,61 @@ export default function App({ platform }: AppProps) {
       setMultiSelectMode(false);
     },
     [history]
+  );
+
+  // The "node" the JSON tab is editing — whole doc at root, otherwise the
+  // child being drilled into.
+  const jsonNode = useMemo<unknown>(() => {
+    if (view.type === "root") return document;
+    return document.children[view.rootIndex];
+  }, [document, view]);
+
+  // Translate the current selection into a JSON path inside `jsonNode`.
+  // Selection indices are encoded as: [0, children.length) → child,
+  // [children.length, total) → attachment. In clip view the JSON node is the
+  // clip itself (no children/attachments), so jumping doesn't apply.
+  const jsonJumpPath = useMemo<string | null>(() => {
+    if (selectedIndices.length !== 1) return null;
+    if (view.type === "clip") return null;
+    const idx = selectedIndices[0];
+    const childCount = viewDocument.children.length;
+    if (idx < childCount) return `children.${idx}`;
+    return `attachments.${idx - childCount}`;
+  }, [selectedIndices, view, viewDocument]);
+
+  const handleJsonNodeSave = useCallback(
+    (next: unknown): string[] | null => {
+      // Build the proposed full document.
+      let proposed: unknown;
+      if (view.type === "root") {
+        proposed = next;
+      } else {
+        const idx = view.rootIndex;
+        if (!document.children[idx]) {
+          return ["View target no longer exists in the document."];
+        }
+        const newChildren = document.children.slice();
+        newChildren[idx] = next as Child;
+        proposed = { ...document, children: newChildren };
+      }
+
+      // Schema-validate the whole document.
+      const result = validateSeamFile(proposed);
+      if (!result.success) return result.errors;
+
+      // Catch resolver-level errors (duplicate ids, broken refs, etc.).
+      try {
+        resolveDoc(result.data);
+      } catch (err) {
+        return [String(err)];
+      }
+
+      history.push(result.data);
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
+      return null;
+    },
+    [document, view, history]
   );
 
   const onSelectionChange = useCallback((next: number[]) => {
@@ -623,8 +680,19 @@ export default function App({ platform }: AppProps) {
             minHeight: 0,
           }}
         >
-          <div style={{ height: '65vh', display: 'flex' }}>
-            <VideoCanvas />
+          <div style={{ height: '65vh', display: 'flex', flexDirection: 'row' }}>
+            <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
+              <InspectorTabs
+                timeline={viewTimeline}
+                viewDocument={viewDocument}
+                jsonNode={jsonNode}
+                onJsonNodeSave={handleJsonNodeSave}
+                jsonJumpPath={jsonJumpPath}
+              />
+            </div>
+            <div style={{ flex: 1, display: 'flex' }}>
+              <VideoCanvas />
+            </div>
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <ControlsBar

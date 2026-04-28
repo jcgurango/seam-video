@@ -12,10 +12,12 @@
     "dev": "electron-vite dev"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@seam/core": "workspace:*",
     "@seam/preview": "workspace:*",
     "jszip": "^3.10.1",
     "lucide-react": "^1.8.0",
+    "monaco-editor": "^0.55.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
