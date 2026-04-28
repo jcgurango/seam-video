@@ -238,10 +238,17 @@ function DesktopTimeline({
   }, []);
 
   const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      onSelectionChange([]);
+    (e: React.PointerEvent<HTMLDivElement>) => {
       const container = scrollRef.current;
       if (!container) return;
+      // Capture the pointer on the scroll container so pointerup fires here
+      // — not on whatever clip happens to be under the cursor at release —
+      // and so children's onPointerUp doesn't run, which would steal the
+      // selection. Don't clear the existing selection: the user explicitly
+      // built it; scrubbing the playhead shouldn't blow it away.
+      const target = e.currentTarget;
+      const pointerId = e.pointerId;
+      target.setPointerCapture(pointerId);
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left + container.scrollLeft;
       const time = Math.max(0, Math.min(x / pxPerSec, totalDuration));
@@ -252,14 +259,21 @@ function DesktopTimeline({
         const mt = Math.max(0, Math.min(mx / pxPerSec, totalDuration));
         seek(mt);
       };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
+      const cleanup = () => {
+        target.removeEventListener("pointermove", onMove);
+        target.removeEventListener("pointerup", cleanup);
+        target.removeEventListener("pointercancel", cleanup);
+        try {
+          target.releasePointerCapture(pointerId);
+        } catch {
+          // Already released (e.g. element unmounted) — fine to ignore.
+        }
       };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      target.addEventListener("pointermove", onMove);
+      target.addEventListener("pointerup", cleanup);
+      target.addEventListener("pointercancel", cleanup);
     },
-    [pxPerSec, totalDuration, seek, onSelectionChange]
+    [pxPerSec, totalDuration, seek]
   );
 
   useEffect(() => {
