@@ -88,12 +88,10 @@ export function editTarget(comp: Composition): Composition {
  */
 export function runScript(
   scriptSrc: string,
-  original: Composition,
-  selectedNodes: unknown[] = []
+  original: Composition
 ): Composition {
   const fn = new Function(
     "currentNode",
-    "selectedNodes",
     "window",
     "document",
     "globalThis",
@@ -105,7 +103,7 @@ export function runScript(
     // Pass an immutable-ish copy so accidental in-place mutations on
     // `currentNode` don't poison our stored `original`.
     const cloned = JSON.parse(JSON.stringify(original));
-    result = fn(cloned, selectedNodes, undefined, undefined, undefined, undefined);
+    result = fn(cloned, undefined, undefined, undefined, undefined);
   } catch (err) {
     throw new Error(
       `Script threw: ${err instanceof Error ? err.message : String(err)}`
@@ -231,6 +229,22 @@ export function disableScript(comp: Composition): Composition {
   const script = findScript(comp);
   if (!script) return comp;
   return script.payload.original;
+}
+
+/**
+ * Run the script one final time and replace the composition with its
+ * rendered output, dropping the script attachment entirely. Useful for
+ * "freezing" a script-driven composition once you're happy with the
+ * result so it no longer depends on the script.
+ *
+ * Throws on script failure — baking with a broken script would lose the
+ * `original` source-of-truth, so we refuse rather than silently using a
+ * stale rendered body.
+ */
+export function bakeScript(comp: Composition): Composition {
+  const script = findScript(comp);
+  if (!script) return comp;
+  return runScript(script.payload.scriptSrc, script.payload.original);
 }
 
 /**

@@ -3,6 +3,7 @@ import "./monacoSetup.js";
 import Editor from "@monaco-editor/react";
 import type { Composition } from "@seam/core";
 import {
+  bakeScript,
   disableScript,
   enableScript,
   findScript,
@@ -81,6 +82,17 @@ export default function ScriptPanel({
     const next = disableScript(currentComposition);
     const errs = onApply(next);
     if (errs) setErrors(errs);
+  };
+
+  const handleBake = () => {
+    setErrors(null);
+    try {
+      const next = bakeScript(currentComposition);
+      const errs = onApply(next);
+      if (errs) setErrors(errs);
+    } catch (err) {
+      setErrors([err instanceof Error ? err.message : String(err)]);
+    }
   };
 
   const handleSave = () => {
@@ -177,7 +189,7 @@ export default function ScriptPanel({
         <div style={{ color: "#888", fontSize: 11 }}>
           The script runs as{" "}
           <code style={CODE_STYLE}>
-            (currentNode, selectedNodes) =&gt; {"{"} … {"}"}
+            (currentNode) =&gt; {"{"} … {"}"}
           </code>
           . Must return a composition node.
         </div>
@@ -189,6 +201,13 @@ export default function ScriptPanel({
             style={dirty ? BTN_PRIMARY : BTN_DISABLED}
           >
             Save
+          </button>
+          <button
+            onClick={handleBake}
+            style={BTN_SECONDARY}
+            title="Run the script one last time and replace the composition with its output. Removes the script."
+          >
+            Bake
           </button>
           <button onClick={handleDisable} style={BTN_DANGER}>
             Disable Script
@@ -239,6 +258,17 @@ const BTN_DISABLED: React.CSSProperties = {
   background: "#2a2a2a",
   color: "#666",
   cursor: "not-allowed",
+};
+
+const BTN_SECONDARY: React.CSSProperties = {
+  background: "#333",
+  border: "1px solid #444",
+  color: "#e0e0e0",
+  padding: "6px 12px",
+  borderRadius: 4,
+  cursor: "pointer",
+  fontSize: 13,
+  fontFamily: "inherit",
 };
 
 const BTN_DANGER: React.CSSProperties = {
