@@ -61,6 +61,7 @@ export function flattenResolved(
         data: child.data,
         timelineStart: start,
         timelineEnd: end,
+        ...(child.tags?.length ? { tags: child.tags } : {}),
       });
     } else if (child.type === "html") {
       result.push({

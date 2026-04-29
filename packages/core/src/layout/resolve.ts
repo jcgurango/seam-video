@@ -81,6 +81,7 @@ function resolveChild(
         data: child.data,
         timelineStart: 0,
         timelineEnd: 0,
+        ...(child.tags?.length ? { tags: child.tags } : {}),
       },
       actualDuration: target,
     };

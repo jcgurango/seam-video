@@ -62,6 +62,7 @@ export interface ResolvedAudio {
 export interface ResolvedData {
   type: "data";
   data: unknown;
+  tags?: string[];
   timelineStart: number;
   timelineEnd: number;
 }

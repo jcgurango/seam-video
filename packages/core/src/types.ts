@@ -142,6 +142,8 @@ export interface Data {
   type: "data";
   data: unknown;
   duration?: number;
+  /** Free-form classifier tags. Editor-side filtering / grouping fodder. */
+  tags?: string[];
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;

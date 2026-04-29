@@ -116,6 +116,7 @@ A free-form JSON payload that occupies a span of time. Renders nothing — it's 
 | `type` | `"data"` | yes | Must be `"data"` |
 | `data` | any JSON | yes | Arbitrary payload — preserved unchanged through resolution |
 | `duration` | number | no | Length of the slot in seconds (>= 0). Defaults to `0`, useful for point-in-time markers |
+| `tags` | string[] | no | Free-form classifier tags. Editor-side filtering / grouping fodder; preserved through resolution |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 

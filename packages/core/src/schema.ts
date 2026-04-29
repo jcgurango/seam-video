@@ -159,6 +159,7 @@ export const DataSchema = z.object({
   type: z.literal("data"),
   data: z.unknown(),
   duration: z.number().nonnegative().optional(),
+  tags: z.array(z.string()).optional(),
   ...AnchorFieldsSchema,
 }).strict();
 

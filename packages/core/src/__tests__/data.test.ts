@@ -188,4 +188,55 @@ describe("data node", () => {
     );
     expect(result.success).toBe(false);
   });
+
+  it("preserves tags through resolution when present", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          {
+            type: "data",
+            data: { foo: 1 },
+            duration: 1,
+            tags: ["marker", "punchline"],
+          },
+        ],
+      })
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const node = resolveComposition(result.data).children[0];
+      if (node.type === "data") {
+        expect(node.tags).toEqual(["marker", "punchline"]);
+      }
+    }
+  });
+
+  it("omits tags from resolved output when absent or empty", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [{ type: "data", data: {}, duration: 1 }],
+      })
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const node = resolveComposition(result.data).children[0];
+      if (node.type === "data") {
+        expect(node.tags).toBeUndefined();
+      }
+    }
+  });
+
+  it("rejects non-string tags", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          { type: "data", data: {}, duration: 1, tags: ["ok", 7] },
+        ],
+      })
+    );
+    expect(result.success).toBe(false);
+  });
 });
