@@ -14,6 +14,7 @@ interface ElectronSeamApi {
   onMenuSave: (cb: () => void) => void;
   onMenuSaveAs: (cb: () => void) => void;
   onMenuExport: (cb: () => void) => void;
+  onMenuSettings: (cb: () => void) => void;
   getInitialFile: () => Promise<{ filePath: string; json: string } | null>;
   writeFile: (
     filePath: string,
@@ -101,6 +102,9 @@ export class ElectronPlatform implements Platform {
         break;
       case "save-as":
         window.seamApi.onMenuSaveAs(cb);
+        break;
+      case "settings":
+        window.seamApi.onMenuSettings(cb);
         break;
     }
   }

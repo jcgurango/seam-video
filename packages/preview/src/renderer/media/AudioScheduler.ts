@@ -3,6 +3,9 @@ import type { AudioBufferSink } from "mediabunny";
 interface ClipState {
   sink: AudioBufferSink;
   speed: number;
+  /** Per-clip volume multiplier; 1 = unity. Used as the steady-state value
+   *  the gain node holds during normal playback / scrub fades. */
+  volume: number;
   gainNode: GainNode;
   // Playback state (null when not playing)
   iterator: AsyncIterator<{ buffer: AudioBuffer; timestamp: number; duration: number }> | null;
@@ -74,12 +77,19 @@ export class AudioScheduler {
     }
   }
 
-  registerClip(id: string, sink: AudioBufferSink, speed: number): void {
+  registerClip(
+    id: string,
+    sink: AudioBufferSink,
+    speed: number,
+    volume: number = 1
+  ): void {
     const gainNode = this.audioContext.createGain();
+    gainNode.gain.value = volume;
     gainNode.connect(this.masterGain);
     this.clips.set(id, {
       sink,
       speed,
+      volume,
       gainNode,
       iterator: null,
       queuedNodes: new Set(),
@@ -101,10 +111,11 @@ export class AudioScheduler {
     if (!state) return;
     this.doStop(state);
 
-    // Clear any leftover scrub automation so we start at full gain.
+    // Clear any leftover scrub automation so we start at the clip's
+    // configured steady-state volume.
     const now = this.audioContext.currentTime;
     state.gainNode.gain.cancelScheduledValues(now);
-    state.gainNode.gain.setValueAtTime(1, now);
+    state.gainNode.gain.setValueAtTime(state.volume, now);
 
     state.asyncId++;
     const myAsyncId = state.asyncId;
@@ -156,15 +167,17 @@ export class AudioScheduler {
       if (!state) continue;
       this.doStop(state);
 
-      // Fade in → hold → fade out on the clip's gain node, then restore to 1
-      // so future normal playback isn't silenced by leftover automation.
+      // Fade in → hold → fade out on the clip's gain node, then restore to
+      // the clip's steady-state volume so future normal playback isn't
+      // silenced by leftover automation.
       const g = state.gainNode.gain;
+      const v = state.volume;
       g.cancelScheduledValues(startedAt);
       g.setValueAtTime(0, startedAt);
-      g.linearRampToValueAtTime(1, startedAt + fadeTime);
-      g.setValueAtTime(1, steadyEnd);
+      g.linearRampToValueAtTime(v, startedAt + fadeTime);
+      g.setValueAtTime(v, steadyEnd);
       g.linearRampToValueAtTime(0, endsAt);
-      g.setValueAtTime(1, endsAt + 0.001);
+      g.setValueAtTime(v, endsAt + 0.001);
 
       state.asyncId++;
       const myAsyncId = state.asyncId;
@@ -197,7 +210,7 @@ export class AudioScheduler {
       if (!state) continue;
       const g = state.gainNode.gain;
       g.cancelScheduledValues(now);
-      g.setValueAtTime(1, now);
+      g.setValueAtTime(state.volume, now);
       this.doStop(state);
     }
     this.scrubActiveIds.clear();
@@ -232,7 +245,7 @@ export class AudioScheduler {
         g.cancelScheduledValues(now);
       }
       g.linearRampToValueAtTime(0, stopAt);
-      g.setValueAtTime(1, stopAt + 0.001);
+      g.setValueAtTime(state.volume, stopAt + 0.001);
       this.doStop(state, stopAt);
     }
     this.scrubActiveIds.clear();

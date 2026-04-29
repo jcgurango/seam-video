@@ -300,6 +300,9 @@ function buildClipSegment(
   if (effectiveSpeed !== 1) {
     aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
   }
+  if (clip.volume != null && clip.volume !== 1) {
+    aChain += `,volume=${clip.volume}`;
+  }
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);
 
@@ -325,6 +328,9 @@ function buildAudioSegment(
   let aChain = `[${idx}:a]atrim=${audio.sourceIn}:${audio.sourceOut},asetpts=PTS-STARTPTS`;
   if (effectiveSpeed !== 1) {
     aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
+  }
+  if (audio.volume != null && audio.volume !== 1) {
+    aChain += `,volume=${audio.volume}`;
   }
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);

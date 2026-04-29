@@ -43,6 +43,12 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send("menu-export"),
         },
         { type: "separator" },
+        {
+          label: "Settings…",
+          accelerator: "CmdOrCtrl+,",
+          click: () => mainWindow?.webContents.send("menu-settings"),
+        },
+        { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
       ],
     },

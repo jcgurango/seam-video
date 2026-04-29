@@ -15,6 +15,7 @@ interface WebTopBarProps {
   onExport: () => void;
   onImport: (file: File) => void;
   onBrowseProjects: () => void;
+  onSettings: () => void;
   canSave: boolean; // false if no document loaded
 }
 
@@ -26,6 +27,7 @@ export default function WebTopBar({
   onExport,
   onImport,
   onBrowseProjects,
+  onSettings,
   canSave,
 }: WebTopBarProps) {
   const [open, setOpen] = useState(false);
@@ -88,6 +90,8 @@ export default function WebTopBar({
     },
     { label: "—", onClick: () => {} },
     { label: "Browse Projects", onClick: onBrowseProjects },
+    { label: "—", onClick: () => {} },
+    { label: "Settings…", shortcut: `${mod},`, onClick: onSettings },
   ];
 
   const handleItem = (item: MenuItem) => {

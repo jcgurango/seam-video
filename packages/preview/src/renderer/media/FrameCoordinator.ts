@@ -100,7 +100,12 @@ export class FrameCoordinator {
         const audioId = `${flat.source}:${flat.clip.sourceIn}:${flat.absoluteStart}`;
         flat.audioId = audioId;
         const audioSink = new AudioBufferSink(audioTrack);
-        audioScheduler.registerClip(audioId, audioSink, flat.clip.speed);
+        audioScheduler.registerClip(
+          audioId,
+          audioSink,
+          flat.clip.speed,
+          flat.clip.volume ?? 1
+        );
       }
     });
 

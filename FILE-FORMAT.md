@@ -54,6 +54,7 @@ A clip references a segment of a source video file.
 | `out` | number | yes | End point in the source file (seconds, > 0) |
 | `speed` | number | no | Playback speed multiplier (e.g. `2` for 2x speed). Mutually exclusive with `duration` |
 | `duration` | number | no | Explicit duration in seconds — stretches the clip to fit. Mutually exclusive with `speed` |
+| `volume` | number | no | Audio gain multiplier (default `1`). `0` mutes; values up to `4` are accepted for amplification. |
 | `overflow` | string | no | Strategy when the clip is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
 | `position` | string | no | `"relative"` or `"absolute"` (see [Spatial Layout](#spatial-layout)) |
@@ -84,6 +85,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `source` | string | yes | Path to the audio file |
 | `in`, `out` | number | yes | Source-time window (same shape as on a clip) |
 | `speed`, `duration`, `overflow`, `underflow` | — | no | Same shape as on a clip |
+| `volume` | number | no | Audio gain multiplier (default `1`). Same shape as on a clip. |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 
 Visual props (`filters`, `position`, `objectFit`, box dimensions) are rejected by the schema — `audio` doesn't render to a quad.

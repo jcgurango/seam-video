@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld("seamApi", {
   onMenuExport: (cb: () => void) => {
     ipcRenderer.on("menu-export", () => cb());
   },
+  onMenuSettings: (cb: () => void) => {
+    ipcRenderer.on("menu-settings", () => cb());
+  },
 
   // File I/O
   getInitialFile: () =>

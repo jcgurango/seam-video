@@ -175,4 +175,36 @@ describe("audio", () => {
     );
     expect(result.success).toBe(false);
   });
+
+  it("preserves volume on clip and audio through resolution", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 2, volume: 0.75 },
+          { type: "audio", source: "a.mp3", in: 0, out: 1, volume: 1.5 },
+        ],
+      })
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const r = resolveComposition(result.data);
+      const c = r.children[0];
+      const a = r.children[1];
+      if (c.type === "clip") expect(c.volume).toBe(0.75);
+      if (a.type === "audio") expect(a.volume).toBe(1.5);
+    }
+  });
+
+  it("rejects negative volume", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 1, volume: -0.5 },
+        ],
+      })
+    );
+    expect(result.success).toBe(false);
+  });
 });

@@ -704,6 +704,57 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).toContain("asetrate=48000*2,aresample=48000");
   });
 
+  it("emits a volume filter on clip and audio when volume is set", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          sourceIn: 0,
+          sourceOut: 2,
+          timelineStart: 0,
+          timelineEnd: 2,
+          speed: 1,
+          volume: 0.5,
+        },
+        {
+          type: "audio",
+          source: "a.mp3",
+          sourceIn: 0,
+          sourceOut: 3,
+          timelineStart: 2,
+          timelineEnd: 5,
+          speed: 1,
+          volume: 1.5,
+        },
+      ],
+    };
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).toContain("volume=0.5");
+    expect(cmd.filterComplex).toContain("volume=1.5");
+  });
+
+  it("omits volume filter when volume is 1 or absent", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 2,
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          sourceIn: 0,
+          sourceOut: 2,
+          timelineStart: 0,
+          timelineEnd: 2,
+          speed: 1,
+          volume: 1,
+        },
+      ],
+    };
+    const cmd = buildFfmpegCommand(timeline, "out.mp4");
+    expect(cmd.filterComplex).not.toContain("volume=");
+  });
+
   it("html nodes use the supplied PNG with -loop 1", () => {
     const html = {
       type: "html" as const,

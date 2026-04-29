@@ -517,6 +517,9 @@ export class WebPlatform implements Platform {
       } else if (key === "e") {
         e.preventDefault();
         this.exportHandler?.();
+      } else if (key === ",") {
+        e.preventDefault();
+        this.actionHandlers.get("settings")?.();
       }
     });
   }

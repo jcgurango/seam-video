@@ -38,6 +38,7 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
         speed: child.speed * parentSpeed,
+        ...(child.volume != null ? { volume: child.volume } : {}),
       });
     } else if (child.type === "audio") {
       result.push({
@@ -48,6 +49,7 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
         speed: child.speed * parentSpeed,
+        ...(child.volume != null ? { volume: child.volume } : {}),
       });
     } else if (child.type === "empty") {
       result.push({

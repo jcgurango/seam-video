@@ -99,6 +99,8 @@ export interface Clip extends ChildTimingFields {
   out: number;
   speed?: number;
   duration?: number;
+  /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
+  volume?: number;
 }
 
 export interface Empty {
@@ -124,6 +126,8 @@ export interface Audio {
   duration?: number;
   overflow?: Overflow;
   underflow?: Underflow;
+  /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
+  volume?: number;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;

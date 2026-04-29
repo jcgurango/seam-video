@@ -35,6 +35,8 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Audio gain multiplier; absent means unity (1). */
+  volume?: number;
   filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
@@ -57,6 +59,8 @@ export interface ResolvedAudio {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Audio gain multiplier; absent means unity (1). */
+  volume?: number;
 }
 
 export interface ResolvedData {

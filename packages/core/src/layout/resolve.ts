@@ -194,6 +194,7 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         speed,
+        ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       },
       actualDuration: leafDur,
     };
@@ -208,6 +209,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
     },

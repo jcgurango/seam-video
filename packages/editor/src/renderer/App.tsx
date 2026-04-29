@@ -13,6 +13,8 @@ import InspectorTabs from "./InspectorTabs.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
+import SettingsDialog from "./SettingsDialog.js";
+import { useSettings } from "./useSettings.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
@@ -151,6 +153,9 @@ export default function App({ platform }: AppProps) {
   const [showBrowser, setShowBrowser] = useState(platform.kind === "web");
   const [exportProgress, setExportProgress] =
     useState<ExportProgress | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const { settings, updateSettings, resetSettings } = useSettings();
+  void settings; // consumed by future code that talks to the generator server
 
   // Web platform UI bridges (project picker / save-as prompt)
   const openPickerRef = useRef<
@@ -574,6 +579,7 @@ export default function App({ platform }: AppProps) {
 
     platform.onAction("save", () => handleSaveRef.current());
     platform.onAction("save-as", () => handleSaveAsRef.current());
+    platform.onAction("settings", () => setSettingsOpen(true));
   }, [platform]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const basePath = filePath ? dirname(filePath) : "";
@@ -756,6 +762,7 @@ export default function App({ platform }: AppProps) {
           onExport={handleExport}
           onImport={handleImport}
           onBrowseProjects={topBarBrowseProjects}
+          onSettings={() => setSettingsOpen(true)}
           canSave={!showBrowser}
         />
       )}
@@ -799,6 +806,14 @@ export default function App({ platform }: AppProps) {
       )}
 
       {exportProgress && <ExportProgressOverlay progress={exportProgress} />}
+
+      <SettingsDialog
+        open={settingsOpen}
+        settings={settings}
+        onSave={updateSettings}
+        onReset={resetSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }
