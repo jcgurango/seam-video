@@ -15,6 +15,8 @@ import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
 import SettingsDialog from "./SettingsDialog.js";
 import { useSettings } from "./useSettings.js";
+import { useTranscribe } from "./useTranscribe.js";
+import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
@@ -155,7 +157,6 @@ export default function App({ platform }: AppProps) {
     useState<ExportProgress | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { settings, updateSettings, resetSettings } = useSettings();
-  void settings; // consumed by future code that talks to the generator server
 
   // Web platform UI bridges (project picker / save-as prompt)
   const openPickerRef = useRef<
@@ -584,6 +585,26 @@ export default function App({ platform }: AppProps) {
 
   const basePath = filePath ? dirname(filePath) : "";
 
+  // Transcription job: feeds the generator server one clip at a time and
+  // appends a `data` attachment per response. Disabled in clip view (the
+  // hook reports an error if you try anyway).
+  const transcriber = useTranscribe({
+    serverUrl: settings.generatorServerUrl,
+    platform,
+    basePath,
+    history,
+  });
+
+  useEffect(() => {
+    if (transcriber.errors.length > 0) {
+      setErrors(transcriber.errors);
+    }
+  }, [transcriber.errors]);
+
+  const handleTranscribe = useCallback(() => {
+    void transcriber.run(document, view, selectedIndices);
+  }, [transcriber, document, view, selectedIndices]);
+
   const viewKey =
     view.type === "root" ? "root" : `${view.type}-${view.rootIndex}`;
 
@@ -715,6 +736,8 @@ export default function App({ platform }: AppProps) {
               onExit={handleExit}
               onEnterClip={handleEnterChild}
               platform={platform}
+              onTranscribe={handleTranscribe}
+              transcribing={transcriber.progress != null}
             />
             <TimelinePanel
               timeline={viewTimeline}
@@ -806,6 +829,13 @@ export default function App({ platform }: AppProps) {
       )}
 
       {exportProgress && <ExportProgressOverlay progress={exportProgress} />}
+
+      {transcriber.progress && (
+        <TranscribeProgressOverlay
+          progress={transcriber.progress}
+          onCancel={transcriber.cancel}
+        />
+      )}
 
       <SettingsDialog
         open={settingsOpen}

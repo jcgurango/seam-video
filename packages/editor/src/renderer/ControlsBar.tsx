@@ -22,6 +22,7 @@ import {
   LogIn,
   AlignStartVertical,
   AlignEndVertical,
+  Captions,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
@@ -42,6 +43,10 @@ interface ControlsBarProps {
   platform: Platform;
   onExit: (viewTime: number) => void;
   onEnterClip: (rootIndex: number, currentParentTime: number) => void;
+  /** Trigger CC/transcript generation for the current selection (or all). */
+  onTranscribe: () => void;
+  /** True while a transcription job is running — disables the CC button. */
+  transcribing: boolean;
 }
 
 // ── Slice logic ──────────────────────────────────────────────────────
@@ -472,6 +477,8 @@ export default function ControlsBar({
   onExit,
   onEnterClip,
   platform,
+  onTranscribe,
+  transcribing,
 }: ControlsBarProps) {
   const {
     currentTime,
@@ -723,6 +730,21 @@ export default function ControlsBar({
               title="Delete (Del)"
             >
               <Trash2 size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={onTranscribe}
+              disabled={transcribing}
+              style={{
+                ...BTN_STYLE,
+                opacity: transcribing ? 0.3 : 1,
+              }}
+              title={
+                selectedIndices.length > 0
+                  ? "Generate transcripts for the selected clip/audio nodes"
+                  : "Generate transcripts for all clip/audio children"
+              }
+            >
+              <Captions size={ICON_SIZE} />
             </button>
           </>
         ) : (

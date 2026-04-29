@@ -137,3 +137,7 @@ curl -X POST http://127.0.0.1:8000/enhance \
   it behind a reverse proxy that handles auth/rate limiting.
 - Uploads are streamed to a temp file and removed after the response is
   sent; no audio is persisted on disk.
+- CORS is wide-open by default (`Access-Control-Allow-Origin: *`) so the
+  editor can hit it from any origin during development. Set
+  `CORS_ALLOW_ORIGINS=https://my.host,https://other.host` (comma-separated)
+  to lock it down.

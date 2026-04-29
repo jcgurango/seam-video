@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from .enhance import denoise_audio, setup_enhancer
 from .schemas import TranscriptionResponse
@@ -31,6 +32,22 @@ app = FastAPI(
         "transcription and Resemble Enhance denoise."
     ),
     lifespan=lifespan,
+)
+
+# Permissive CORS: this server is meant to be hit from the editor running
+# in a browser (Electron renderer or the web build), which lives at a
+# different origin. Tighten via `CORS_ALLOW_ORIGINS` (comma-separated) if
+# you ever expose this beyond a trusted network.
+_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=(
+        ["*"] if _cors_origins.strip() == "*"
+        else [o.strip() for o in _cors_origins.split(",") if o.strip()]
+    ),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
