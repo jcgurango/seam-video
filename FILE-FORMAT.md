@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are five node types: **clip**, **audio**, **empty**, **data**, and **composition**.
+There are six node types: **clip**, **audio**, **empty**, **data**, **html**, and **composition**.
 
 ### Clip
 
@@ -131,6 +131,50 @@ As a child, a `data` node takes up `duration` seconds of sequential time. As an 
 
 The renderer and preview skip `data` nodes — they don't draw, don't make sound, and don't produce ffmpeg input.
 
+### HTML
+
+A static HTML snippet rasterized into an image and shown for `duration` seconds. Useful for titles, lower thirds, captions, watermarks — anything textual or graphic that's easier to author as markup than as a pre-rendered video.
+
+```json
+{
+  "type": "html",
+  "source": "<div style=\"font-size: 64px; color: white; padding: 24px\">Hello!</div>",
+  "duration": 5,
+  "contentWidth": 800,
+  "contentHeight": 200
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"html"` | yes | Must be `"html"` |
+| `source` | string | yes | The HTML markup itself (not a file path) |
+| `duration` | number | yes | How long to display the rasterized image, in seconds (> 0) |
+| `contentWidth` | number | no | Intrinsic width in pixels — the canvas satori renders into. Defaults to the top-level canvas width. See [Content Dimensions](#content-dimensions) |
+| `contentHeight` | number | no | Intrinsic height in pixels — the canvas satori renders into. Defaults to the top-level canvas height |
+| `filters` | array | no | Visual effects applied to the rasterized image (see [Filters](#filters)) |
+| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+
+#### How HTML is rendered
+
+The `source` markup is fed to [satori](https://github.com/vercel/satori) (via `satori-html`), which produces an SVG sized to `contentWidth × contentHeight`. The preview composites that SVG directly onto the WebGPU canvas; the FFmpeg renderer pre-rasterizes it to a PNG via [resvg](https://github.com/yisibl/resvg-js) before invoking ffmpeg, so output is consistent and doesn't depend on whether your ffmpeg build has librsvg support.
+
+Because satori is the renderer, only its [supported subset](https://github.com/vercel/satori#documentation) of HTML/CSS works — flexbox-style layout, text, images, basic backgrounds and borders. Arbitrary HTML/JS does **not** work; this is a feature, not a bug, since it makes output deterministic.
+
+The default font is **Liberation Sans** (Regular / Bold / Italic / Bold Italic), bundled with the toolchain.
+
+#### Sizing
+
+`contentWidth` and `contentHeight` follow the same model as a composition's: they're the node's intrinsic dimensions, what it renders *into* internally. The on-canvas placement is then handled by the spatial properties exactly like a clip — `objectFit` decides how a `contentWidth × contentHeight` rect fits into the box implied by `top/left/right/bottom/width/height`.
+
+If both content dims are omitted, the html fills the parent at its intrinsic resolution. If only one is set, the other still falls back to the canvas dimension on that axis (they're independent).
+
+#### Renderer side-effects
+
+When the FFmpeg renderer processes a `.seam` file containing html nodes, it creates a sidecar directory next to the file — `<filename>.seam-rendered/` — and writes one PNG per html node into it. The directory is cleaned up after the render completes (success or failure). Pass `--dry-run` to the CLI to leave it in place and print the ffmpeg invocation without running it.
+
 ### Composition
 
 A container that holds other nodes in sequence. The root of every `.seam` file is a composition, and compositions can be nested.
@@ -148,7 +192,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | yes | One or more child nodes (clip, audio, empty, data, composition). Children play sequentially — each takes its own natural duration. |
+| `children` | array | yes | One or more child nodes (clip, audio, empty, data, html, composition). Children play sequentially — each takes its own natural duration. |
 | `attachments` | array | no | Anchored children rendered on top of `children` (see [Attachments](#attachments)) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |

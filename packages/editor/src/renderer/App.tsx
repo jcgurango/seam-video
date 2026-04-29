@@ -691,7 +691,7 @@ export default function App({ platform }: AppProps) {
               />
             </div>
             <div style={{ flex: 1, display: 'flex' }}>
-              <VideoCanvas />
+              <VideoCanvas width={1080} height={1920} />
             </div>
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
