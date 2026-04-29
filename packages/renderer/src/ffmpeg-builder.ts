@@ -54,8 +54,8 @@ export function buildFfmpegCommand(
   options: FfmpegOptions = {}
 ): FfmpegCommand {
   const opts: Required<Omit<FfmpegOptions, "basePath" | "htmlAssets">> = {
-    width: options.width ?? 1920,
-    height: options.height ?? 1080,
+    width: options.width ?? timeline.contentWidth ?? 1920,
+    height: options.height ?? timeline.contentHeight ?? 1080,
     fps: options.fps ?? 30,
   };
 

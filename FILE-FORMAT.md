@@ -152,7 +152,7 @@ A static HTML snippet rasterized into an image and shown for `duration` seconds.
 |-------|------|----------|-------------|
 | `type` | `"html"` | yes | Must be `"html"` |
 | `source` | string | yes | The HTML markup itself (not a file path) |
-| `duration` | number | yes | How long to display the rasterized image, in seconds (> 0) |
+| `duration` | number | sometimes | How long to display the rasterized image, in seconds (> 0). Required unless used as an attachment with **both** `start` and `end` pinned (the anchor span supplies the target). |
 | `contentWidth` | number | no | Intrinsic width in pixels — the canvas satori renders into. Defaults to the top-level canvas width. See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels — the canvas satori renders into. Defaults to the top-level canvas height |
 | `filters` | array | no | Visual effects applied to the rasterized image (see [Filters](#filters)) |

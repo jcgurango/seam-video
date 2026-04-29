@@ -166,7 +166,10 @@ export interface Data {
 export interface Html extends SpatialFields {
   type: "html";
   source: string;
-  duration: number;
+  /** Natural duration in seconds. Required for sequential or
+   *  single-anchor attachment use; optional only when both `start` and
+   *  `end` are pinned (the anchor span dictates the target). */
+  duration?: number;
   contentWidth?: number;
   contentHeight?: number;
   filters?: Filter[];

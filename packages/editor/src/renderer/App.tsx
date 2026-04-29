@@ -18,6 +18,12 @@ import { useSettings } from "./useSettings.js";
 import { useTranscribe } from "./useTranscribe.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
+import {
+  editTarget as scriptEditTarget,
+  findScript,
+  safeWithUpdatedOriginal,
+} from "./nodeScript.js";
+import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
 import { useHistory } from "./useHistory.js";
@@ -93,7 +99,7 @@ function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
 
 function resolveDoc(doc: SeamFile): ResolvedTimeline {
   const temporal = resolveComposition(doc);
-  return resolveSpatial(temporal, 1920, 1080);
+  return resolveSpatial(temporal, doc.contentWidth ?? 1080, doc.contentHeight ?? 1920);
 }
 
 function SelectionBar({
@@ -140,6 +146,14 @@ function SelectionBar({
 export default function App({ platform }: AppProps) {
   const history = useHistory<SeamFile>(EMPTY_DOCUMENT);
   const document = history.current;
+  // Editor-surface root: when the root composition has a node-script
+  // attached, this is the pre-script `original` so the timeline panel,
+  // selection, JSON tab, etc. all operate on the source-of-truth shape.
+  // The on-disk `document` retains the rendered body + script attachment.
+  const editorDoc = useMemo<SeamFile>(
+    () => scriptEditTarget(document) as SeamFile,
+    [document]
+  );
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -194,23 +208,46 @@ export default function App({ platform }: AppProps) {
     }
   }, [document]);
 
-  // The view's effective document (i.e. what the player/timeline show).
-  // For root it's the real document; for nested views it's the subtree
-  // being drilled into, adapted per view type (see getViewDocument).
-  const viewDocument = useMemo<SeamFile>(
-    () => (view.type === "root" ? document : getViewDocument(document, view)),
-    [document, view]
-  );
+  // The view's effective document (i.e. what the timeline panel shows).
+  // For root it's the editor-surface document; for nested views it's the
+  // subtree being drilled into. `getViewDocument` operates on the editor
+  // surface so nested compositions with their own scripts get the same
+  // unwrap treatment automatically.
+  const viewDocument = useMemo<SeamFile>(() => {
+    const base =
+      view.type === "root" ? editorDoc : getViewDocument(editorDoc, view);
+    return scriptEditTarget(base) as SeamFile;
+  }, [editorDoc, view]);
 
-  const viewTimeline = useMemo<ResolvedTimeline | null>(() => {
-    if (!rootTimeline) return null;
-    if (view.type === "root") return rootTimeline;
+  // Two distinct resolved timelines:
+  //   - `editorTimeline` is what the timeline panel renders (and what the
+  //     inspector reads). It comes from the editor surface (= `original`
+  //     when a script is attached), so the blocks the user sees match
+  //     the source-of-truth shape they can actually edit.
+  //   - `playerTimeline` is what the preview canvas plays. It comes from
+  //     the on-disk document (post-script rendered body), so the user
+  //     sees what'll actually export.
+  //
+  // Both axes share the playhead clock, so scrubbing the panel moves the
+  // preview. If a script changes the doc's duration the two won't line
+  // up perfectly — that's a known trade-off of using scripts.
+  const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
       return resolveDoc(viewDocument);
     } catch {
       return null;
     }
-  }, [view, rootTimeline, viewDocument]);
+  }, [viewDocument]);
+
+  const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
+    if (!rootTimeline) return null;
+    if (view.type === "root") return rootTimeline;
+    try {
+      return resolveDoc(getViewDocument(document, view));
+    } catch {
+      return null;
+    }
+  }, [view, rootTimeline, document]);
 
   useEffect(() => {
     try {
@@ -295,21 +332,45 @@ export default function App({ platform }: AppProps) {
     [loadDocument]
   );
 
+  // Track the most recent script execution error so the Script tab can
+  // surface it. Mutations that bump `original` always succeed at the
+  // doc-state level (we keep the last-good rendered body); only the
+  // script's last-run status is reflected here.
+  const [scriptError, setScriptError] = useState<string | null>(null);
+
   const updateDocument = useCallback(
-    (doc: SeamFile) => {
-      history.push(doc);
+    (surfaceDoc: SeamFile) => {
+      // The incoming doc is the *editor surface*. If the on-disk root
+      // has a script attached, re-run it against this new `original` and
+      // store the rendered body alongside the bumped script payload.
+      const { comp, error } = safeWithUpdatedOriginal(
+        document as Composition,
+        surfaceDoc as Composition
+      );
+      setScriptError(error);
+      history.push(comp as SeamFile);
       setSelectedIndices([]);
       setMultiSelectMode(false);
     },
-    [history]
+    [history, document]
   );
 
-  // The "node" the JSON tab is editing — whole doc at root, otherwise the
-  // child being drilled into.
+  // The "node" the JSON tab is editing — the root editor-surface doc at
+  // root view, otherwise the child being drilled into. Compositions get
+  // an extra script-edit-target unwrap so nested scripts also surface
+  // their `original` instead of the rendered body.
   const jsonNode = useMemo<unknown>(() => {
-    if (view.type === "root") return document;
-    return document.children[view.rootIndex];
-  }, [document, view]);
+    let node: unknown =
+      view.type === "root" ? editorDoc : editorDoc.children[view.rootIndex];
+    if (
+      node &&
+      typeof node === "object" &&
+      (node as { type?: string }).type === "composition"
+    ) {
+      node = scriptEditTarget(node as Composition);
+    }
+    return node;
+  }, [editorDoc, view]);
 
   // Translate the current selection into a JSON path inside `jsonNode`.
   // Selection indices are encoded as: [0, children.length) → child,
@@ -324,39 +385,94 @@ export default function App({ platform }: AppProps) {
     return `attachments.${idx - childCount}`;
   }, [selectedIndices, view, viewDocument]);
 
-  const handleJsonNodeSave = useCallback(
-    (next: unknown): string[] | null => {
-      // Build the proposed full document.
-      let proposed: unknown;
+  // The composition the Script tab targets. Root view → on-disk root
+  // composition (so the Script tab sees the existing wrapper, if any).
+  // Composition view → the targeted child. Clip view → null (panel is
+  // disabled).
+  const scriptComposition = useMemo<Composition | null>(() => {
+    if (view.type === "root") return document as Composition;
+    if (view.type === "composition") {
+      const target = document.children[view.rootIndex];
+      return target?.type === "composition" ? (target as Composition) : null;
+    }
+    return null;
+  }, [document, view]);
+
+  const handleScriptApply = useCallback(
+    (next: Composition): string[] | null => {
+      // Splice the new composition back into the on-disk document at the
+      // current view's position. We push directly (bypassing the root
+      // script re-wrap path of `updateDocument`) because enable/disable
+      // and scriptSrc edits already manage the script attachment shape
+      // for us — re-wrapping here would double-apply.
+      let newDoc: SeamFile;
       if (view.type === "root") {
-        proposed = next;
-      } else {
+        newDoc = next as SeamFile;
+      } else if (view.type === "composition") {
         const idx = view.rootIndex;
-        if (!document.children[idx]) {
-          return ["View target no longer exists in the document."];
-        }
         const newChildren = document.children.slice();
-        newChildren[idx] = next as Child;
-        proposed = { ...document, children: newChildren };
+        newChildren[idx] = next;
+        newDoc = { ...document, children: newChildren };
+      } else {
+        return ["Scripts can only be attached to compositions."];
       }
-
-      // Schema-validate the whole document.
-      const result = validateSeamFile(proposed);
-      if (!result.success) return result.errors;
-
-      // Catch resolver-level errors (duplicate ids, broken refs, etc.).
       try {
-        resolveDoc(result.data);
+        resolveDoc(newDoc);
       } catch (err) {
         return [String(err)];
       }
-
-      history.push(result.data);
+      // Reset script-error UI: this apply call already validated.
+      setScriptError(null);
+      history.push(newDoc);
       setSelectedIndices([]);
       setMultiSelectMode(false);
       return null;
     },
     [document, view, history]
+  );
+
+  const handleJsonNodeSave = useCallback(
+    (next: unknown): string[] | null => {
+      // Build the proposed editor-surface document. JSON edits target the
+      // editor surface (which is `editorDoc` — script-unwrapped), so we
+      // splice into editorDoc rather than the on-disk document.
+      let proposedSurface: unknown;
+      if (view.type === "root") {
+        proposedSurface = next;
+      } else {
+        const idx = view.rootIndex;
+        if (!editorDoc.children[idx]) {
+          return ["View target no longer exists in the document."];
+        }
+        const newChildren = editorDoc.children.slice();
+        newChildren[idx] = next as Child;
+        proposedSurface = { ...editorDoc, children: newChildren };
+      }
+
+      const result = validateSeamFile(proposedSurface);
+      if (!result.success) return result.errors;
+
+      // Re-wrap through the root script (no-op if the document has none).
+      // safeWithUpdatedOriginal preserves the rendered body on script
+      // errors, so we still need to validate the resolver runs against
+      // the final compiled form before pushing.
+      const wrapped = safeWithUpdatedOriginal(
+        document as Composition,
+        result.data as Composition
+      );
+      try {
+        resolveDoc(wrapped.comp as SeamFile);
+      } catch (err) {
+        return [String(err)];
+      }
+
+      setScriptError(wrapped.error);
+      history.push(wrapped.comp as SeamFile);
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
+      return null;
+    },
+    [document, editorDoc, view, history]
   );
 
   const onSelectionChange = useCallback((next: number[]) => {
@@ -672,7 +788,7 @@ export default function App({ platform }: AppProps) {
       );
     }
 
-    if (!viewTimeline) {
+    if (!playerTimeline || !editorTimeline) {
       return (
         <div
           style={{
@@ -691,7 +807,7 @@ export default function App({ platform }: AppProps) {
     return (
       <Timeline
         key={viewKey}
-        timeline={viewTimeline}
+        timeline={playerTimeline}
         basePath={basePath}
         preserveTime
         initialTime={initialTime}
@@ -710,20 +826,23 @@ export default function App({ platform }: AppProps) {
           <div style={{ height: '65vh', display: 'flex', flexDirection: 'row' }}>
             <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
               <InspectorTabs
-                timeline={viewTimeline}
+                timeline={editorTimeline}
                 viewDocument={viewDocument}
                 jsonNode={jsonNode}
                 onJsonNodeSave={handleJsonNodeSave}
                 jsonJumpPath={jsonJumpPath}
+                scriptComposition={scriptComposition}
+                scriptError={scriptError}
+                onScriptApply={handleScriptApply}
               />
             </div>
             <div style={{ flex: 1, display: 'flex' }}>
-              <VideoCanvas width={1080} height={1920} />
+              <VideoCanvas width={playerTimeline.contentWidth} height={playerTimeline.contentHeight} />
             </div>
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <ControlsBar
-              document={document}
+              document={editorDoc}
               filePath={filePath}
               selectedIndices={selectedIndices}
               onSelectionChange={onSelectionChange}
@@ -740,8 +859,8 @@ export default function App({ platform }: AppProps) {
               transcribing={transcriber.progress != null}
             />
             <TimelinePanel
-              timeline={viewTimeline}
-              document={document}
+              timeline={editorTimeline}
+              document={editorDoc}
               viewDocument={viewDocument}
               filePath={filePath}
               isMobile={isMobile}

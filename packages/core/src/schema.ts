@@ -168,13 +168,23 @@ export const DataSchema = z.object({
 export const HtmlSchema = z.object({
   type: z.literal("html"),
   source: z.string().min(1),
-  duration: z.number().positive(),
+  // Required for sequential / single-anchor attachment use; optional only
+  // when both `start` and `end` are pinned (the anchor span supplies the
+  // target span and we don't need a natural duration).
+  duration: z.number().positive().optional(),
   contentWidth: z.number().positive().optional(),
   contentHeight: z.number().positive().optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
   ...AnchorFieldsSchema,
-}).strict();
+}).strict().refine(
+  (data) =>
+    data.duration != null || (data.start != null && data.end != null),
+  {
+    message:
+      "'duration' is required unless both 'start' and 'end' anchors are set",
+  }
+);
 
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([

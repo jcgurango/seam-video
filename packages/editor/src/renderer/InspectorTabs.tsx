@@ -1,7 +1,14 @@
 import React, { useState } from "react";
 import { useTimeline } from "@seam/preview";
-import type { Child, ResolvedChild, ResolvedTimeline, SeamFile } from "@seam/core";
+import type {
+  Child,
+  Composition,
+  ResolvedChild,
+  ResolvedTimeline,
+  SeamFile,
+} from "@seam/core";
 import JsonNodePanel from "./JsonNodePanel.js";
+import ScriptPanel from "./ScriptPanel.js";
 
 type TabId = "properties" | "filters" | "json" | "script" | "inspector";
 
@@ -22,6 +29,12 @@ interface InspectorTabsProps {
   onJsonNodeSave: (next: unknown) => string[] | null;
   /** Path key inside `jsonNode` to reveal in the JSON editor (e.g. "children.3"). */
   jsonJumpPath: string | null;
+  /** The composition the Script tab targets — null in clip view. */
+  scriptComposition: Composition | null;
+  /** Last script-execution error from the active composition (or null). */
+  scriptError: string | null;
+  /** Apply a transformed composition produced by the Script tab. */
+  onScriptApply: (next: Composition) => string[] | null;
 }
 
 export default function InspectorTabs({
@@ -30,6 +43,9 @@ export default function InspectorTabs({
   jsonNode,
   onJsonNodeSave,
   jsonJumpPath,
+  scriptComposition,
+  scriptError,
+  onScriptApply,
 }: InspectorTabsProps) {
   const [active, setActive] = useState<TabId>("properties");
 
@@ -102,7 +118,11 @@ export default function InspectorTabs({
           />
         )}
         {active === "script" && (
-          <PaddedTab>Script panel (placeholder)</PaddedTab>
+          <ScriptPanel
+            currentComposition={scriptComposition}
+            scriptError={scriptError}
+            onApply={onScriptApply}
+          />
         )}
         {active === "inspector" && (
           <PaddedTab>

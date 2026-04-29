@@ -418,10 +418,45 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects an html node missing duration", () => {
+  it("rejects a sequential html node missing duration", () => {
     const result = validate({
       type: "composition",
       children: [{ type: "html", source: "<b>hi</b>" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts an html attachment without duration when both start and end are pinned", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { id: "anchor", type: "clip", source: "v.mp4", in: 0, out: 5 },
+      ],
+      attachments: [
+        {
+          type: "html",
+          source: "<b>hi</b>",
+          start: { anchor: "anchor", timeSource: "output", anchorPoint: "0%" },
+          end: { anchor: "anchor", timeSource: "output", anchorPoint: "50%" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an html attachment without duration when only start is pinned", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { id: "anchor", type: "clip", source: "v.mp4", in: 0, out: 5 },
+      ],
+      attachments: [
+        {
+          type: "html",
+          source: "<b>hi</b>",
+          start: { anchor: "anchor", timeSource: "output", anchorPoint: "0%" },
+        },
+      ],
     });
     expect(result.success).toBe(false);
   });

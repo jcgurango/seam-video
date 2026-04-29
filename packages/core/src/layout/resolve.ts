@@ -28,7 +28,11 @@ function naturalDuration(child: Child): number {
     case "data":
       return child.duration ?? 0;
     case "html":
-      return child.duration;
+      // `duration` is optional when both anchors are pinned (the anchor
+      // span supplies the target). 0 is a safe fallback for the only
+      // place this value is used in that case — `%`-offset math, which
+      // multiplies against natural duration.
+      return child.duration ?? 0;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
