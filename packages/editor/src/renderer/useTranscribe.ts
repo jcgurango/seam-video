@@ -259,29 +259,43 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
               `Generator server returned ${res.status}: ${detail.slice(0, 200)}`
             );
           }
-          const json = await res.json();
+          const json = (await res.json()) as Array<{
+            start: number;
+            end: number;
+            text: string;
+            words?: Array<{ start: number; end: number; text: string }>;
+          }>;
 
           if (cancelRef.current) break;
 
-          const start: TimeAnchor = {
-            anchor: anchorId,
-            timeSource: "source",
-            anchorPoint: target.child.in,
-          };
-          const end: TimeAnchor = {
-            anchor: anchorId,
-            timeSource: "source",
-            anchorPoint: target.child.out,
-          };
-          const dataNode: Child = {
-            type: "data",
-            data: json,
-            tags: ["transcription", "whisper"],
-            start,
-            end,
-          };
-
-          workingHost = withAppendedAttachment(workingHost, dataNode) as typeof workingHost;
+          // Append one data attachment per whisper segment, anchored to the
+          // segment's source-time bounds on the clip. The whisper response
+          // timestamps are relative to the audio we sent (which started at
+          // `target.child.in` in source time), so we just shift by clip.in.
+          for (const seg of json) {
+            if (cancelRef.current) break;
+            const start: TimeAnchor = {
+              anchor: anchorId,
+              timeSource: "source",
+              anchorPoint: target.child.in + seg.start,
+            };
+            const end: TimeAnchor = {
+              anchor: anchorId,
+              timeSource: "source",
+              anchorPoint: target.child.in + seg.end,
+            };
+            const dataNode: Child = {
+              type: "data",
+              data: { text: seg.text, words: seg.words ?? [] },
+              tags: ["transcription", "whisper"],
+              start,
+              end,
+            };
+            workingHost = withAppendedAttachment(
+              workingHost,
+              dataNode
+            ) as typeof workingHost;
+          }
           workingDoc = withReplacedHost(workingDoc, view, workingHost);
           history.replace(workingDoc);
         } catch (err) {
