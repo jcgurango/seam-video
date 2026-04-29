@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 import {
   buildFfmpegArgs,
@@ -28,8 +29,6 @@ function shellQuote(arg: string): string {
 export async function renderCommand(file: string, options: RenderOptions) {
   const filePath = resolve(file);
   const fps = options.fps ? parseInt(options.fps, 10) : 30;
-  const width = options.width ? parseInt(options.width, 10) : 1920;
-  const height = options.height ? parseInt(options.height, 10) : 1080;
   const dryRun = !!options.dryRun;
 
   if (!dryRun) checkFfmpeg();
@@ -45,16 +44,22 @@ export async function renderCommand(file: string, options: RenderOptions) {
   }
 
   const temporal = resolveComposition(result.data);
+
+  const width = options.width ? parseInt(options.width, 10) : (temporal.contentWidth ?? 1920);
+  const height = options.height ? parseInt(options.height, 10) : (temporal.contentHeight ?? 1080);
   const timeline = resolveSpatial(temporal, width, height);
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);
 
-  // Pre-render any html nodes to PNGs in a sidecar dir; cleaned up at the end
-  // regardless of success so we don't leave stale assets behind. With
-  // --dry-run we keep the dir so it can be inspected (and the printed
-  // ffmpeg command can be run manually).
+  // Sidecar dir holds (a) pre-rendered html PNGs and (b) the
+  // filter_complex script we hand to ffmpeg via -filter_complex_script.
+  // The filter goes through a file so we don't trip Windows' 8191-char
+  // argv limit on non-trivial compositions. Cleaned up after success or
+  // failure unless --dry-run is set.
   const assetsDir = `${filePath}-rendered`;
+  await mkdir(assetsDir, { recursive: true });
   const htmlAssets = await prerenderHtmlAssets(timeline, assetsDir);
+  const filterScriptPath = join(assetsDir, "filter.txt");
 
   try {
     const command = buildFfmpegCommand(timeline, outputPath, {
@@ -66,23 +71,26 @@ export async function renderCommand(file: string, options: RenderOptions) {
     });
 
     if (dryRun) {
-      const args = buildFfmpegArgs(command);
+      // Write the filter file too so the printed command can actually
+      // run as-is.
+      await writeFile(filterScriptPath, command.filterComplex, "utf-8");
+      const args = buildFfmpegArgs(command, { filterScriptPath });
       console.log("# dry run — would invoke:");
       console.log(["ffmpeg", ...args].map(shellQuote).join(" "));
-      if (htmlAssets.byNode.size > 0) {
-        console.log(`\n# html assets left in: ${assetsDir}`);
-      }
+      console.log(`\n# assets left in: ${assetsDir}`);
       return;
     }
 
     console.log(`Rendering to ${outputPath}...`);
-    const renderResult = await renderWithFfmpeg(command, outputPath);
+    const renderResult = await renderWithFfmpeg(command, outputPath, {
+      filterScriptPath,
+    });
 
     if (renderResult.success) {
       console.log(`Done in ${renderResult.duration.toFixed(1)}s → ${outputPath}`);
     } else {
-      console.error("ffmpeg failed:");
-      console.error(renderResult.stderr);
+      // ffmpeg's stderr was streamed live as it ran, so we don't repeat it.
+      console.error(`\nffmpeg failed (exited after ${renderResult.duration.toFixed(1)}s).`);
       process.exit(1);
     }
   } finally {

@@ -16,8 +16,8 @@ program
   .description("Render a .seam file to mp4 via ffmpeg")
   .option("-o, --output <path>", "Output file path")
   .option("--fps <number>", "Frames per second", "30")
-  .option("--width <number>", "Output width in pixels", "1920")
-  .option("--height <number>", "Output height in pixels", "1080")
+  .option("--width <number>", "Output width in pixels")
+  .option("--height <number>", "Output height in pixels")
   .option(
     "--dry-run",
     "Print the ffmpeg command and leave the .seam-rendered/ assets dir in place"

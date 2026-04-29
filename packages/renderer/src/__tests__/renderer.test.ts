@@ -42,7 +42,7 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.outputArgs).toContain("out.mp4");
   });
 
-  it("gives each clip its own input (no dedup)", () => {
+  it("dedupes inputs that share a path", () => {
     const timeline: ResolvedTimeline = {
       duration: 6,
       children: [
@@ -68,9 +68,10 @@ describe("buildFfmpegCommand", () => {
     };
 
     const cmd = buildFfmpegCommand(timeline, "out.mp4");
-    expect(cmd.inputs.map((i) => i.path)).toEqual(["video.mp4", "video.mp4"]);
+    // Single shared input — both filter chains read from [0:v] / [0:a].
+    expect(cmd.inputs.map((i) => i.path)).toEqual(["video.mp4"]);
     expect(cmd.filterComplex).toContain("[0:v]trim=0:3");
-    expect(cmd.filterComplex).toContain("[1:v]trim=5:8");
+    expect(cmd.filterComplex).toContain("[0:v]trim=5:8");
   });
 
   it("handles speed with setpts and pitch-shifted audio", () => {

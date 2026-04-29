@@ -48,6 +48,37 @@ interface BuildContext {
   htmlAssets: Map<ResolvedHtml, string>;
 }
 
+/**
+ * Dedupe ffmpeg `-i` inputs by `(path, flags)` so a single source file
+ * referenced by multiple clips/audio nodes still produces only one input
+ * (and one decoder pass) — multiple filter chains can read from the same
+ * `[N:v]` / `[N:a]` stream.
+ */
+function getOrAddInput(
+  ctx: BuildContext,
+  path: string,
+  flags?: string[]
+): number {
+  const wantFlags = flags ?? [];
+  for (let i = 0; i < ctx.inputs.length; i++) {
+    const existing = ctx.inputs[i];
+    if (existing.path !== path) continue;
+    const haveFlags = existing.flags ?? [];
+    if (haveFlags.length !== wantFlags.length) continue;
+    let match = true;
+    for (let j = 0; j < wantFlags.length; j++) {
+      if (haveFlags[j] !== wantFlags[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return i;
+  }
+  const idx = ctx.inputs.length;
+  ctx.inputs.push(flags ? { path, flags } : { path });
+  return idx;
+}
+
 export function buildFfmpegCommand(
   timeline: ResolvedTimeline,
   outputPath: string,
@@ -257,9 +288,8 @@ function buildClipSegment(
   parentW: number,
   parentH: number
 ): { v: string; a: string } {
-  const idx = ctx.inputs.length;
   const source = ctx.basePath ? resolve(ctx.basePath, clip.source) : clip.source;
-  ctx.inputs.push({ path: source });
+  const idx = getOrAddInput(ctx, source);
   const seg = ctx.segmentIndex++;
   const { fps } = ctx.options;
 
@@ -319,9 +349,8 @@ function buildAudioSegment(
   audio: ResolvedAudio,
   parentSpeed: number
 ): { a: string } {
-  const idx = ctx.inputs.length;
   const source = ctx.basePath ? resolve(ctx.basePath, audio.source) : audio.source;
-  ctx.inputs.push({ path: source });
+  const idx = getOrAddInput(ctx, source);
   const seg = ctx.segmentIndex++;
   const effectiveSpeed = audio.speed * parentSpeed;
 
@@ -356,8 +385,7 @@ function buildHtmlSegment(
       "html node has no pre-rendered PNG — call prerenderHtmlAssets before buildFfmpegCommand"
     );
   }
-  const idx = ctx.inputs.length;
-  ctx.inputs.push({ path: png, flags: ["-loop", "1"] });
+  const idx = getOrAddInput(ctx, png, ["-loop", "1"]);
   const seg = ctx.segmentIndex++;
   const { fps } = ctx.options;
   const dur = snapToFrame(
