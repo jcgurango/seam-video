@@ -653,11 +653,13 @@ A node-local time of `0` is when the node first becomes active; `100%` is when i
 
 ### Renderer support
 
-| Field | Editor preview | FFmpeg CLI |
-|---|---|---|
-| Text styles (incl. per-run) | ✅ | ✅ — pre-rasterized to a PNG sequence at output fps |
-| Spatial edges (`top`/`left`/…) | ✅ | ❌ — bake or remove |
-| Volume | ✅ | ❌ — bake or remove |
-| Filter parameters | ✅ | ❌ — bake or remove |
+The CLI ffmpeg path supports every animatable field:
 
-The CLI fails fast with the offending field name when an unsupported animation reaches the renderer.
+| Field | How it's rendered |
+|---|---|
+| Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
+| Spatial edges (`top`/`left`/…) | `scale=eval=frame` and `overlay=eval=frame` driven by piecewise-linear expressions baked from the keyframes (one sample per output frame). When spatial is animated, `objectFit` is bypassed — the sampled rect is the on-screen rect, and the source stretches to it. |
+| Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
+| Filter parameters | `eq` (adjust) uses `eval=frame` + per-parameter expressions. `colorchannelmixer` (opacity), `colorbalance`, and `colortemperature` use `sendcmd` to deliver one stepwise update per output frame to a labelled filter instance. |
+
+Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

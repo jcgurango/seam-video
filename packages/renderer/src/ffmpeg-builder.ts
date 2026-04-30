@@ -9,9 +9,19 @@ import type {
   SpatialAnchor,
   ObjectFit,
   Filter,
+  Keyframed,
 } from "@seam/core";
 import { isKeyframed } from "@seam/core";
 import type { TextRasterMap } from "./text/textRaster.js";
+import {
+  bakePwl,
+  bakeSpatialPwl,
+  isConstant,
+  pwlToExpression,
+  pwlToSendcmdCommands,
+  type SpatialPwl,
+} from "./animation/expr.js";
+import { hasAnimatedSpatialInput } from "@seam/core";
 
 /**
  * Per-input prefix flags. Plain strings are still accepted (most clips
@@ -149,13 +159,30 @@ function buildCompositeSegment(
     a: string;
     delay: number;
     spatial?: SpatialRect;
+    /** Per-frame x/y/w/h samples for nodes whose spatial edges are
+     *  keyframed. Carried alongside the static `spatial` rect (which
+     *  is the t=0 fallback) so the overlay step can drive ffmpeg
+     *  expressions instead of fixed positions. */
+    spatialPwl?: SpatialPwl;
   }[] = [];
   for (const child of children) {
     if (child.type === "empty" || child.type === "data") continue;
     const delay = snapToFrame(child.timelineStart / parentSpeed, ctx.options.fps);
-    const label = buildSingleSegment(ctx, child, parentSpeed, width, height);
-    const spatial = (child as any).spatial as SpatialRect | undefined;
-    childSegments.push({ ...label, delay, spatial });
+
+    // Bake spatial PWL once per child if any edge is animated. Samples
+    // are in the *node-local* output time (post-speed); the overlay
+    // step shifts to parent timeline by `delay`.
+    const inp = (child as { spatialInput?: import("@seam/core").SpatialInput }).spatialInput;
+    const animated = inp != null && hasAnimatedSpatialInput(inp);
+    const childOutputDuration =
+      (child.timelineEnd - child.timelineStart) / parentSpeed;
+    const spatialPwl = animated
+      ? bakeSpatialPwl(inp!, width, height, childOutputDuration, fps)
+      : undefined;
+
+    const label = buildSingleSegment(ctx, child, parentSpeed, width, height, spatialPwl);
+    const spatial = (child as { spatial?: SpatialRect }).spatial;
+    childSegments.push({ ...label, delay, spatial, spatialPwl });
   }
 
   // If no visible children, return pure black
@@ -199,11 +226,22 @@ function buildCompositeSegment(
 
     // Overlay child on top of current result (skipped for audio-only).
     if (childV != null) {
-      const ox = child.spatial ? child.spatial.x : 0;
-      const oy = child.spatial ? child.spatial.y : 0;
       const resultV = `[comp${seg}]`;
+      let overlayArgs: string;
+      if (child.spatialPwl) {
+        // Animated position: drive overlay's x/y per frame. The base
+        // stream's `t` is parent timeline time, so PWL samples (in
+        // node-local time) get shifted by the child's start delay.
+        const xExpr = pwlToExpression(child.spatialPwl.x, child.delay);
+        const yExpr = pwlToExpression(child.spatialPwl.y, child.delay);
+        overlayArgs = `x='${xExpr}':y='${yExpr}':eval=frame:eof_action=pass`;
+      } else {
+        const ox = child.spatial ? child.spatial.x : 0;
+        const oy = child.spatial ? child.spatial.y : 0;
+        overlayArgs = `${ox}:${oy}:eof_action=pass`;
+      }
       ctx.filters.push(
-        `${currentV}${childV}overlay=${ox}:${oy}:eof_action=pass${resultV}`
+        `${currentV}${childV}overlay=${overlayArgs}${resultV}`,
       );
       currentV = resultV;
     }
@@ -240,10 +278,11 @@ function buildSingleSegment(
   child: ResolvedChild,
   parentSpeed: number,
   parentW: number,
-  parentH: number
+  parentH: number,
+  spatialPwl?: SpatialPwl,
 ): { v?: string; a: string } {
   if (child.type === "clip") {
-    return buildClipSegment(ctx, child, parentSpeed, parentW, parentH);
+    return buildClipSegment(ctx, child, parentSpeed, parentW, parentH, spatialPwl);
   }
   if (child.type === "audio") {
     return buildAudioSegment(ctx, child, parentSpeed);
@@ -252,7 +291,7 @@ function buildSingleSegment(
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
   if (child.type === "text") {
-    return buildTextSegment(ctx, child, parentSpeed, parentW, parentH);
+    return buildTextSegment(ctx, child, parentSpeed, parentW, parentH, spatialPwl);
   }
   // Composition: recurse into children
   const compoundSpeed = child.speed * parentSpeed;
@@ -262,8 +301,20 @@ function buildSingleSegment(
   const innerH = child.contentHeight ?? displayH;
   let result = buildCompositeSegment(ctx, child.children, child.duration, compoundSpeed, innerW, innerH);
 
-  // Scale from inner to display size if they differ
-  if (innerW !== displayW || innerH !== displayH) {
+  // Scale from inner to display size. When the composition's own spatial
+  // is animated, the display size varies per frame — drive scale's
+  // w/h with expressions and `eval=frame`.
+  const displaySizeAnimated = spatialPwl != null;
+  if (displaySizeAnimated) {
+    const seg = ctx.segmentIndex++;
+    const scaledV = `[scaled${seg}]`;
+    const wExpr = pwlToExpression(spatialPwl.w);
+    const hExpr = pwlToExpression(spatialPwl.h);
+    ctx.filters.push(
+      `${result.v}scale=w='${wExpr}':h='${hExpr}':eval=frame${scaledV}`,
+    );
+    result = { v: scaledV, a: result.a };
+  } else if (innerW !== displayW || innerH !== displayH) {
     const seg = ctx.segmentIndex++;
     const scaledV = `[scaled${seg}]`;
     ctx.filters.push(
@@ -274,7 +325,7 @@ function buildSingleSegment(
 
   // Apply filters to the composite result
   if (child.filters?.length) {
-    const filterStr = buildFilterChain(child.filters);
+    const filterStr = buildFilterChain(child.filters, ctx, child.duration / compoundSpeed);
     if (filterStr) {
       const seg = ctx.segmentIndex++;
       const filteredV = `[filt${seg}]`;
@@ -291,7 +342,8 @@ function buildClipSegment(
   clip: ResolvedClip,
   parentSpeed: number,
   parentW: number,
-  parentH: number
+  parentH: number,
+  spatialPwl?: SpatialPwl,
 ): { v: string; a: string } {
   const source = ctx.basePath ? resolve(ctx.basePath, clip.source) : clip.source;
   const idx = getOrAddInput(ctx, source);
@@ -311,8 +363,16 @@ function buildClipSegment(
   }
   vChain += `,fps=${fps}`;
 
-  // Apply objectFit scaling
-  if (clip.objectFit) {
+  // Apply spatial scaling. Animated edges drive a per-frame `scale=eval=frame`
+  // expression and intentionally bypass objectFit's pad/crop dance — the
+  // sampled rect already represents the on-screen area, so we stretch the
+  // source to it. Static spatial keeps the existing fit/cover/center
+  // pad/crop logic.
+  if (spatialPwl) {
+    const wExpr = pwlToExpression(spatialPwl.w);
+    const hExpr = pwlToExpression(spatialPwl.h);
+    vChain += `,scale=w='${wExpr}':h='${hExpr}':eval=frame`;
+  } else if (clip.objectFit) {
     const rect: SpatialRect = clip.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
     vChain += buildObjectFitFilters(clip.objectFit, rect, clip.anchor);
   } else if (clip.spatial) {
@@ -320,9 +380,12 @@ function buildClipSegment(
     vChain += `,scale=${clip.spatial.width}:${clip.spatial.height}`;
   }
 
-  // Apply filters
+  // Apply filters. Filter time runs in clip-output coordinates after
+  // the trim+setpts reset above, so we sample over `(out - in) /
+  // effectiveSpeed` seconds.
   if (clip.filters?.length) {
-    const filterStr = buildFilterChain(clip.filters);
+    const clipOutputDuration = (clip.sourceOut - clip.sourceIn) / effectiveSpeed;
+    const filterStr = buildFilterChain(clip.filters, ctx, clipOutputDuration);
     if (filterStr) vChain += `,${filterStr}`;
   }
 
@@ -335,13 +398,37 @@ function buildClipSegment(
   if (effectiveSpeed !== 1) {
     aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
   }
-  if (clip.volume != null && clip.volume !== 1) {
-    aChain += `,volume=${clip.volume}`;
-  }
+  // The volume filter sees clip-local time after asetpts (PTS-STARTPTS
+  // resets to 0). For animated volume we bake the keyframes into a
+  // sample-rate-independent expression and let ffmpeg evaluate per
+  // frame; static volume passes through as a literal.
+  const audioDuration = (clip.sourceOut - clip.sourceIn) / effectiveSpeed;
+  aChain += buildVolumeFilter(clip.volume, audioDuration, ctx.options.fps);
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);
 
   return { v: vLabel, a: aLabel };
+}
+
+/** Append a `,volume=…` filter when the value is non-trivial. Static
+ *  values use a literal; animated values use `eval=frame` + a baked PWL
+ *  expression in `t` (clip-local seconds). Returns "" when volume is
+ *  effectively unity so the filter chain stays minimal. */
+function buildVolumeFilter(
+  volume: ResolvedClip["volume"] | undefined,
+  duration: number,
+  fps: number,
+): string {
+  if (volume == null) return "";
+  if (!isKeyframed(volume)) {
+    return volume === 1 ? "" : `,volume=${volume}`;
+  }
+  const pwl = bakePwl(volume, duration, fps);
+  if (isConstant(pwl)) {
+    const v = pwl.samples[0].v;
+    return v === 1 ? "" : `,volume=${v}`;
+  }
+  return `,volume=eval=frame:volume='${pwlToExpression(pwl)}'`;
 }
 
 /**
@@ -363,9 +450,8 @@ function buildAudioSegment(
   if (effectiveSpeed !== 1) {
     aChain += `,asetrate=48000*${effectiveSpeed},aresample=48000`;
   }
-  if (audio.volume != null && audio.volume !== 1) {
-    aChain += `,volume=${audio.volume}`;
-  }
+  const audioDuration = (audio.sourceOut - audio.sourceIn) / effectiveSpeed;
+  aChain += buildVolumeFilter(audio.volume, audioDuration, ctx.options.fps);
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);
 
@@ -385,6 +471,7 @@ function buildTextSegment(
   parentSpeed: number,
   parentW: number,
   parentH: number,
+  spatialPwl?: SpatialPwl,
 ): { v: string; a: string } {
   const raster = ctx.textRasters.get(text);
   if (!raster) {
@@ -416,18 +503,26 @@ function buildTextSegment(
   // Spatial scaling. Text's intrinsic size is the SVG canvas
   // (`raster.width` / `raster.height`); the spatial pass may have
   // assigned a different display rect via objectFit + content dims.
-  const wantsScale =
-    text.spatial &&
-    (Math.round(text.spatial.width) !== raster.width ||
-      Math.round(text.spatial.height) !== raster.height);
-  if (text.objectFit && text.spatial && wantsScale) {
-    vChain += buildObjectFitFilters(text.objectFit, text.spatial, text.anchor);
-  } else if (text.spatial && wantsScale) {
-    vChain += `,scale=${Math.round(text.spatial.width)}:${Math.round(text.spatial.height)}`;
+  // Animated edges drive a per-frame `scale=eval=frame` instead.
+  if (spatialPwl) {
+    const wExpr = pwlToExpression(spatialPwl.w);
+    const hExpr = pwlToExpression(spatialPwl.h);
+    vChain += `,scale=w='${wExpr}':h='${hExpr}':eval=frame`;
+  } else {
+    const wantsScale =
+      text.spatial &&
+      (Math.round(text.spatial.width) !== raster.width ||
+        Math.round(text.spatial.height) !== raster.height);
+    if (text.objectFit && text.spatial && wantsScale) {
+      vChain += buildObjectFitFilters(text.objectFit, text.spatial, text.anchor);
+    } else if (text.spatial && wantsScale) {
+      vChain += `,scale=${Math.round(text.spatial.width)}:${Math.round(text.spatial.height)}`;
+    }
   }
 
   if (text.filters?.length) {
-    const filterStr = buildFilterChain(text.filters);
+    const textOutputDuration = (text.timelineEnd - text.timelineStart) / parentSpeed;
+    const filterStr = buildFilterChain(text.filters, ctx, textOutputDuration);
     if (filterStr) vChain += `,${filterStr}`;
   }
 
@@ -500,100 +595,174 @@ function buildObjectFitFilters(objectFit: ObjectFit, spatial: SpatialRect, ancho
 }
 
 /**
- * Convert a filters array to an FFmpeg filter chain string.
+ * Convert a filters array to an FFmpeg filter chain string. Animated
+ * filter parameters use one of two paths depending on what the filter
+ * supports natively:
+ *
+ *   - `eq` (adjust): expression strings + `eval=frame`. ffmpeg evaluates
+ *     each parameter every frame, so the output is per-frame accurate
+ *     with no extra filter instances.
+ *   - `colorchannelmixer` (opacity), `colorbalance`, `colortemperature`:
+ *     `sendcmd` ahead of the filter, emitting one stepwise command per
+ *     output frame against a labelled (`@id`) instance. The filter
+ *     itself only stores the t=0 value as its initial parameters.
+ *
+ * `duration` and `fps` are needed to bake the keyframes into PWL
+ * samples; pass the segment's local duration (post-speed).
  */
-function buildFilterChain(filters: Filter[]): string {
-  return filters.map(f => {
+function buildFilterChain(
+  filters: Filter[],
+  ctx: BuildContext,
+  duration: number,
+): string {
+  const fps = ctx.options.fps;
+  const prefix: string[] = [];
+  const body: string[] = [];
+
+  // Helper: turns a numeric Keyframed (or undefined) into either a
+  // literal "name=value" piece, a "name='<expr>'" piece (when animated
+  // and the host filter supports per-frame eval), or a sendcmd
+  // registration via `addSendcmd` (when animated against a sendcmd
+  // target). Returns the literal/expression piece (or "" to skip), and
+  // tells the caller via `wasAnimated` whether eval=frame is needed.
+  const pwlOf = (
+    value: Keyframed<number> | undefined,
+    defaultV: number,
+  ): { piece: string; animated: boolean } => {
+    if (value == null) return { piece: "", animated: false };
+    if (!isKeyframed(value)) {
+      return value === defaultV
+        ? { piece: "", animated: false }
+        : { piece: String(value), animated: false };
+    }
+    const pwl = bakePwl(value, duration, fps);
+    if (isConstant(pwl)) {
+      const v = pwl.samples[0].v;
+      return v === defaultV
+        ? { piece: "", animated: false }
+        : { piece: String(v), animated: false };
+    }
+    return { piece: `'${pwlToExpression(pwl)}'`, animated: true };
+  };
+
+  // sendcmd helper: registers commands targeting `<filter>@<id>`. We
+  // emit one sendcmd filter per filter instance (cheaper to scan than
+  // one per parameter); commands are accumulated then concat'd.
+  const sendcmdAccum = new Map<string, string[]>();
+  const accumSendcmd = (target: string, commands: string) => {
+    if (!commands) return;
+    const list = sendcmdAccum.get(target) ?? [];
+    list.push(commands);
+    sendcmdAccum.set(target, list);
+  };
+
+  let nextId = 0;
+  const labelFor = (kind: string) => `seam_${kind}_${nextId++}`;
+
+  for (const f of filters) {
     switch (f.type) {
       case "adjust": {
-        const parts: string[] = [];
-        if (f.brightness != null && f.brightness !== 0) parts.push(`brightness=${f.brightness}`);
-        if (f.contrast != null && f.contrast !== 1) parts.push(`contrast=${f.contrast}`);
-        if (f.saturation != null && f.saturation !== 1) parts.push(`saturation=${f.saturation}`);
-        if (f.gamma != null && f.gamma !== 1) parts.push(`gamma=${f.gamma}`);
-        return parts.length > 0 ? `eq=${parts.join(":")}` : "";
+        const pieces: string[] = [];
+        let anyAnimated = false;
+        const emit = (
+          name: string,
+          value: Keyframed<number> | undefined,
+          defaultV: number,
+        ) => {
+          const r = pwlOf(value, defaultV);
+          if (r.piece) pieces.push(`${name}=${r.piece}`);
+          if (r.animated) anyAnimated = true;
+        };
+        emit("brightness", f.brightness, 0);
+        emit("contrast", f.contrast, 1);
+        emit("saturation", f.saturation, 1);
+        emit("gamma", f.gamma, 1);
+        if (pieces.length === 0) break;
+        if (anyAnimated) pieces.push("eval=frame");
+        body.push(`eq=${pieces.join(":")}`);
+        break;
       }
-      case "opacity":
-        return `format=rgba,colorchannelmixer=aa=${f.value}`;
-      case "colorbalance": {
-        const parts: string[] = [];
-        for (const key of ["rs","gs","bs","rm","gm","bm","rh","gh","bh"] as const) {
-          if (f[key] != null && f[key] !== 0) parts.push(`${key}=${f[key]}`);
+      case "opacity": {
+        // colorchannelmixer doesn't support eval=frame, so even static
+        // values stay simple. Animated values become a sendcmd source
+        // ahead of a labelled colorchannelmixer.
+        if (!isKeyframed(f.value)) {
+          body.push(`format=rgba,colorchannelmixer=aa=${f.value}`);
+          break;
         }
-        return parts.length > 0 ? `colorbalance=${parts.join(":")}` : "";
+        const pwl = bakePwl(f.value, duration, fps);
+        if (isConstant(pwl)) {
+          body.push(`format=rgba,colorchannelmixer=aa=${pwl.samples[0].v}`);
+          break;
+        }
+        const id = labelFor("op");
+        const target = `colorchannelmixer@${id}`;
+        accumSendcmd(target, pwlToSendcmdCommands(pwl, target, "aa"));
+        // Initial value is the t=0 sample.
+        body.push(`format=rgba,colorchannelmixer@${id}=aa=${pwl.samples[0].v}`);
+        break;
       }
-      case "colortemperature":
-        return `colortemperature=temperature=${f.temperature ?? 6500}`;
+      case "colorbalance": {
+        const KEYS = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"] as const;
+        const animatedKeys = KEYS.filter((k) => isKeyframed(f[k] as never));
+        const id = animatedKeys.length > 0 ? labelFor("cb") : null;
+        const pieces: string[] = [];
+        for (const k of KEYS) {
+          const value = f[k] as Keyframed<number> | undefined;
+          if (value == null) continue;
+          if (isKeyframed(value)) {
+            const pwl = bakePwl(value, duration, fps);
+            if (isConstant(pwl)) {
+              if (pwl.samples[0].v !== 0) pieces.push(`${k}=${pwl.samples[0].v}`);
+            } else {
+              const target = `colorbalance@${id}`;
+              accumSendcmd(target, pwlToSendcmdCommands(pwl, target, k));
+              pieces.push(`${k}=${pwl.samples[0].v}`);
+            }
+          } else if (value !== 0) {
+            pieces.push(`${k}=${value}`);
+          }
+        }
+        if (pieces.length === 0) break;
+        const head = id != null ? `colorbalance@${id}` : "colorbalance";
+        body.push(`${head}=${pieces.join(":")}`);
+        break;
+      }
+      case "colortemperature": {
+        if (!isKeyframed(f.temperature)) {
+          body.push(`colortemperature=temperature=${f.temperature ?? 6500}`);
+          break;
+        }
+        const pwl = bakePwl(f.temperature, duration, fps);
+        if (isConstant(pwl)) {
+          body.push(`colortemperature=temperature=${pwl.samples[0].v}`);
+          break;
+        }
+        const id = labelFor("ct");
+        const target = `colortemperature@${id}`;
+        accumSendcmd(target, pwlToSendcmdCommands(pwl, target, "temperature"));
+        body.push(`colortemperature@${id}=temperature=${pwl.samples[0].v}`);
+        break;
+      }
     }
-  }).filter(s => s.length > 0).join(",");
+  }
+
+  // Group all sendcmd commands into one source per target, then prepend.
+  for (const [, parts] of sendcmdAccum) {
+    prefix.push(`sendcmd=c='${parts.join(";")}'`);
+  }
+
+  return [...prefix, ...body].filter((s) => s.length > 0).join(",");
 }
 
 /**
  * Snap a time value to the nearest frame boundary at the given fps.
  */
-// Walk the resolved tree and bail if anything time-varying is set. The
-// preview path samples per frame; the static filter graph does not.
-function assertNoAnimation(children: ResolvedChild[]): void {
-  const animatedFields = (
-    obj: Record<string, unknown>,
-    keys: readonly string[]
-  ): string | null => {
-    for (const k of keys) {
-      if (isKeyframed(obj[k] as never)) return k;
-    }
-    return null;
-  };
-  const SPATIAL = ["top", "left", "right", "bottom", "width", "height"] as const;
-  // Text styles can animate now (rasterized into a per-frame PNG sequence
-  // by the renderer pre-pass). Spatial / volume / filter animation are
-  // still unsupported in the static filter graph.
-  const FILTER_FIELDS: Record<string, readonly string[]> = {
-    adjust: ["brightness", "contrast", "saturation", "gamma"],
-    opacity: ["value"],
-    colorbalance: ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"],
-    colortemperature: ["temperature"],
-  };
-
-  const walkFilters = (filters: Filter[] | undefined, label: string) => {
-    if (!filters) return;
-    for (const f of filters) {
-      const fields = FILTER_FIELDS[f.type] ?? [];
-      const hit = animatedFields(f as unknown as Record<string, unknown>, fields);
-      if (hit) {
-        throw new Error(
-          `ffmpeg render does not yet support animated filter values (got ${f.type}.${hit} on ${label}). Bake the value or use the editor preview.`
-        );
-      }
-    }
-  };
-
-  const walk = (node: ResolvedChild) => {
-    if (node.type === "empty" || node.type === "data") return;
-    const inp = (node as { spatialInput?: Record<string, unknown> }).spatialInput;
-    if (inp) {
-      const hit = animatedFields(inp, SPATIAL);
-      if (hit) {
-        throw new Error(
-          `ffmpeg render does not yet support animated spatial properties (got ${hit} on a ${node.type}). Use the editor preview.`
-        );
-      }
-    }
-    if (node.type === "clip" || node.type === "audio") {
-      if (isKeyframed(node.volume as never)) {
-        throw new Error(
-          `ffmpeg render does not yet support animated 'volume' (on a ${node.type}). Use the editor preview.`
-        );
-      }
-    }
-    if (node.type === "clip" || node.type === "composition" || node.type === "text") {
-      walkFilters(node.filters, node.type);
-    }
-    if (node.type === "composition") {
-      for (const c of node.children) walk(c);
-    }
-  };
-
-  for (const c of children) walk(c);
+// All animation kinds (volume, filter values, spatial edges, text
+// styles) are now handled by the renderer. The hook is preserved as the
+// place to surface future regressions cleanly.
+function assertNoAnimation(_children: ResolvedChild[]): void {
+  // intentional no-op
 }
 
 function snapToFrame(seconds: number, fps: number): number {
