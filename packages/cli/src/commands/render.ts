@@ -6,6 +6,7 @@ import {
   buildFfmpegArgs,
   buildFfmpegCommand,
   checkFfmpeg,
+  rasterizeAllText,
   renderWithFfmpeg,
 } from "@seam/renderer";
 
@@ -58,11 +59,18 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const filterScriptPath = join(assetsDir, "filter.txt");
 
   try {
+    // Rasterize text nodes to PNGs in the assets dir before building
+    // the filter graph. Static text → one PNG; animated text → a
+    // numbered sequence at the output fps.
+    const textDir = join(assetsDir, "text");
+    const textRasters = await rasterizeAllText(timeline, textDir, fps);
+
     const command = buildFfmpegCommand(timeline, outputPath, {
       fps,
       width,
       height,
       basePath,
+      textRasters,
     });
 
     if (dryRun) {

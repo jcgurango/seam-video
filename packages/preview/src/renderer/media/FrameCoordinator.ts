@@ -62,12 +62,10 @@ export class FrameCoordinator {
       basePath
     );
 
-    // Text nodes pre-rasterize via Pretext-laid-out SVG. Kicked off in
-    // parallel with the mediabunny init below; rendering won't show
-    // their pixels until each canvas is decoded, but the rest of the
-    // timeline starts unblocked.
+    // Text nodes rasterize synchronously straight onto OffscreenCanvases
+    // via Pretext-laid-out canvas drawing — no SVG / `<img>` decode wait.
     this.textStore.onFrameAvailable = () => this.onFrameAvailable?.();
-    const textReady = this.textStore.setTimeline(timeline);
+    this.textStore.setTimeline(timeline);
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -117,7 +115,6 @@ export class FrameCoordinator {
     });
 
     await Promise.all(initAll);
-    void textReady;
     this.ready = true;
 
     // Prime at the actual playhead so the paused frame becomes available

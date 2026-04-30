@@ -10,3 +10,5 @@ export {
   buildFfmpegArgs,
 } from "./ffmpeg-runner.js";
 export type { RenderResult, RenderOptions } from "./ffmpeg-runner.js";
+export { rasterizeAllText } from "./text/textRaster.js";
+export type { TextRasterEntry, TextRasterMap } from "./text/textRaster.js";

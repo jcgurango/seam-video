@@ -1,9 +1,13 @@
-// Render a ResolvedText node to an SVG string. Uses @chenglou/pretext
-// for line-breaking and width measurement; the rest is just stamping
-// <text>/<tspan>/<rect> elements at the positions Pretext gives us.
+// Lay out a ResolvedText node at a given local time. Pure logic — no
+// rendering. The output is a list of rects (backgrounds) and glyph
+// fragments (text + style) at concrete pixel positions, ready for any
+// backend that can draw rects + text. Same module is shared by the
+// browser preview (OffscreenCanvas) and the Node renderer (node-canvas)
+// so layout and render use the same engine — no measurement drift.
 //
-// Browser-only: Pretext relies on canvas measureText + DOM calibration.
-// The renderer (Node-side ffmpeg path) needs a different code path.
+// Layout requires a 2D Canvas context for `measureText` (via Pretext).
+// In browsers that's automatic; in Node, shim `OffscreenCanvas` with
+// node-canvas before importing this module.
 
 import {
   prepareRichInline,
@@ -12,18 +16,14 @@ import {
   type RichInlineItem,
   type RichInlineLineRange,
 } from "@chenglou/pretext/rich-inline";
-import type {
-  ResolvedText,
-  TextRun,
-  TextPadding,
-  Keyframed,
-} from "@seam/core";
+import type { ResolvedText } from "../resolved-types.js";
+import type { TextRun, TextPadding, Keyframed } from "../types.js";
 import {
   isKeyframed,
   sampleNumber,
   sampleColor,
   samplePadding,
-} from "@seam/core";
+} from "../animation/keyframes.js";
 
 const DEFAULT_FONT_FAMILY = "sans-serif";
 const DEFAULT_FONT_SIZE = 16;
@@ -76,19 +76,6 @@ function cssFontShorthand(
   // Family with spaces gets quoted to keep the shorthand parser happy.
   const familyToken = /\s/.test(family) ? `"${family}"` : family;
   return `${weight ? `${weight} ` : ""}${size}px ${familyToken}`;
-}
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
 interface RunStyle {
@@ -153,9 +140,42 @@ export function textHasAnimatedStyle(node: ResolvedText): boolean {
   return false;
 }
 
-/** Render a ResolvedText to an SVG string at the given node-local time
- *  `t` (seconds since the node became active). Static texts pass `t=0`. */
-export function textToSvg(node: ResolvedText, t: number = 0): string {
+export interface TextRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill: string;
+}
+
+export interface TextGlyph {
+  /** x in canvas pixels, where text starts (post-padding inset). */
+  x: number;
+  /** Baseline y, for `textBaseline = "alphabetic"`. */
+  y: number;
+  text: string;
+  /** CSS font shorthand suitable for `ctx.font` ("bold 16px sans-serif"). */
+  font: string;
+  fill: string;
+  /** Stroke is drawn first when present (mimics SVG `paint-order: stroke fill`). */
+  stroke: string | null;
+  strokeWidth: number;
+}
+
+export interface TextLayoutResult {
+  /** SVG/canvas extents (matches `node.contentWidth/Height`). */
+  width: number;
+  height: number;
+  /** Background rects, drawn before glyphs. */
+  rects: TextRect[];
+  /** Text fragments, drawn after rects. */
+  glyphs: TextGlyph[];
+}
+
+/** Produce a backend-agnostic layout for a ResolvedText at node-local
+ *  time `t` (seconds since the node became active). The values returned
+ *  are in the SVG canvas's coordinate space (origin top-left). */
+export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult {
   const W = node.contentWidth;
   const H = node.contentHeight;
   const duration = node.timelineEnd - node.timelineStart;
@@ -165,10 +185,8 @@ export function textToSvg(node: ResolvedText, t: number = 0): string {
     ? lineHeightSampled
     : Math.round(fontSize * 1.2);
 
-  // Inner box: shrunk from the SVG canvas by `padding` so backgrounds
-  // and strokes that hang past the layout extents don't clip the SVG
-  // edge. Layout (line wrapping, alignment) operates in this inset
-  // rect; we offset the rendered output by (innerX, innerY).
+  // Inner box: shrunk from the canvas by `padding` so backgrounds and
+  // strokes hanging past the layout extents don't clip the canvas edge.
   const pad = expandPadding(node.padding);
   const innerW = Math.max(0, W - pad.left - pad.right);
   const innerH = Math.max(0, H - pad.top - pad.bottom);
@@ -215,7 +233,8 @@ export function textToSvg(node: ResolvedText, t: number = 0): string {
   }
 
   const textAlign = node.textAlign ?? "center";
-  const parts: string[] = [];
+  const rects: TextRect[] = [];
+  const glyphs: TextGlyph[] = [];
 
   for (const line of lines) {
     const lineTop = yLineTop;
@@ -238,9 +257,9 @@ export function textToSvg(node: ResolvedText, t: number = 0): string {
         break;
     }
 
-    // Pass 1: backgrounds. Emit per-fragment rects (we don't try to
-    // merge contiguous same-style fragments; per-fragment is simpler
-    // and visually identical for most text).
+    // Pass 1: backgrounds. One rect per fragment (we don't merge
+    // contiguous same-style fragments; per-fragment is simpler and
+    // visually identical for most text).
     let bgX = x;
     for (const frag of line.fragments) {
       bgX += frag.gapBefore;
@@ -249,18 +268,22 @@ export function textToSvg(node: ResolvedText, t: number = 0): string {
         const padTop = style.backgroundPadding.top;
         const padBottom = style.backgroundPadding.bottom;
         // Vertical padding hangs above/below the glyph block but does
-        // *not* affect line height per the spec.
+        // *not* affect line height.
         const rectY = lineTop + (lineHeight - fontSize) / 2 - padTop;
         const rectH = fontSize + padTop + padBottom;
-        parts.push(
-          `<rect x="${bgX.toFixed(3)}" y="${rectY.toFixed(3)}" width="${frag.occupiedWidth.toFixed(3)}" height="${rectH.toFixed(3)}" fill="${escapeAttr(style.backgroundColor)}"/>`
-        );
+        rects.push({
+          x: bgX,
+          y: rectY,
+          width: frag.occupiedWidth,
+          height: rectH,
+          fill: style.backgroundColor,
+        });
       }
       bgX += frag.occupiedWidth;
     }
 
-    // Pass 2: text. Each fragment is its own <text> so per-run styling
-    // is straightforward (no shared <text> + per-tspan font shifting).
+    // Pass 2: glyph fragments. One entry per fragment so each can carry
+    // its own font/colour/stroke without sharing state.
     let tx = x;
     for (const frag of line.fragments) {
       tx += frag.gapBefore;
@@ -269,28 +292,23 @@ export function textToSvg(node: ResolvedText, t: number = 0): string {
       // Glyphs sit inside the padded fragment; offset by the left
       // padding so the text isn't drawn flush against the rect edge.
       const textX = tx + padLeft;
-      const attrs: string[] = [
-        `x="${textX.toFixed(3)}"`,
-        `y="${baseline.toFixed(3)}"`,
-        `font-family="${escapeAttr(style.fontFamily)}"`,
-        `font-size="${style.fontSize}"`,
-      ];
-      if (style.fontWeight) attrs.push(`font-weight="${escapeAttr(style.fontWeight)}"`);
-      attrs.push(`fill="${escapeAttr(style.color)}"`);
-      if (style.strokeWidth > 0) {
-        attrs.push(
-          `stroke="${escapeAttr(style.strokeColor ?? "black")}"`,
-          `stroke-width="${style.strokeWidth}"`,
-          `stroke-opacity="1"`,
-          `paint-order="stroke fill markers"`
-        );
-      }
-      parts.push(
-        `<text ${attrs.join(" ")}>${escapeXml(frag.text)}</text>`
-      );
+      const fontWeight = style.fontWeight;
+      const familyToken = /\s/.test(style.fontFamily)
+        ? `"${style.fontFamily}"`
+        : style.fontFamily;
+      const font = `${fontWeight ? `${fontWeight} ` : ""}${style.fontSize}px ${familyToken}`;
+      glyphs.push({
+        x: textX,
+        y: baseline,
+        text: frag.text,
+        font,
+        fill: style.color,
+        stroke: style.strokeWidth > 0 ? (style.strokeColor ?? "black") : null,
+        strokeWidth: style.strokeWidth,
+      });
       tx += frag.occupiedWidth;
     }
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join("")}</svg>`;
+  return { width: W, height: H, rects, glyphs };
 }

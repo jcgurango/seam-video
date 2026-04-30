@@ -17,8 +17,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@seam/core": "workspace:*",
-    "playwright-core": "^1.59.1"
+    "@chenglou/pretext": "^0.0.6",
+    "@napi-rs/canvas": "^0.1.100",
+    "@seam/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

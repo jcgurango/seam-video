@@ -11,3 +11,11 @@ export {
 export { parseDimension, resolveDimension } from "./layout/units.js";
 export { flattenResolved } from "./flatten.js";
 export * from "./animation/index.js";
+export {
+  layoutText,
+  textHasAnimatedStyle,
+  type TextLayoutResult,
+  type TextRect,
+  type TextGlyph,
+} from "./text/textLayout.js";
+export { drawTextLayout } from "./text/textCanvas.js";

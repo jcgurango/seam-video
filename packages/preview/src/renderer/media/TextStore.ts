@@ -3,25 +3,30 @@ import type {
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
-import { textToSvg, textHasAnimatedStyle } from "../text/textSvg.js";
+import {
+  layoutText,
+  textHasAnimatedStyle,
+  drawTextLayout,
+} from "@seam/core";
 
 interface AnimatedEntry {
   node: ResolvedText;
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
-  /** Last node-local time we rasterized at, in seconds. Skips re-decode
+  /** Last node-local time we rasterized at, in seconds. Skips the redraw
    *  when the time hasn't advanced enough to change anything. */
   lastT: number;
-  /** Async generation token — bumped on each rasterize-call so a stale
-   *  decode that finishes after a newer call doesn't clobber the canvas. */
-  gen: number;
 }
 
 /**
- * Manages per-text-node OffscreenCanvases. Static text is rasterized once
+ * Manages per-text-node OffscreenCanvases. Static text rasterizes once
  * at setTimeline. Animated text (any keyframed style field, including
- * inside runs) is re-rasterized on each `update(currentTime)` call so
- * keyframes propagate to the GPU's texture upload path.
+ * inside runs) re-rasterizes on each `update(currentTime)` call so the
+ * GPU's texture upload picks up the new pixels.
+ *
+ * Drawing goes straight through Pretext-laid-out text into the
+ * OffscreenCanvas via `drawTextLayout` — no SVG round-trip, no async
+ * `<img>` decode. Same engine measures + renders, no glyph-position drift.
  *
  * Each canvas's identity is stable across frames so the TextureManager
  * only allocates one GPU texture per node.
@@ -29,84 +34,62 @@ interface AnimatedEntry {
 export class TextStore {
   private bitmaps = new Map<ResolvedText, OffscreenCanvas>();
   private animated = new Map<ResolvedText, AnimatedEntry>();
-  /** Fires when a text node's bitmap has finished decoding so the
-   *  outer render loop can repaint while paused. */
+  /** Fires when a text node's bitmap has been (re-)drawn so the outer
+   *  render loop can repaint while paused. */
   onFrameAvailable: (() => void) | null = null;
 
-  async setTimeline(timeline: ResolvedTimeline): Promise<void> {
+  setTimeline(timeline: ResolvedTimeline): void {
     this.dispose();
     const nodes = collectTextNodes(timeline.children);
     if (nodes.length === 0) return;
-    await Promise.all(
-      nodes.map(async (node) => {
-        try {
-          const canvas = new OffscreenCanvas(
-            Math.max(1, Math.round(node.contentWidth)),
-            Math.max(1, Math.round(node.contentHeight))
-          );
-          const ctx = canvas.getContext("2d");
-          if (!ctx) throw new Error("OffscreenCanvas 2d context unavailable");
-          // Register the canvas before the async decode so the GPU
-          // pipeline's getFrame returns the (initially blank) canvas
-          // instead of null while the decode is in flight.
-          this.bitmaps.set(node, canvas);
+    for (const node of nodes) {
+      try {
+        const canvas = new OffscreenCanvas(
+          Math.max(1, Math.round(node.contentWidth)),
+          Math.max(1, Math.round(node.contentHeight))
+        );
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("OffscreenCanvas 2d context unavailable");
+        this.bitmaps.set(node, canvas);
 
-          if (textHasAnimatedStyle(node)) {
-            // Animated: track for per-frame rasterization. The first
-            // raster runs at t=0 to seed the canvas before playback.
-            const entry: AnimatedEntry = { node, canvas, ctx, lastT: -1, gen: 0 };
-            this.animated.set(node, entry);
-            await this.rasterizeAnimated(entry, 0);
-          } else {
-            await rasterizeOnce(node, canvas, ctx, 0);
-            this.onFrameAvailable?.();
-          }
-        } catch (err) {
-          console.error("Text node rasterization failed:", err);
+        if (textHasAnimatedStyle(node)) {
+          // Animated: track for per-frame redraw. Seed the canvas at
+          // t=0 so the first paint shows something before playback.
+          this.animated.set(node, { node, canvas, ctx, lastT: -1 });
+          drawTextLayout(ctx, layoutText(node, 0));
+        } else {
+          drawTextLayout(ctx, layoutText(node, 0));
         }
-      })
-    );
+      } catch (err) {
+        console.error("Text node rasterization failed:", err);
+      }
+    }
+    this.onFrameAvailable?.();
   }
 
-  /** Per-frame hook: re-rasterize any animated text whose node-local time
-   *  has advanced. `currentTime` is in the *root* timeline's coordinate
+  /** Per-frame hook: redraw any animated text whose node-local time has
+   *  advanced. `currentTime` is in the *root* timeline's coordinate
    *  space; the call is cheap-skipped when no text is animated. */
   update(currentTime: number): void {
     if (this.animated.size === 0) return;
+    let anyRedrew = false;
     for (const entry of this.animated.values()) {
       const t = currentTime - entry.node.timelineStart;
-      // Only re-rasterize when active in the timeline. Outside the active
-      // window, holding the most recent frame is fine — it's not visible.
+      // Outside the active window holding the most recent frame is
+      // fine — the node won't be drawn anyway.
       const duration = entry.node.timelineEnd - entry.node.timelineStart;
       if (t < 0 || t > duration) continue;
-      // Cheap dedupe: ~1ms quantization saves redraws when the clock
-      // hasn't moved (e.g. paused, redraws on hover). Adjust if too coarse.
+      // Cheap dedupe at ~1ms to skip redraws when the clock hasn't moved.
       if (Math.abs(t - entry.lastT) < 0.001) continue;
       entry.lastT = t;
-      void this.rasterizeAnimated(entry, t);
-    }
-  }
-
-  private async rasterizeAnimated(entry: AnimatedEntry, t: number): Promise<void> {
-    const myGen = ++entry.gen;
-    try {
-      const svg = textToSvg(entry.node, t);
-      const blob = new Blob([svg], { type: "image/svg+xml" });
-      const url = URL.createObjectURL(blob);
       try {
-        const img = new Image();
-        img.src = url;
-        await img.decode();
-        if (entry.gen !== myGen) return; // a newer rasterize already started
-        entry.ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
-        entry.ctx.drawImage(img, 0, 0, entry.canvas.width, entry.canvas.height);
-        this.onFrameAvailable?.();
-      } finally {
-        URL.revokeObjectURL(url);
+        drawTextLayout(entry.ctx, layoutText(entry.node, t));
+        anyRedrew = true;
+      } catch (err) {
+        console.error("Animated text rasterization failed:", err);
       }
-    } catch (err) {
-      console.error("Animated text rasterization failed:", err);
     }
+    if (anyRedrew) this.onFrameAvailable?.();
   }
 
   getFrame(node: ResolvedText): OffscreenCanvas | null {
@@ -116,26 +99,6 @@ export class TextStore {
   dispose(): void {
     this.bitmaps.clear();
     this.animated.clear();
-  }
-}
-
-async function rasterizeOnce(
-  node: ResolvedText,
-  canvas: OffscreenCanvas,
-  ctx: OffscreenCanvasRenderingContext2D,
-  t: number,
-): Promise<void> {
-  const svg = textToSvg(node, t);
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  } finally {
-    URL.revokeObjectURL(url);
   }
 }
 

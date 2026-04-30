@@ -192,7 +192,7 @@ Style fields on a run override the node-level fallback for that fragment only. L
 
 Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's intrinsic canvas (defaulting to the parent display size), then [Spatial Layout](#spatial-layout) places that canvas on the parent. Line wrapping uses the inner box (`contentWidth − padding.left − padding.right`).
 
-> **Renderer note.** Text layout currently relies on the browser (canvas `measureText` + DOM calibration), so the editor preview renders text but the FFmpeg CLI render path does not yet support `text` nodes. Bake or remove them before rendering.
+Both backends share Pretext for layout. The editor preview measures + draws on `OffscreenCanvas`; the FFmpeg CLI path does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side, then writes one PNG per static text node and a numbered sequence per animated text node, which ffmpeg pulls in via `overlay`. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
 
 ### Composition
 
@@ -653,4 +653,11 @@ A node-local time of `0` is when the node first becomes active; `100%` is when i
 
 ### Renderer support
 
-Animation is currently editor-preview only. The CLI ffmpeg path rejects animated values (`volume`, spatial edges, filter parameters, text styles) and tells you which field tripped the check — bake or remove keyframes, or use the editor preview, until ffmpeg-side per-frame evaluation lands.
+| Field | Editor preview | FFmpeg CLI |
+|---|---|---|
+| Text styles (incl. per-run) | ✅ | ✅ — pre-rasterized to a PNG sequence at output fps |
+| Spatial edges (`top`/`left`/…) | ✅ | ❌ — bake or remove |
+| Volume | ✅ | ❌ — bake or remove |
+| Filter parameters | ✅ | ❌ — bake or remove |
+
+The CLI fails fast with the offending field name when an unsupported animation reaches the renderer.
