@@ -41,44 +41,6 @@ function resolveNode(
     return node;
   }
 
-  // HTML mirrors composition: contentWidth/contentHeight are the satori
-  // canvas (intrinsic), SpatialFields determine on-canvas placement.
-  if (node.type === "html") {
-    const input = node.spatialInput;
-    if (!input) {
-      const intrinsicW = node.contentWidth ?? parentW;
-      const intrinsicH = node.contentHeight ?? parentH;
-      const hasCustomIntrinsic =
-        intrinsicW !== parentW || intrinsicH !== parentH;
-      const spatial = hasCustomIntrinsic
-        ? computeObjectFitRect(parentObjectFit, intrinsicW, intrinsicH, parentW, parentH)
-        : undefined;
-      return {
-        ...node,
-        contentWidth: intrinsicW,
-        contentHeight: intrinsicH,
-        objectFit: parentObjectFit,
-        spatial,
-      };
-    }
-    const { spatial, anchor } = resolveBoxProps(input, parentW, parentH);
-    const position: Position = input.position ?? "relative";
-    const displayW = spatial ? spatial.width : parentW;
-    const displayH = spatial ? spatial.height : parentH;
-    const innerW = node.contentWidth ?? displayW;
-    const innerH = node.contentHeight ?? displayH;
-    const { spatialInput: _, ...rest } = node;
-    return {
-      ...rest,
-      contentWidth: innerW,
-      contentHeight: innerH,
-      spatial,
-      anchor,
-      position,
-      objectFit: parentObjectFit,
-    };
-  }
-
   const input = node.spatialInput;
 
   // Determine this node's own objectFit policy for its children

@@ -27,12 +27,6 @@ function naturalDuration(child: Child): number {
       return child.duration;
     case "data":
       return child.duration ?? 0;
-    case "html":
-      // `duration` is optional when both anchors are pinned (the anchor
-      // span supplies the target). 0 is a safe fallback for the only
-      // place this value is used in that case — `%`-offset math, which
-      // multiplies against natural duration.
-      return child.duration ?? 0;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
@@ -92,26 +86,6 @@ function resolveChild(
   }
 
   const spatialInput = collectSpatialInput(child);
-
-  if (child.type === "html") {
-    // HTML is static — overflow/underflow strategies all collapse to "show
-    // the same image for the target span". contentWidth/contentHeight stay
-    // as authored (possibly undefined — the spatial pass fills with the
-    // display rect, mirroring composition behaviour).
-    return {
-      resolved: {
-        type: "html" as const,
-        source: child.source,
-        contentWidth: child.contentWidth as number,
-        contentHeight: child.contentHeight as number,
-        timelineStart: 0,
-        timelineEnd: 0,
-        ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-      },
-      actualDuration: target,
-    };
-  }
 
   if (child.type === "composition") {
     const inner = resolveCompositionInner(child);
@@ -329,11 +303,7 @@ function buildIdMapEntry(
       speed: resolved.speed,
     };
   }
-  if (
-    resolved.type === "empty" ||
-    resolved.type === "data" ||
-    resolved.type === "html"
-  ) {
+  if (resolved.type === "empty" || resolved.type === "data") {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   // composition — source time is the pre-window inner timeline
@@ -496,8 +466,7 @@ function cropChildrenToWindow(
       });
     } else if (
       child.type === "empty" ||
-      child.type === "data" ||
-      child.type === "html"
+      child.type === "data"
     ) {
       result.push({
         ...child,

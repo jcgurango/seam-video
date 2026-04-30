@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 import {
   buildFfmpegArgs,
   buildFfmpegCommand,
   checkFfmpeg,
-  cleanupHtmlAssets,
-  prerenderHtmlAssets,
   renderWithFfmpeg,
 } from "@seam/renderer";
 
@@ -51,14 +49,12 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);
 
-  // Sidecar dir holds (a) pre-rendered html PNGs and (b) the
-  // filter_complex script we hand to ffmpeg via -filter_complex_script.
-  // The filter goes through a file so we don't trip Windows' 8191-char
-  // argv limit on non-trivial compositions. Cleaned up after success or
-  // failure unless --dry-run is set.
+  // Sidecar dir holds the filter_complex script we hand to ffmpeg via
+  // -filter_complex_script. The filter goes through a file so we don't
+  // trip Windows' 8191-char argv limit on non-trivial compositions.
+  // Cleaned up after success or failure unless --dry-run is set.
   const assetsDir = `${filePath}-rendered`;
   await mkdir(assetsDir, { recursive: true });
-  const htmlAssets = await prerenderHtmlAssets(timeline, assetsDir);
   const filterScriptPath = join(assetsDir, "filter.txt");
 
   try {
@@ -67,7 +63,6 @@ export async function renderCommand(file: string, options: RenderOptions) {
       width,
       height,
       basePath,
-      htmlAssets: htmlAssets.byNode,
     });
 
     if (dryRun) {
@@ -94,6 +89,12 @@ export async function renderCommand(file: string, options: RenderOptions) {
       process.exit(1);
     }
   } finally {
-    if (!dryRun) await cleanupHtmlAssets(assetsDir);
+    if (!dryRun) {
+      try {
+        await rm(assetsDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; if the dir doesn't exist anymore that's fine.
+      }
+    }
   }
 }

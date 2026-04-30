@@ -4,9 +4,7 @@
  * textures by clip identity so they can be reused across frames.
  */
 
-import type { ResolvedClip, ResolvedHtml } from "@seam/core";
-
-type TextureKey = ResolvedClip | ResolvedHtml;
+import type { ResolvedClip } from "@seam/core";
 
 interface TextureEntry {
   texture: GPUTexture;
@@ -17,7 +15,7 @@ interface TextureEntry {
 
 export class TextureManager {
   private device: GPUDevice;
-  private entries = new Map<TextureKey, TextureEntry>();
+  private entries = new Map<ResolvedClip, TextureEntry>();
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -28,7 +26,7 @@ export class TextureManager {
    * Reuses the existing texture if the dimensions haven't changed.
    */
   upload(
-    clip: TextureKey,
+    clip: ResolvedClip,
     source: HTMLCanvasElement | OffscreenCanvas,
   ): GPUTextureView {
     const w = source.width;
@@ -62,7 +60,7 @@ export class TextureManager {
   }
 
   /** Remove textures for clips that are no longer active. */
-  prune(activeClips: Set<TextureKey>): void {
+  prune(activeClips: Set<ResolvedClip>): void {
     for (const [clip, entry] of this.entries) {
       if (!activeClips.has(clip)) {
         entry.texture.destroy();

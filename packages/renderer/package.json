@@ -17,9 +17,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@resvg/resvg-js": "^2.6.2",
     "@seam/core": "workspace:*",
-    "@seam/html-renderer": "workspace:*",
     "playwright-core": "^1.59.1"
   },
   "devDependencies": {

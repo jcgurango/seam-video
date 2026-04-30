@@ -756,44 +756,4 @@ describe("buildFfmpegCommand", () => {
     expect(cmd.filterComplex).not.toContain("volume=");
   });
 
-  it("html nodes use the supplied PNG with -loop 1", () => {
-    const html = {
-      type: "html" as const,
-      source: "<b>hi</b>",
-      contentWidth: 100,
-      contentHeight: 50,
-      timelineStart: 0,
-      timelineEnd: 3,
-    };
-    const timeline: ResolvedTimeline = {
-      duration: 3,
-      children: [html],
-    };
-
-    const cmd = buildFfmpegCommand(timeline, "out.mp4", {
-      htmlAssets: new Map([[html, "/tmp/html-0.png"]]),
-    });
-
-    expect(cmd.inputs).toEqual([
-      { path: "/tmp/html-0.png", flags: ["-loop", "1"] },
-    ]);
-    expect(cmd.filterComplex).toContain("trim=0:3");
-    expect(cmd.filterComplex).toContain("anullsrc=r=48000:cl=stereo");
-  });
-
-  it("throws when an html node has no pre-rendered asset", () => {
-    const html = {
-      type: "html" as const,
-      source: "<b>hi</b>",
-      contentWidth: 100,
-      contentHeight: 50,
-      timelineStart: 0,
-      timelineEnd: 3,
-    };
-    const timeline: ResolvedTimeline = {
-      duration: 3,
-      children: [html],
-    };
-    expect(() => buildFfmpegCommand(timeline, "out.mp4")).toThrow(/pre-rendered/);
-  });
 });

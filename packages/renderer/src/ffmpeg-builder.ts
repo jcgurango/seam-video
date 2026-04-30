@@ -4,7 +4,6 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedAudio,
-  ResolvedHtml,
   SpatialRect,
   SpatialAnchor,
   ObjectFit,
@@ -13,7 +12,7 @@ import type {
 
 /**
  * Per-input prefix flags. Plain strings are still accepted (most clips
- * don't need any prefix); html nodes use `-loop 1` for static-image inputs.
+ * don't need any prefix); reserved here for future per-input options.
  */
 export interface FfmpegInput {
   path: string;
@@ -31,21 +30,14 @@ export interface FfmpegOptions {
   height?: number;
   fps?: number;
   basePath?: string;
-  /**
-   * For each ResolvedHtml node in the timeline, the path of its
-   * pre-rendered PNG. The CLI rasterizes these via satori + resvg before
-   * calling buildFfmpegCommand.
-   */
-  htmlAssets?: Map<ResolvedHtml, string>;
 }
 
 interface BuildContext {
   inputs: FfmpegInput[];
   filters: string[];
   segmentIndex: number;
-  options: Required<Omit<FfmpegOptions, "basePath" | "htmlAssets">>;
+  options: Required<Omit<FfmpegOptions, "basePath">>;
   basePath: string | undefined;
-  htmlAssets: Map<ResolvedHtml, string>;
 }
 
 /**
@@ -84,7 +76,7 @@ export function buildFfmpegCommand(
   outputPath: string,
   options: FfmpegOptions = {}
 ): FfmpegCommand {
-  const opts: Required<Omit<FfmpegOptions, "basePath" | "htmlAssets">> = {
+  const opts: Required<Omit<FfmpegOptions, "basePath">> = {
     width: options.width ?? timeline.contentWidth ?? 1920,
     height: options.height ?? timeline.contentHeight ?? 1080,
     fps: options.fps ?? 30,
@@ -96,7 +88,6 @@ export function buildFfmpegCommand(
     segmentIndex: 0,
     options: opts,
     basePath: options.basePath,
-    htmlAssets: options.htmlAssets ?? new Map(),
   };
 
   const { v, a } = buildCompositeSegment(ctx, timeline.children, timeline.duration, 1);
@@ -243,9 +234,6 @@ function buildSingleSegment(
   if (child.type === "audio") {
     return buildAudioSegment(ctx, child, parentSpeed);
   }
-  if (child.type === "html") {
-    return buildHtmlSegment(ctx, child, parentSpeed, parentW, parentH);
-  }
   if (child.type === "empty" || child.type === "data") {
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
@@ -365,61 +353,6 @@ function buildAudioSegment(
   ctx.filters.push(`${aChain}${aLabel}`);
 
   return { a: aLabel };
-}
-
-/**
- * Build a single resolved html node from a pre-rasterized PNG. The PNG is
- * fed via `-loop 1` so the single frame is held for the node's full
- * timeline span; we then trim it to that duration and pad silent audio.
- */
-function buildHtmlSegment(
-  ctx: BuildContext,
-  html: ResolvedHtml,
-  parentSpeed: number,
-  parentW: number,
-  parentH: number
-): { v: string; a: string } {
-  const png = ctx.htmlAssets.get(html);
-  if (!png) {
-    throw new Error(
-      "html node has no pre-rendered PNG — call prerenderHtmlAssets before buildFfmpegCommand"
-    );
-  }
-  const idx = getOrAddInput(ctx, png, ["-loop", "1"]);
-  const seg = ctx.segmentIndex++;
-  const { fps } = ctx.options;
-  const dur = snapToFrame(
-    (html.timelineEnd - html.timelineStart) / parentSpeed,
-    fps
-  );
-
-  let vChain =
-    `[${idx}:v]trim=0:${dur},setpts=PTS-STARTPTS,fps=${fps},format=rgba`;
-
-  // Same spatial-fit logic as clips: with objectFit, fit/center/cover into
-  // the spatial rect (or the parent if no rect); otherwise stretch to the
-  // explicit spatial rect; otherwise leave at intrinsic content dims.
-  if (html.objectFit) {
-    const rect: SpatialRect =
-      html.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
-    vChain += buildObjectFitFilters(html.objectFit, rect, html.anchor);
-  } else if (html.spatial) {
-    vChain += `,scale=${html.spatial.width}:${html.spatial.height}`;
-  }
-
-  if (html.filters?.length) {
-    const filterStr = buildFilterChain(html.filters);
-    if (filterStr) vChain += `,${filterStr}`;
-  }
-  const vLabel = `[v${seg}]`;
-  ctx.filters.push(`${vChain}${vLabel}`);
-
-  const aLabel = `[a${seg}]`;
-  ctx.filters.push(
-    `anullsrc=r=48000:cl=stereo[a${seg}_pre];[a${seg}_pre]atrim=0:${dur}${aLabel}`
-  );
-
-  return { v: vLabel, a: aLabel };
 }
 
 /**

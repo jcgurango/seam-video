@@ -2,14 +2,12 @@ import type {
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
-  ResolvedHtml,
   ResolvedTimeline,
 } from "@seam/core";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
-import { HtmlStore } from "./HtmlStore.js";
 import { resolveSource } from "../components/resolveSource.js";
 
 /** Seconds of source time to keep buffered ahead of the playhead per clip. */
@@ -38,7 +36,6 @@ export class FrameCoordinator {
   private sizes = new Map<ResolvedClip, { w: number; h: number }>();
   private playingClips = new Set<ResolvedClip | ResolvedAudio>();
   private audioScheduler: AudioScheduler | null = null;
-  private htmlStore = new HtmlStore();
   private ready = false;
 
   /** Fires when a buffered frame becomes available — used to repaint while paused. */
@@ -60,13 +57,6 @@ export class FrameCoordinator {
       (t) => t,
       basePath
     );
-
-    // HTML nodes are pre-rasterized via satori. Kicked off in parallel with
-    // mediabunny init below; rendering won't show their pixels until each
-    // bitmap is ready, but the rest of the timeline starts unblocked.
-    const htmlReady = this.htmlStore.setTimeline(timeline).then(() => {
-      this.onFrameAvailable?.();
-    });
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -110,7 +100,6 @@ export class FrameCoordinator {
     });
 
     await Promise.all(initAll);
-    void htmlReady;
     this.ready = true;
 
     // Prime at the actual playhead so the paused frame becomes available
@@ -169,12 +158,9 @@ export class FrameCoordinator {
    * become visible on the next gpuRender call without needing a reconcile.
    */
   getFrame(
-    clip: ResolvedClip | ResolvedHtml,
+    clip: ResolvedClip,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
-    if (clip.type === "html") {
-      return this.htmlStore.getFrame(clip);
-    }
     const flat = this.flatByClip.get(clip);
     if (!flat) return null;
     if (timelineTime < flat.absoluteStart || timelineTime >= flat.absoluteEnd) {
@@ -198,7 +184,6 @@ export class FrameCoordinator {
     this.flatByClip.clear();
     this.sizes.clear();
     this.playingClips.clear();
-    this.htmlStore.dispose();
     this.ready = false;
   }
 

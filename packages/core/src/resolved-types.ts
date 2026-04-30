@@ -71,23 +71,6 @@ export interface ResolvedData {
   timelineEnd: number;
 }
 
-export interface ResolvedHtml {
-  type: "html";
-  source: string;
-  /** Intrinsic SVG width (satori render canvas) — filled by the spatial pass. */
-  contentWidth: number;
-  /** Intrinsic SVG height (satori render canvas) — filled by the spatial pass. */
-  contentHeight: number;
-  timelineStart: number;
-  timelineEnd: number;
-  filters?: Filter[];
-  spatial?: SpatialRect;
-  objectFit?: ObjectFit;
-  position?: Position;
-  anchor?: SpatialAnchor;
-  spatialInput?: SpatialInput;
-}
-
 export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
@@ -110,7 +93,6 @@ export type ResolvedChild =
   | ResolvedAudio
   | ResolvedEmpty
   | ResolvedData
-  | ResolvedHtml
   | ResolvedComposition;
 
 export interface ResolvedTimeline {

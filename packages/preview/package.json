@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@seam/core": "workspace:*",
-    "@seam/html-renderer": "workspace:*",
     "chokidar": "^4.0.0",
     "mediabunny": "^1.38.0",
     "react": "^19.0.0",
