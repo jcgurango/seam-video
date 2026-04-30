@@ -4,13 +4,15 @@ import type {
   ResolvedAudio,
   ResolvedEmpty,
   ResolvedData,
+  ResolvedText,
 } from "./resolved-types.js";
 
 export type FlatLeaf =
   | ResolvedClip
   | ResolvedAudio
   | ResolvedEmpty
-  | ResolvedData;
+  | ResolvedData
+  | ResolvedText;
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
@@ -62,6 +64,12 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
         ...(child.tags?.length ? { tags: child.tags } : {}),
+      });
+    } else if (child.type === "text") {
+      result.push({
+        ...child,
+        timelineStart: start,
+        timelineEnd: end,
       });
     } else {
       // Composition: recurse with compounded speed and offset

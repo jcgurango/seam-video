@@ -10,6 +10,7 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
+  ResolvedText,
   SpatialAnchor,
   ObjectFit,
   Filter,
@@ -17,7 +18,7 @@ import type {
 
 export interface DrawCommand {
   type: "draw";
-  clip: ResolvedClip;
+  clip: ResolvedClip | ResolvedText;
   scissorX: number;
   scissorY: number;
   scissorW: number;
@@ -144,6 +145,33 @@ function walkChildren(
         child.anchor,
       );
 
+      commands.push({
+        type: "draw",
+        clip: child,
+        scissorX: scissor.x,
+        scissorY: scissor.y,
+        scissorW: scissor.w,
+        scissorH: scissor.h,
+        quadX: quad.x,
+        quadY: quad.y,
+        quadW: quad.w,
+        quadH: quad.h,
+        opacity,
+      });
+    } else if (child.type === "text") {
+      // Text mirrors clip placement: SpatialFields → spatial rect on
+      // the parent, contentWidth/contentHeight → intrinsic dims fed to
+      // objectFit for aspect handling.
+      const container = absoluteRect(viewport, child.spatial);
+      const scissor = intersect(clipRect, container);
+      if (scissor.w <= 0 || scissor.h <= 0) continue;
+      const quad = objectFitQuad(
+        container,
+        child.contentWidth,
+        child.contentHeight,
+        child.objectFit,
+        child.anchor,
+      );
       commands.push({
         type: "draw",
         clip: child,

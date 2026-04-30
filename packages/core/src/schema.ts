@@ -165,12 +165,67 @@ export const DataSchema = z.object({
   ...AnchorFieldsSchema,
 }).strict();
 
+// Padding can be a single number (all sides), `[v, h]`, or `[t, r, b, l]`.
+const TextPaddingSchema = z.union([
+  z.number().nonnegative(),
+  z.tuple([z.number().nonnegative(), z.number().nonnegative()]),
+  z.tuple([
+    z.number().nonnegative(),
+    z.number().nonnegative(),
+    z.number().nonnegative(),
+    z.number().nonnegative(),
+  ]),
+]);
+
+// Common style fields shared between the top-level Text node and inline
+// runs. Layout-level fields (textAlign, verticalAlign, lineHeight,
+// contentWidth, contentHeight) live only on the top-level node.
+const TextStyleFieldsSchema = {
+  fontFamily: z.string().min(1).optional(),
+  fontSize: z.number().positive().optional(),
+  color: z.string().optional(),
+  fontWeight: z.string().optional(),
+  backgroundColor: z.string().optional(),
+  backgroundPadding: TextPaddingSchema.optional(),
+  strokeColor: z.string().optional(),
+  strokeWidth: z.number().nonnegative().optional(),
+};
+
+const TextRunSchema = z.object({
+  text: z.string(),
+  ...TextStyleFieldsSchema,
+}).strict();
+
+export const TextSchema = z.object({
+  type: z.literal("text"),
+  text: z.union([z.string(), z.array(z.union([z.string(), TextRunSchema]))]),
+  lineHeight: z.number().nonnegative().optional(),
+  textAlign: z.enum(["left", "center", "right"]).optional(),
+  verticalAlign: z.enum(["top", "center", "bottom"]).optional(),
+  padding: TextPaddingSchema.optional(),
+  contentWidth: z.number().positive().optional(),
+  contentHeight: z.number().positive().optional(),
+  duration: z.number().positive().optional(),
+  filters: FiltersArraySchema,
+  ...TextStyleFieldsSchema,
+  ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
+}).strict().refine(
+  (data) =>
+    data.duration != null || (data.start != null && data.end != null),
+  {
+    message:
+      "'duration' is required unless both 'start' and 'end' anchors are set",
+  }
+);
+
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
     AudioSchema,
     EmptySchema,
     DataSchema,
+    TextSchema,
     CompositionSchema,
   ])
 );

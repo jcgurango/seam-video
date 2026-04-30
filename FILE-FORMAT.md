@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are five node types: **clip**, **audio**, **empty**, **data**, and **composition**.
+There are six node types: **clip**, **audio**, **empty**, **data**, **text**, and **composition**.
 
 ### Clip
 
@@ -133,6 +133,66 @@ As a child, a `data` node takes up `duration` seconds of sequential time. As an 
 ```
 
 The renderer and preview skip `data` nodes — they don't draw, don't make sound, and don't produce ffmpeg input.
+
+### Text
+
+A text node renders styled text as inline SVG. Layout (line breaking, alignment) happens at resolve time via [`@chenglou/pretext`](https://github.com/chenglou/pretext); the SVG is then rasterized and composited like any other visual node.
+
+```json
+{ "type": "text", "text": "Hello, world!", "fontSize": 64, "duration": 3 }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"text"` | yes | Must be `"text"` |
+| `text` | string \| array | yes | Plain string, or an array of strings/`TextRun` objects for inline formatting (see below) |
+| `duration` | number | no¹ | Display duration in seconds (> 0) |
+| `fontFamily` | string | no | Font family. Default `"sans-serif"` |
+| `fontSize` | number | no | Font size in pixels. Default `16` |
+| `color` | string | no | Any SVG `fill` value. Default `"black"` |
+| `fontWeight` | string | no | Any SVG `font-weight` (e.g. `"bold"`, `"700"`) |
+| `backgroundColor` | string | no | SVG fill for a rect drawn behind each run. Wraps with the run when text breaks across lines |
+| `backgroundPadding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Pixel padding around the background rect |
+| `strokeColor` | string | no | Any SVG stroke value |
+| `strokeWidth` | number | no | Stroke width in pixels. SVG centers strokes on path edges, so the visible outline is roughly half this value |
+| `lineHeight` | number | no | Line height in pixels. Default `1.2 × fontSize` |
+| `textAlign` | `"left"` \| `"center"` \| `"right"` | no | Horizontal alignment within the inner box. Default `"center"` |
+| `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
+| `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
+| `contentWidth` | number | no | Intrinsic SVG width in pixels (default: parent display width). Acts like a composition's `contentWidth` for sizing |
+| `contentHeight` | number | no | Intrinsic SVG height in pixels (default: parent display height) |
+| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+
+¹ `duration` is required unless both `start` and `end` are pinned (the anchor span dictates the timeline span).
+
+#### Inline runs
+
+When `text` is an array, each entry is either a plain string (which inherits the node-level styles) or a `TextRun` object that overrides any of the style fields above (`fontFamily`, `fontSize`, `color`, `fontWeight`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`):
+
+```json
+{
+  "type": "text",
+  "fontSize": 48,
+  "color": "white",
+  "text": [
+    "Hello, ",
+    { "text": "world", "color": "yellow", "fontWeight": "bold", "backgroundColor": "#222", "backgroundPadding": [4, 8] },
+    "!"
+  ],
+  "duration": 4
+}
+```
+
+Style fields on a run override the node-level fallback for that fragment only. Layout-level fields (`textAlign`, `verticalAlign`, `lineHeight`, `padding`, `contentWidth`, `contentHeight`) live only on the top-level node.
+
+#### Sizing
+
+Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's intrinsic canvas (defaulting to the parent display size), then [Spatial Layout](#spatial-layout) places that canvas on the parent. Line wrapping uses the inner box (`contentWidth − padding.left − padding.right`).
+
+> **Renderer note.** Text layout currently relies on the browser (canvas `measureText` + DOM calibration), so the editor preview renders text but the FFmpeg CLI render path does not yet support `text` nodes. Bake or remove them before rendering.
 
 ### Composition
 
@@ -396,24 +456,23 @@ Nodes can be positioned and sized within their parent container using box proper
 |-------|------|-------------|
 | `position` | `"relative"` \| `"absolute"` | Placement mode (default: `"relative"`) |
 | `objectFit` | `"center"` \| `"fit"` \| `"cover"` | How children are scaled within this container (default: `"fit"`) |
-| `top` | string | Offset from top edge |
-| `left` | string | Offset from left edge |
-| `right` | string | Offset from right edge |
-| `bottom` | string | Offset from bottom edge |
-| `width` | string | Explicit width |
-| `height` | string | Explicit height |
+| `top` | number \| string | Offset from top edge |
+| `left` | number \| string | Offset from left edge |
+| `right` | number \| string | Offset from right edge |
+| `bottom` | number \| string | Offset from bottom edge |
+| `width` | number \| string | Explicit width |
+| `height` | number \| string | Explicit height |
 
 All spatial fields are optional. When no spatial properties are present, the default `objectFit` (`"fit"`) still applies — clips are scaled to fit the canvas preserving aspect ratio.
 
 ### Units
 
-Dimension values are CSS-like strings:
+Dimension values are either a number or a percentage string:
 
-- `"10px"` — pixels
-- `"50%"` — percentage of parent dimension
-- `"100"` — bare number, treated as pixels
+- `10` — pixels (numbers are always pixels — no `"10px"` strings)
+- `"50%"` — percentage of the parent dimension along that axis
 
-Negative values are allowed (e.g. `"-10px"`).
+Negative values are allowed (e.g. `-10` or `"-25%"`).
 
 ### objectFit
 
@@ -488,8 +547,8 @@ When you specify a single edge (`right`, `bottom`, etc.), objectFit-scaled conte
 
 This interacts with all objectFit modes:
 
-- **`"fit"`**: determines where the letterbox padding goes (e.g. `right: "0px"` puts all padding on the left)
-- **`"cover"`**: determines which part of the video is kept (e.g. `top: "0px"` crops from the bottom)
+- **`"fit"`**: determines where the letterbox padding goes (e.g. `right: 0` puts all padding on the left)
+- **`"cover"`**: determines which part of the video is kept (e.g. `top: 0` crops from the bottom)
 - **`"center"`**: determines where the native-size content sits in the container
 
 ```json
@@ -501,13 +560,13 @@ This interacts with all objectFit modes:
       "type": "clip",
       "source": "tall-video.mp4",
       "in": 0, "out": 10,
-      "top": "0px"
+      "top": 0
     }
   ]
 }
 ```
 
-The video is scaled to cover the canvas, and the `top: "0px"` anchor keeps the top of the video visible, cropping from the bottom.
+The video is scaled to cover the canvas, and the `top: 0` anchor keeps the top of the video visible, cropping from the bottom.
 
 ### Crop via objectFit
 
@@ -541,8 +600,8 @@ With the default `"fit"`, the same clip would be letterboxed (black bars on the 
       "out": 30,
       "start": { "anchor": "main", "timeSource": "output", "anchorPoint": "0%" },
       "position": "absolute",
-      "right": "20px",
-      "bottom": "20px",
+      "right": 20,
+      "bottom": 20,
       "width": "25%",
       "height": "25%"
     }

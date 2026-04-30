@@ -10,7 +10,9 @@
  *   opacity — alpha multiply
  */
 
-import type { ResolvedClip, Filter } from "@seam/core";
+import type { ResolvedClip, ResolvedText, Filter } from "@seam/core";
+
+type Drawable = ResolvedClip | ResolvedText;
 import { TextureManager } from "./TextureManager.js";
 import type { RenderCommand, DrawCommand, GroupCommand } from "./RenderList.js";
 
@@ -124,13 +126,13 @@ export class WebGPURenderer {
 
   private uniformBindGroups: GPUBindGroup[] = [];
   private texBindGroupCache = new Map<
-    ResolvedClip | symbol,
+    Drawable | symbol,
     { view: GPUTextureView; bg: GPUBindGroup }
   >();
   private uniformStaging = new ArrayBuffer(MAX_DRAWS * UNIFORM_ALIGN);
   private frameCount = 0;
   private drawSlot = 0;
-  private activeClips = new Set<ResolvedClip>();
+  private activeClips = new Set<Drawable>();
 
   // FBO pool: keyed by "WxH", reused across frames
   private fboPool = new Map<string, GPUTexture[]>();
@@ -272,7 +274,7 @@ export class WebGPURenderer {
   render(
     commands: RenderCommand[],
     getFrame: (
-      clip: ResolvedClip,
+      clip: Drawable,
     ) => HTMLCanvasElement | OffscreenCanvas | null,
   ): void {
     if (!this._ready) return;
@@ -337,7 +339,7 @@ export class WebGPURenderer {
   private prepareCommands(
     commands: RenderCommand[],
     getFrame: (
-      clip: ResolvedClip,
+      clip: Drawable,
     ) => HTMLCanvasElement | OffscreenCanvas | null,
   ): void {
     for (const cmd of commands) {
@@ -352,7 +354,7 @@ export class WebGPURenderer {
   private prepareDraw(
     cmd: DrawCommand,
     getFrame: (
-      clip: ResolvedClip,
+      clip: Drawable,
     ) => HTMLCanvasElement | OffscreenCanvas | null,
   ): void {
     const slot = this.drawSlot++;
@@ -376,7 +378,7 @@ export class WebGPURenderer {
   private prepareGroup(
     cmd: GroupCommand,
     getFrame: (
-      clip: ResolvedClip,
+      clip: Drawable,
     ) => HTMLCanvasElement | OffscreenCanvas | null,
   ): void {
     // Prepare children first (they render into the FBO)
@@ -601,7 +603,7 @@ export class WebGPURenderer {
   // ── Helpers ──
 
   private cacheTexBindGroup(
-    key: ResolvedClip | symbol,
+    key: Drawable | symbol,
     view: GPUTextureView,
   ): void {
     let cached = this.texBindGroupCache.get(key);

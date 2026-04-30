@@ -17,6 +17,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.6",
     "zod": "^3.23.0"
   },
   "devDependencies": {

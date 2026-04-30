@@ -62,6 +62,22 @@ function resolveNode(
         children: resolveChildren(node.children, intrinsicW, intrinsicH, ownObjectFit),
       };
     }
+    if (node.type === "text") {
+      // Mirror composition for sizing but no children to recurse into.
+      const intrinsicW = node.contentWidth ?? parentW;
+      const intrinsicH = node.contentHeight ?? parentH;
+      const hasCustomIntrinsic = intrinsicW !== parentW || intrinsicH !== parentH;
+      const spatial = hasCustomIntrinsic
+        ? computeObjectFitRect(parentObjectFit, intrinsicW, intrinsicH, parentW, parentH)
+        : undefined;
+      return {
+        ...node,
+        contentWidth: intrinsicW,
+        contentHeight: intrinsicH,
+        objectFit: parentObjectFit,
+        spatial,
+      };
+    }
     // Clip: receives parent's objectFit for its own sizing
     return { ...node, objectFit: parentObjectFit };
   }
@@ -79,7 +95,24 @@ function resolveNode(
     return { ...rest, spatial, anchor, position, objectFit: overconstrained ? undefined : parentObjectFit };
   }
 
-  // Container nodes: display size from spatial or parent, inner from contentWidth/contentHeight
+  if (node.type === "text") {
+    const displayW = spatial ? spatial.width : parentW;
+    const displayH = spatial ? spatial.height : parentH;
+    const innerW = node.contentWidth ?? displayW;
+    const innerH = node.contentHeight ?? displayH;
+    const { spatialInput: _, ...rest } = node;
+    return {
+      ...rest,
+      contentWidth: innerW,
+      contentHeight: innerH,
+      spatial,
+      anchor,
+      position,
+      objectFit: parentObjectFit,
+    };
+  }
+
+  // Composition: display size from spatial or parent, inner from contentWidth/contentHeight
   const displayW = spatial ? spatial.width : parentW;
   const displayH = spatial ? spatial.height : parentH;
   const innerW = node.contentWidth ?? displayW;

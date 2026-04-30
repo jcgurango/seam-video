@@ -1,4 +1,11 @@
-import type { ObjectFit, Position, Filter } from "./types.js";
+import type {
+  ObjectFit,
+  Position,
+  Filter,
+  TextPadding,
+  TextRun,
+  TextStyleFields,
+} from "./types.js";
 
 export type { ObjectFit, Position };
 
@@ -71,6 +78,30 @@ export interface ResolvedData {
   timelineEnd: number;
 }
 
+export interface ResolvedText extends TextStyleFields {
+  type: "text";
+  /** Always normalised to an array of runs by the resolver. Plain
+   *  strings authored at the doc level are wrapped into single-text
+   *  runs; mixed arrays have their bare strings wrapped the same way. */
+  runs: TextRun[];
+  lineHeight?: number;
+  textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "center" | "bottom";
+  padding?: TextPadding;
+  /** Intrinsic SVG width — filled by the spatial pass. */
+  contentWidth: number;
+  /** Intrinsic SVG height — filled by the spatial pass. */
+  contentHeight: number;
+  timelineStart: number;
+  timelineEnd: number;
+  filters?: Filter[];
+  spatial?: SpatialRect;
+  objectFit?: ObjectFit;
+  position?: Position;
+  anchor?: SpatialAnchor;
+  spatialInput?: SpatialInput;
+}
+
 export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
@@ -93,6 +124,7 @@ export type ResolvedChild =
   | ResolvedAudio
   | ResolvedEmpty
   | ResolvedData
+  | ResolvedText
   | ResolvedComposition;
 
 export interface ResolvedTimeline {

@@ -3,6 +3,7 @@ import type {
   Child,
   Overflow,
   TimeAnchor,
+  TextRun,
   Underflow,
 } from "../types.js";
 import type {
@@ -27,6 +28,11 @@ function naturalDuration(child: Child): number {
       return child.duration;
     case "data":
       return child.duration ?? 0;
+    case "text":
+      // Optional when both anchors pinned (anchor span dictates target);
+      // 0 fallback is fine — natural duration is only used by `%`-offset
+      // math against the attachment's own length.
+      return child.duration ?? 0;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
@@ -34,6 +40,13 @@ function naturalDuration(child: Child): number {
       return resolveCompositionInner(child).duration;
     }
   }
+}
+
+/** Wrap any bare strings in `text` into single-text TextRun objects so
+ *  callers downstream see a uniform `runs: TextRun[]` shape. */
+function normalizeTextRuns(text: string | (string | TextRun)[]): TextRun[] {
+  if (typeof text === "string") return [{ text }];
+  return text.map((item) => (typeof item === "string" ? { text: item } : item));
 }
 
 function collectSpatialInput(child: Child): SpatialInput | undefined {
@@ -86,6 +99,50 @@ function resolveChild(
   }
 
   const spatialInput = collectSpatialInput(child);
+
+  if (child.type === "text") {
+    // Text is static — overflow/underflow strategies all collapse to
+    // "show the same image for the target span". `contentWidth` /
+    // `contentHeight` stay as authored (possibly undefined — the
+    // spatial pass fills with the display rect, mirroring composition
+    // behaviour). We always emit `runs` as a normalised array so
+    // downstream consumers don't need to handle the `string | array`
+    // union.
+    const runs = normalizeTextRuns(child.text);
+    const styleKeys = [
+      "fontFamily",
+      "fontSize",
+      "color",
+      "fontWeight",
+      "backgroundColor",
+      "backgroundPadding",
+      "strokeColor",
+      "strokeWidth",
+      "lineHeight",
+      "textAlign",
+      "verticalAlign",
+      "padding",
+    ] as const;
+    const carried: Record<string, unknown> = {};
+    for (const k of styleKeys) {
+      const v = (child as unknown as Record<string, unknown>)[k];
+      if (v != null) carried[k] = v;
+    }
+    return {
+      resolved: {
+        type: "text" as const,
+        runs,
+        ...carried,
+        contentWidth: child.contentWidth as number,
+        contentHeight: child.contentHeight as number,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
+      } as ResolvedChild,
+      actualDuration: target,
+    };
+  }
 
   if (child.type === "composition") {
     const inner = resolveCompositionInner(child);
@@ -303,7 +360,11 @@ function buildIdMapEntry(
       speed: resolved.speed,
     };
   }
-  if (resolved.type === "empty" || resolved.type === "data") {
+  if (
+    resolved.type === "empty" ||
+    resolved.type === "data" ||
+    resolved.type === "text"
+  ) {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   // composition — source time is the pre-window inner timeline
@@ -466,7 +527,8 @@ function cropChildrenToWindow(
       });
     } else if (
       child.type === "empty" ||
-      child.type === "data"
+      child.type === "data" ||
+      child.type === "text"
     ) {
       result.push({
         ...child,

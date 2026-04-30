@@ -124,6 +124,17 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
     if (docChild.type === "clip" || docChild.type === "audio") {
       return (docChild.source ?? "").split("/").pop() || "untitled";
     }
+    if (docChild.type === "text") {
+      // Show a single-line preview of the rendered text instead of a
+      // full dump of inline runs.
+      const flat = typeof docChild.text === "string"
+        ? docChild.text
+        : docChild.text
+            .map((r) => (typeof r === "string" ? r : r.text))
+            .join("");
+      const stripped = flat.replace(/\s+/g, " ").trim();
+      return stripped.length > 24 ? stripped.slice(0, 24) + "…" : stripped || "text";
+    }
     if (docChild.type === "empty") return "empty";
     if (docChild.type === "data") return "data";
     return docChild.type;
@@ -132,6 +143,7 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
   if (resolved.type === "clip" || resolved.type === "audio") {
     return (resolved.source ?? "").split("/").pop() || "untitled";
   }
+  if (resolved.type === "text") return "text";
   if (resolved.type === "empty") return "empty";
   if (resolved.type === "data") return "data";
   return resolved.type;
@@ -143,6 +155,7 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   composition: { bg: "#6a5acd", border: "#8470ff" },
   empty: { bg: "#555", border: "#666" },
   data: { bg: "#7a5a3a", border: "#a47a52" },
+  text: { bg: "#a04060", border: "#c45582" },
 };
 
 const PRIMARY_BORDER = "#ffcc00";

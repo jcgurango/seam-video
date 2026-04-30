@@ -237,6 +237,16 @@ function buildSingleSegment(
   if (child.type === "empty" || child.type === "data") {
     return buildBlackSegment(ctx, snapToFrame((child.timelineEnd - child.timelineStart) / parentSpeed, ctx.options.fps));
   }
+  if (child.type === "text") {
+    // Text nodes lay out via @chenglou/pretext, which is browser-only
+    // (uses canvas measureText + DOM calibration). Until we add a
+    // browser-driven render path here (e.g. via Playwright) the CLI
+    // can't produce frames for text. Bail loudly so the user knows.
+    throw new Error(
+      "ffmpeg render does not yet support text nodes. " +
+        "Bake or remove them, or use the editor preview for now."
+    );
+  }
   // Composition: recurse into children
   const compoundSpeed = child.speed * parentSpeed;
   const displayW = child.spatial ? child.spatial.width : parentW;

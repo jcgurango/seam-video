@@ -153,6 +153,74 @@ export interface Data {
   end?: TimeAnchor;
 }
 
+/**
+ * Background padding around inline text. A single number applies to all
+ * four sides; `[v, h]` splits vertical/horizontal; `[t, r, b, l]` is the
+ * full set in CSS shorthand order.
+ */
+export type TextPadding = number | [number, number] | [number, number, number, number];
+
+/** Common style fields available on both the top-level `Text` node and
+ *  on individual `TextRun`s in its `text` array. Layout-level fields
+ *  (`textAlign`, `verticalAlign`, `lineHeight`, `contentWidth`,
+ *  `contentHeight`) live only on the top-level node. */
+export interface TextStyleFields {
+  fontFamily?: string;
+  fontSize?: number;
+  /** Any valid SVG `fill` value; defaults to black. */
+  color?: string;
+  /** Any valid SVG `font-weight` (e.g. "bold", "700"). */
+  fontWeight?: string;
+  /** Any valid SVG fill string. Drawn as a rect behind the run, expanding
+   *  per line on wrap (mirrors the way a span's background flows in HTML). */
+  backgroundColor?: string;
+  backgroundPadding?: TextPadding;
+  /** Any valid SVG stroke value. */
+  strokeColor?: string;
+  /** SVG stroke width in pixels. SVG centers strokes on path edges, so
+   *  the visible outline thickness is roughly half this value. */
+  strokeWidth?: number;
+}
+
+/** A styled run inside a `Text` node's `text` array. Mirrors
+ *  `TextStyleFields` plus the run's own `text` content. */
+export interface TextRun extends TextStyleFields {
+  text: string;
+}
+
+/**
+ * A text node rendered by laying out (via `@chenglou/pretext`) and
+ * emitting an inline SVG. Like html, sizing follows composition rules:
+ * `contentWidth`/`contentHeight` are the SVG's intrinsic canvas, and
+ * `SpatialFields` place that canvas on the parent.
+ *
+ * `text` can be a plain string or an array of strings / styled runs
+ * for inline formatting (bold parts, per-run highlights, etc.).
+ */
+export interface Text extends SpatialFields, TextStyleFields {
+  type: "text";
+  text: string | (string | TextRun)[];
+  /** Optional override for line height in pixels; defaults to 1.2 ×
+   *  `fontSize`. */
+  lineHeight?: number;
+  textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "center" | "bottom";
+  /** Inset on the inner layout box. Same shape as `backgroundPadding`
+   *  (number / `[v,h]` / `[t,r,b,l]`). Useful for keeping
+   *  background/stroke from clipping the content edges. */
+  padding?: TextPadding;
+  contentWidth?: number;
+  contentHeight?: number;
+  /** Display duration. Required for sequential / single-anchor
+   *  attachment use; optional only when both `start` and `end` are
+   *  pinned (the anchor span dictates the target). */
+  duration?: number;
+  filters?: Filter[];
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+}
+
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
@@ -166,5 +234,5 @@ export interface Composition extends ChildTimingFields {
   contentHeight?: number;
 }
 
-export type Child = Clip | Audio | Empty | Data | Composition;
+export type Child = Clip | Audio | Empty | Data | Text | Composition;
 export type SeamFile = Composition;

@@ -11,6 +11,7 @@
     "dev": "electron-vite dev"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.6",
     "@seam/core": "workspace:*",
     "chokidar": "^4.0.0",
     "mediabunny": "^1.38.0",
