@@ -1,3 +1,7 @@
+import type { Keyframed } from "./animation/keyframes.js";
+export type { Keyframe, Keyframed } from "./animation/keyframes.js";
+export type { TimeExpr } from "./animation/time.js";
+
 export type Overflow = "trim-end" | "trim-start" | "trim-center" | "stretch";
 export type Underflow =
   | "extend-end"
@@ -12,40 +16,44 @@ export type ObjectFit = "center" | "fit" | "cover";
 
 export interface AdjustFilter {
   type: "adjust";
-  brightness?: number;
-  contrast?: number;
-  saturation?: number;
-  gamma?: number;
+  brightness?: Keyframed<number>;
+  contrast?: Keyframed<number>;
+  saturation?: Keyframed<number>;
+  gamma?: Keyframed<number>;
 }
 
 export interface OpacityFilter {
   type: "opacity";
-  value: number;
+  value: Keyframed<number>;
 }
 
 export interface ColorBalanceFilter {
   type: "colorbalance";
-  rs?: number; gs?: number; bs?: number;
-  rm?: number; gm?: number; bm?: number;
-  rh?: number; gh?: number; bh?: number;
+  rs?: Keyframed<number>; gs?: Keyframed<number>; bs?: Keyframed<number>;
+  rm?: Keyframed<number>; gm?: Keyframed<number>; bm?: Keyframed<number>;
+  rh?: Keyframed<number>; gh?: Keyframed<number>; bh?: Keyframed<number>;
 }
 
 export interface ColorTemperatureFilter {
   type: "colortemperature";
-  temperature?: number;
+  temperature?: Keyframed<number>;
 }
 
 export type Filter = AdjustFilter | OpacityFilter | ColorBalanceFilter | ColorTemperatureFilter;
 
+/** A spatial dimension. Numbers are pixels; strings must be percentages
+ *  like "50%" or "-25%". */
+export type Dimension = number | string;
+
 export interface SpatialFields {
   position?: Position;
   objectFit?: ObjectFit;
-  top?: string;
-  left?: string;
-  right?: string;
-  bottom?: string;
-  width?: string;
-  height?: string;
+  top?: Keyframed<Dimension>;
+  left?: Keyframed<Dimension>;
+  right?: Keyframed<Dimension>;
+  bottom?: Keyframed<Dimension>;
+  width?: Keyframed<Dimension>;
+  height?: Keyframed<Dimension>;
 }
 
 /**
@@ -100,7 +108,7 @@ export interface Clip extends ChildTimingFields {
   speed?: number;
   duration?: number;
   /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
-  volume?: number;
+  volume?: Keyframed<number>;
 }
 
 export interface Empty {
@@ -127,7 +135,7 @@ export interface Audio {
   overflow?: Overflow;
   underflow?: Underflow;
   /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
-  volume?: number;
+  volume?: Keyframed<number>;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
@@ -166,20 +174,20 @@ export type TextPadding = number | [number, number] | [number, number, number, n
  *  `contentHeight`) live only on the top-level node. */
 export interface TextStyleFields {
   fontFamily?: string;
-  fontSize?: number;
+  fontSize?: Keyframed<number>;
   /** Any valid SVG `fill` value; defaults to black. */
-  color?: string;
+  color?: Keyframed<string>;
   /** Any valid SVG `font-weight` (e.g. "bold", "700"). */
   fontWeight?: string;
   /** Any valid SVG fill string. Drawn as a rect behind the run, expanding
    *  per line on wrap (mirrors the way a span's background flows in HTML). */
-  backgroundColor?: string;
-  backgroundPadding?: TextPadding;
+  backgroundColor?: Keyframed<string>;
+  backgroundPadding?: Keyframed<TextPadding>;
   /** Any valid SVG stroke value. */
-  strokeColor?: string;
+  strokeColor?: Keyframed<string>;
   /** SVG stroke width in pixels. SVG centers strokes on path edges, so
    *  the visible outline thickness is roughly half this value. */
-  strokeWidth?: number;
+  strokeWidth?: Keyframed<number>;
 }
 
 /** A styled run inside a `Text` node's `text` array. Mirrors
@@ -202,7 +210,7 @@ export interface Text extends SpatialFields, TextStyleFields {
   text: string | (string | TextRun)[];
   /** Optional override for line height in pixels; defaults to 1.2 ×
    *  `fontSize`. */
-  lineHeight?: number;
+  lineHeight?: Keyframed<number>;
   textAlign?: "left" | "center" | "right";
   verticalAlign?: "top" | "center" | "bottom";
   /** Inset on the inner layout box. Same shape as `backgroundPadding`

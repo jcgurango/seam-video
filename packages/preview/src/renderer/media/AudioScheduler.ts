@@ -3,8 +3,9 @@ import type { AudioBufferSink } from "mediabunny";
 interface ClipState {
   sink: AudioBufferSink;
   speed: number;
-  /** Per-clip volume multiplier; 1 = unity. Used as the steady-state value
-   *  the gain node holds during normal playback / scrub fades. */
+  /** Current sampled volume (1 = unity). Tracks animated keyframes when
+   *  `setClipVolume` is called per frame; otherwise holds the static value.
+   *  Used as the steady-state target by scrub/restore automation. */
   volume: number;
   gainNode: GainNode;
   // Playback state (null when not playing)
@@ -95,6 +96,24 @@ export class AudioScheduler {
       queuedNodes: new Set(),
       asyncId: 0,
     });
+  }
+
+  /** Update an animated clip's per-frame volume. Skips if a scrub is in
+   *  flight so the scrub's scheduled fade isn't clobbered. */
+  setClipVolume(id: string, volume: number): void {
+    const state = this.clips.get(id);
+    if (!state) return;
+    if (this.scrubActiveIds.has(id)) {
+      // The scrub will restore to the (now updated) state.volume itself.
+      state.volume = volume;
+      return;
+    }
+    if (state.volume === volume) return;
+    state.volume = volume;
+    const now = this.audioContext.currentTime;
+    const g = state.gainNode.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(volume, now);
   }
 
   unregisterClip(id: string): void {

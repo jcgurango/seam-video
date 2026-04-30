@@ -152,10 +152,10 @@ describe("validate", () => {
           in: 0,
           out: 5,
           position: "absolute",
-          left: "10px",
+          left: 10,
           top: "20%",
-          width: "480px",
-          height: "270px",
+          width: 480,
+          height: 270,
           objectFit: "cover",
         },
       ],
@@ -170,8 +170,8 @@ describe("validate", () => {
       children: [
         {
           type: "composition",
-          left: "0px",
-          top: "0px",
+          left: 0,
+          top: 0,
           width: "50%",
           height: "50%",
           children: [
@@ -373,6 +373,88 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts keyframed volume on a clip", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip", source: "v.mp4", in: 0, out: 5,
+          volume: [[0, 0], ["50%", 1, "ease-in"], ["100%", 0]],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts keyframed spatial dimensions", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip", source: "v.mp4", in: 0, out: 5,
+          left: [[0, 0], [2, 100]],
+          width: [[0, "50%"], ["100%", "75%"]],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts keyframed text style fields", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "text",
+          text: "hi",
+          duration: 2,
+          fontSize: [[0, 24], ["100%", 64]],
+          color: [[0, "red"], [1, "blue", "ease-in-out"]],
+          backgroundPadding: [[0, 5], [1, [10, 20]]],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts keyframed filter values", () => {
+    const result = validate({
+      type: "composition",
+      filters: [
+        { type: "opacity", value: [[0, 0], [1, 1, "ease-in"]] },
+      ],
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5 },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects malformed keyframe time expressions", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip", source: "v.mp4", in: 0, out: 5,
+          volume: [["bad-time", 0]],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects keyframe values outside the static field's range", () => {
+    const result = validate({
+      type: "composition",
+      filters: [
+        { type: "opacity", value: [[0, 0], [1, 5]] }, // 5 > max(1)
+      ],
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseSeamFile", () => {

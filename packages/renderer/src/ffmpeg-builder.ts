@@ -9,6 +9,7 @@ import type {
   ObjectFit,
   Filter,
 } from "@seam/core";
+import { isKeyframed } from "@seam/core";
 
 /**
  * Per-input prefix flags. Plain strings are still accepted (most clips
@@ -76,6 +77,12 @@ export function buildFfmpegCommand(
   outputPath: string,
   options: FfmpegOptions = {}
 ): FfmpegCommand {
+  // Animated properties need per-frame evaluation, which the editor preview
+  // does but ffmpeg's static filter graph can't (without going through
+  // sendcmd / per-frame expression scripting we haven't implemented).
+  // Bail loudly so the user knows.
+  assertNoAnimation(timeline.children);
+
   const opts: Required<Omit<FfmpegOptions, "basePath">> = {
     width: options.width ?? timeline.contentWidth ?? 1920,
     height: options.height ?? timeline.contentHeight ?? 1080,
@@ -447,6 +454,90 @@ function buildFilterChain(filters: Filter[]): string {
 /**
  * Snap a time value to the nearest frame boundary at the given fps.
  */
+// Walk the resolved tree and bail if anything time-varying is set. The
+// preview path samples per frame; the static filter graph does not.
+function assertNoAnimation(children: ResolvedChild[]): void {
+  const animatedFields = (
+    obj: Record<string, unknown>,
+    keys: readonly string[]
+  ): string | null => {
+    for (const k of keys) {
+      if (isKeyframed(obj[k] as never)) return k;
+    }
+    return null;
+  };
+  const SPATIAL = ["top", "left", "right", "bottom", "width", "height"] as const;
+  const TEXT_STYLE = [
+    "fontSize", "color", "backgroundColor", "backgroundPadding",
+    "strokeColor", "strokeWidth", "lineHeight",
+  ] as const;
+  const FILTER_FIELDS: Record<string, readonly string[]> = {
+    adjust: ["brightness", "contrast", "saturation", "gamma"],
+    opacity: ["value"],
+    colorbalance: ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"],
+    colortemperature: ["temperature"],
+  };
+
+  const walkFilters = (filters: Filter[] | undefined, label: string) => {
+    if (!filters) return;
+    for (const f of filters) {
+      const fields = FILTER_FIELDS[f.type] ?? [];
+      const hit = animatedFields(f as unknown as Record<string, unknown>, fields);
+      if (hit) {
+        throw new Error(
+          `ffmpeg render does not yet support animated filter values (got ${f.type}.${hit} on ${label}). Bake the value or use the editor preview.`
+        );
+      }
+    }
+  };
+
+  const walk = (node: ResolvedChild) => {
+    if (node.type === "empty" || node.type === "data") return;
+    const obj = node as unknown as Record<string, unknown>;
+    const inp = (node as { spatialInput?: Record<string, unknown> }).spatialInput;
+    if (inp) {
+      const hit = animatedFields(inp, SPATIAL);
+      if (hit) {
+        throw new Error(
+          `ffmpeg render does not yet support animated spatial properties (got ${hit} on a ${node.type}). Use the editor preview.`
+        );
+      }
+    }
+    if (node.type === "clip" || node.type === "audio") {
+      if (isKeyframed(node.volume as never)) {
+        throw new Error(
+          `ffmpeg render does not yet support animated 'volume' (on a ${node.type}). Use the editor preview.`
+        );
+      }
+    }
+    if (node.type === "clip" || node.type === "composition" || node.type === "text") {
+      walkFilters(node.filters, node.type);
+    }
+    if (node.type === "text") {
+      const styleHit = animatedFields(obj, TEXT_STYLE);
+      if (styleHit) {
+        throw new Error(
+          `ffmpeg render does not yet support animated text styles (got ${styleHit}). Bake or use the editor preview.`
+        );
+      }
+      // Recurse into runs — animations on individual runs count too.
+      for (const run of node.runs) {
+        const runHit = animatedFields(run as unknown as Record<string, unknown>, TEXT_STYLE);
+        if (runHit) {
+          throw new Error(
+            `ffmpeg render does not yet support animated text-run styles (got ${runHit}). Bake or use the editor preview.`
+          );
+        }
+      }
+    }
+    if (node.type === "composition") {
+      for (const c of node.children) walk(c);
+    }
+  };
+
+  for (const c of children) walk(c);
+}
+
 function snapToFrame(seconds: number, fps: number): number {
   return Math.round(seconds * fps) / fps;
 }

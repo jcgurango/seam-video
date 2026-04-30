@@ -1,4 +1,6 @@
 import type {
+  Dimension,
+  Keyframed,
   ObjectFit,
   Position,
   Filter,
@@ -19,12 +21,12 @@ export interface SpatialRect {
 export interface SpatialInput {
   position?: Position;
   objectFit?: ObjectFit;
-  top?: string;
-  left?: string;
-  right?: string;
-  bottom?: string;
-  width?: string;
-  height?: string;
+  top?: Keyframed<Dimension>;
+  left?: Keyframed<Dimension>;
+  right?: Keyframed<Dimension>;
+  bottom?: Keyframed<Dimension>;
+  width?: Keyframed<Dimension>;
+  height?: Keyframed<Dimension>;
 }
 
 export interface SpatialAnchor {
@@ -43,7 +45,7 @@ export interface ResolvedClip {
   timelineEnd: number;
   speed: number;
   /** Audio gain multiplier; absent means unity (1). */
-  volume?: number;
+  volume?: Keyframed<number>;
   filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
@@ -67,7 +69,7 @@ export interface ResolvedAudio {
   timelineEnd: number;
   speed: number;
   /** Audio gain multiplier; absent means unity (1). */
-  volume?: number;
+  volume?: Keyframed<number>;
 }
 
 export interface ResolvedData {
@@ -84,7 +86,7 @@ export interface ResolvedText extends TextStyleFields {
    *  strings authored at the doc level are wrapped into single-text
    *  runs; mixed arrays have their bare strings wrapped the same way. */
   runs: TextRun[];
-  lineHeight?: number;
+  lineHeight?: Keyframed<number>;
   textAlign?: "left" | "center" | "right";
   verticalAlign?: "top" | "center" | "bottom";
   padding?: TextPadding;

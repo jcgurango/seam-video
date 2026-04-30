@@ -12,7 +12,18 @@ import {
   type RichInlineItem,
   type RichInlineLineRange,
 } from "@chenglou/pretext/rich-inline";
-import type { ResolvedText, TextRun, TextPadding } from "@seam/core";
+import type {
+  ResolvedText,
+  TextRun,
+  TextPadding,
+  Keyframed,
+} from "@seam/core";
+import {
+  isKeyframed,
+  sampleNumber,
+  sampleColor,
+  samplePadding,
+} from "@seam/core";
 
 const DEFAULT_FONT_FAMILY = "sans-serif";
 const DEFAULT_FONT_SIZE = 16;
@@ -32,12 +43,35 @@ function expandPadding(p: TextPadding | undefined): PaddingBox {
   return { top: p[0], right: p[1], bottom: p[2], left: p[3] };
 }
 
+// Sampler shorthands. Each style field is either a static value or a
+// keyframe array; sample at the node-local time `t` against the node's
+// duration `d` (used to resolve "%" time expressions).
+
+function sN(v: Keyframed<number> | undefined, d: number, t: number): number | undefined {
+  if (v == null) return undefined;
+  return sampleNumber(v, t, d);
+}
+
+function sC(v: Keyframed<string> | undefined, d: number, t: number): string | undefined {
+  if (v == null) return undefined;
+  return sampleColor(v, t, d);
+}
+
+function sP(v: Keyframed<TextPadding> | undefined, d: number, t: number): TextPadding | undefined {
+  if (v == null) return undefined;
+  return samplePadding(v, t, d);
+}
+
 function cssFontShorthand(
   run: TextRun,
-  defaults: ResolvedText
+  defaults: ResolvedText,
+  duration: number,
+  t: number,
 ): string {
   const family = run.fontFamily ?? defaults.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const size = run.fontSize ?? defaults.fontSize ?? DEFAULT_FONT_SIZE;
+  const size = sN(run.fontSize, duration, t)
+    ?? sN(defaults.fontSize, duration, t)
+    ?? DEFAULT_FONT_SIZE;
   const weight = run.fontWeight ?? defaults.fontWeight;
   // Family with spaces gets quoted to keep the shorthand parser happy.
   const familyToken = /\s/.test(family) ? `"${family}"` : family;
@@ -68,27 +102,67 @@ interface RunStyle {
   strokeWidth: number;
 }
 
-function resolveRunStyle(run: TextRun, defaults: ResolvedText): RunStyle {
+function resolveRunStyle(
+  run: TextRun,
+  defaults: ResolvedText,
+  duration: number,
+  t: number,
+): RunStyle {
   return {
     fontFamily: run.fontFamily ?? defaults.fontFamily ?? DEFAULT_FONT_FAMILY,
-    fontSize: run.fontSize ?? defaults.fontSize ?? DEFAULT_FONT_SIZE,
-    color: run.color ?? defaults.color ?? DEFAULT_COLOR,
+    fontSize: sN(run.fontSize, duration, t)
+      ?? sN(defaults.fontSize, duration, t)
+      ?? DEFAULT_FONT_SIZE,
+    color: sC(run.color, duration, t)
+      ?? sC(defaults.color, duration, t)
+      ?? DEFAULT_COLOR,
     fontWeight: run.fontWeight ?? defaults.fontWeight ?? null,
-    backgroundColor: run.backgroundColor ?? defaults.backgroundColor ?? null,
+    backgroundColor: sC(run.backgroundColor, duration, t)
+      ?? sC(defaults.backgroundColor, duration, t)
+      ?? null,
     backgroundPadding: expandPadding(
-      run.backgroundPadding ?? defaults.backgroundPadding
+      sP(run.backgroundPadding, duration, t)
+        ?? sP(defaults.backgroundPadding, duration, t)
     ),
-    strokeColor: run.strokeColor ?? defaults.strokeColor ?? null,
-    strokeWidth: run.strokeWidth ?? defaults.strokeWidth ?? 0,
+    strokeColor: sC(run.strokeColor, duration, t)
+      ?? sC(defaults.strokeColor, duration, t)
+      ?? null,
+    strokeWidth: sN(run.strokeWidth, duration, t)
+      ?? sN(defaults.strokeWidth, duration, t)
+      ?? 0,
   };
 }
 
-export function textToSvg(node: ResolvedText): string {
+/** True when any text-style field on the node or its runs is animated.
+ *  Lets the rasteriser skip per-frame regeneration when the text is static. */
+export function textHasAnimatedStyle(node: ResolvedText): boolean {
+  const styleKeys = [
+    "fontSize", "color", "backgroundColor", "backgroundPadding",
+    "strokeColor", "strokeWidth", "lineHeight",
+  ] as const;
+  const obj = node as unknown as Record<string, unknown>;
+  for (const k of styleKeys) {
+    if (isKeyframed(obj[k] as never)) return true;
+  }
+  for (const run of node.runs) {
+    const ro = run as unknown as Record<string, unknown>;
+    for (const k of styleKeys) {
+      if (isKeyframed(ro[k] as never)) return true;
+    }
+  }
+  return false;
+}
+
+/** Render a ResolvedText to an SVG string at the given node-local time
+ *  `t` (seconds since the node became active). Static texts pass `t=0`. */
+export function textToSvg(node: ResolvedText, t: number = 0): string {
   const W = node.contentWidth;
   const H = node.contentHeight;
-  const fontSize = node.fontSize ?? DEFAULT_FONT_SIZE;
-  const lineHeight = node.lineHeight && node.lineHeight > 0
-    ? node.lineHeight
+  const duration = node.timelineEnd - node.timelineStart;
+  const fontSize = sN(node.fontSize, duration, t) ?? DEFAULT_FONT_SIZE;
+  const lineHeightSampled = sN(node.lineHeight, duration, t);
+  const lineHeight = lineHeightSampled && lineHeightSampled > 0
+    ? lineHeightSampled
     : Math.round(fontSize * 1.2);
 
   // Inner box: shrunk from the SVG canvas by `padding` so backgrounds
@@ -102,7 +176,7 @@ export function textToSvg(node: ResolvedText): string {
   const innerY = pad.top;
 
   // Pre-resolve each run's style so we can read it cheaply per fragment.
-  const styles: RunStyle[] = node.runs.map((run) => resolveRunStyle(run, node));
+  const styles: RunStyle[] = node.runs.map((run) => resolveRunStyle(run, node, duration, t));
 
   // Convert runs to Pretext items. `extraWidth` carries the horizontal
   // padding component so layout math accounts for it.
@@ -110,7 +184,7 @@ export function textToSvg(node: ResolvedText): string {
     const style = styles[i];
     return {
       text: run.text,
-      font: cssFontShorthand(run, node),
+      font: cssFontShorthand(run, node, duration, t),
       extraWidth: style.backgroundPadding.left + style.backgroundPadding.right,
     };
   });

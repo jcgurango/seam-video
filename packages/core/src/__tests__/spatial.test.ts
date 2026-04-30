@@ -36,7 +36,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { left: "100px", top: "50px", width: "400px", height: "300px" },
+          spatialInput: { left: 100, top: 50, width: 400, height: 300 },
         }),
       ],
     };
@@ -67,7 +67,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { left: "100px", right: "100px", top: "0px", height: "1080px" },
+          spatialInput: { left: 100, right: 100, top: 0, height: 1080 },
         }),
       ],
     };
@@ -82,7 +82,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { right: "10px", width: "400px", top: "0px", height: "300px" },
+          spatialInput: { right: 10, width: 400, top: 0, height: 300 },
         }),
       ],
     };
@@ -104,10 +104,10 @@ describe("resolveSpatial", () => {
           speed: 1,
           children: [
             makeClip({
-              spatialInput: { left: "0px", width: "480px" },
+              spatialInput: { left: 0, width: 480 },
             }),
           ],
-          spatialInput: { objectFit: "cover", left: "0px", top: "0px", width: "1920px", height: "1080px" },
+          spatialInput: { objectFit: "cover", left: 0, top: 0, width: 1920, height: 1080 },
         },
       ],
     };
@@ -126,7 +126,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { position: "absolute", left: "10px", top: "10px", width: "100px", height: "100px" },
+          spatialInput: { position: "absolute", left: 10, top: 10, width: 100, height: 100 },
         }),
       ],
     };
@@ -151,7 +151,7 @@ describe("resolveSpatial", () => {
               spatialInput: { left: "50%", top: "50%", width: "50%", height: "50%" },
             }),
           ],
-          spatialInput: { left: "0px", top: "0px", width: "960px", height: "540px" },
+          spatialInput: { left: 0, top: 0, width: 960, height: 540 },
         },
       ],
     };
@@ -236,7 +236,7 @@ describe("resolveSpatial", () => {
       contentHeight: 600,
       children: [
         makeClip({
-          spatialInput: { left: "0px", top: "0px", width: "100%", height: "100%" },
+          spatialInput: { left: 0, top: 0, width: "100%", height: "100%" },
         }),
       ],
     };
@@ -259,7 +259,7 @@ describe("resolveSpatial", () => {
           speed: 1,
           children: [
             makeClip({
-              spatialInput: { width: "50%", height: "50%", left: "0px", top: "0px" },
+              spatialInput: { width: "50%", height: "50%", left: 0, top: 0 },
             }),
           ],
         },
@@ -286,10 +286,10 @@ describe("resolveSpatial", () => {
           speed: 1,
           contentWidth: 640,
           contentHeight: 480,
-          spatialInput: { left: "0px", top: "0px", width: "960px", height: "540px" },
+          spatialInput: { left: 0, top: 0, width: 960, height: 540 },
           children: [
             makeClip({
-              spatialInput: { width: "100%", height: "100%", left: "0px", top: "0px" },
+              spatialInput: { width: "100%", height: "100%", left: 0, top: 0 },
             }),
           ],
         },
@@ -309,7 +309,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { right: "0px", width: "480px", top: "0px", height: "270px" },
+          spatialInput: { right: 0, width: 480, top: 0, height: 270 },
         }),
       ],
     };
@@ -325,7 +325,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { left: "100px", right: "100px", top: "50px", bottom: "50px" },
+          spatialInput: { left: 100, right: 100, top: 50, bottom: 50 },
         }),
       ],
     };
@@ -341,7 +341,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { width: "480px", height: "270px" },
+          spatialInput: { width: 480, height: 270 },
         }),
       ],
     };
@@ -363,7 +363,7 @@ describe("resolveSpatial", () => {
           speed: 1,
           children: [
             makeClip({
-              spatialInput: { right: "20px", bottom: "20px", width: "25%", height: "25%" },
+              spatialInput: { right: 20, bottom: 20, width: "25%", height: "25%" },
             }),
           ],
         },
@@ -383,7 +383,7 @@ describe("resolveSpatial", () => {
       objectFit: "fit",
       children: [
         makeClip({
-          spatialInput: { left: "0px", width: "50%", height: "100px" },
+          spatialInput: { left: 0, width: "50%", height: 100 },
         }),
       ],
     };
@@ -399,7 +399,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { left: "0px", right: "0px", top: "0px", bottom: "0px" },
+          spatialInput: { left: 0, right: 0, top: 0, bottom: 0 },
         }),
       ],
     };
@@ -415,7 +415,7 @@ describe("resolveSpatial", () => {
       objectFit: "cover",
       children: [
         makeClip({
-          spatialInput: { width: "50%", top: "0px" },
+          spatialInput: { width: "50%", top: 0 },
         }),
       ],
     };
@@ -430,7 +430,7 @@ describe("resolveSpatial", () => {
       duration: 5,
       children: [
         makeClip({
-          spatialInput: { left: "0px", top: "0px", width: "100px", height: "100px" },
+          spatialInput: { left: 0, top: 0, width: 100, height: 100 },
         }),
       ],
     };

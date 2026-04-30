@@ -3,37 +3,66 @@ import { z } from "zod";
 export const PositionSchema = z.enum(["absolute", "relative"]);
 export const ObjectFitSchema = z.enum(["center", "fit", "cover"]);
 
+// ── Animation primitives ───────────────────────────────────────────
+
+const PercentStringSchema = z.string().regex(
+  /^-?\d+(?:\.\d+)?%$/,
+  "Must be a percentage string (e.g. '50%', '-25%')"
+);
+
+// A keyframe time expression: either bare seconds, "<n>%" of node duration,
+// or "<n>% + <n>" / "<n>% - <n>" combined.
+const TimeExprStringSchema = z.string().regex(
+  /^-?\d+(?:\.\d+)?%(?:\s+[+-]\s+-?\d+(?:\.\d+)?)?$/,
+  "Must be a number, '<n>%', or '<n>% + <n>' / '<n>% - <n>'"
+);
+const TimeExprSchema = z.union([z.number(), TimeExprStringSchema]);
+
+const EasingSchema = z.string();
+
+/** Wraps a value schema so it accepts either the static value directly or
+ *  an array of `[time, value, easing?]` keyframe tuples. The discriminator
+ *  is structural: an array whose first element is itself a tuple is read
+ *  as keyframes; anything else falls through to the static schema. */
+export function keyframed<T extends z.ZodTypeAny>(staticSchema: T): z.ZodType<any> {
+  const kfTuple = z.union([
+    z.tuple([TimeExprSchema, staticSchema]),
+    z.tuple([TimeExprSchema, staticSchema, EasingSchema]),
+  ]);
+  return z.union([staticSchema, z.array(kfTuple).min(1)]);
+}
+
 // ── Filters ────────────────────────────────────────────────────────
 
 export const AdjustFilterSchema = z.object({
   type: z.literal("adjust"),
-  brightness: z.number().min(-1).max(1).default(0),
-  contrast: z.number().min(-1000).max(1000).default(1),
-  saturation: z.number().min(0).max(3).default(1),
-  gamma: z.number().min(0.1).max(10).default(1),
+  brightness: keyframed(z.number().min(-1).max(1)).default(0),
+  contrast: keyframed(z.number().min(-1000).max(1000)).default(1),
+  saturation: keyframed(z.number().min(0).max(3)).default(1),
+  gamma: keyframed(z.number().min(0.1).max(10)).default(1),
 });
 
 export const OpacityFilterSchema = z.object({
   type: z.literal("opacity"),
-  value: z.number().min(0).max(1),
+  value: keyframed(z.number().min(0).max(1)),
 });
 
 export const ColorBalanceFilterSchema = z.object({
   type: z.literal("colorbalance"),
-  rs: z.number().min(-1).max(1).default(0),
-  gs: z.number().min(-1).max(1).default(0),
-  bs: z.number().min(-1).max(1).default(0),
-  rm: z.number().min(-1).max(1).default(0),
-  gm: z.number().min(-1).max(1).default(0),
-  bm: z.number().min(-1).max(1).default(0),
-  rh: z.number().min(-1).max(1).default(0),
-  gh: z.number().min(-1).max(1).default(0),
-  bh: z.number().min(-1).max(1).default(0),
+  rs: keyframed(z.number().min(-1).max(1)).default(0),
+  gs: keyframed(z.number().min(-1).max(1)).default(0),
+  bs: keyframed(z.number().min(-1).max(1)).default(0),
+  rm: keyframed(z.number().min(-1).max(1)).default(0),
+  gm: keyframed(z.number().min(-1).max(1)).default(0),
+  bm: keyframed(z.number().min(-1).max(1)).default(0),
+  rh: keyframed(z.number().min(-1).max(1)).default(0),
+  gh: keyframed(z.number().min(-1).max(1)).default(0),
+  bh: keyframed(z.number().min(-1).max(1)).default(0),
 });
 
 export const ColorTemperatureFilterSchema = z.object({
   type: z.literal("colortemperature"),
-  temperature: z.number().min(1000).max(40000).default(6500),
+  temperature: keyframed(z.number().min(1000).max(40000)).default(6500),
 });
 
 export const FilterSchema = z.discriminatedUnion("type", [
@@ -44,15 +73,10 @@ export const FilterSchema = z.discriminatedUnion("type", [
 ]);
 
 export const FiltersArraySchema = z.array(FilterSchema).optional();
-export const DimensionStringSchema = z.string().regex(
-  /^-?\d+(?:\.\d+)?(?:px|%)?$/,
-  "Must be a CSS dimension string (e.g. '10px', '50%', '100')"
-);
 
-const PercentStringSchema = z.string().regex(
-  /^-?\d+(?:\.\d+)?%$/,
-  "Must be a percentage string (e.g. '50%', '-25%')"
-);
+// A spatial dimension. Numbers are pixels; strings must be "<n>%". No more
+// "100px" — pixel values are bare numbers.
+export const DimensionSchema = z.union([z.number(), PercentStringSchema]);
 
 export const TimeAnchorSchema = z.object({
   anchor: z.string().min(1).optional(),
@@ -90,12 +114,12 @@ const AnchorFieldsSchema = {
 const SpatialFieldsSchema = {
   position: PositionSchema.optional(),
   objectFit: ObjectFitSchema.optional(),
-  top: DimensionStringSchema.optional(),
-  left: DimensionStringSchema.optional(),
-  right: DimensionStringSchema.optional(),
-  bottom: DimensionStringSchema.optional(),
-  width: DimensionStringSchema.optional(),
-  height: DimensionStringSchema.optional(),
+  top: keyframed(DimensionSchema).optional(),
+  left: keyframed(DimensionSchema).optional(),
+  right: keyframed(DimensionSchema).optional(),
+  bottom: keyframed(DimensionSchema).optional(),
+  width: keyframed(DimensionSchema).optional(),
+  height: keyframed(DimensionSchema).optional(),
 };
 
 export const OverflowSchema = z.enum([
@@ -119,7 +143,7 @@ export const ClipSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  volume: z.number().nonnegative().max(4).optional(),
+  volume: keyframed(z.number().nonnegative().max(4)).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
@@ -143,7 +167,7 @@ export const AudioSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  volume: z.number().nonnegative().max(4).optional(),
+  volume: keyframed(z.number().nonnegative().max(4)).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...AnchorFieldsSchema,
@@ -182,13 +206,13 @@ const TextPaddingSchema = z.union([
 // contentWidth, contentHeight) live only on the top-level node.
 const TextStyleFieldsSchema = {
   fontFamily: z.string().min(1).optional(),
-  fontSize: z.number().positive().optional(),
-  color: z.string().optional(),
+  fontSize: keyframed(z.number().positive()).optional(),
+  color: keyframed(z.string()).optional(),
   fontWeight: z.string().optional(),
-  backgroundColor: z.string().optional(),
-  backgroundPadding: TextPaddingSchema.optional(),
-  strokeColor: z.string().optional(),
-  strokeWidth: z.number().nonnegative().optional(),
+  backgroundColor: keyframed(z.string()).optional(),
+  backgroundPadding: keyframed(TextPaddingSchema).optional(),
+  strokeColor: keyframed(z.string()).optional(),
+  strokeWidth: keyframed(z.number().nonnegative()).optional(),
 };
 
 const TextRunSchema = z.object({
@@ -199,7 +223,7 @@ const TextRunSchema = z.object({
 export const TextSchema = z.object({
   type: z.literal("text"),
   text: z.union([z.string(), z.array(z.union([z.string(), TextRunSchema]))]),
-  lineHeight: z.number().nonnegative().optional(),
+  lineHeight: keyframed(z.number().nonnegative()).optional(),
   textAlign: z.enum(["left", "center", "right"]).optional(),
   verticalAlign: z.enum(["top", "center", "bottom"]).optional(),
   padding: TextPaddingSchema.optional(),

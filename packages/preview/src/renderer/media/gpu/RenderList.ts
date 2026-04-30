@@ -11,10 +11,13 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedText,
+  ResolvedComposition,
   SpatialAnchor,
+  SpatialRect,
   ObjectFit,
   Filter,
 } from "@seam/core";
+import { resolveBoxProps } from "@seam/core";
 
 export interface DrawCommand {
   type: "draw";
@@ -28,6 +31,10 @@ export interface DrawCommand {
   quadW: number;
   quadH: number;
   opacity: number;
+  /** Node-local time (seconds since this clip/text became active) and total
+   *  duration. Used by the renderer to sample animated filter values. */
+  nodeTime: number;
+  nodeDuration: number;
 }
 
 export interface GroupCommand {
@@ -50,6 +57,9 @@ export interface GroupCommand {
   opacity: number;
   /** Commands to render into the FBO. */
   children: RenderCommand[];
+  /** Node-local time + duration for sampling animated filter values. */
+  nodeTime: number;
+  nodeDuration: number;
 }
 
 export type RenderCommand = DrawCommand | GroupCommand;
@@ -106,6 +116,30 @@ export function buildRenderList(
   return commands;
 }
 
+/** Re-evaluate a node's spatial rect at the current local time. For static
+ *  nodes the resolver already baked `spatial`/`anchor`; this just reads them
+ *  back. For animated nodes (`spatialInput` retained on the resolved node)
+ *  we re-run the box solver against the current parent content dims so
+ *  width/height/edges can interpolate frame-to-frame. */
+function dynamicSpatial(
+  child: ResolvedClip | ResolvedText | ResolvedComposition,
+  viewport: Viewport,
+  localTime: number,
+): { spatial: SpatialRect | undefined; anchor: SpatialAnchor | undefined } {
+  if (child.spatialInput) {
+    const t = localTime - child.timelineStart;
+    const duration = child.timelineEnd - child.timelineStart;
+    return resolveBoxProps(
+      child.spatialInput,
+      viewport.contentW,
+      viewport.contentH,
+      t,
+      duration,
+    );
+  }
+  return { spatial: child.spatial, anchor: child.anchor };
+}
+
 function walkChildren(
   children: ResolvedChild[],
   localTime: number,
@@ -130,7 +164,8 @@ function walkChildren(
     if (!isActive) continue;
 
     if (child.type === "clip") {
-      const container = absoluteRect(viewport, child.spatial);
+      const { spatial, anchor } = dynamicSpatial(child, viewport, localTime);
+      const container = absoluteRect(viewport, spatial);
       const scissor = intersect(clipRect, container);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
 
@@ -142,7 +177,7 @@ function walkChildren(
         videoW,
         videoH,
         child.objectFit,
-        child.anchor,
+        anchor,
       );
 
       commands.push({
@@ -157,12 +192,15 @@ function walkChildren(
         quadW: quad.w,
         quadH: quad.h,
         opacity,
+        nodeTime: localTime - child.timelineStart,
+        nodeDuration: child.timelineEnd - child.timelineStart,
       });
     } else if (child.type === "text") {
       // Text mirrors clip placement: SpatialFields → spatial rect on
       // the parent, contentWidth/contentHeight → intrinsic dims fed to
       // objectFit for aspect handling.
-      const container = absoluteRect(viewport, child.spatial);
+      const { spatial, anchor } = dynamicSpatial(child, viewport, localTime);
+      const container = absoluteRect(viewport, spatial);
       const scissor = intersect(clipRect, container);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
       const quad = objectFitQuad(
@@ -170,7 +208,7 @@ function walkChildren(
         child.contentWidth,
         child.contentHeight,
         child.objectFit,
-        child.anchor,
+        anchor,
       );
       commands.push({
         type: "draw",
@@ -184,6 +222,8 @@ function walkChildren(
         quadW: quad.w,
         quadH: quad.h,
         opacity,
+        nodeTime: localTime - child.timelineStart,
+        nodeDuration: child.timelineEnd - child.timelineStart,
       });
     } else {
       // composition
@@ -192,7 +232,8 @@ function walkChildren(
         child.duration,
       );
 
-      const container = absoluteRect(viewport, child.spatial);
+      const { spatial } = dynamicSpatial(child, viewport, localTime);
+      const container = absoluteRect(viewport, spatial);
       const childClip = intersect(clipRect, container);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
@@ -240,6 +281,8 @@ function walkChildren(
           filters: child.filters!,
           opacity,
           children: groupChildren,
+          nodeTime: childLocalTime,
+          nodeDuration: child.duration,
         });
       } else {
         // No filters — flatten children directly (no FBO overhead)

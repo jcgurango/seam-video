@@ -10,7 +10,8 @@
  *   opacity — alpha multiply
  */
 
-import type { ResolvedClip, ResolvedText, Filter } from "@seam/core";
+import type { ResolvedClip, ResolvedText, Filter, Keyframed } from "@seam/core";
+import { sampleNumber } from "@seam/core";
 
 type Drawable = ResolvedClip | ResolvedText;
 import { TextureManager } from "./TextureManager.js";
@@ -372,7 +373,7 @@ export class WebGPURenderer {
 
     const textureView = this.textures.upload(cmd.clip, frame);
     this.cacheTexBindGroup(cmd.clip, textureView);
-    this.writeUniforms(slot, cmd, cmd.clip.filters);
+    this.writeUniforms(slot, cmd);
   }
 
   private prepareGroup(
@@ -406,12 +407,8 @@ export class WebGPURenderer {
     this.writeGroupUniforms(slot, cmd);
   }
 
-  private writeUniforms(
-    slot: number,
-    cmd: DrawCommand,
-    filters?: Filter[],
-  ): void {
-    const fp = extractFilterParams(filters);
+  private writeUniforms(slot: number, cmd: DrawCommand): void {
+    const fp = extractFilterParams(cmd.clip.filters, cmd.nodeTime, cmd.nodeDuration);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -436,7 +433,7 @@ export class WebGPURenderer {
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
-    const fp = extractFilterParams(cmd.filters);
+    const fp = extractFilterParams(cmd.filters, cmd.nodeTime, cmd.nodeDuration);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -662,29 +659,36 @@ const IDENTITY_PARAMS: FilterParams = {
   ct_r: 1, ct_g: 1, ct_b: 1,
 };
 
-function extractFilterParams(filters?: Filter[]): FilterParams {
+function extractFilterParams(
+  filters: Filter[] | undefined,
+  t: number,
+  duration: number,
+): FilterParams {
   if (!filters?.length) return IDENTITY_PARAMS;
+
+  const sN = (v: Keyframed<number> | undefined, fallback: number): number =>
+    v == null ? fallback : sampleNumber(v, t, duration);
 
   const p = { ...IDENTITY_PARAMS };
 
   for (const f of filters) {
     switch (f.type) {
       case "adjust":
-        if (f.brightness != null) p.brightness += f.brightness;
-        if (f.contrast != null) p.contrast *= f.contrast;
-        if (f.saturation != null) p.saturation *= f.saturation;
-        if (f.gamma != null) p.gamma *= f.gamma;
+        p.brightness += sN(f.brightness, 0);
+        p.contrast *= sN(f.contrast, 1);
+        p.saturation *= sN(f.saturation, 1);
+        p.gamma *= sN(f.gamma, 1);
         break;
       case "opacity":
-        p.opacity *= f.value;
+        p.opacity *= sN(f.value, 1);
         break;
       case "colorbalance":
-        p.cb_rs += f.rs ?? 0; p.cb_gs += f.gs ?? 0; p.cb_bs += f.bs ?? 0;
-        p.cb_rm += f.rm ?? 0; p.cb_gm += f.gm ?? 0; p.cb_bm += f.bm ?? 0;
-        p.cb_rh += f.rh ?? 0; p.cb_gh += f.gh ?? 0; p.cb_bh += f.bh ?? 0;
+        p.cb_rs += sN(f.rs, 0); p.cb_gs += sN(f.gs, 0); p.cb_bs += sN(f.bs, 0);
+        p.cb_rm += sN(f.rm, 0); p.cb_gm += sN(f.gm, 0); p.cb_bm += sN(f.bm, 0);
+        p.cb_rh += sN(f.rh, 0); p.cb_gh += sN(f.gh, 0); p.cb_bh += sN(f.bh, 0);
         break;
       case "colortemperature": {
-        const { r, g, b } = tempToScale(f.temperature ?? 6500);
+        const { r, g, b } = tempToScale(sN(f.temperature, 6500));
         p.ct_r *= r; p.ct_g *= g; p.ct_b *= b;
         break;
       }

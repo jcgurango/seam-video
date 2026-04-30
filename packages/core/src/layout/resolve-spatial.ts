@@ -1,5 +1,13 @@
 import type { ResolvedTimeline, ResolvedChild, SpatialRect, SpatialInput, SpatialAnchor, ObjectFit, Position } from "../resolved-types.js";
-import { resolveDimension } from "./units.js";
+import { sampleDimension, isKeyframed } from "../animation/keyframes.js";
+
+const SPATIAL_DIM_KEYS = ["top", "left", "right", "bottom", "width", "height"] as const;
+type SpatialDimKey = typeof SPATIAL_DIM_KEYS[number];
+
+export function hasAnimatedSpatialInput(input: SpatialInput | undefined): boolean {
+  if (!input) return false;
+  return SPATIAL_DIM_KEYS.some((k) => isKeyframed(input[k] as never));
+}
 
 export function resolveSpatial(
   timeline: ResolvedTimeline,
@@ -82,17 +90,26 @@ function resolveNode(
     return { ...node, objectFit: parentObjectFit };
   }
 
-  // Resolve explicit box props to pixel rect + anchor
+  // Resolve explicit box props to pixel rect + anchor. For animated spatial,
+  // this is the t=0 fallback; the renderer re-resolves per frame.
   const { spatial, anchor } = resolveBoxProps(input, parentW, parentH);
   const position: Position = input.position ?? "relative";
+  // Strip spatialInput from the resolved tree when nothing's animated —
+  // baked `spatial`/`anchor` are sufficient. Animated nodes keep the input
+  // so the renderer can sample it per frame.
+  const animated = hasAnimatedSpatialInput(input);
+  const stripIfStatic = <T extends { spatialInput?: SpatialInput }>(n: T): T => {
+    if (animated) return n;
+    const { spatialInput: _, ...rest } = n;
+    return rest as T;
+  };
 
   if (node.type === "clip") {
-    const { spatialInput: _, ...rest } = node;
     // When both dimensions are explicitly set, the clip is overconstrained — stretch
     const widthExplicit = input.width != null || (input.left != null && input.right != null);
     const heightExplicit = input.height != null || (input.top != null && input.bottom != null);
     const overconstrained = widthExplicit && heightExplicit;
-    return { ...rest, spatial, anchor, position, objectFit: overconstrained ? undefined : parentObjectFit };
+    return stripIfStatic({ ...node, spatial, anchor, position, objectFit: overconstrained ? undefined : parentObjectFit });
   }
 
   if (node.type === "text") {
@@ -100,16 +117,15 @@ function resolveNode(
     const displayH = spatial ? spatial.height : parentH;
     const innerW = node.contentWidth ?? displayW;
     const innerH = node.contentHeight ?? displayH;
-    const { spatialInput: _, ...rest } = node;
-    return {
-      ...rest,
+    return stripIfStatic({
+      ...node,
       contentWidth: innerW,
       contentHeight: innerH,
       spatial,
       anchor,
       position,
       objectFit: parentObjectFit,
-    };
+    });
   }
 
   // Composition: display size from spatial or parent, inner from contentWidth/contentHeight
@@ -117,15 +133,14 @@ function resolveNode(
   const displayH = spatial ? spatial.height : parentH;
   const innerW = node.contentWidth ?? displayW;
   const innerH = node.contentHeight ?? displayH;
-  const { spatialInput: _, ...rest } = node;
-  return {
-    ...rest,
+  return stripIfStatic({
+    ...node,
     spatial,
     anchor,
     position,
     objectFit: parentObjectFit,
     children: resolveChildren(node.children, innerW, innerH, ownObjectFit),
-  };
+  });
 }
 
 function computeObjectFitRect(
@@ -157,22 +172,28 @@ function computeObjectFitRect(
   };
 }
 
-function resolveBoxProps(
+/** Resolve spatial input to a concrete rect at a given local time `t` (in
+ *  seconds, relative to the node's start; defaults to 0 for the static
+ *  resolve pass). `duration` lets percent-time keyframe expressions resolve
+ *  against the node's lifetime. */
+export function resolveBoxProps(
   input: SpatialInput,
   parentW: number,
-  parentH: number
+  parentH: number,
+  t: number = 0,
+  duration: number = 0
 ): { spatial: SpatialRect | undefined; anchor: SpatialAnchor | undefined } {
   const hasX = input.left != null || input.right != null || input.width != null;
   const hasY = input.top != null || input.bottom != null || input.height != null;
 
   if (!hasX && !hasY) return { spatial: undefined, anchor: undefined };
 
-  const left = input.left != null ? resolveDimension(input.left, parentW) : undefined;
-  const right = input.right != null ? resolveDimension(input.right, parentW) : undefined;
-  const width = input.width != null ? resolveDimension(input.width, parentW) : undefined;
-  const top = input.top != null ? resolveDimension(input.top, parentH) : undefined;
-  const bottom = input.bottom != null ? resolveDimension(input.bottom, parentH) : undefined;
-  const height = input.height != null ? resolveDimension(input.height, parentH) : undefined;
+  const left = input.left != null ? sampleDimension(input.left, t, duration, parentW) : undefined;
+  const right = input.right != null ? sampleDimension(input.right, t, duration, parentW) : undefined;
+  const width = input.width != null ? sampleDimension(input.width, t, duration, parentW) : undefined;
+  const top = input.top != null ? sampleDimension(input.top, t, duration, parentH) : undefined;
+  const bottom = input.bottom != null ? sampleDimension(input.bottom, t, duration, parentH) : undefined;
+  const height = input.height != null ? sampleDimension(input.height, t, duration, parentH) : undefined;
 
   const anchor: SpatialAnchor = {
     ...(left != null ? { left } : {}),

@@ -610,3 +610,47 @@ With the default `"fit"`, the same clip would be letterboxed (black bars on the 
 ```
 
 The main video fills the frame. The camera feed is placed in the bottom-right corner at 25% size.
+
+## Animation
+
+Most numeric / colour / dimension fields can be animated by replacing the static value with a list of keyframe tuples:
+
+```json
+[ [time, value], [time, value, easing], ... ]
+```
+
+- `time` — when this keyframe lands, in the node's local timeline:
+  - bare number: seconds since the node became active (e.g. `0.5`)
+  - `"50%"`: percentage of the node's duration
+  - `"50% + 10"` / `"50% - 1.5"`: percentage plus/minus a constant offset (whitespace required around the operator)
+- `value` — the field's static type (number, colour string, padding tuple, etc.)
+- `easing` *(optional)* — applied on the segment leading into this keyframe. CSS-style: `linear` (default), `ease`, `ease-in`, `ease-out`, `ease-in-out`, or `cubic-bezier(a, b, c, d)`
+
+A node-local time of `0` is when the node first becomes active; `100%` is when it ends. Out-of-range times clamp to the nearest keyframe (no extrapolation).
+
+```json
+{
+  "type": "clip",
+  "source": "v.mp4",
+  "in": 0, "out": 5,
+  "volume": [[0, 0], ["50%", 1, "ease-in"], ["100%", 0, "ease-out"]],
+  "left": [[0, 0], [2, 200]],
+  "filters": [
+    { "type": "opacity", "value": [[0, 0], [1, 1, "ease-in-out"]] }
+  ]
+}
+```
+
+### What can be animated
+
+| Node | Fields |
+|------|--------|
+| **Clip** | `volume`, `top`, `left`, `right`, `bottom`, `width`, `height` |
+| **Audio** | `volume` |
+| **Composition** | `top`, `left`, `right`, `bottom`, `width`, `height` |
+| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `top`, `left`, `right`, `bottom`, `width`, `height` |
+| **Filters** | every numeric value: `adjust.{brightness,contrast,saturation,gamma}`, `opacity.value`, `colorbalance.{rs,gs,bs,rm,gm,bm,rh,gh,bh}`, `colortemperature.temperature` |
+
+### Renderer support
+
+Animation is currently editor-preview only. The CLI ffmpeg path rejects animated values (`volume`, spatial edges, filter parameters, text styles) and tells you which field tripped the check — bake or remove keyframes, or use the editor preview, until ffmpeg-side per-frame evaluation lands.

@@ -5,6 +5,7 @@ import type {
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
+import { isKeyframed, sampleNumber } from "@seam/core";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
@@ -100,11 +101,17 @@ export class FrameCoordinator {
         const audioId = `${flat.source}:${flat.clip.sourceIn}:${flat.absoluteStart}`;
         flat.audioId = audioId;
         const audioSink = new AudioBufferSink(audioTrack);
+        // Register with the t=0 sample of volume so static and animated
+        // clips both start with the right value. Animated clips get
+        // updated each tick via setClipVolume.
+        const initialVolume = flat.clip.volume == null
+          ? 1
+          : sampleNumber(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
         audioScheduler.registerClip(
           audioId,
           audioSink,
           flat.clip.speed,
-          flat.clip.volume ?? 1
+          initialVolume
         );
       }
     });
@@ -266,6 +273,26 @@ export class FrameCoordinator {
         // Clip no longer active — stop audio (buffer may still be in window)
         this.playingClips.delete(flat.clip);
         if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
+      }
+    }
+
+    // Animated text styles: re-rasterize each frame. Static texts noop.
+    this.textStore.update(currentTime);
+
+    // Animated clip volumes: sample once per tick and push to the
+    // scheduler. Static-volume clips skip the lookup so we don't wake up
+    // the audio param graph every frame for nothing.
+    if (this.audioScheduler) {
+      for (const flat of this.flatClips) {
+        if (!flat.audioId) continue;
+        const v = flat.clip.volume;
+        if (!isKeyframed(v)) continue;
+        const localT = currentTime - flat.absoluteStart;
+        const dur = flat.absoluteEnd - flat.absoluteStart;
+        this.audioScheduler.setClipVolume(
+          flat.audioId,
+          sampleNumber(v, localT, dur)
+        );
       }
     }
 

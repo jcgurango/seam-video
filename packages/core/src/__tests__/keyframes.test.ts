@@ -1,0 +1,116 @@
+import { describe, it, expect } from "vitest";
+import {
+  isKeyframed,
+  sampleNumber,
+  sampleColor,
+  samplePadding,
+  sampleDimension,
+} from "../animation/keyframes.js";
+
+describe("isKeyframed", () => {
+  it("rejects scalars", () => {
+    expect(isKeyframed(5)).toBe(false);
+    expect(isKeyframed("red")).toBe(false);
+    expect(isKeyframed(undefined as never)).toBe(false);
+  });
+
+  it("rejects static padding tuples", () => {
+    expect(isKeyframed([10, 5])).toBe(false);
+    expect(isKeyframed([10, 5, 10, 5])).toBe(false);
+  });
+
+  it("accepts keyframe arrays", () => {
+    expect(isKeyframed([[0, 5]])).toBe(true);
+    expect(isKeyframed([[0, 5], ["50%", 10]])).toBe(true);
+    expect(isKeyframed([[0, [10, 5]]])).toBe(true);
+  });
+});
+
+describe("sampleNumber", () => {
+  it("returns static value unchanged", () => {
+    expect(sampleNumber(0.5, 0, 10)).toBe(0.5);
+    expect(sampleNumber(0.5, 5, 10)).toBe(0.5);
+  });
+
+  it("clamps before first keyframe", () => {
+    expect(sampleNumber([[1, 10], [2, 20]], 0, 10)).toBe(10);
+  });
+
+  it("clamps after last keyframe", () => {
+    expect(sampleNumber([[1, 10], [2, 20]], 5, 10)).toBe(20);
+  });
+
+  it("interpolates linearly between keyframes by default", () => {
+    expect(sampleNumber([[0, 0], [10, 10]], 5, 10)).toBe(5);
+    expect(sampleNumber([[0, 0], [10, 10]], 2.5, 10)).toBe(2.5);
+  });
+
+  it("resolves percentage time expressions against duration", () => {
+    expect(sampleNumber([["0%", 0], ["100%", 100]], 5, 10)).toBe(50);
+  });
+
+  it("resolves percentage + offset", () => {
+    expect(sampleNumber([["0%", 0], ["50% + 1", 100]], 6, 10)).toBe(100);
+  });
+
+  it("applies easing on the segment leading into a keyframe", () => {
+    // Linear vs ease-in: at midpoint, ease-in produces less than 0.5
+    const linear = sampleNumber([[0, 0], [1, 1]], 0.5, 1);
+    const easeIn = sampleNumber([[0, 0], [1, 1, "ease-in"]], 0.5, 1);
+    expect(linear).toBe(0.5);
+    expect(easeIn).toBeLessThan(0.5);
+  });
+
+  it("sorts unsorted keyframes by resolved time", () => {
+    expect(sampleNumber([[10, 100], [0, 0]], 5, 10)).toBe(50);
+  });
+
+});
+
+describe("sampleColor", () => {
+  it("returns static colour unchanged", () => {
+    expect(sampleColor("red", 0, 10)).toBe("red");
+  });
+
+  it("interpolates between colours", () => {
+    const mid = sampleColor([[0, "rgb(0,0,0)"], [10, "rgb(255,255,255)"]], 5, 10);
+    // d3-interpolate returns CSS rgb strings
+    expect(mid).toMatch(/rgb\(12[78],\s*12[78],\s*12[78]\)/);
+  });
+});
+
+describe("samplePadding", () => {
+  it("returns static padding unchanged", () => {
+    expect(samplePadding(10, 0, 10)).toBe(10);
+    expect(samplePadding([10, 5], 0, 10)).toEqual([10, 5]);
+  });
+
+  it("upgrades number to 4-tuple before interpolating", () => {
+    const result = samplePadding([[0, 0], [10, 20]], 5, 10);
+    expect(result).toEqual([10, 10, 10, 10]);
+  });
+
+  it("upgrades [v, h] to 4-tuple before interpolating", () => {
+    const result = samplePadding([[0, [0, 0]], [10, [20, 10]]], 5, 10) as number[];
+    expect(result).toEqual([10, 5, 10, 5]);
+  });
+});
+
+describe("sampleDimension", () => {
+  it("resolves static numeric pixels", () => {
+    expect(sampleDimension(100, 0, 10, 1920)).toBe(100);
+  });
+
+  it("resolves static percentage", () => {
+    expect(sampleDimension("50%", 0, 10, 1920)).toBe(960);
+  });
+
+  it("interpolates between pixel keyframes", () => {
+    expect(sampleDimension([[0, 0], [10, 100]], 5, 10, 1920)).toBe(50);
+  });
+
+  it("collapses percent + pixel keyframes against parent before interpolating", () => {
+    // 0 → "50%" of 1000 = 500; midpoint = 250
+    expect(sampleDimension([[0, 0], [10, "50%"]], 5, 10, 1000)).toBe(250);
+  });
+});
