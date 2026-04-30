@@ -1,9 +1,12 @@
-// Browser/Vite loader for the bundled Liberation Sans family. The four
-// `new URL(..., import.meta.url)` references are the pattern Vite recognises
-// when scanning node_modules, so the TTFs get emitted as bundled assets and
-// these end up as fetchable URLs at runtime.
+// Browser/Vite loader for the bundled Liberation Sans family. The
+// `new URL(..., import.meta.url)` references are the pattern Vite
+// recognises when scanning node_modules, so each asset (the four TTFs
+// and yoga.wasm) gets emitted as a bundled asset and resolves to a
+// fetchable URL at runtime. Also calls satori's `init()` once with
+// yoga.wasm before fonts are returned — the standalone bundle requires
+// it before any render.
 
-import type { Font } from "satori";
+import { init as initYoga, type Font } from "@jcgurango/satori/standalone";
 
 const REGULAR_URL = new URL(
   "../assets/LiberationSans-Regular.ttf",
@@ -21,6 +24,7 @@ const BOLD_ITALIC_URL = new URL(
   "../assets/LiberationSans-BoldItalic.ttf",
   import.meta.url
 );
+const YOGA_WASM_URL = new URL("../assets/yoga.wasm", import.meta.url);
 
 interface FontSpec {
   url: URL;
@@ -37,22 +41,42 @@ const SPECS: FontSpec[] = [
   { url: BOLD_ITALIC_URL, weight: 700, style: "italic" },
 ];
 
+let yogaInitPromise: Promise<void> | null = null;
+function ensureYoga(): Promise<void> {
+  if (!yogaInitPromise) {
+    yogaInitPromise = (async () => {
+      const res = await fetch(YOGA_WASM_URL.href);
+      if (!res.ok) {
+        throw new Error(
+          `Failed to fetch yoga.wasm at ${YOGA_WASM_URL.href}: ${res.status} ${res.statusText}`
+        );
+      }
+      await initYoga(await res.arrayBuffer());
+    })();
+  }
+  return yogaInitPromise;
+}
+
 let cached: Promise<Font[]> | null = null;
 
 export function loadDefaultFonts(): Promise<Font[]> {
   if (!cached) {
-    cached = Promise.all(
-      SPECS.map(async (spec): Promise<Font> => {
-        const res = await fetch(spec.url.href);
-        if (!res.ok) {
-          throw new Error(
-            `Failed to fetch ${spec.url.href}: ${res.status} ${res.statusText}`
-          );
-        }
-        const data = await res.arrayBuffer();
-        return { name: FAMILY, data, weight: spec.weight, style: spec.style };
-      })
-    );
+    cached = (async () => {
+      const [, ...fonts] = await Promise.all<Font | void>([
+        ensureYoga(),
+        ...SPECS.map(async (spec): Promise<Font> => {
+          const res = await fetch(spec.url.href);
+          if (!res.ok) {
+            throw new Error(
+              `Failed to fetch ${spec.url.href}: ${res.status} ${res.statusText}`
+            );
+          }
+          const data = await res.arrayBuffer();
+          return { name: FAMILY, data, weight: spec.weight, style: spec.style };
+        }),
+      ]);
+      return fonts as Font[];
+    })();
   }
   return cached;
 }

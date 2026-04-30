@@ -72,9 +72,20 @@ export default function Timeline({
     };
   }, []);
 
-  // Initialize WebGPU when the canvas mounts
+  // Initialize WebGPU when the canvas element changes. We gate on
+  // canvas *identity*, not on `renderer.ready`: a `register` call from
+  // VideoCanvas can land while the previous init() is still awaiting
+  // `requestAdapter`/`requestDevice`, so checking `ready` would
+  // incorrectly fall through and start a second concurrent init that
+  // races against the first and ends up rendering with bind groups
+  // owned by the loser device. As long as we've kicked off init for
+  // this canvas, we're done — width/height changes flow through
+  // `renderer.resize` per frame and don't need a fresh device.
+  const initCanvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
-    if (!canvasMount || renderer.ready) return;
+    if (!canvasMount) return;
+    if (initCanvasRef.current === canvasMount.canvas) return;
+    initCanvasRef.current = canvasMount.canvas;
     void renderer.init(canvasMount.canvas).catch((err) => {
       console.error("WebGPU init failed:", err);
     });
@@ -118,8 +129,17 @@ export default function Timeline({
       if (!renderer.ready) return;
       const mount = canvasMountRef.current;
       if (!mount) return;
+      // Sanity check: if the canvas the renderer is bound to has drifted
+      // away from the one VideoCanvas is currently mounting, the render
+      // will go to a stale offscreen target. This shouldn't happen with
+      // the canvas-identity-gated init effect above, but log loudly if
+      // it ever does.
+      if (initCanvasRef.current !== mount.canvas) {
+        console.warn(
+          "[gpu] gpuRender: canvas mismatch — renderer initialised on a different canvas than is currently mounted"
+        );
+      }
       renderer.resize(mount.width, mount.height);
-
       const commands = buildRenderList(
         timelineRef.current,
         time,
@@ -127,7 +147,6 @@ export default function Timeline({
         mount.height,
         (clip) => coordinator.getIntrinsicSize(clip),
       );
-
       renderer.render(commands, (clip) => coordinator.getFrame(clip, time));
     },
     [renderer, coordinator],

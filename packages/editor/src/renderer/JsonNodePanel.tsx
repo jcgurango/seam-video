@@ -50,7 +50,7 @@ export default function JsonNodePanel({
   //   - If the buffer is dirty, leave it alone — the UI will show a Reload
   //     button because externalChanged is now true.
   useEffect(() => {
-    if (!dirty) {
+    if (!dirty && editorJson !== documentJson) {
       setEditorJson(documentJson);
       setBaselineJson(documentJson);
       setErrors(null);

@@ -143,6 +143,18 @@ export class WebGPURenderer {
   }
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
+    // Make init() idempotent: if we've already initialised against an
+    // earlier canvas/device, tear that down first. React effects can
+    // re-run with a fresh `<canvas>` (e.g. after a hot reload, or if the
+    // VideoCanvas component remounts), and continuing to use the old
+    // device/context produces "BindGroup is associated with [Device]" /
+    // "Invalid CommandBuffer" errors plus a black preview. Callers
+    // (Timeline.tsx) are also expected to gate this so we don't fire
+    // overlapping inits — see the canvas-identity check there.
+    if (this._ready) {
+      this.dispose();
+    }
+
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error("WebGPU not supported");
 
@@ -620,6 +632,10 @@ export class WebGPURenderer {
     for (const tex of this.fboInUse) tex.destroy();
     this.fboPool.clear();
     this.fboInUse.length = 0;
+    // Drop per-device bind groups so a subsequent init() rebuilds them
+    // against the new device rather than appending to a stale list.
+    this.uniformBindGroups.length = 0;
+    this.activeClips.clear();
     this._ready = false;
   }
 }

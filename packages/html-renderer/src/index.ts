@@ -7,7 +7,14 @@
 //   import { loadDefaultFonts } from "@seam/html-renderer/node-fonts";
 //   import { loadDefaultFonts } from "@seam/html-renderer/browser-fonts";
 
-import satori, { type Font } from "satori";
+// Pull from the `/standalone` entry, which inlines yoga's WASM into the
+// bundle. The default entry expects to lazy-load `yoga.wasm` via a
+// runtime `process.env.SATORI_STANDALONE` gate, and that gate doesn't
+// survive browser bundling cleanly — substituting it to "1" disables
+// the lazy loader without providing an alternative, so the satori call
+// `await`s forever. The standalone build works in both Node and the
+// browser at the cost of a slightly larger artefact.
+import satori, { type Font } from "@jcgurango/satori/standalone";
 import { html as satoriHtml } from "satori-html";
 
 export interface HtmlToSvgOptions {
@@ -32,4 +39,4 @@ export async function htmlToSvg(
   return await satori(tree, { width, height, fonts: opts.fonts });
 }
 
-export type { Font } from "satori";
+export type { Font } from "@jcgurango/satori/standalone";

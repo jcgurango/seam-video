@@ -19,17 +19,24 @@ export class HtmlStore {
     await Promise.all(
       nodes.map(async (node) => {
         try {
+          const n = Date.now();
           const svg = await htmlToSvg(
             node.source,
             node.contentWidth,
             node.contentHeight,
             { fonts }
           );
+          console.log('Parsing took ' + (Date.now() - n));
+          const r = Date.now();
+
           const canvas = await svgToCanvas(
             svg,
             node.contentWidth,
             node.contentHeight
           );
+
+          console.log('Rendering took ' + (Date.now() - r));
+          console.log('Total took ' + (Date.now() - n));
           this.bitmaps.set(node, canvas);
         } catch (err) {
           console.error("HTML node rasterization failed:", err);
