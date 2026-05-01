@@ -1,21 +1,25 @@
 // Build an MLT XML document from a resolved seam timeline.
 //
+// Audio note: the timeline's clip and audio nodes contribute *no*
+// audio to this graph. Instead, the caller pre-renders a single mixed
+// audio file with ffmpeg (sample-accurate, no per-frame stepping
+// artifacts) and passes its path via `options.audioFile`. We add it as
+// a single producer + track. This keeps melt's render to a single
+// pass while avoiding MLT's frame-grid audio splicing.
+//
 // Architecture:
-//   - One <producer> per unique media file (videos, audio).
+//   - One <producer> per unique source (clips supply video only).
 //   - One <producer> per text PNG (qimage service, ttl=1).
+//   - One <producer> for the pre-rendered audio file when supplied.
 //   - Track 0 (video): a single <playlist> of every clip in timeline
 //     order; sequential clips back-to-back, blanks for any gaps.
 //   - Tracks 1..N (text overlays): one track per text node. Each track
 //     gets exactly one <composite> transition whose `in`/`out` clamp
 //     it to the text's own time range and whose `geometry` frames are
-//     relative to that `in`. Sharing a track between non-overlapping
-//     texts (the previous packed model) caused MLT to interpolate
-//     between adjacent texts' keyframes — visually a static text
-//     would drift across the canvas toward its neighbour's rect.
-//   - Tracks N+1..M (audio): greedy-packed so non-overlapping audio
-//     entries share a playlist; summed into the master via
-//     <mix combine="1"> transitions. Audio doesn't have a position to
-//     interpolate so the packing concern doesn't apply there.
+//     relative to that `in`.
+//   - Track N+1 (audio, when `audioFile` is set): one entry covering
+//     the full duration; mixed into the master via a single mix
+//     transition.
 //
 // Animation:
 //   - Animated text spatial: re-resolve `spatialInput` per output frame
@@ -37,7 +41,6 @@ import {
 import type {
   Filter,
   Keyframed,
-  ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
   ResolvedText,
@@ -56,6 +59,11 @@ export interface MltOptions {
   basePath?: string;
   /** PNGs from `rasterizeAllText`, keyed by ResolvedText identity. */
   textRasters?: TextRasterMap;
+  /** Path to a pre-rendered audio file (any format ffmpeg/melt can
+   *  read — typically aac or wav). Added as a single producer that
+   *  spans the timeline; the audio in clip and audio nodes is
+   *  intentionally not re-emitted by this builder. */
+  audioFile?: string;
 }
 
 /** Field that this builder doesn't yet translate. Surfaced so the
@@ -100,9 +108,18 @@ export function buildMltDocument(
     if (cached) return cached;
     const id = newProducerId("src");
     producerIdByResource.set(fullPath, id);
+    // `audio_index=-1` disables the producer's audio stream entirely.
+    // Without this, melt mixes each clip's source audio into the
+    // master *in addition to* our pre-rendered audio file — which
+    // shows up as flanging (two slightly-skewed copies of the same
+    // signal) and roughly +6dB across the whole track.
     producers.set(
       id,
-      `  <producer id="${id}" resource="${escAttr(fullPath)}"/>`,
+      [
+        `  <producer id="${id}" resource="${escAttr(fullPath)}">`,
+        `    <property name="audio_index">-1</property>`,
+        `  </producer>`,
+      ].join("\n"),
     );
     return id;
   }
@@ -156,17 +173,6 @@ export function buildMltDocument(
     volume?: Keyframed<number>;
     node: ResolvedClip;
   };
-  type AudioSeg = {
-    kind: "audio";
-    start: number;
-    end: number;
-    producer: string;
-    sourceIn: number;
-    sourceOut: number;
-    speed: number;
-    volume?: Keyframed<number>;
-    node: ResolvedAudio;
-  };
   type TextSeg = {
     kind: "text";
     start: number;
@@ -176,7 +182,6 @@ export function buildMltDocument(
   };
 
   const clipSegs: ClipSeg[] = [];
-  const audioSegs: AudioSeg[] = [];
   const textSegs: TextSeg[] = [];
 
   // Walk the resolved tree top-level only (composition already
@@ -227,18 +232,7 @@ export function buildMltDocument(
       return;
     }
     if (child.type === "audio") {
-      const prod = addMediaProducer(child.source);
-      audioSegs.push({
-        kind: "audio",
-        start: child.timelineStart,
-        end: child.timelineEnd,
-        producer: prod,
-        sourceIn: child.sourceIn,
-        sourceOut: child.sourceOut,
-        speed: child.speed,
-        volume: child.volume,
-        node: child,
-      });
+      // Audio is rendered by the ffmpeg audio path; ignore it here.
       return;
     }
     if (child.type === "text") {
@@ -275,8 +269,8 @@ export function buildMltDocument(
     }
   }
 
-  // (Track packing was removed — see the audioSegsSorted/textSegsSorted
-  // comment above. Each non-empty entry now lives on its own track.)
+  // (Track packing was removed — see the textSegsSorted comment
+  // above. Each non-empty entry now lives on its own track.)
 
   // One track per non-empty entry across the board. Packing was an
   // optimization that turned out to buy nothing — melt's per-frame
@@ -287,7 +281,6 @@ export function buildMltDocument(
   // composite, etc.). Sort by start time so track indices loosely
   // mirror timeline order, which keeps the project navigable in
   // GUI editors.
-  const audioSegsSorted = [...audioSegs].sort((a, b) => a.start - b.start);
   const textSegsSorted = [...textSegs].sort((a, b) => a.start - b.start);
 
   // ── Playlists ─────────────────────────────────────────────────
@@ -313,46 +306,6 @@ export function buildMltDocument(
       lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
       cursor = endF;
     }
-    lines.push(`  </playlist>`);
-    return lines.join("\n");
-  }
-
-  /** A single-audio-entry playlist: leading blank, the entry, then a
-   *  trailing blank to the tractor end. */
-  function renderSingleAudioPlaylist(id: string, seg: AudioSeg, totalFrames: number): string {
-    const startF = fr(seg.start);
-    const endF = fr(seg.end);
-    const segLen = endF - startF;
-    if (segLen < 1) return "";
-    const lines = [`  <playlist id="${id}">`];
-    if (startF > 0) lines.push(`    <blank length="${startF}"/>`);
-    const inF = fr(seg.sourceIn);
-    const outF = inF + segLen - 1;
-    // Inline volume filter on the entry. Static unity volume is
-    // skipped (default in MLT). Animated volume is logged as a
-    // limitation; MLT's `volume` filter does support keyframed
-    // `gain`, but we haven't bridged the keyframe-string path yet.
-    let entry = `    <entry producer="${seg.producer}" in="${inF}" out="${outF}"`;
-    let entryClosed = false;
-    if (seg.volume != null) {
-      if (isKeyframed(seg.volume)) {
-        limitations.push({
-          node: "audio",
-          field: "volume",
-          detail: "animated volume not yet translated to MLT volume filter keyframes",
-        });
-      } else if (seg.volume !== 1) {
-        entry += `>\n      <filter mlt_service="volume" gain="${fnum(seg.volume as number)}"/>\n    </entry>`;
-        lines.push(entry);
-        entryClosed = true;
-      }
-    }
-    if (!entryClosed) {
-      entry += "/>";
-      lines.push(entry);
-    }
-    const trailing = totalFrames - endF;
-    if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
     lines.push(`  </playlist>`);
     return lines.join("\n");
   }
@@ -397,17 +350,21 @@ export function buildMltDocument(
       textPlaylistsXml.push(xml);
     }
   }
-  const audioTrackInfo: { id: string; seg: AudioSeg }[] = [];
-  const audioPlaylistsXml: string[] = [];
-  for (const seg of audioSegsSorted) {
-    const segLen = fr(seg.end) - fr(seg.start);
-    if (segLen < 1) continue;
-    const id = `audio_a${audioTrackInfo.length}`;
-    const xml = renderSingleAudioPlaylist(id, seg, totalFrames);
-    if (xml) {
-      audioTrackInfo.push({ id, seg });
-      audioPlaylistsXml.push(xml);
-    }
+
+  // Pre-mixed audio file as a single producer + playlist + track.
+  // Renders alongside the video without participating in the
+  // composite chain (mix transition just sums it into the master).
+  let audioProducerXml = "";
+  let audioPlaylistXml = "";
+  let audioTrackId: string | null = null;
+  if (options.audioFile) {
+    audioTrackId = "audio_track";
+    audioProducerXml = `  <producer id="mixed_audio" resource="${escAttr(options.audioFile)}"/>`;
+    audioPlaylistXml = [
+      `  <playlist id="${audioTrackId}">`,
+      `    <entry producer="mixed_audio" in="0" out="${Math.max(0, totalFrames - 1)}"/>`,
+      `  </playlist>`,
+    ].join("\n");
   }
 
   // ── qtblend rect keyframes per text ──────────────────────────
@@ -472,11 +429,11 @@ export function buildMltDocument(
   for (const t of textTrackInfo) {
     trackEntries.push(`    <track producer="${t.id}"/>`);
   }
-  const audioBase = 1 + textTrackInfo.length;
-  for (const t of audioTrackInfo) {
-    trackEntries.push(`    <track producer="${t.id}" hide="video"/>`);
+  let audioTrackIdx: number | null = null;
+  if (audioTrackId) {
+    audioTrackIdx = 1 + textTrackInfo.length;
+    trackEntries.push(`    <track producer="${audioTrackId}" hide="video"/>`);
   }
-
   const transitionsXml: string[] = [];
   for (let i = 0; i < textTrackInfo.length; i++) {
     const trackIdx = 1 + i;
@@ -498,12 +455,12 @@ export function buildMltDocument(
       ].join("\n"),
     );
   }
-  for (let i = 0; i < audioTrackInfo.length; i++) {
+  if (audioTrackIdx != null) {
     transitionsXml.push(
       [
         `    <transition>`,
         `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${audioBase + i}</property>`,
+        `      <property name="b_track">${audioTrackIdx}</property>`,
         `      <property name="mlt_service">mix</property>`,
         `      <property name="combine">1</property>`,
         `    </transition>`,
@@ -524,13 +481,11 @@ export function buildMltDocument(
   <profile description="${W}x${H} ${fps}fps" width="${W}" height="${H}" frame_rate_num="${fps}" frame_rate_den="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="${W}" display_aspect_den="${H}" colorspace="709" progressive="1"/>
 
 ${[...producers.values()].join("\n")}
-
+${audioProducerXml ? `\n${audioProducerXml}\n` : ""}
 ${videoPlaylistXml}
 
 ${textPlaylistsXml.join("\n\n")}
-
-${audioPlaylistsXml.join("\n\n")}
-
+${audioPlaylistXml ? `\n${audioPlaylistXml}\n` : ""}
   <tractor id="main_tractor" in="0" out="${Math.max(0, totalFrames - 1)}">
 ${trackEntries.join("\n")}
 

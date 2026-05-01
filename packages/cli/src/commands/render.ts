@@ -3,11 +3,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 import {
+  buildFfmpegAudioCommand,
   buildMeltArgs,
   buildMltDocument,
+  checkFfmpeg,
   checkMelt,
   rasterizeAllText,
   renderWithMelt,
+  runFfmpegAudio,
 } from "@seam/renderer";
 
 interface RenderOptions {
@@ -30,7 +33,10 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const fps = options.fps ? parseInt(options.fps, 10) : 30;
   const dryRun = !!options.dryRun;
 
-  if (!dryRun) checkMelt();
+  if (!dryRun) {
+    checkFfmpeg();
+    checkMelt();
+  }
 
   const json = readFileSync(filePath, "utf-8");
   const result = parseSeamFile(json);
@@ -50,12 +56,15 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);
 
-  // Sidecar dir holds the rasterized text PNGs and the MLT XML we hand
-  // to melt. Lives next to the .seam so paths inside the XML are easy
-  // to inspect; cleaned up after success unless --dry-run is set.
+  // Sidecar dir holds the rasterized text PNGs, the pre-rendered
+  // audio mix, and the MLT XML we hand to melt. Lives next to the
+  // .seam so paths inside the XML are easy to inspect; cleaned up
+  // after success unless --dry-run is set.
   const assetsDir = `${filePath}-rendered`;
   await mkdir(assetsDir, { recursive: true });
   const scriptPath = join(assetsDir, "project.mlt");
+  const audioPath = join(assetsDir, "audio.m4a");
+  const audioFilterScript = join(assetsDir, "audio-filter.txt");
 
   try {
     // Rasterize text nodes to PNGs in the assets dir before building
@@ -64,12 +73,24 @@ export async function renderCommand(file: string, options: RenderOptions) {
     const textDir = join(assetsDir, "text");
     const textRasters = await rasterizeAllText(timeline, textDir, fps);
 
+    // Pre-render audio with ffmpeg first. MLT slices audio along the
+    // video frame grid which produces audible artifacts at clip
+    // boundaries and when volume animates; ffmpeg's audio filters
+    // operate on continuous time, so the mix lands sample-accurate.
+    // The resulting file is then referenced by the MLT graph as a
+    // single producer that spans the timeline.
+    const audioCommand = buildFfmpegAudioCommand(timeline, audioPath, {
+      basePath,
+      fps,
+    });
+
     const { xml, limitations } = buildMltDocument(timeline, {
       fps,
       width,
       height,
       basePath,
       textRasters,
+      audioFile: audioPath,
     });
 
     // Always surface translation limitations. They're not fatal —
@@ -77,9 +98,6 @@ export async function renderCommand(file: string, options: RenderOptions) {
     // needs to know which fields didn't round-trip.
     if (limitations.length > 0) {
       console.warn(`MLT translation notes (${limitations.length}):`);
-      // Same field+detail often repeats across many nodes (e.g. each
-      // animated text logs the same "PNG sequence not yet bridged").
-      // Group by detail to keep the report short.
       const grouped = new Map<string, number>();
       for (const lim of limitations) {
         const key = `${lim.node}.${lim.field}: ${lim.detail}`;
@@ -98,18 +116,41 @@ export async function renderCommand(file: string, options: RenderOptions) {
 
     if (dryRun) {
       await writeFile(scriptPath, xml, "utf-8");
-      const args = buildMeltArgs(scriptPath, outputPath, meltOpts);
+      const meltArgs = buildMeltArgs(scriptPath, outputPath, meltOpts);
       console.log("# dry run — would invoke:");
-      console.log(["melt", ...args].map(shellQuote).join(" "));
+      console.log("# 1) ffmpeg (audio):");
+      console.log(
+        [
+          "ffmpeg",
+          "-y",
+          ...audioCommand.inputs.flatMap((i) => ["-i", i.path]),
+          "-filter_complex_script",
+          audioFilterScript,
+          ...audioCommand.outputArgs,
+        ]
+          .map(shellQuote)
+          .join(" "),
+      );
+      console.log("# 2) melt (video + text + pre-rendered audio):");
+      console.log(["melt", ...meltArgs].map(shellQuote).join(" "));
       console.log(`\n# assets left in: ${assetsDir}`);
       return;
+    }
+
+    console.log("Rendering audio mix...");
+    const audioResult = await runFfmpegAudio(audioCommand, audioFilterScript);
+    if (!audioResult.success) {
+      console.error(`\nffmpeg audio pass failed (exited after ${audioResult.duration.toFixed(1)}s).`);
+      process.exit(1);
     }
 
     console.log(`Rendering to ${outputPath}...`);
     const renderResult = await renderWithMelt(xml, outputPath, meltOpts);
 
     if (renderResult.success) {
-      console.log(`Done in ${renderResult.duration.toFixed(1)}s → ${outputPath}`);
+      console.log(
+        `Done in ${(audioResult.duration + renderResult.duration).toFixed(1)}s → ${outputPath}`,
+      );
     } else {
       console.error(`\nmelt failed (exited after ${renderResult.duration.toFixed(1)}s).`);
       process.exit(1);

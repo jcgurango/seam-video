@@ -15,7 +15,10 @@ export interface MeltRenderOptions {
   scriptPath: string;
   /** Video codec for the avformat consumer (default `libx264`). */
   vcodec?: string;
-  /** Audio codec for the avformat consumer (default `aac`). */
+  /** Audio codec for the avformat consumer (default `aac`). The
+   *  audio reaches melt via a pre-rendered ffmpeg-mixed file
+   *  referenced as a producer in the MLT graph; this is just the
+   *  encode codec for the final mp4 mux. */
   acodec?: string;
   /** Output canvas dimensions. Should mirror what was passed to
    *  `buildMltDocument` — for the typical case this is the seam doc's

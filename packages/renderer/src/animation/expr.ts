@@ -159,6 +159,37 @@ function fnum(n: number): string {
   return n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+/** Compile a PWL into an ffmpeg expression in the variable `t`
+ *  (seconds), used by the volume filter's `eval=frame` mode for
+ *  animated audio gain. Linear interpolation between adjacent samples
+ *  (easings are baked in at sample time), held outside the
+ *  keyframed range. Structured as a balanced binary tree of
+ *  `if(lt(t, …))` so depth stays O(log N) — long PWLs blow past
+ *  ffmpeg's expression parser depth otherwise. */
+export function pwlToExpression(pwl: PwlSamples, tShift: number = 0): string {
+  const s = pwl.samples;
+  if (s.length === 1) return fnum(s[0].v);
+  const tVar = tShift === 0 ? "t" : `(t-${fnum(tShift)})`;
+  const lerpSegment = (i: number): string => {
+    const a = s[i];
+    const b = s[i + 1];
+    const dt = b.t - a.t;
+    if (dt <= 0) return fnum(b.v);
+    return `(${fnum(a.v)}+(${fnum(b.v - a.v)})*(${tVar}-${fnum(a.t)})/${fnum(dt)})`;
+  };
+  const buildTree = (lo: number, hi: number): string => {
+    if (lo === hi - 1) return lerpSegment(lo);
+    const mid = (lo + hi) >> 1;
+    return `if(lt(${tVar},${fnum(s[mid].t)}),${buildTree(lo, mid)},${buildTree(mid, hi)})`;
+  };
+  const inner = buildTree(0, s.length - 1);
+  const firstT = fnum(s[0].t);
+  const lastT = fnum(s[s.length - 1].t);
+  const firstV = fnum(s[0].v);
+  const lastV = fnum(s[s.length - 1].v);
+  return `if(lt(${tVar},${firstT}),${firstV},if(lt(${tVar},${lastT}),${inner},${lastV}))`;
+}
+
 /** Compile a numeric PWL into MLT's keyframed-property syntax —
  *  `<frame>=<value>;<frame>=<value>;…`. Static (single-sample) PWLs
  *  return just the bare value so the property reads as a constant.
