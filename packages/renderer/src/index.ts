@@ -1,14 +1,14 @@
-export { buildMltDocument } from "./mlt-builder.js";
+export { buildFfmpegCommand } from "./ffmpeg-builder.js";
 export type {
-  MltOptions,
-  MltLimitation,
-  MltBuildResult,
-} from "./mlt-builder.js";
+  FfmpegCommand,
+  FfmpegInput,
+  FfmpegOptions,
+} from "./ffmpeg-builder.js";
 export {
-  renderWithMelt,
-  checkMelt,
-  buildMeltArgs,
-} from "./mlt-runner.js";
-export type { RenderResult, MeltRenderOptions } from "./mlt-runner.js";
+  renderWithFfmpeg,
+  checkFfmpeg,
+  buildFfmpegArgs,
+} from "./ffmpeg-runner.js";
+export type { RenderResult, RenderOptions } from "./ffmpeg-runner.js";
 export { rasterizeAllText } from "./text/textRaster.js";
 export type { TextRasterEntry, TextRasterMap } from "./text/textRaster.js";
