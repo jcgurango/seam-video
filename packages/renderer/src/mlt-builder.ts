@@ -297,27 +297,37 @@ export function buildMltDocument(
 
   // ── Playlists ─────────────────────────────────────────────────
 
-  let droppedSubFrame = 0;
+  /** Round a clip to its on-grid (start, end) frames with a 1-frame
+   *  floor on length. Sub-frame clips that round to 0 frames get
+   *  bumped up to a single frame at the rounded start; if that pushes
+   *  past where the next clip starts, the next clip's blank logic
+   *  will absorb the slip (no overlap, no drop). */
+  function clipFrameSpan(seg: ClipSeg): { startF: number; endF: number } {
+    const startF = fr(seg.start);
+    let endF = fr(seg.end);
+    if (endF <= startF) endF = startF + 1;
+    return { startF, endF };
+  }
 
   function renderClipPlaylist(id: string, segs: ClipSeg[]): string {
     const lines = [`  <playlist id="${id}">`];
     let cursor = 0;
     for (const seg of segs) {
-      const startF = fr(seg.start);
-      const endF = fr(seg.end);
+      const { startF, endF } = clipFrameSpan(seg);
       const segLen = endF - startF;
-      if (segLen < 1) {
-        droppedSubFrame++;
-        continue;
-      }
       // Positioned clips render on their own dedicated track so
       // qtblend can give them a per-clip rect. They DON'T contribute
       // to the shared playlist, but the gap they leave is left as
       // implicit (the next plain clip's blank logic naturally fills
       // it because we don't advance `cursor`).
       if (seg.positioned) continue;
-      if (startF > cursor) {
-        lines.push(`    <blank length="${startF - cursor}"/>`);
+      // Snap forward if this clip's nominal start is before the
+      // running cursor (can happen when an earlier sub-frame clip
+      // got bumped up to 1 frame). The entry just plays a tick later
+      // — preferable to dropping it.
+      const effectiveStartF = Math.max(startF, cursor);
+      if (effectiveStartF > cursor) {
+        lines.push(`    <blank length="${effectiveStartF - cursor}"/>`);
       }
       // Producer is plain avformat for speed=1 and timewarp:S:path
       // otherwise. In both cases producer-frame N corresponds to
@@ -327,7 +337,7 @@ export function buildMltDocument(
       const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
       const outF = inF + segLen - 1;
       lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
-      cursor = endF;
+      cursor = effectiveStartF + segLen;
     }
     lines.push(`  </playlist>`);
     return lines.join("\n");
@@ -368,10 +378,8 @@ export function buildMltDocument(
     seg: ClipSeg,
     totalFrames: number,
   ): string {
-    const startF = fr(seg.start);
-    const endF = fr(seg.end);
+    const { startF, endF } = clipFrameSpan(seg);
     const segLen = endF - startF;
-    if (segLen < 1) return "";
     const lines = [`  <playlist id="${id}">`];
     if (startF > 0) lines.push(`    <blank length="${startF}"/>`);
     const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
@@ -432,9 +440,14 @@ export function buildMltDocument(
     // Wraps ffmpeg's `eq` filter — same parameter semantics as seam:
     // brightness is a -1..1 offset, contrast/saturation/gamma are
     // multipliers around 1.
+    //
+    // `av.eval=frame` tells ffmpeg's eq to re-evaluate parameters per
+    // frame; MLT's avfilter wrapper updates `av.*` properties on each
+    // frame, and eq's `process_command` picks them up.
     const lines = [
       `    <filter in="${inF}" out="${outF}">`,
       `      <property name="mlt_service">avfilter.eq</property>`,
+      `      <property name="av.eval">frame</property>`,
     ];
     if (f.brightness != null) lines.push(`      <property name="av.brightness">${escAttr(compileKeyframedProp(f.brightness, duration, inF))}</property>`);
     if (f.contrast != null) lines.push(`      <property name="av.contrast">${escAttr(compileKeyframedProp(f.contrast, duration, inF))}</property>`);
@@ -688,8 +701,7 @@ export function buildMltDocument(
   for (let i = 0; i < clipTrackInfo.length; i++) {
     const trackIdx = clipTrackBase + i;
     const { seg } = clipTrackInfo[i];
-    const startF = fr(seg.start);
-    const endF = fr(seg.end);
+    const { startF, endF } = clipFrameSpan(seg);
     const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
       [
@@ -739,13 +751,6 @@ export function buildMltDocument(
     );
   }
 
-  if (droppedSubFrame > 0) {
-    limitations.push({
-      node: "clip",
-      field: "duration",
-      detail: `${droppedSubFrame} clip(s) collapsed to <1 frame at ${fps}fps and were dropped`,
-    });
-  }
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <mlt LC_NUMERIC="C" version="7.0.0" producer="main_tractor">
