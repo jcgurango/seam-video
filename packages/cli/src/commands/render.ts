@@ -3,11 +3,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
 import {
-  buildFfmpegArgs,
-  buildFfmpegCommand,
-  checkFfmpeg,
+  buildMeltArgs,
+  buildMltDocument,
+  checkMelt,
   rasterizeAllText,
-  renderWithFfmpeg,
+  renderWithMelt,
 } from "@seam/renderer";
 
 interface RenderOptions {
@@ -30,7 +30,7 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const fps = options.fps ? parseInt(options.fps, 10) : 30;
   const dryRun = !!options.dryRun;
 
-  if (!dryRun) checkFfmpeg();
+  if (!dryRun) checkMelt();
 
   const json = readFileSync(filePath, "utf-8");
   const result = parseSeamFile(json);
@@ -50,22 +50,21 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);
 
-  // Sidecar dir holds the filter_complex script we hand to ffmpeg via
-  // -filter_complex_script. The filter goes through a file so we don't
-  // trip Windows' 8191-char argv limit on non-trivial compositions.
-  // Cleaned up after success or failure unless --dry-run is set.
+  // Sidecar dir holds the rasterized text PNGs and the MLT XML we hand
+  // to melt. Lives next to the .seam so paths inside the XML are easy
+  // to inspect; cleaned up after success unless --dry-run is set.
   const assetsDir = `${filePath}-rendered`;
   await mkdir(assetsDir, { recursive: true });
-  const filterScriptPath = join(assetsDir, "filter.txt");
+  const scriptPath = join(assetsDir, "project.mlt");
 
   try {
     // Rasterize text nodes to PNGs in the assets dir before building
-    // the filter graph. Static text → one PNG; animated text → a
-    // numbered sequence at the output fps.
+    // the MLT document — the document references each PNG by absolute
+    // path, so the files have to exist when melt parses the project.
     const textDir = join(assetsDir, "text");
     const textRasters = await rasterizeAllText(timeline, textDir, fps);
 
-    const command = buildFfmpegCommand(timeline, outputPath, {
+    const { xml, limitations } = buildMltDocument(timeline, {
       fps,
       width,
       height,
@@ -73,27 +72,46 @@ export async function renderCommand(file: string, options: RenderOptions) {
       textRasters,
     });
 
+    // Always surface translation limitations. They're not fatal —
+    // most just mean a feature was silently dropped — but the user
+    // needs to know which fields didn't round-trip.
+    if (limitations.length > 0) {
+      console.warn(`MLT translation notes (${limitations.length}):`);
+      // Same field+detail often repeats across many nodes (e.g. each
+      // animated text logs the same "PNG sequence not yet bridged").
+      // Group by detail to keep the report short.
+      const grouped = new Map<string, number>();
+      for (const lim of limitations) {
+        const key = `${lim.node}.${lim.field}: ${lim.detail}`;
+        grouped.set(key, (grouped.get(key) ?? 0) + 1);
+      }
+      for (const [key, count] of grouped) {
+        console.warn(`  ${count > 1 ? `[${count}×] ` : ""}${key}`);
+      }
+    }
+
+    // Pass canvas dims to melt so the output matches the seam doc's
+    // declared size — without these flags, MLT's first producer wins
+    // (a portrait clip would otherwise pull the whole render
+    // portrait, ignoring the project's own contentWidth/Height).
+    const meltOpts = { scriptPath, width, height, fps };
+
     if (dryRun) {
-      // Write the filter file too so the printed command can actually
-      // run as-is.
-      await writeFile(filterScriptPath, command.filterComplex, "utf-8");
-      const args = buildFfmpegArgs(command, { filterScriptPath });
+      await writeFile(scriptPath, xml, "utf-8");
+      const args = buildMeltArgs(scriptPath, outputPath, meltOpts);
       console.log("# dry run — would invoke:");
-      console.log(["ffmpeg", ...args].map(shellQuote).join(" "));
+      console.log(["melt", ...args].map(shellQuote).join(" "));
       console.log(`\n# assets left in: ${assetsDir}`);
       return;
     }
 
     console.log(`Rendering to ${outputPath}...`);
-    const renderResult = await renderWithFfmpeg(command, outputPath, {
-      filterScriptPath,
-    });
+    const renderResult = await renderWithMelt(xml, outputPath, meltOpts);
 
     if (renderResult.success) {
       console.log(`Done in ${renderResult.duration.toFixed(1)}s → ${outputPath}`);
     } else {
-      // ffmpeg's stderr was streamed live as it ran, so we don't repeat it.
-      console.error(`\nffmpeg failed (exited after ${renderResult.duration.toFixed(1)}s).`);
+      console.error(`\nmelt failed (exited after ${renderResult.duration.toFixed(1)}s).`);
       process.exit(1);
     }
   } finally {
