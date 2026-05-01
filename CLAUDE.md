@@ -7,7 +7,7 @@ Video editor where edits are defined as JSON (`.seam` files). No absolute timeco
 pnpm monorepo with 6 packages:
 
 - **`@seam/core`** — Schema (Zod), types, layout resolver. Pure logic, no I/O.
-- **`@seam/renderer`** — Builds FFmpeg filter graphs from resolved timelines and executes them.
+- **`@seam/renderer`** — Builds MLT projects from resolved timelines and executes them, uses FFMPEG for sample-accurate audio.
 - **`@seam/cli`** — `render` and `preview` commands (Commander).
 - **`@seam/preview`** — Electron + React live preview with file watching. Exports Player, Timeline, TransportControls components for reuse.
 - **`@seam/editor`** — Electron + React editing app. Owns React UI, platform abstraction (Electron / Web / Mobile), exports App + platform for host shells to consume.
@@ -43,7 +43,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 
 ## Conventions
 
-- **Seconds everywhere** — frames only at the FFmpeg boundary (default 30fps)
+- **Seconds everywhere** — frames only at the MLT boundary (default 30fps)
 - **`children`** not `segments` for composition arrays
 - **`overflow`/`underflow`** for flex adjustment strategies (trim-end, stretch, etc.). `overflow` is optional in schema; default is `"trim-end"` for composition children
 - **`ChildTimingFields`** shared interface for `in`, `out`, `flex`, `overflow`, `underflow`, `id`, `start`, `end` — used by Clip, Composition, and RefChild

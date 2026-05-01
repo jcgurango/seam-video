@@ -39,6 +39,9 @@ import {
   sampleNumber,
 } from "@seam/core";
 import type {
+  AdjustFilter,
+  ColorBalanceFilter,
+  ColorTemperatureFilter,
   Filter,
   Keyframed,
   ResolvedChild,
@@ -49,6 +52,7 @@ import type {
   SpatialInput,
   SpatialRect,
 } from "@seam/core";
+import { bakePwl, pwlToMltKeyframes } from "./animation/expr.js";
 import type { TextRasterMap } from "./text/textRaster.js";
 
 export interface MltOptions {
@@ -237,13 +241,6 @@ export function buildMltDocument(
         node: child,
         positioned,
       });
-      if (child.filters?.length) {
-        limitations.push({
-          node: "clip",
-          field: "filters",
-          detail: `${child.source}: filters on clips not yet translated to MLT (${child.filters.map((f) => f.type).join(", ")})`,
-        });
-      }
       return;
     }
     if (child.type === "audio") {
@@ -361,7 +358,11 @@ export function buildMltDocument(
   /** Same as renderSingleTextPlaylist but for a positioned clip
    *  (which trims its source via in/out frames) — the in/out math
    *  matches what `renderClipPlaylist` does for plain clips, so
-   *  timewarp-wrapped producers keep working. */
+   *  timewarp-wrapped producers keep working.
+   *
+   *  Non-opacity filters (adjust / colorbalance / colortemperature)
+   *  are emitted as MLT `<filter>` children of the playlist, clamped
+   *  to the entry's playlist-local frame range so blanks stay clean. */
   function renderSinglePositionedClipPlaylist(
     id: string,
     seg: ClipSeg,
@@ -378,7 +379,109 @@ export function buildMltDocument(
     lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
     const trailing = totalFrames - endF;
     if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
+    // Filter coordinates are playlist-local. The entry sits at frames
+    // [startF, startF + segLen - 1] in playlist coords (after the
+    // leading blank).
+    const filterIn = startF;
+    const filterOut = startF + segLen - 1;
+    const dur = seg.end - seg.start;
+    const filtersXml = compileNonOpacityFilters(seg.node.filters, filterIn, filterOut, dur);
+    if (filtersXml) lines.push(filtersXml);
     lines.push(`  </playlist>`);
+    return lines.join("\n");
+  }
+
+  function compileNonOpacityFilters(
+    filters: Filter[] | undefined,
+    inF: number,
+    outF: number,
+    duration: number,
+  ): string {
+    if (!filters || filters.length === 0) return "";
+    const blocks: string[] = [];
+    for (const f of filters) {
+      if (f.type === "opacity") continue; // folded into qtblend rect alpha
+      let block: string | null = null;
+      if (f.type === "adjust") block = compileAdjustFilter(f, inF, outF, duration);
+      else if (f.type === "colorbalance") block = compileColorBalanceFilter(f, inF, outF, duration);
+      else if (f.type === "colortemperature") block = compileColorTemperatureFilter(f, inF, outF, duration);
+      if (block) blocks.push(block);
+    }
+    return blocks.join("\n");
+  }
+
+  /** Compile a `Keyframed<number>` to an MLT property value. Static
+   *  values become bare numbers; animated values bake to PWL and
+   *  convert to MLT's `frame=value;…` keyframe syntax (frames are
+   *  shifted by `frameOffset` so they land in playlist-local space). */
+  function compileKeyframedProp(
+    value: Keyframed<number>,
+    duration: number,
+    frameOffset: number,
+  ): string {
+    const pwl = bakePwl(value, duration, fps);
+    return pwlToMltKeyframes(pwl, fps, frameOffset);
+  }
+
+  function compileAdjustFilter(
+    f: AdjustFilter,
+    inF: number,
+    outF: number,
+    duration: number,
+  ): string {
+    // Wraps ffmpeg's `eq` filter — same parameter semantics as seam:
+    // brightness is a -1..1 offset, contrast/saturation/gamma are
+    // multipliers around 1.
+    const lines = [
+      `    <filter in="${inF}" out="${outF}">`,
+      `      <property name="mlt_service">avfilter.eq</property>`,
+    ];
+    if (f.brightness != null) lines.push(`      <property name="av.brightness">${escAttr(compileKeyframedProp(f.brightness, duration, inF))}</property>`);
+    if (f.contrast != null) lines.push(`      <property name="av.contrast">${escAttr(compileKeyframedProp(f.contrast, duration, inF))}</property>`);
+    if (f.saturation != null) lines.push(`      <property name="av.saturation">${escAttr(compileKeyframedProp(f.saturation, duration, inF))}</property>`);
+    if (f.gamma != null) lines.push(`      <property name="av.gamma">${escAttr(compileKeyframedProp(f.gamma, duration, inF))}</property>`);
+    lines.push(`    </filter>`);
+    return lines.join("\n");
+  }
+
+  function compileColorBalanceFilter(
+    f: ColorBalanceFilter,
+    inF: number,
+    outF: number,
+    duration: number,
+  ): string {
+    // Wraps ffmpeg's `colorbalance` (rs/gs/bs shadow, rm/gm/bm
+    // midtones, rh/gh/bh highlights — each -1..1).
+    const lines = [
+      `    <filter in="${inF}" out="${outF}">`,
+      `      <property name="mlt_service">avfilter.colorbalance</property>`,
+    ];
+    const channels: Array<keyof ColorBalanceFilter> = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"];
+    for (const k of channels) {
+      const v = f[k];
+      if (v == null) continue;
+      lines.push(`      <property name="av.${k}">${escAttr(compileKeyframedProp(v as Keyframed<number>, duration, inF))}</property>`);
+    }
+    lines.push(`    </filter>`);
+    return lines.join("\n");
+  }
+
+  function compileColorTemperatureFilter(
+    f: ColorTemperatureFilter,
+    inF: number,
+    outF: number,
+    duration: number,
+  ): string {
+    // Wraps ffmpeg's `colortemperature` filter. Default 6500K is
+    // neutral; lower values warm the image, higher cool it.
+    const lines = [
+      `    <filter in="${inF}" out="${outF}">`,
+      `      <property name="mlt_service">avfilter.colortemperature</property>`,
+    ];
+    if (f.temperature != null) {
+      lines.push(`      <property name="av.temperature">${escAttr(compileKeyframedProp(f.temperature, duration, inF))}</property>`);
+    }
+    lines.push(`    </filter>`);
     return lines.join("\n");
   }
 
@@ -478,8 +581,7 @@ export function buildMltDocument(
     const dur = seg.end - seg.start;
     const spatialAnimated =
       node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
-    const opacityAnimated =
-      seg.kind === "text" && textHasAnimatedOpacity(node as ResolvedText);
+    const opacityAnimated = nodeHasAnimatedOpacity(node);
     const animated = spatialAnimated || opacityAnimated;
 
     const sampleAt = (frameOffset: number) => {
@@ -504,8 +606,7 @@ export function buildMltDocument(
         // objectFit values are flagged separately.
         rect = container;
       }
-      const alpha =
-        seg.kind === "text" ? sampleOpacity(node as ResolvedText, t, dur) : 1;
+      const alpha = sampleNodeOpacity(node, t, dur);
       return { rect, alpha };
     };
 
@@ -672,14 +773,16 @@ ${transitionsXml.join("\n")}
 
 // ── Helpers ────────────────────────────────────────────────────
 
-/** A clip needs its own track + qtblend rect when its display rect
- *  isn't the full canvas (spatial set) or when objectFit is non-fit
- *  (we can't honor cover/center inside the shared full-canvas rect).
- *  Plain clips with default sizing ride the shared video playlist. */
+/** A clip needs its own track when (a) its display rect isn't the
+ *  full canvas, (b) objectFit is non-fit, or (c) it has any filter
+ *  (filters attach to the dedicated playlist, opacity also needs
+ *  the per-clip qtblend transition for animated alpha). Plain clips
+ *  ride the shared video playlist. */
 function isClipPositioned(clip: ResolvedClip): boolean {
   if (clip.spatial != null) return true;
   if (clip.spatialInput != null) return true;
   if (clip.objectFit && clip.objectFit !== "fit") return true;
+  if (clip.filters && clip.filters.length > 0) return true;
   return false;
 }
 
@@ -763,18 +866,22 @@ function applyObjectFit(
   };
 }
 
-function textHasAnimatedOpacity(text: ResolvedText): boolean {
-  if (!text.filters) return false;
-  for (const f of text.filters) {
+function nodeHasAnimatedOpacity(node: { filters?: Filter[] }): boolean {
+  if (!node.filters) return false;
+  for (const f of node.filters) {
     if (f.type === "opacity" && isKeyframed(f.value)) return true;
   }
   return false;
 }
 
-function sampleOpacity(text: ResolvedText, t: number, duration: number): number {
-  if (!text.filters) return 1;
+function sampleNodeOpacity(
+  node: { filters?: Filter[] },
+  t: number,
+  duration: number,
+): number {
+  if (!node.filters) return 1;
   let alpha = 1;
-  for (const f of text.filters as Filter[]) {
+  for (const f of node.filters) {
     if (f.type !== "opacity") continue;
     const value = f.value;
     if (value == null) continue;
