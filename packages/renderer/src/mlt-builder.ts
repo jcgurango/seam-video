@@ -102,25 +102,44 @@ export function buildMltDocument(
   let nextProdSeq = 0;
   const newProducerId = (prefix: string) => `${prefix}_${nextProdSeq++}`;
 
-  function addMediaProducer(relPath: string): string {
+  function addMediaProducer(relPath: string, speed: number): string {
     const fullPath = basePath ? resolve(basePath, relPath) : relPath;
-    const cached = producerIdByResource.get(fullPath);
+    // Dedup by (path, speed): two clips on the same source at
+    // different speeds need separate timewarp producers because the
+    // producer's frame coordinates are post-warp.
+    const cacheKey = `${fullPath}@${speed}`;
+    const cached = producerIdByResource.get(cacheKey);
     if (cached) return cached;
     const id = newProducerId("src");
-    producerIdByResource.set(fullPath, id);
+    producerIdByResource.set(cacheKey, id);
+    // For speed != 1 we wrap the source in MLT's `timewarp` service.
+    // The XML loader needs `mlt_service` set explicitly — it doesn't
+    // parse `service:args` out of `resource` the way the CLI loader
+    // does, so without this it treats the whole `timewarp:S:path`
+    // string as a filename and fails with "failed to load producer".
+    // The resource form here is `S:path`; we also set warp_speed /
+    // warp_resource explicitly because Shotcut/Kdenlive do, and
+    // older melt builds rely on those to avoid re-parsing.
+    //
     // `audio_index=-1` disables the producer's audio stream entirely.
     // Without this, melt mixes each clip's source audio into the
     // master *in addition to* our pre-rendered audio file — which
     // shows up as flanging (two slightly-skewed copies of the same
     // signal) and roughly +6dB across the whole track.
-    producers.set(
-      id,
-      [
-        `  <producer id="${id}" resource="${escAttr(fullPath)}">`,
-        `    <property name="audio_index">-1</property>`,
-        `  </producer>`,
-      ].join("\n"),
-    );
+    const lines: string[] = [];
+    if (speed === 1) {
+      lines.push(`  <producer id="${id}" resource="${escAttr(fullPath)}">`);
+      lines.push(`    <property name="audio_index">-1</property>`);
+    } else {
+      lines.push(`  <producer id="${id}" resource="${escAttr(`${speed}:${fullPath}`)}">`);
+      lines.push(`    <property name="mlt_service">timewarp</property>`);
+      lines.push(`    <property name="warp_speed">${speed}</property>`);
+      lines.push(`    <property name="warp_resource">${escAttr(fullPath)}</property>`);
+      lines.push(`    <property name="warp_pitch">0</property>`);
+      lines.push(`    <property name="audio_index">-1</property>`);
+    }
+    lines.push(`  </producer>`);
+    producers.set(id, lines.join("\n"));
     return id;
   }
 
@@ -134,16 +153,10 @@ export function buildMltDocument(
       });
       return null;
     }
-    if (raster.isAnimated) {
-      // Animated text styles use a per-frame PNG sequence in the
-      // ffmpeg path. The MLT image-list producer can pull a numbered
-      // sequence too, but we haven't wired it yet.
-      limitations.push({
-        node: "text",
-        field: "animated style",
-        detail: `text-${node.runs.map((r) => r.text).join("").slice(0, 30)}: per-frame PNG sequence not yet bridged into MLT (using t=0 frame only)`,
-      });
-    }
+    // Animated text resolves to a printf-style numbered sequence
+    // (e.g. `text-3-%04d.png`); the qimage service with `ttl=1`
+    // advances one PNG per output frame, so animated styles "just
+    // work" without any extra plumbing here.
     const cached = producerIdByResource.get(raster.path);
     if (cached) return cached;
     const id = newProducerId("text");
@@ -194,14 +207,7 @@ export function buildMltDocument(
   function collectChild(child: ResolvedChild): void {
     if (child.type === "empty" || child.type === "data") return;
     if (child.type === "clip") {
-      const prod = addMediaProducer(child.source);
-      if (child.speed !== 1) {
-        limitations.push({
-          node: "clip",
-          field: "speed",
-          detail: `${child.source}: non-unity speed (${child.speed}x) not yet wired through MLT`,
-        });
-      }
+      const prod = addMediaProducer(child.source, child.speed);
       if ((child.spatial != null && child.spatial.x !== 0) ||
           (child.objectFit && child.objectFit !== "fit")) {
         // testedit's clips don't customize spatial; flag if encountered.
@@ -301,7 +307,12 @@ export function buildMltDocument(
       if (startF > cursor) {
         lines.push(`    <blank length="${startF - cursor}"/>`);
       }
-      const inF = fr(seg.sourceIn);
+      // Producer is plain avformat for speed=1 and timewarp:S:path
+      // otherwise. In both cases producer-frame N corresponds to
+      // source-frame N×speed, so we divide sourceIn by speed before
+      // converting to frames. segLen is in *timeline* frames, which
+      // is also what timewarp's producer counts in.
+      const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
       const outF = inF + segLen - 1;
       lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
       cursor = endF;
