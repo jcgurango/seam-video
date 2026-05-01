@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<mlt LC_NUMERIC="C.UTF-8" version="7.38.0" title="project.mlt">
+  <profile description="1080x1920 30fps" width="1080" height="1920" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1080" display_aspect_den="1920" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
+  <producer id="main_tractor" in="0" out="2273">
+    <property name="length">2274</property>
+    <property name="eof">pause</property>
+    <property name="resource">/Users/jc/Desktop/seam-test/testedit.seam-rendered/project.mlt</property>
+    <property name="mlt_service">xml</property>
+    <property name="xml">was here</property>
+    <property name="seekable">1</property>
+  </producer>
+  <playlist id="playlist0">
+    <entry producer="main_tractor" in="0" out="2273"/>
+  </playlist>
+  <tractor id="tractor0" title="project.mlt" in="0" out="2273">
+    <track producer="playlist0"/>
+  </tractor>
+</mlt>

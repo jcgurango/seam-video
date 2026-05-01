@@ -333,6 +333,29 @@ export function buildMltDocument(
   }
 
   const totalFrames = fr(timeline.duration);
+
+  // Track 0 is a uniform black base spanning the whole timeline.
+  // Every other content track (video clips, text overlays, audio)
+  // composites *onto this black background* via its own qtblend
+  // transition with a_track=0. That keeps qtblend's "rect"
+  // interpretation consistent across siblings — without the black
+  // base, the actual video clips' source properties (Dolby Vision
+  // HDR colorspace, non-square SAR, rotation metadata) seem to bleed
+  // into how qtblend parses other transitions' rect values, sending
+  // pixel coordinates into a percent-of-source frame.
+  const bgPlaylistId = "bg_track";
+  const bgProducerXml = [
+    `  <producer id="bg" in="0" out="${Math.max(0, totalFrames - 1)}">`,
+    `    <property name="mlt_service">color</property>`,
+    `    <property name="resource">black</property>`,
+    `  </producer>`,
+  ].join("\n");
+  const bgPlaylistXmlStr = [
+    `  <playlist id="${bgPlaylistId}">`,
+    `    <entry producer="bg" in="0" out="${Math.max(0, totalFrames - 1)}"/>`,
+    `  </playlist>`,
+  ].join("\n");
+
   const videoPlaylistId = "video_v0";
   const videoPlaylistXml = renderClipPlaylist(videoPlaylistId, clipSegs);
   // Each text gets its own track id `text_v<i>` so the tractor can
@@ -367,12 +390,17 @@ export function buildMltDocument(
     ].join("\n");
   }
 
-  // ── qtblend rect keyframes per text ──────────────────────────
-  // Geometry frames are relative to the transition's `in` — frame 0
-  // in the geometry = `in` in the tractor — so we count from 0..len
-  // here instead of startF..endF. The transition's in/out clamps the
-  // composite to [startF, endF], so we don't need the explicit
-  // alpha=0 lead-in we previously emitted.
+  // ── qtblend rect per text ────────────────────────────────────
+  // Static texts emit a single non-keyframed rect. Animated texts
+  // emit `frame=spec` keyframes relative to the transition's `in`
+  // (frame 0 in the geometry = `in` in the tractor), one per output
+  // frame the value changes; RLE-collapsed.
+  //
+  // The two forms are *not* interchangeable to qtblend: the moment
+  // the rect string contains a keyframe (`=`), qtblend appears to
+  // re-interpret bare numbers as percentages instead of pixels, which
+  // sends y=-800 to y=0 (clamped) and explains the (0,0) drift we
+  // saw when ¥400 coexisted with another animated overlay.
   function buildTextGeometry(seg: TextSeg): string {
     const text = seg.node;
     const len = fr(seg.end) - fr(seg.start);
@@ -396,26 +424,25 @@ export function buildMltDocument(
       return { rect, alpha };
     };
 
-    const first = sampleAt(0);
     if (!animated) {
-      // qtblend lerps every adjacent keyframe pair, so we hold alpha
-      // at `len-1` to keep the rect solidly visible through the
-      // active range and only snap to 0 at `len` (one past the last
-      // visible frame).
-      const parts = [`0=${formatGeometry(first.rect, first.alpha)}`];
-      if (len > 1) {
-        parts.push(`${len - 1}=${formatGeometry(first.rect, first.alpha)}`);
-      }
-      parts.push(`${len}=${formatGeometry(first.rect, 0)}`);
-      return parts.join(";");
+      // Single static rect — no `=` anywhere. qtblend treats this as
+      // a constant pixel rect, and the transition's in/out handles
+      // the show/hide window for us.
+      const { rect, alpha } = sampleAt(0);
+      return formatGeometry(rect, alpha);
     }
 
+    // Animated: one keyframe per output frame the value changes,
+    // RLE-collapsed. We don't emit an alpha-drop keyframe past the
+    // last visible frame because the transition's in/out already
+    // makes everything outside [0, len-1] inactive.
     const parts: string[] = [];
     let prev: string | null = null;
-    for (let local = 0; local <= len; local++) {
+    const last = len - 1;
+    for (let local = 0; local <= last; local++) {
       const { rect, alpha } = sampleAt(local);
       const spec = formatGeometry(rect, alpha);
-      if (spec !== prev || local === 0 || local === len) {
+      if (spec !== prev || local === 0 || local === last) {
         parts.push(`${local}=${spec}`);
         prev = spec;
       }
@@ -424,19 +451,46 @@ export function buildMltDocument(
   }
 
   // ── Tractor ──────────────────────────────────────────────────
+  // Track layout:
+  //   0 = bg (uniform black, full duration)
+  //   1 = video clips
+  //   2..N+1 = text overlays
+  //   N+2 = audio (when present)
 
-  const trackEntries: string[] = [`    <track producer="${videoPlaylistId}"/>`];
+  const trackEntries: string[] = [
+    `    <track producer="${bgPlaylistId}"/>`,
+    `    <track producer="${videoPlaylistId}"/>`,
+  ];
+  const videoTrackIdx = 1;
+  const textTrackBase = 2;
   for (const t of textTrackInfo) {
     trackEntries.push(`    <track producer="${t.id}"/>`);
   }
   let audioTrackIdx: number | null = null;
   if (audioTrackId) {
-    audioTrackIdx = 1 + textTrackInfo.length;
+    audioTrackIdx = textTrackBase + textTrackInfo.length;
     trackEntries.push(`    <track producer="${audioTrackId}" hide="video"/>`);
   }
+
   const transitionsXml: string[] = [];
+
+  // Video composite: fills the canvas. No in/out — active for the
+  // whole timeline. Blanks in the video playlist (gaps between
+  // clips) just leave the bg showing through.
+  transitionsXml.push(
+    [
+      `    <transition>`,
+      `      <property name="a_track">0</property>`,
+      `      <property name="b_track">${videoTrackIdx}</property>`,
+      `      <property name="mlt_service">qtblend</property>`,
+      `      <property name="compositing">over</property>`,
+      `      <property name="rect">0 0 ${W} ${H} 1</property>`,
+      `    </transition>`,
+    ].join("\n"),
+  );
+
   for (let i = 0; i < textTrackInfo.length; i++) {
-    const trackIdx = 1 + i;
+    const trackIdx = textTrackBase + i;
     const { seg } = textTrackInfo[i];
     const startF = fr(seg.start);
     const endF = fr(seg.end);
@@ -480,8 +534,11 @@ export function buildMltDocument(
 <mlt LC_NUMERIC="C" version="7.0.0" producer="main_tractor">
   <profile description="${W}x${H} ${fps}fps" width="${W}" height="${H}" frame_rate_num="${fps}" frame_rate_den="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="${W}" display_aspect_den="${H}" colorspace="709" progressive="1"/>
 
+${bgProducerXml}
 ${[...producers.values()].join("\n")}
 ${audioProducerXml ? `\n${audioProducerXml}\n` : ""}
+${bgPlaylistXmlStr}
+
 ${videoPlaylistXml}
 
 ${textPlaylistsXml.join("\n\n")}
