@@ -185,6 +185,10 @@ export function buildMltDocument(
     speed: number;
     volume?: Keyframed<number>;
     node: ResolvedClip;
+    /** Plain clips (full canvas, fit/undefined objectFit) ride on the
+     *  shared video playlist; positioned ones get their own track so
+     *  qtblend can give them a per-clip rect. */
+    positioned: boolean;
   };
   type TextSeg = {
     kind: "text";
@@ -208,13 +212,17 @@ export function buildMltDocument(
     if (child.type === "empty" || child.type === "data") return;
     if (child.type === "clip") {
       const prod = addMediaProducer(child.source, child.speed);
-      if ((child.spatial != null && child.spatial.x !== 0) ||
-          (child.objectFit && child.objectFit !== "fit")) {
-        // testedit's clips don't customize spatial; flag if encountered.
+      const positioned = isClipPositioned(child);
+      // qtblend always stretches the source to fit its rect, so non-fit
+      // objectFit values ("cover", "center") aren't honored unless we
+      // also know the source's intrinsic dims. Flag it so the user
+      // knows the rect is being stretched-to-fit instead of cropped/
+      // centered.
+      if (child.objectFit && child.objectFit !== "fit") {
         limitations.push({
           node: "clip",
-          field: "spatial",
-          detail: `${child.source}: non-default clip spatial/objectFit not yet wired`,
+          field: "objectFit",
+          detail: `${child.source}: objectFit="${child.objectFit}" stretches to rect (qtblend has no native cover/center mode)`,
         });
       }
       clipSegs.push({
@@ -227,6 +235,7 @@ export function buildMltDocument(
         speed: child.speed,
         volume: child.volume,
         node: child,
+        positioned,
       });
       if (child.filters?.length) {
         limitations.push({
@@ -304,6 +313,12 @@ export function buildMltDocument(
         droppedSubFrame++;
         continue;
       }
+      // Positioned clips render on their own dedicated track so
+      // qtblend can give them a per-clip rect. They DON'T contribute
+      // to the shared playlist, but the gap they leave is left as
+      // implicit (the next plain clip's blank logic naturally fills
+      // it because we don't advance `cursor`).
+      if (seg.positioned) continue;
       if (startF > cursor) {
         lines.push(`    <blank length="${startF - cursor}"/>`);
       }
@@ -343,6 +358,30 @@ export function buildMltDocument(
     return lines.join("\n");
   }
 
+  /** Same as renderSingleTextPlaylist but for a positioned clip
+   *  (which trims its source via in/out frames) — the in/out math
+   *  matches what `renderClipPlaylist` does for plain clips, so
+   *  timewarp-wrapped producers keep working. */
+  function renderSinglePositionedClipPlaylist(
+    id: string,
+    seg: ClipSeg,
+    totalFrames: number,
+  ): string {
+    const startF = fr(seg.start);
+    const endF = fr(seg.end);
+    const segLen = endF - startF;
+    if (segLen < 1) return "";
+    const lines = [`  <playlist id="${id}">`];
+    if (startF > 0) lines.push(`    <blank length="${startF}"/>`);
+    const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
+    const outF = inF + segLen - 1;
+    lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
+    const trailing = totalFrames - endF;
+    if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
+    lines.push(`  </playlist>`);
+    return lines.join("\n");
+  }
+
   const totalFrames = fr(timeline.duration);
 
   // Track 0 is a uniform black base spanning the whole timeline.
@@ -369,6 +408,27 @@ export function buildMltDocument(
 
   const videoPlaylistId = "video_v0";
   const videoPlaylistXml = renderClipPlaylist(videoPlaylistId, clipSegs);
+
+  // Each positioned clip rides its own track + transition so qtblend
+  // can hand it a per-clip rect. Plain clips stay in the shared
+  // video playlist. Sort by start time so track indices loosely
+  // mirror timeline order.
+  const positionedClipsSorted = clipSegs
+    .filter((s) => s.positioned)
+    .sort((a, b) => a.start - b.start);
+  const clipTrackInfo: { id: string; seg: ClipSeg }[] = [];
+  const clipPlaylistsXml: string[] = [];
+  for (const seg of positionedClipsSorted) {
+    const segLen = fr(seg.end) - fr(seg.start);
+    if (segLen < 1) continue;
+    const id = `clip_v${clipTrackInfo.length + 1}`;
+    const xml = renderSinglePositionedClipPlaylist(id, seg, totalFrames);
+    if (xml) {
+      clipTrackInfo.push({ id, seg });
+      clipPlaylistsXml.push(xml);
+    }
+  }
+
   // Each text gets its own track id `text_v<i>` so the tractor can
   // attach a unique composite transition to it. Track indices are
   // 1-based to leave 0 for the video track.
@@ -412,26 +472,40 @@ export function buildMltDocument(
   // re-interpret bare numbers as percentages instead of pixels, which
   // sends y=-800 to y=0 (clamped) and explains the (0,0) drift we
   // saw when ¥400 coexisted with another animated overlay.
-  function buildTextGeometry(seg: TextSeg): string {
-    const text = seg.node;
+  function buildOverlayGeometry(seg: TextSeg | ClipSeg): string {
+    const node = seg.node;
     const len = fr(seg.end) - fr(seg.start);
     const dur = seg.end - seg.start;
     const spatialAnimated =
-      text.spatialInput != null && hasAnimatedSpatialInput(text.spatialInput);
-    const opacityAnimated = textHasAnimatedOpacity(text);
+      node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
+    const opacityAnimated =
+      seg.kind === "text" && textHasAnimatedOpacity(node as ResolvedText);
     const animated = spatialAnimated || opacityAnimated;
 
     const sampleAt = (frameOffset: number) => {
       const t = animated ? frameOffset / fps : 0;
-      const container = sampleContainerRect(text, W, H, t, dur);
-      const rect = applyObjectFit(
-        container,
-        text.contentWidth,
-        text.contentHeight,
-        text.objectFit,
-        text.anchor,
-      );
-      const alpha = sampleOpacity(text, t, dur);
+      const container = sampleContainerRect(node, W, H, t, dur);
+      let rect: SpatialRect;
+      if (seg.kind === "text") {
+        // Text PNGs carry their own intrinsic dims, so applyObjectFit
+        // can place them inside the container (fit/cover/center).
+        const text = node as ResolvedText;
+        rect = applyObjectFit(
+          container,
+          text.contentWidth,
+          text.contentHeight,
+          text.objectFit,
+          text.anchor,
+        );
+      } else {
+        // Clips don't have intrinsic dims at build time (we'd need to
+        // ffprobe each source), so we just hand the container rect to
+        // qtblend — which stretches the source to fill it. Non-fit
+        // objectFit values are flagged separately.
+        rect = container;
+      }
+      const alpha =
+        seg.kind === "text" ? sampleOpacity(node as ResolvedText, t, dur) : 1;
       return { rect, alpha };
     };
 
@@ -464,16 +538,25 @@ export function buildMltDocument(
   // ── Tractor ──────────────────────────────────────────────────
   // Track layout:
   //   0 = bg (uniform black, full duration)
-  //   1 = video clips
-  //   2..N+1 = text overlays
-  //   N+2 = audio (when present)
+  //   1 = shared video clips (plain clips only)
+  //   2..C+1 = positioned clips (one per track)
+  //   C+2..C+T+1 = text overlays (one per track)
+  //   last = audio (when present)
+  //
+  // Compositing order matches transition emit order: bg < shared
+  // video < positioned clips < text < audio. So a positioned clip
+  // appears as a PIP over the canvas and text still lands on top.
 
   const trackEntries: string[] = [
     `    <track producer="${bgPlaylistId}"/>`,
     `    <track producer="${videoPlaylistId}"/>`,
   ];
   const videoTrackIdx = 1;
-  const textTrackBase = 2;
+  const clipTrackBase = 2;
+  for (const c of clipTrackInfo) {
+    trackEntries.push(`    <track producer="${c.id}"/>`);
+  }
+  const textTrackBase = clipTrackBase + clipTrackInfo.length;
   for (const t of textTrackInfo) {
     trackEntries.push(`    <track producer="${t.id}"/>`);
   }
@@ -487,7 +570,8 @@ export function buildMltDocument(
 
   // Video composite: fills the canvas. No in/out — active for the
   // whole timeline. Blanks in the video playlist (gaps between
-  // clips) just leave the bg showing through.
+  // clips, or where positioned clips live) just leave the bg
+  // showing through.
   transitionsXml.push(
     [
       `    <transition>`,
@@ -500,12 +584,33 @@ export function buildMltDocument(
     ].join("\n"),
   );
 
+  for (let i = 0; i < clipTrackInfo.length; i++) {
+    const trackIdx = clipTrackBase + i;
+    const { seg } = clipTrackInfo[i];
+    const startF = fr(seg.start);
+    const endF = fr(seg.end);
+    const geometry = buildOverlayGeometry(seg);
+    transitionsXml.push(
+      [
+        `    <transition>`,
+        `      <property name="a_track">0</property>`,
+        `      <property name="b_track">${trackIdx}</property>`,
+        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="compositing">over</property>`,
+        `      <property name="in">${startF}</property>`,
+        `      <property name="out">${endF - 1}</property>`,
+        `      <property name="rect">${escAttr(geometry)}</property>`,
+        `    </transition>`,
+      ].join("\n"),
+    );
+  }
+
   for (let i = 0; i < textTrackInfo.length; i++) {
     const trackIdx = textTrackBase + i;
     const { seg } = textTrackInfo[i];
     const startF = fr(seg.start);
     const endF = fr(seg.end);
-    const geometry = buildTextGeometry(seg);
+    const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
       [
         `    <transition>`,
@@ -552,7 +657,7 @@ ${bgPlaylistXmlStr}
 
 ${videoPlaylistXml}
 
-${textPlaylistsXml.join("\n\n")}
+${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}
 ${audioPlaylistXml ? `\n${audioPlaylistXml}\n` : ""}
   <tractor id="main_tractor" in="0" out="${Math.max(0, totalFrames - 1)}">
 ${trackEntries.join("\n")}
@@ -566,6 +671,17 @@ ${transitionsXml.join("\n")}
 }
 
 // ── Helpers ────────────────────────────────────────────────────
+
+/** A clip needs its own track + qtblend rect when its display rect
+ *  isn't the full canvas (spatial set) or when objectFit is non-fit
+ *  (we can't honor cover/center inside the shared full-canvas rect).
+ *  Plain clips with default sizing ride the shared video playlist. */
+function isClipPositioned(clip: ResolvedClip): boolean {
+  if (clip.spatial != null) return true;
+  if (clip.spatialInput != null) return true;
+  if (clip.objectFit && clip.objectFit !== "fit") return true;
+  return false;
+}
 
 function escAttr(s: string): string {
   return s
@@ -590,15 +706,15 @@ function formatGeometry(rect: SpatialRect, alpha: number): string {
 }
 
 function sampleContainerRect(
-  text: ResolvedText,
+  node: { spatialInput?: SpatialInput; spatial?: SpatialRect },
   parentW: number,
   parentH: number,
   t: number,
   duration: number,
 ): SpatialRect {
-  if (text.spatialInput && hasAnimatedSpatialInput(text.spatialInput)) {
+  if (node.spatialInput && hasAnimatedSpatialInput(node.spatialInput)) {
     const { spatial } = resolveBoxProps(
-      text.spatialInput,
+      node.spatialInput,
       parentW,
       parentH,
       t,
@@ -606,7 +722,7 @@ function sampleContainerRect(
     );
     return spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
   }
-  return text.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
+  return node.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
 }
 
 /** Apply objectFit/anchor to compute the on-screen rect for the source
