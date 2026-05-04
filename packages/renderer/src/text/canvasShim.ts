@@ -3,15 +3,21 @@
 // with @napi-rs/canvas so the same layout code can run server-side and
 // produce identical line-break decisions to the browser preview.
 //
+// Also bundles Liberation Sans as the default font so output is
+// metric-stable across machines (host fonts no longer leak into the
+// render).
+//
 // Idempotent: callable from any entry point that needs text rasterization.
 
 import { createCanvas } from "@napi-rs/canvas";
+import { installLiberationSans } from "./fonts.js";
 
 let installed = false;
 
 export function installCanvasShim(): void {
   if (installed) return;
   installed = true;
+  installLiberationSans();
   if (typeof (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas === "undefined") {
     // Pretext only calls `new OffscreenCanvas(w, h).getContext('2d')` and
     // then `measureText`. @napi-rs/canvas's `Canvas` exposes a

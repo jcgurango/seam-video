@@ -25,7 +25,11 @@ import {
   samplePadding,
 } from "../animation/keyframes.js";
 
-const DEFAULT_FONT_FAMILY = "sans-serif";
+// Liberation Sans is bundled with the renderer (and should be loaded
+// in the browser preview too) so the same layout decisions land on
+// every machine. Falling back to "sans-serif" — the OS-default — was
+// the prior cause of glyph metric drift between dev/CI/editor.
+const DEFAULT_FONT_FAMILY = "Liberation Sans";
 const DEFAULT_FONT_SIZE = 16;
 const DEFAULT_COLOR = "black";
 
