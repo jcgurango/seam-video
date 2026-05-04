@@ -205,17 +205,29 @@ export function buildMltDocument(
   const clipSegs: ClipSeg[] = [];
   const textSegs: TextSeg[] = [];
 
-  // Walk the resolved tree top-level only (composition already
-  // flattened by `resolveComposition`/`resolveSpatial`). Nested
-  // compositions aren't supported yet — flag them.
+  // Walk the resolved tree, recursing into nested compositions and
+  // compounding their timeline offset and speed onto inner children.
+  // Composition wrapper props (spatial/filters/contentSize) are not
+  // honored — see the warning below — but the inner content renders
+  // with correct absolute timing.
   for (const child of timeline.children) {
-    collectChild(child);
+    collectChild(child, 0, 1);
   }
 
-  function collectChild(child: ResolvedChild): void {
+  function collectChild(
+    child: ResolvedChild,
+    offset: number,
+    parentSpeed: number,
+  ): void {
     if (child.type === "empty" || child.type === "data") return;
+    // Map the child's local-to-parent timeline range into absolute
+    // outer-timeline coords. Same math as core's `flattenResolved`:
+    // a slower parent (speed<1) stretches inner durations.
+    const start = offset + child.timelineStart / parentSpeed;
+    const end = offset + child.timelineEnd / parentSpeed;
     if (child.type === "clip") {
-      const prod = addMediaProducer(child.source, child.speed);
+      const compoundSpeed = child.speed * parentSpeed;
+      const prod = addMediaProducer(child.source, compoundSpeed);
       const positioned = isClipPositioned(child);
       // qtblend always stretches the source to fit its rect, so non-fit
       // objectFit values ("cover", "center") aren't honored unless we
@@ -231,12 +243,12 @@ export function buildMltDocument(
       }
       clipSegs.push({
         kind: "clip",
-        start: child.timelineStart,
-        end: child.timelineEnd,
+        start,
+        end,
         producer: prod,
         sourceIn: child.sourceIn,
         sourceOut: child.sourceOut,
-        speed: child.speed,
+        speed: compoundSpeed,
         volume: child.volume,
         node: child,
         positioned,
@@ -248,13 +260,13 @@ export function buildMltDocument(
       return;
     }
     if (child.type === "text") {
-      const dur = child.timelineEnd - child.timelineStart;
+      const dur = end - start;
       const prod = addTextProducer(child, fr(dur));
       if (!prod) return;
       textSegs.push({
         kind: "text",
-        start: child.timelineStart,
-        end: child.timelineEnd,
+        start,
+        end,
         producer: prod,
         node: child,
       });
@@ -272,11 +284,29 @@ export function buildMltDocument(
       return;
     }
     if (child.type === "composition") {
-      limitations.push({
-        node: "composition",
-        field: "nesting",
-        detail: "nested compositions not yet flattened to MLT — only top-level children render",
-      });
+      // Wrapper props (spatial/objectFit/filters/contentWidth/Height)
+      // aren't applied to the flattened inner content — flag if any
+      // are non-default so the user knows the wrapping is being
+      // discarded. `objectFit: "fit"` is the resolver's default and
+      // doesn't count.
+      const hasSpatial =
+        child.spatial != null || child.spatialInput != null;
+      const hasFit = child.objectFit != null && child.objectFit !== "fit";
+      const hasFilters = child.filters && child.filters.length > 0;
+      const hasContent =
+        child.contentWidth != null || child.contentHeight != null;
+      if (hasSpatial || hasFit || hasFilters || hasContent) {
+        limitations.push({
+          node: "composition",
+          field: "wrapper",
+          detail:
+            "nested composition with spatial/objectFit/filters/contentSize: inner children render but the wrapper transform isn't applied",
+        });
+      }
+      const compSpeed = child.speed * parentSpeed;
+      for (const grandchild of child.children) {
+        collectChild(grandchild, start, compSpeed);
+      }
       return;
     }
   }
