@@ -327,47 +327,79 @@ export function buildMltDocument(
 
   // ── Playlists ─────────────────────────────────────────────────
 
-  /** Round a clip to its on-grid (start, end) frames with a 1-frame
-   *  floor on length. Sub-frame clips that round to 0 frames get
-   *  bumped up to a single frame at the rounded start; if that pushes
-   *  past where the next clip starts, the next clip's blank logic
-   *  will absorb the slip (no overlap, no drop). */
-  function clipFrameSpan(seg: ClipSeg): { startF: number; endF: number } {
-    const startF = fr(seg.start);
-    let endF = fr(seg.end);
-    if (endF <= startF) endF = startF + 1;
-    return { startF, endF };
+  /** A clip's frame-ownership window: the half-open range of output
+   *  frames whose nominal time `K/fps` falls inside `[start, end)`.
+   *  Length = `endK - startK`; a sub-frame clip whose range falls
+   *  entirely between two frame centers owns 0 frames and is silently
+   *  not displayed (audio is rendered separately by ffmpeg, so the
+   *  content isn't lost). */
+  function clipFrameOwnership(seg: ClipSeg | TextSeg): { startK: number; endK: number } {
+    return {
+      startK: Math.ceil(seg.start * fps),
+      endK: Math.ceil(seg.end * fps),
+    };
   }
 
-  function renderClipPlaylist(id: string, segs: ClipSeg[]): string {
-    const lines = [`  <playlist id="${id}">`];
-    let cursor = 0;
+  /** Source producer-frame at output frame `K` for a clip seg. The
+   *  formula is the only place absolute timing meets the playlist:
+   *  `sourceIn × fps / speed` is the producer-frame at the clip's
+   *  nominal `timelineStart`; we then offset by `(K − timelineStart×fps)`
+   *  so any divergence between K and `fr(timelineStart)` (sub-frame
+   *  start, cursor drift in sibling renderers) round-trips correctly.
+   *  Holds for plain producers (speed=1) and `timewarp:S:path` alike,
+   *  since both count producer frames at the output rate. */
+  function producerFrameAt(seg: ClipSeg, K: number): number {
+    return Math.max(
+      0,
+      Math.round(seg.sourceIn * fps / seg.speed + K - seg.start * fps),
+    );
+  }
+
+  /** Build the shared video playlist by frame ownership. For each
+   *  output frame K in `[0, totalFrames)`, find the plain clip whose
+   *  resolver-spec range contains `K/fps`. Consecutive same-owner
+   *  frames collapse into one playlist `<entry>`; gaps become
+   *  `<blank>`s. Source frames are computed per-entry from K, not
+   *  from a running cursor, so audio-video alignment is fixed by
+   *  construction.
+   *
+   *  When two clips' ranges overlap (shouldn't happen for sequential
+   *  composition children, but possible via attachments), the
+   *  later-defined one wins. */
+  function renderClipPlaylist(
+    id: string,
+    segs: ClipSeg[],
+    totalFrames: number,
+  ): string {
+    const owner: Array<ClipSeg | null> = new Array(totalFrames).fill(null);
     for (const seg of segs) {
-      const { startF, endF } = clipFrameSpan(seg);
-      const segLen = endF - startF;
-      // Positioned clips render on their own dedicated track so
-      // qtblend can give them a per-clip rect. They DON'T contribute
-      // to the shared playlist, but the gap they leave is left as
-      // implicit (the next plain clip's blank logic naturally fills
-      // it because we don't advance `cursor`).
       if (seg.positioned) continue;
-      // Snap forward if this clip's nominal start is before the
-      // running cursor (can happen when an earlier sub-frame clip
-      // got bumped up to 1 frame). The entry just plays a tick later
-      // — preferable to dropping it.
-      const effectiveStartF = Math.max(startF, cursor);
-      if (effectiveStartF > cursor) {
-        lines.push(`    <blank length="${effectiveStartF - cursor}"/>`);
+      const { startK, endK } = clipFrameOwnership(seg);
+      const lo = Math.max(0, startK);
+      const hi = Math.min(totalFrames, endK);
+      for (let K = lo; K < hi; K++) {
+        owner[K] = seg;
       }
-      // Producer is plain avformat for speed=1 and timewarp:S:path
-      // otherwise. In both cases producer-frame N corresponds to
-      // source-frame N×speed, so we divide sourceIn by speed before
-      // converting to frames. segLen is in *timeline* frames, which
-      // is also what timewarp's producer counts in.
-      const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
-      const outF = inF + segLen - 1;
-      lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
-      cursor = effectiveStartF + segLen;
+    }
+
+    const lines = [`  <playlist id="${id}">`];
+    let runStart = 0;
+    let runOwner: ClipSeg | null = totalFrames > 0 ? owner[0] : null;
+    for (let K = 1; K <= totalFrames; K++) {
+      const o = K < totalFrames ? owner[K] : null;
+      if (o === runOwner) continue;
+      const runLen = K - runStart;
+      if (runLen > 0) {
+        if (runOwner == null) {
+          lines.push(`    <blank length="${runLen}"/>`);
+        } else {
+          const inF = producerFrameAt(runOwner, runStart);
+          const outF = inF + runLen - 1;
+          lines.push(`    <entry producer="${runOwner.producer}" in="${inF}" out="${outF}"/>`);
+        }
+      }
+      runStart = K;
+      runOwner = o;
     }
     lines.push(`  </playlist>`);
     return lines.join("\n");
@@ -382,14 +414,13 @@ export function buildMltDocument(
    *  underneath later text overlays. With an explicit blank, the
    *  b_track is unambiguously empty post-entry. */
   function renderSingleTextPlaylist(id: string, seg: TextSeg, totalFrames: number): string {
-    const startF = fr(seg.start);
-    const endF = fr(seg.end);
-    const segLen = endF - startF;
+    const { startK, endK } = clipFrameOwnership(seg);
+    const segLen = endK - startK;
     if (segLen < 1) return "";
     const lines = [`  <playlist id="${id}">`];
-    if (startF > 0) lines.push(`    <blank length="${startF}"/>`);
+    if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
     lines.push(`    <entry producer="${seg.producer}" in="0" out="${segLen - 1}"/>`);
-    const trailing = totalFrames - endF;
+    const trailing = totalFrames - endK;
     if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
     lines.push(`  </playlist>`);
     return lines.join("\n");
@@ -408,20 +439,24 @@ export function buildMltDocument(
     seg: ClipSeg,
     totalFrames: number,
   ): string {
-    const { startF, endF } = clipFrameSpan(seg);
-    const segLen = endF - startF;
+    const { startK, endK } = clipFrameOwnership(seg);
+    const segLen = endK - startK;
+    if (segLen < 1) return "";
     const lines = [`  <playlist id="${id}">`];
-    if (startF > 0) lines.push(`    <blank length="${startF}"/>`);
-    const inF = Math.max(0, Math.round((seg.sourceIn / seg.speed) * fps));
+    if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
+    // Same source-frame mapping as the shared playlist — derive
+    // producer-in from the entry's first output frame, which keeps
+    // sub-frame timing aligned with the resolver's spec.
+    const inF = producerFrameAt(seg, startK);
     const outF = inF + segLen - 1;
     lines.push(`    <entry producer="${seg.producer}" in="${inF}" out="${outF}"/>`);
-    const trailing = totalFrames - endF;
+    const trailing = totalFrames - endK;
     if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
-    // Filter coordinates are playlist-local. The entry sits at frames
-    // [startF, startF + segLen - 1] in playlist coords (after the
+    // Filter coordinates are playlist-local. The entry sits at
+    // frames [startK, endK − 1] in playlist coords (after the
     // leading blank).
-    const filterIn = startF;
-    const filterOut = startF + segLen - 1;
+    const filterIn = startK;
+    const filterOut = endK - 1;
     const dur = seg.end - seg.start;
     const filtersXml = compileNonOpacityFilters(seg.node.filters, filterIn, filterOut, dur);
     if (filtersXml) lines.push(filtersXml);
@@ -528,7 +563,11 @@ export function buildMltDocument(
     return lines.join("\n");
   }
 
-  const totalFrames = fr(timeline.duration);
+  // Use ceiling so the last frame whose nominal time `K/fps` falls
+  // inside `[0, duration)` is included — matches the frame-ownership
+  // model the playlist builders use, so a clip ending exactly at
+  // `duration` doesn't get its last frame chopped.
+  const totalFrames = Math.ceil(timeline.duration * fps);
 
   // Track 0 is a uniform black base spanning the whole timeline.
   // Every other content track (video clips, text overlays, audio)
@@ -553,7 +592,7 @@ export function buildMltDocument(
   ].join("\n");
 
   const videoPlaylistId = "video_v0";
-  const videoPlaylistXml = renderClipPlaylist(videoPlaylistId, clipSegs);
+  const videoPlaylistXml = renderClipPlaylist(videoPlaylistId, clipSegs, totalFrames);
 
   // Each positioned clip rides its own track + transition so qtblend
   // can hand it a per-clip rect. Plain clips stay in the shared
@@ -731,7 +770,7 @@ export function buildMltDocument(
   for (let i = 0; i < clipTrackInfo.length; i++) {
     const trackIdx = clipTrackBase + i;
     const { seg } = clipTrackInfo[i];
-    const { startF, endF } = clipFrameSpan(seg);
+    const { startK, endK } = clipFrameOwnership(seg);
     const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
       [
@@ -740,8 +779,8 @@ export function buildMltDocument(
         `      <property name="b_track">${trackIdx}</property>`,
         `      <property name="mlt_service">qtblend</property>`,
         `      <property name="compositing">over</property>`,
-        `      <property name="in">${startF}</property>`,
-        `      <property name="out">${endF - 1}</property>`,
+        `      <property name="in">${startK}</property>`,
+        `      <property name="out">${endK - 1}</property>`,
         `      <property name="rect">${escAttr(geometry)}</property>`,
         `    </transition>`,
       ].join("\n"),
@@ -751,8 +790,7 @@ export function buildMltDocument(
   for (let i = 0; i < textTrackInfo.length; i++) {
     const trackIdx = textTrackBase + i;
     const { seg } = textTrackInfo[i];
-    const startF = fr(seg.start);
-    const endF = fr(seg.end);
+    const { startK, endK } = clipFrameOwnership(seg);
     const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
       [
@@ -761,8 +799,8 @@ export function buildMltDocument(
         `      <property name="b_track">${trackIdx}</property>`,
         `      <property name="mlt_service">qtblend</property>`,
         `      <property name="compositing">over</property>`,
-        `      <property name="in">${startF}</property>`,
-        `      <property name="out">${endF - 1}</property>`,
+        `      <property name="in">${startK}</property>`,
+        `      <property name="out">${endK - 1}</property>`,
         `      <property name="rect">${escAttr(geometry)}</property>`,
         `    </transition>`,
       ].join("\n"),
