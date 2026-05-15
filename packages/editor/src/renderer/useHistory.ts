@@ -14,18 +14,32 @@ export interface History<T> {
   reset: (value: T) => void;
 }
 
+export interface HistoryOptions<T> {
+  /** If provided, `push` skips when the new value is equal to the current
+   *  one. Prevents downstream consumers from seeing a fresh reference when
+   *  nothing meaningfully changed (e.g. would otherwise re-prime the
+   *  preview's media coordinator and steal Monaco's cursor focus). */
+  isEqual?: (a: T, b: T) => boolean;
+}
+
 /**
  * Undo/redo stack. `push` adds a new entry (clearing any redo future).
  * `replace` overwrites the current entry without creating history
  * (useful for saves that remap paths but don't change semantics).
  */
-export function useHistory<T>(initial: T): History<T> {
+export function useHistory<T>(
+  initial: T,
+  options?: HistoryOptions<T>,
+): History<T> {
   const [current, setCurrent] = useState(initial);
   const pastRef = useRef<T[]>([]);
   const futureRef = useRef<T[]>([]);
+  const isEqualRef = useRef(options?.isEqual);
+  isEqualRef.current = options?.isEqual;
 
   const push = useCallback((value: T) => {
     setCurrent((prev) => {
+      if (isEqualRef.current?.(prev, value)) return prev;
       pastRef.current.push(prev);
       if (pastRef.current.length > MAX_HISTORY) {
         pastRef.current.shift();

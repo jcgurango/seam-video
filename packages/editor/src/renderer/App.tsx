@@ -144,7 +144,14 @@ function SelectionBar({
 }
 
 export default function App({ platform }: AppProps) {
-  const history = useHistory<SeamFile>(EMPTY_DOCUMENT);
+  // Drop pushes that don't change the document JSON. Mutations
+  // (timeline drags, script re-runs, JSON saves that round-trip to the
+  // same shape) otherwise hand back a fresh reference, which would
+  // re-memoize playerTimeline, fire <Timeline>'s setTimeline effect,
+  // re-prime media, and steal Monaco's cursor focus.
+  const history = useHistory<SeamFile>(EMPTY_DOCUMENT, {
+    isEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+  });
   const document = history.current;
   // Editor-surface root: when the root composition has a node-script
   // attached, this is the pre-script `original` so the timeline panel,
