@@ -1,17 +1,13 @@
-// Node-script support: a composition can carry an attached `data` node
-// tagged ["seam-editor", "node-script"] whose payload is `{ scriptSrc,
-// original }`. The composition's `children` + `attachments` (minus the
-// script attachment itself) is the *rendered* output of running
-// `scriptSrc` against `original`. The editor edits `original` and the
-// rendered body is recomputed on every change.
-//
-// Only one script attachment is honoured per composition; we always
-// pick the first one we find.
+// Node-script support: a composition can carry a `seam-editor-script`
+// entry in its `metadata` whose value is `{ scriptSrc, original }`. The
+// composition's `children` + `attachments` is the *rendered* output of
+// running `scriptSrc` against `original`. The editor edits `original`
+// and the rendered body is recomputed on every change.
 
 import { validate } from "@seam/core";
-import type { Composition, Data, SeamFile } from "@seam/core";
+import type { Composition, SeamFile } from "@seam/core";
 
-export const SCRIPT_TAGS = ["seam-editor", "node-script"];
+export const SCRIPT_METADATA_KEY = "seam-editor-script";
 
 export interface ScriptPayload {
   /** JavaScript source — body of an anonymous function. Must `return` a
@@ -22,47 +18,33 @@ export interface ScriptPayload {
 }
 
 export interface FoundScript {
-  /** Position of the script attachment within `attachments`. */
-  index: number;
   payload: ScriptPayload;
 }
 
 const DEFAULT_SCRIPT = "return currentNode;\n";
 
 export function findScript(comp: Composition): FoundScript | null {
-  const atts = comp.attachments;
-  if (!atts) return null;
-  for (let i = 0; i < atts.length; i++) {
-    const att = atts[i];
-    if (att.type !== "data") continue;
-    const tags = att.tags ?? [];
-    if (
-      !tags.includes("seam-editor") ||
-      !tags.includes("node-script")
-    ) {
-      continue;
-    }
-    const data = att.data;
-    if (
-      typeof data === "object" &&
-      data !== null &&
-      "scriptSrc" in data &&
-      "original" in data &&
-      typeof (data as { scriptSrc: unknown }).scriptSrc === "string"
-    ) {
-      const payload = data as ScriptPayload;
-      // Validate `original` is a composition; if it's been corrupted, treat
-      // as no-script (caller can decide to surface or repair).
-      if (
-        payload.original &&
-        typeof payload.original === "object" &&
-        payload.original.type === "composition"
-      ) {
-        return { index: i, payload };
-      }
-    }
+  const raw = comp.metadata?.[SCRIPT_METADATA_KEY];
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !("scriptSrc" in raw) ||
+    !("original" in raw) ||
+    typeof (raw as { scriptSrc: unknown }).scriptSrc !== "string"
+  ) {
+    return null;
   }
-  return null;
+  const payload = raw as ScriptPayload;
+  // Validate `original` is a composition; if it's been corrupted, treat
+  // as no-script (caller can decide to surface or repair).
+  if (
+    !payload.original ||
+    typeof payload.original !== "object" ||
+    payload.original.type !== "composition"
+  ) {
+    return null;
+  }
+  return { payload };
 }
 
 export function hasScript(comp: Composition): boolean {
@@ -128,17 +110,15 @@ export function runScript(
   return v.data as Composition;
 }
 
-/**
- * Build a composition's "compiled" form: the rendered output of running
- * the script + the script attachment carrying `{ scriptSrc, original }`.
- * The script attachment is always appended at the end of `attachments`.
- */
-function makeScriptAttachment(payload: ScriptPayload): Data {
+/** Splice the script payload into a composition's metadata, preserving any
+ *  other metadata keys already present. */
+function withScriptMetadata(
+  comp: Composition,
+  payload: ScriptPayload
+): Composition {
   return {
-    type: "data",
-    tags: SCRIPT_TAGS,
-    data: payload,
-    duration: 0,
+    ...comp,
+    metadata: { ...(comp.metadata ?? {}), [SCRIPT_METADATA_KEY]: payload },
   };
 }
 
@@ -147,14 +127,13 @@ export function compile(comp: Composition): Composition {
   const script = findScript(comp);
   if (!script) return comp;
   const rendered = runScript(script.payload.scriptSrc, script.payload.original);
-  const newAttachments = [...(rendered.attachments ?? []), makeScriptAttachment(script.payload)];
-  return { ...rendered, attachments: newAttachments };
+  return withScriptMetadata(rendered, script.payload);
 }
 
 /**
  * The user just edited `original` (e.g. via the timeline panel). Persist
- * the new `original` inside the script attachment and recompile so the
- * rendered body reflects the change.
+ * the new `original` inside the metadata and recompile so the rendered
+ * body reflects the change.
  */
 export function withUpdatedOriginal(
   comp: Composition,
@@ -170,16 +149,8 @@ export function withUpdatedOriginal(
     scriptSrc: script.payload.scriptSrc,
     original: newOriginal,
   };
-  // We rebuild from scratch: render the new original, then attach a fresh
-  // script attachment carrying the new payload.
   const rendered = runScript(newPayload.scriptSrc, newPayload.original);
-  return {
-    ...rendered,
-    attachments: [
-      ...(rendered.attachments ?? []),
-      makeScriptAttachment(newPayload),
-    ],
-  };
+  return withScriptMetadata(rendered, newPayload);
 }
 
 /** Replace just the scriptSrc, then recompile. */
@@ -196,34 +167,22 @@ export function withUpdatedScriptSrc(
     original: script.payload.original,
   };
   const rendered = runScript(newPayload.scriptSrc, newPayload.original);
-  return {
-    ...rendered,
-    attachments: [
-      ...(rendered.attachments ?? []),
-      makeScriptAttachment(newPayload),
-    ],
-  };
+  return withScriptMetadata(rendered, newPayload);
 }
 
 /**
  * Enable the script feature on a composition: snapshot it as `original`,
- * run an identity script (returns currentNode), and append the script
- * attachment.
+ * run an identity script (returns currentNode), and stash the payload in
+ * metadata.
  */
 export function enableScript(comp: Composition): Composition {
   const original = comp;
   const payload: ScriptPayload = { scriptSrc: DEFAULT_SCRIPT, original };
   const rendered = runScript(payload.scriptSrc, payload.original);
-  return {
-    ...rendered,
-    attachments: [
-      ...(rendered.attachments ?? []),
-      makeScriptAttachment(payload),
-    ],
-  };
+  return withScriptMetadata(rendered, payload);
 }
 
-/** Strip the script attachment and replace the composition body with the
+/** Strip the script metadata and replace the composition body with the
  *  unrendered `original`. */
 export function disableScript(comp: Composition): Composition {
   const script = findScript(comp);
@@ -233,7 +192,7 @@ export function disableScript(comp: Composition): Composition {
 
 /**
  * Run the script one final time and replace the composition with its
- * rendered output, dropping the script attachment entirely. Useful for
+ * rendered output, dropping the script metadata entirely. Useful for
  * "freezing" a script-driven composition once you're happy with the
  * result so it no longer depends on the script.
  *
@@ -271,15 +230,8 @@ export function safeWithUpdatedOriginal(
       scriptSrc: script.payload.scriptSrc,
       original: newOriginal,
     };
-    // Keep the rendered body untouched; just patch the script attachment's
-    // payload so the new `original` is preserved for the next run.
-    const newAtts = (comp.attachments ?? []).map((att, i) =>
-      i === script.index
-        ? { ...(att as Data), data: newPayload, tags: SCRIPT_TAGS, duration: 0 }
-        : att
-    );
     return {
-      comp: { ...comp, attachments: newAtts },
+      comp: withScriptMetadata(comp, newPayload),
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -302,19 +254,12 @@ export function safeWithUpdatedScriptSrc(
   try {
     return { comp: withUpdatedScriptSrc(comp, newSrc), error: null };
   } catch (err) {
-    // Update the stored scriptSrc so the editor reflects what the user
-    // typed, but don't touch the rendered body.
     const newPayload: ScriptPayload = {
       scriptSrc: newSrc,
       original: script.payload.original,
     };
-    const newAtts = (comp.attachments ?? []).map((att, i) =>
-      i === script.index
-        ? { ...(att as Data), data: newPayload, tags: SCRIPT_TAGS, duration: 0 }
-        : att
-    );
     return {
-      comp: { ...comp, attachments: newAtts },
+      comp: withScriptMetadata(comp, newPayload),
       error: err instanceof Error ? err.message : String(err),
     };
   }

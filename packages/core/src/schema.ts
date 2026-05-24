@@ -111,6 +111,12 @@ const AnchorFieldsSchema = {
   end: TimeAnchorSchema.optional(),
 };
 
+// Free-form per-node bag for editor / tooling concerns that travel with
+// the document but don't affect rendering. Values are arbitrary JSON.
+const MetadataFieldsSchema = {
+  metadata: z.record(z.string(), z.unknown()).optional(),
+};
+
 const SpatialFieldsSchema = {
   position: PositionSchema.optional(),
   objectFit: ObjectFitSchema.optional(),
@@ -149,6 +155,7 @@ export const ClipSchema = z.object({
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
   ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
 }).strict().refine(
   (data) => !(data.speed != null && data.duration != null),
   { message: "Cannot specify both 'speed' and 'duration' on a clip" }
@@ -158,6 +165,7 @@ export const EmptySchema = z.object({
   type: z.literal("empty"),
   duration: z.number().positive(),
   ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
 }).strict();
 
 export const AudioSchema = z.object({
@@ -171,6 +179,7 @@ export const AudioSchema = z.object({
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
 })
   // Strict: audio has no spatial fields and no `filters` (visual). Extra
   // keys are a schema error rather than being silently dropped, so users
@@ -187,6 +196,7 @@ export const DataSchema = z.object({
   duration: z.number().nonnegative().optional(),
   tags: z.array(z.string()).optional(),
   ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
 }).strict();
 
 // Padding can be a single number (all sides), `[v, h]`, or `[t, r, b, l]`.
@@ -234,6 +244,7 @@ export const TextSchema = z.object({
   ...TextStyleFieldsSchema,
   ...SpatialFieldsSchema,
   ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
 }).strict().refine(
   (data) =>
     data.duration != null || (data.start != null && data.end != null),
@@ -268,6 +279,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,
     ...AnchorFieldsSchema,
+    ...MetadataFieldsSchema,
   }).strict()
 );
 

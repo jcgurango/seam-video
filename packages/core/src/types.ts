@@ -86,6 +86,10 @@ export interface TimeAnchor {
   timeSource?: "output" | "source";
 }
 
+/** Free-form per-node bag for editor / tooling concerns that travel with
+ *  the document but don't affect rendering. Values are arbitrary JSON. */
+export type Metadata = Record<string, unknown>;
+
 export interface ChildTimingFields extends SpatialFields {
   in?: number;
   out?: number;
@@ -98,6 +102,7 @@ export interface ChildTimingFields extends SpatialFields {
   start?: TimeAnchor;
   /** Anchor for the child's timeline end (only meaningful in attachments). */
   end?: TimeAnchor;
+  metadata?: Metadata;
 }
 
 export interface Clip extends ChildTimingFields {
@@ -117,6 +122,7 @@ export interface Empty {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  metadata?: Metadata;
 }
 
 /**
@@ -139,6 +145,7 @@ export interface Audio {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  metadata?: Metadata;
 }
 
 /**
@@ -159,6 +166,7 @@ export interface Data {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  metadata?: Metadata;
 }
 
 /**
@@ -227,6 +235,7 @@ export interface Text extends SpatialFields, TextStyleFields {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  metadata?: Metadata;
 }
 
 export interface Composition extends ChildTimingFields {

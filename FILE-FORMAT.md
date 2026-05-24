@@ -63,6 +63,7 @@ A clip references a segment of a source video file.
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | Free-form bag of arbitrary JSON keyed by string. Preserved through resolution; doesn't affect rendering (see [Metadata](#metadata)) |
 
 The **natural duration** of a clip is `(out - in) / speed`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
 
@@ -87,6 +88,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `speed`, `duration`, `overflow`, `underflow` | — | no | Same shape as on a clip |
 | `volume` | number | no | Audio gain multiplier (default `1`). Same shape as on a clip. |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 Visual props (`filters`, `position`, `objectFit`, box dimensions) are rejected by the schema — `audio` doesn't render to a quad.
 
@@ -104,6 +106,7 @@ A gap — silence and black for a given duration.
 | `duration` | number | yes | Length of the gap in seconds (> 0) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 ### Data
 
@@ -121,6 +124,7 @@ A free-form JSON payload that occupies a span of time. Renders nothing — it's 
 | `tags` | string[] | no | Free-form classifier tags. Editor-side filtering / grouping fodder; preserved through resolution |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 As a child, a `data` node takes up `duration` seconds of sequential time. As an attachment, its on-timeline length is whatever the anchors imply: with both `start` and `end` pinned, `end − start` wins regardless of `duration`. With only `start` (and no `end`/`duration`) it acts as an instantaneous marker.
 
@@ -165,6 +169,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 ¹ `duration` is required unless both `start` and `end` are pinned (the anchor span dictates the timeline span).
 
@@ -223,6 +228,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 A composition's natural duration is the sum of its children's natural durations. There's no `duration` field, no flex, no justify, no gap — those are higher-order layout concerns that belong in the editor, not the spec. The resolved duration is whatever the children add up to (or `out − in` if a window is set).
 
@@ -375,6 +381,25 @@ Attachments are resolved in array order. Each attachment's `id`, once resolved, 
 ```
 
 `a` starts at t=5 (from composition origin), running to t=7. The second attachment begins at t=7.
+
+## Metadata
+
+Every node type accepts an optional `metadata` field — an object with arbitrary string keys whose values can be any JSON. Metadata travels with the document and is preserved through resolution, but the renderer and preview ignore it entirely: it doesn't change layout, timing, or pixels.
+
+```json
+{
+  "type": "clip",
+  "source": "intro.mp4",
+  "in": 0, "out": 10,
+  "metadata": {
+    "color": "#ff8800",
+    "notes": "needs color grade",
+    "review": { "by": "alice", "status": "approved" }
+  }
+}
+```
+
+Use it for editor concerns that should round-trip through saves — review state, color tags on timeline blocks, plugin-specific annotations, etc. Unlike a [`data`](#data) node, metadata isn't a timeline citizen: it lives on the node it's attached to, doesn't occupy a span, and isn't reachable as an anchor target.
 
 ## Filters
 
