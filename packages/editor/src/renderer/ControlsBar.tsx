@@ -259,10 +259,14 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
   if (targetIdx === -1) return null;
 
   const child = children[targetIdx];
-  // Splitting is only defined for clip/audio for now. Composition splitting
-  // used to lean on refs (the .seam concept that's gone) — we'll figure out
-  // its UX once references re-emerge as an editor concept.
-  if (child.type !== "clip" && child.type !== "audio") return null;
+  if (
+    child.type !== "clip" &&
+    child.type !== "audio" &&
+    child.type !== "composition"
+  ) {
+    // Splitting empty/data/text has no clear meaning — bail.
+    return null;
+  }
 
   const offset = currentTime - timelineStart;
   const origLen =
@@ -276,28 +280,61 @@ function sliceAtPlayhead(doc: SeamFile, currentTime: number): SeamFile | null {
   const existingIds = collectAllIds(doc);
   const origId = (child as { id?: string }).id;
   const rightId = origId != null ? uniqueSplitId(existingIds, origId) : undefined;
-  const applyAnchorRewrite = (nextDoc: SeamFile): SeamFile => {
-    if (origId == null || rightId == null) return nextDoc;
-    const ctx: SplitContext = {
-      origId,
-      rightId,
-      splitOffset: offset,
-      origLen,
-      baseSourceTime: child.in,
-      speed: clipBaseSpeed(child),
-    };
-    return rewriteSplitAnchors(nextDoc, ctx);
-  };
 
-  const speed = clipBaseSpeed(child);
-  const splitSource = child.in + offset * speed;
-  const { duration: _d, ...base } = child;
-  const first = { ...base, out: splitSource } as typeof child;
-  const second = { ...base, in: splitSource } as typeof child;
-  if (rightId != null) second.id = rightId;
-  else delete (second as { id?: string }).id;
+  let first: Child;
+  let second: Child;
+  let splitContext: SplitContext | null = null;
+
+  if (child.type === "clip" || child.type === "audio") {
+    const speed = clipBaseSpeed(child);
+    const splitSource = child.in + offset * speed;
+    const { duration: _d, ...base } = child;
+    first = { ...base, out: splitSource } as typeof child;
+    second = { ...base, in: splitSource } as typeof child;
+    if (rightId != null) (second as { id?: string }).id = rightId;
+    else delete (second as { id?: string }).id;
+    if (origId != null && rightId != null) {
+      splitContext = {
+        origId,
+        rightId,
+        splitOffset: offset,
+        origLen,
+        baseSourceTime: child.in,
+        speed,
+      };
+    }
+  } else {
+    // Composition: both halves share the same body (children +
+    // attachments + spatial fields + metadata + filters + script/bin
+    // payload). They differ only in the inner-timeline window — first
+    // keeps [compIn..innerSplit], second takes [innerSplit..compOut].
+    // Child compositions always run at unit speed (overflow/underflow
+    // stretching only kicks in for anchored attachments), so the
+    // output-offset translates 1:1 to inner-timeline coordinates.
+    const compIn = child.in ?? 0;
+    const resolvedComp = resolved.children[targetIdx];
+    const compOut = child.out ?? compIn + resolvedComp.duration;
+    const innerSplit = compIn + offset;
+    first = { ...child, in: compIn, out: innerSplit };
+    second = { ...child, in: innerSplit, out: compOut };
+    if (rightId != null) (second as { id?: string }).id = rightId;
+    else delete (second as { id?: string }).id;
+    if (origId != null && rightId != null) {
+      splitContext = {
+        origId,
+        rightId,
+        splitOffset: offset,
+        origLen,
+        baseSourceTime: compIn,
+        speed: 1,
+      };
+    }
+  }
+
   newChildren.splice(targetIdx, 1, first, second);
-  return applyAnchorRewrite({ ...doc, children: newChildren });
+  let nextDoc: SeamFile = { ...doc, children: newChildren };
+  if (splitContext) nextDoc = rewriteSplitAnchors(nextDoc, splitContext);
+  return nextDoc;
 }
 
 // ── Attach tool ──────────────────────────────────────────────────────
@@ -600,14 +637,13 @@ export default function ControlsBar({
     seek(pct * totalDuration);
   };
 
-  // Slice is only enabled when at least one selected (or playhead-targeted)
-  // child is a clip or audio node.
+  // Slice is enabled when at least one selected (or playhead-targeted)
+  // child is a sliceable type: clip, audio, or composition.
+  const isSliceableType = (t: string | undefined) =>
+    t === "clip" || t === "audio" || t === "composition";
   const canSlice = selectedIndices.length === 0
-    ? doc.children.some((c) => c.type === "clip" || c.type === "audio")
-    : selectedIndices.some((i) => {
-        const t = doc.children[i]?.type;
-        return t === "clip" || t === "audio";
-      });
+    ? doc.children.some((c) => isSliceableType(c.type))
+    : selectedIndices.some((i) => isSliceableType(doc.children[i]?.type));
 
   // Attach: needs 2+ selected, all of which are children (not attachments),
   // and a primary with a source axis.
@@ -761,7 +797,7 @@ export default function ControlsBar({
               onClick={handleSlice}
               style={{ ...BTN_STYLE, opacity: canSlice ? 1 : 0.3 }}
               disabled={!canSlice}
-              title="Slice (S) — clip and audio only"
+              title="Slice (S) — clip, audio, or composition"
             >
               <Scissors size={ICON_SIZE} />
             </button>
