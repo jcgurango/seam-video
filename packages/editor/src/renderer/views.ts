@@ -3,7 +3,13 @@ import type { Clip, Composition, SeamFile, ResolvedTimeline } from "@seam/core";
 export type View =
   | { type: "root" }
   | { type: "clip"; rootIndex: number; sourceDuration: number }
-  | { type: "composition"; rootIndex: number };
+  | { type: "composition"; rootIndex: number }
+  /** Special editor mode for cutting clips out of a bin entry using its
+   *  CC transcription. The synthesised preview / timeline comes from
+   *  the user's current selections — there's no path inside the
+   *  on-disk document to drill into, so `getViewDocument` etc. don't
+   *  apply. The App's view-document memo handles this case directly. */
+  | { type: "cc-cut"; binId: string };
 
 /** Returns the document the player should render for the current view. */
 export function getViewDocument(doc: SeamFile, view: View): SeamFile {

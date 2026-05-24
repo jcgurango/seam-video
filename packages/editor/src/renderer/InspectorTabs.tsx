@@ -42,6 +42,8 @@ interface InspectorTabsProps {
   /** Push a new editor-surface root back to history (typically the same
    *  callback used by ControlsBar/TimelinePanel). */
   onRootDocumentChange: (next: SeamFile) => void;
+  /** Enter CC Cut view for the given bin entry. */
+  onEnterCCCut: (binId: string) => void;
 }
 
 export default function InspectorTabs({
@@ -55,6 +57,7 @@ export default function InspectorTabs({
   onScriptApply,
   rootDocument,
   onRootDocumentChange,
+  onEnterCCCut,
 }: InspectorTabsProps) {
   const [active, setActive] = useState<TabId>("properties");
 
@@ -142,6 +145,7 @@ export default function InspectorTabs({
           <BinPanel
             rootDocument={rootDocument}
             onRootDocumentChange={onRootDocumentChange}
+            onEnterCCCut={onEnterCCCut}
           />
         )}
       </div>

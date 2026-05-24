@@ -25,6 +25,13 @@ import {
 } from "./nodeScript.js";
 import { compileDocument, stripForJsonEditing } from "./compile.js";
 import { findBin, withUpdatedBin } from "./nodeBin.js";
+import CCCutView from "./CCCutView.js";
+import {
+  buildCCPreviewDoc,
+  buildCCSpliceChildren,
+  resolveCCWords,
+  type CCSelection,
+} from "./ccCutTool.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
@@ -191,6 +198,10 @@ export default function App({ platform }: AppProps) {
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [view, setView] = useState<View>(ROOT_VIEW);
   const [initialTime, setInitialTime] = useState(0);
+  // In-flight selections for the CC Cut view. Cleared on entry and on
+  // OK/Cancel — lives on App because both the CC view (renders + edits)
+  // and the toolbar (OK button) need to read them.
+  const [ccSelections, setCcSelections] = useState<CCSelection[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saveAsPromptOpen, setSaveAsPromptOpen] = useState(false);
   // On web we start on the project browser; a project must be picked/created
@@ -238,16 +249,35 @@ export default function App({ platform }: AppProps) {
     }
   }, [document]);
 
+  // Bin entry currently being CC-cut (null outside cc-cut view). The
+  // resolved word ribbon + preview doc derive from this.
+  const ccBinEntry = useMemo(() => {
+    if (view.type !== "cc-cut") return null;
+    const bin = findBin(document as Composition);
+    return bin.find((e) => e.id === view.binId) ?? null;
+  }, [view, document]);
+
+  const ccWords = useMemo(() => {
+    if (!ccBinEntry) return [];
+    return resolveCCWords(ccBinEntry, document);
+  }, [ccBinEntry, document]);
+
   // The view's effective document (i.e. what the timeline panel shows).
   // For root it's the editor-surface document; for nested views it's the
   // subtree being drilled into. `getViewDocument` operates on the editor
   // surface so nested compositions with their own scripts get the same
-  // unwrap treatment automatically.
+  // unwrap treatment automatically. In cc-cut view we synthesize a doc
+  // from the user's current selections so the timeline + canvas reflect
+  // what would be spliced if they hit OK.
   const viewDocument = useMemo<SeamFile>(() => {
+    if (view.type === "cc-cut") {
+      if (!ccBinEntry) return editorDoc;
+      return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
+    }
     const base =
       view.type === "root" ? editorDoc : getViewDocument(editorDoc, view);
     return scriptEditTarget(base) as SeamFile;
-  }, [editorDoc, view]);
+  }, [editorDoc, view, ccBinEntry, document, ccSelections]);
 
   // Two distinct resolved timelines:
   //   - `editorTimeline` is what the timeline panel renders (and what the
@@ -273,6 +303,16 @@ export default function App({ platform }: AppProps) {
   }, [viewDocument]);
 
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
+    if (view.type === "cc-cut") {
+      try {
+        return resolveDoc(viewDocument);
+      } catch (err) {
+        console.error("[App] playerTimeline (cc-cut) resolve failed:", err, {
+          viewDocument,
+        });
+        return null;
+      }
+    }
     if (!rootTimeline) return null;
     if (view.type === "root") return rootTimeline;
     try {
@@ -284,7 +324,7 @@ export default function App({ platform }: AppProps) {
       });
       return null;
     }
-  }, [view, rootTimeline, document]);
+  }, [view, rootTimeline, document, viewDocument]);
 
   useEffect(() => {
     try {
@@ -309,6 +349,15 @@ export default function App({ platform }: AppProps) {
       if (!target || target.type !== "composition") {
         setView(ROOT_VIEW);
         setInitialTime(0);
+      }
+    } else if (view.type === "cc-cut") {
+      // Bounce out if the targeted bin entry has been deleted /
+      // renamed out from under us.
+      const bin = findBin(document as Composition);
+      if (!bin.some((e) => e.id === view.binId)) {
+        setView(ROOT_VIEW);
+        setInitialTime(0);
+        setCcSelections([]);
       }
     }
   }, [document, view]);
@@ -593,6 +642,14 @@ export default function App({ platform }: AppProps) {
 
   const handleExit = useCallback(
     (viewTime: number) => {
+      if (view.type === "cc-cut") {
+        // CC view doesn't translate time (synthesised preview); exit is
+        // wired through Cancel instead. Treat handleExit as Cancel.
+        setView(ROOT_VIEW);
+        setCcSelections([]);
+        setInitialTime(0);
+        return;
+      }
       if (!rootTimeline) return;
       const t = translateTimeOnExit(document, rootTimeline, view, viewTime);
       setInitialTime(t);
@@ -600,6 +657,50 @@ export default function App({ platform }: AppProps) {
     },
     [document, rootTimeline, view]
   );
+
+  // ── CC Cut entry / exit ────────────────────────────────────────
+
+  const handleEnterCCCut = useCallback(
+    (binId: string) => {
+      setCcSelections([]);
+      setView({ type: "cc-cut", binId });
+      setInitialTime(0);
+      setSelectedIndices([]);
+      setMultiSelectMode(false);
+    },
+    [],
+  );
+
+  const handleCCCutCancel = useCallback(() => {
+    setView(ROOT_VIEW);
+    setCcSelections([]);
+    setInitialTime(0);
+  }, []);
+
+  const handleCCCutOk = useCallback(() => {
+    if (view.type !== "cc-cut") return;
+    if (!ccBinEntry) return;
+    if (ccSelections.length === 0) {
+      // Nothing to splice — behave like cancel.
+      handleCCCutCancel();
+      return;
+    }
+    const spliced = buildCCSpliceChildren(
+      ccBinEntry,
+      view.binId,
+      ccSelections,
+    );
+    // Append to the on-disk root's children. Compile will re-splice the
+    // bin bodies on the next pass so each reference renders correctly.
+    const newDoc: SeamFile = {
+      ...document,
+      children: [...document.children, ...spliced],
+    };
+    history.push(newDoc);
+    setView(ROOT_VIEW);
+    setCcSelections([]);
+    setInitialTime(0);
+  }, [view, ccBinEntry, ccSelections, document, history, handleCCCutCancel]);
 
   // ── Undo / Redo ────────────────────────────────────────────────
 
@@ -895,18 +996,27 @@ export default function App({ platform }: AppProps) {
         >
           <div style={{ height: '65vh', display: 'flex', flexDirection: 'row' }}>
             <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
-              <InspectorTabs
-                timeline={editorTimeline}
-                viewDocument={viewDocument}
-                jsonNode={jsonNode}
-                onJsonNodeSave={handleJsonNodeSave}
-                jsonJumpPath={jsonJumpPath}
-                scriptComposition={scriptComposition}
-                scriptError={scriptError}
-                onScriptApply={handleScriptApply}
-                rootDocument={editorDoc}
-                onRootDocumentChange={updateDocument}
-              />
+              {view.type === "cc-cut" ? (
+                <CCCutView
+                  words={ccWords}
+                  selections={ccSelections}
+                  onSelectionsChange={setCcSelections}
+                />
+              ) : (
+                <InspectorTabs
+                  timeline={editorTimeline}
+                  viewDocument={viewDocument}
+                  jsonNode={jsonNode}
+                  onJsonNodeSave={handleJsonNodeSave}
+                  jsonJumpPath={jsonJumpPath}
+                  scriptComposition={scriptComposition}
+                  scriptError={scriptError}
+                  onScriptApply={handleScriptApply}
+                  rootDocument={editorDoc}
+                  onRootDocumentChange={updateDocument}
+                  onEnterCCCut={handleEnterCCCut}
+                />
+              )}
             </div>
             <div style={{ flex: 1, display: 'flex' }}>
               <VideoCanvas width={playerTimeline.contentWidth} height={playerTimeline.contentHeight} />
@@ -929,6 +1039,9 @@ export default function App({ platform }: AppProps) {
               platform={platform}
               onTranscribe={handleTranscribe}
               transcribing={transcriber.progress != null}
+              onCCCutOk={handleCCCutOk}
+              onCCCutCancel={handleCCCutCancel}
+              ccCutHasSelections={ccSelections.length > 0}
             />
             <TimelinePanel
               timeline={editorTimeline}

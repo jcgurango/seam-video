@@ -55,6 +55,12 @@ interface ControlsBarProps {
   onTranscribe: () => void;
   /** True while a transcription job is running — disables the CC button. */
   transcribing: boolean;
+  /** CC-cut view: commit selections and splice into the root doc. */
+  onCCCutOk: () => void;
+  /** CC-cut view: discard selections and exit. */
+  onCCCutCancel: () => void;
+  /** True when the CC-cut user has at least one selection (gates OK). */
+  ccCutHasSelections: boolean;
 }
 
 // ── Slice logic ──────────────────────────────────────────────────────
@@ -469,6 +475,39 @@ const TIME_STYLE: React.CSSProperties = {
 
 const ICON_SIZE = 16;
 
+const BTN_PRIMARY_TEXT: React.CSSProperties = {
+  background: "#4a7eb8",
+  border: "none",
+  color: "#fff",
+  padding: "6px 14px",
+  borderRadius: 6,
+  cursor: "pointer",
+  fontSize: 13,
+  fontFamily: "inherit",
+  height: 28,
+  flexShrink: 0,
+};
+
+const BTN_PRIMARY_TEXT_DISABLED: React.CSSProperties = {
+  ...BTN_PRIMARY_TEXT,
+  background: "#2a2a2a",
+  color: "#666",
+  cursor: "not-allowed",
+};
+
+const BTN_SECONDARY_TEXT: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid #555",
+  color: "#ddd",
+  padding: "6px 14px",
+  borderRadius: 6,
+  cursor: "pointer",
+  fontSize: 13,
+  fontFamily: "inherit",
+  height: 28,
+  flexShrink: 0,
+};
+
 // ── Component ────────────────────────────────────────────────────────
 
 export default function ControlsBar({
@@ -487,6 +526,9 @@ export default function ControlsBar({
   platform,
   onTranscribe,
   transcribing,
+  onCCCutOk,
+  onCCCutCancel,
+  ccCutHasSelections,
 }: ControlsBarProps) {
   const {
     currentTime,
@@ -814,6 +856,30 @@ export default function ControlsBar({
               }
             >
               <Captions size={ICON_SIZE} />
+            </button>
+          </>
+        ) : view.type === "cc-cut" ? (
+          <>
+            <button
+              onClick={onCCCutCancel}
+              style={BTN_SECONDARY_TEXT}
+              title="Discard selections and exit CC Cut"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onCCCutOk}
+              disabled={!ccCutHasSelections}
+              style={
+                ccCutHasSelections ? BTN_PRIMARY_TEXT : BTN_PRIMARY_TEXT_DISABLED
+              }
+              title={
+                ccCutHasSelections
+                  ? "Splice selections into the root composition"
+                  : "Make at least one selection first"
+              }
+            >
+              OK
             </button>
           </>
         ) : (

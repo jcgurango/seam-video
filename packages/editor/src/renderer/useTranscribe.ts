@@ -272,6 +272,13 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           // segment's source-time bounds on the clip. The whisper response
           // timestamps are relative to the audio we sent (which started at
           // `target.child.in` in source time), so we just shift by clip.in.
+          //
+          // Inside `data`, word times are normalised to *phrase-local*
+          // seconds (0 = phrase start) and `duration` is the phrase's
+          // intrinsic length. Keeping the words in their own coordinate
+          // space means consumers don't need to know which clip the
+          // phrase is anchored to — the anchor placement is a separate
+          // concern handled by `start`/`end`.
           for (const seg of json) {
             if (cancelRef.current) break;
             const start: TimeAnchor = {
@@ -284,9 +291,19 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
               timeSource: "source",
               anchorPoint: target.child.in + seg.end,
             };
+            const phraseStart = seg.start;
+            const words = (seg.words ?? []).map((w) => ({
+              text: w.text,
+              start: Math.max(0, w.start - phraseStart),
+              end: Math.max(0, w.end - phraseStart),
+            }));
             const dataNode: Child = {
               type: "data",
-              data: { text: seg.text, words: seg.words ?? [] },
+              data: {
+                text: seg.text,
+                words,
+                duration: seg.end - seg.start,
+              },
               tags: ["transcription", "whisper"],
               start,
               end,
