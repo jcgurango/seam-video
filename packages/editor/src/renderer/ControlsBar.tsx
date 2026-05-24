@@ -23,11 +23,19 @@ import {
   AlignStartVertical,
   AlignEndVertical,
   Captions,
+  Group,
+  Box,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
+import {
+  applyCompose,
+  isComposableSelection,
+  walkComposeDependencies,
+} from "./composeTool.js";
+import { applyBin, canBin } from "./binTool.js";
 
 interface ControlsBarProps {
   document: SeamFile;
@@ -584,6 +592,51 @@ export default function ControlsBar({
     [doc, currentTime, selectedIndices, onDocumentChange, onSelectionChange]
   );
 
+  // ── Compose ────────────────────────────────────────────────────
+  // Active when the user has selected a non-empty, contiguous run of
+  // children (no attachments mixed in). The dependency walk + extend +
+  // confirm flow lives inside handleCompose so the gate stays cheap.
+  const canCompose =
+    view.type === "root" &&
+    selectedIndices.length > 0 &&
+    selectedIndices.every((i) => i < doc.children.length) &&
+    isComposableSelection(selectedIndices, doc.children.length);
+
+  const handleCompose = useCallback(() => {
+    if (!canCompose) return;
+    const walk = walkComposeDependencies(doc, selectedIndices);
+    if (walk.extraChildren > 0) {
+      const word = walk.extraChildren === 1 ? "clip" : "clips";
+      const ok = window.confirm(
+        `Composing will also pull in ${walk.extraChildren} more ${word} ` +
+          `because one or more attachments anchor outside your selection. ` +
+          `Proceed?`,
+      );
+      if (!ok) return;
+    }
+    const next = applyCompose(doc, walk);
+    onDocumentChange(next);
+    // Select the newly-created composition so the user can immediately
+    // act on it (e.g. promote to bin).
+    onSelectionChange([walk.childIndices[0]]);
+  }, [canCompose, doc, selectedIndices, onDocumentChange, onSelectionChange]);
+
+  // ── Bin ────────────────────────────────────────────────────────
+  const canBinSelection =
+    view.type === "root" &&
+    selectedIndices.length === 1 &&
+    canBin(doc, selectedIndices[0]);
+
+  const handleBin = useCallback(() => {
+    if (!canBinSelection) return;
+    const result = applyBin(doc, selectedIndices[0]);
+    if (!result) return;
+    onDocumentChange(result.doc);
+    // Keep the (now bin-referencing) composition selected so the user
+    // can see the change in place.
+    onSelectionChange([selectedIndices[0]]);
+  }, [canBinSelection, doc, selectedIndices, onDocumentChange, onSelectionChange]);
+
   // ── Render ─────────────────────────────────────────────────────
 
   return (
@@ -714,6 +767,22 @@ export default function ControlsBar({
               title="Attach end of secondaries to the primary at the playhead"
             >
               <AlignEndVertical size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={handleCompose}
+              style={{ ...BTN_STYLE, opacity: canCompose ? 1 : 0.3 }}
+              disabled={!canCompose}
+              title="Compose selected children (and their dependent attachments) into a new composition"
+            >
+              <Group size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={handleBin}
+              style={{ ...BTN_STYLE, opacity: canBinSelection ? 1 : 0.3 }}
+              disabled={!canBinSelection}
+              title="Bin: promote the selected composition into a reusable bin entry"
+            >
+              <Box size={ICON_SIZE} />
             </button>
             <button
               onClick={() => {

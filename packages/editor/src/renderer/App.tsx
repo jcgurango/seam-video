@@ -23,6 +23,8 @@ import {
   findScript,
   safeWithUpdatedOriginal,
 } from "./nodeScript.js";
+import { compileDocument, stripForJsonEditing } from "./compile.js";
+import { findBin, withUpdatedBin } from "./nodeBin.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
@@ -157,10 +159,30 @@ export default function App({ platform }: AppProps) {
   // attached, this is the pre-script `original` so the timeline panel,
   // selection, JSON tab, etc. all operate on the source-of-truth shape.
   // The on-disk `document` retains the rendered body + script attachment.
-  const editorDoc = useMemo<SeamFile>(
-    () => scriptEditTarget(document) as SeamFile,
-    [document]
-  );
+  const editorDoc = useMemo<SeamFile>(() => {
+    const surface = scriptEditTarget(document) as SeamFile;
+    // When a script is attached, the surface is the user's stored
+    // `original` — which holds bin REFERENCES (no bodies) because the
+    // JSON editor strips them and the user's last save persisted the
+    // stripped form. Inject the document's bin into the surface and
+    // compile so the timeline panel / resolver see fully-rendered
+    // bodies. For documents without a script this is a no-op:
+    // `surface === document`, and re-compiling an already-compiled doc
+    // is idempotent.
+    const rootBin = findBin(document as Composition);
+    const surfaceWithBin =
+      rootBin.length > 0
+        ? withUpdatedBin(surface as Composition, rootBin)
+        : (surface as Composition);
+    try {
+      return compileDocument(surfaceWithBin as SeamFile).doc;
+    } catch (err) {
+      console.error("[App] editorDoc compile failed:", err, {
+        surfaceWithBin,
+      });
+      return surface;
+    }
+  }, [document]);
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -210,7 +232,8 @@ export default function App({ platform }: AppProps) {
   const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
       return resolveDoc(document);
-    } catch {
+    } catch (err) {
+      console.error("[App] rootTimeline resolve failed:", err, { document });
       return null;
     }
   }, [document]);
@@ -241,7 +264,10 @@ export default function App({ platform }: AppProps) {
   const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
       return resolveDoc(viewDocument);
-    } catch {
+    } catch (err) {
+      console.error("[App] editorTimeline resolve failed:", err, {
+        viewDocument,
+      });
       return null;
     }
   }, [viewDocument]);
@@ -251,7 +277,11 @@ export default function App({ platform }: AppProps) {
     if (view.type === "root") return rootTimeline;
     try {
       return resolveDoc(getViewDocument(document, view));
-    } catch {
+    } catch (err) {
+      console.error("[App] playerTimeline resolve failed:", err, {
+        view,
+        document,
+      });
       return null;
     }
   }, [view, rootTimeline, document]);
@@ -315,7 +345,11 @@ export default function App({ platform }: AppProps) {
         wp.clearBlobUrlCache();
         await wp.preloadBlobUrls(collectClipSources(doc));
       }
-      history.reset(doc);
+      // Heal stale rendered bodies: a saved .seam file might have been
+      // edited externally so its bin references / script outputs lag the
+      // current sources. compileDocument is a no-op for plain docs.
+      const compiled = compileDocument(doc).doc;
+      history.reset(compiled);
       setFilePath(fp);
       setErrors([]);
       setSelectedIndices([]);
@@ -362,22 +396,17 @@ export default function App({ platform }: AppProps) {
     [history, document]
   );
 
-  // The "node" the JSON tab is editing — the root editor-surface doc at
-  // root view, otherwise the child being drilled into. Compositions get
-  // an extra script-edit-target unwrap so nested scripts also surface
-  // their `original` instead of the rendered body.
+  // The "node" the JSON tab is editing. We strip rendered bodies off any
+  // script- or bin-bearing composition so the user only sees what they
+  // actually author (the script payload or the bin-item id) — anything
+  // under `children` / `attachments` on those compositions is regenerated
+  // on save by `compileDocument` and would otherwise be silently
+  // overwritten. Plain compositions are shown verbatim.
   const jsonNode = useMemo<unknown>(() => {
-    let node: unknown =
-      view.type === "root" ? editorDoc : editorDoc.children[view.rootIndex];
-    if (
-      node &&
-      typeof node === "object" &&
-      (node as { type?: string }).type === "composition"
-    ) {
-      node = scriptEditTarget(node as Composition);
-    }
-    return node;
-  }, [editorDoc, view]);
+    const isRoot = view.type === "root";
+    const node: unknown = isRoot ? document : document.children[view.rootIndex];
+    return stripForJsonEditing(node, { isRoot });
+  }, [document, view]);
 
   // Translate the current selection into a JSON path inside `jsonNode`.
   // Selection indices are encoded as: [0, children.length) → child,
@@ -440,46 +469,68 @@ export default function App({ platform }: AppProps) {
 
   const handleJsonNodeSave = useCallback(
     (next: unknown): string[] | null => {
-      // Build the proposed editor-surface document. JSON edits target the
-      // editor surface (which is `editorDoc` — script-unwrapped), so we
-      // splice into editorDoc rather than the on-disk document.
-      let proposedSurface: unknown;
+      // Splice the user's edited node back into the on-disk document.
+      // The edited form may have stripped children/attachments on any
+      // script/bin composition — `compileDocument` below regenerates
+      // them, so we deliberately skip schema validation until after the
+      // compile pass.
+      let proposed: unknown;
       if (view.type === "root") {
-        proposedSurface = next;
+        proposed = next;
       } else {
         const idx = view.rootIndex;
-        if (!editorDoc.children[idx]) {
+        if (!document.children[idx]) {
           return ["View target no longer exists in the document."];
         }
-        const newChildren = editorDoc.children.slice();
+        const newChildren = document.children.slice();
         newChildren[idx] = next as Child;
-        proposedSurface = { ...editorDoc, children: newChildren };
+        proposed = { ...document, children: newChildren };
       }
 
-      const result = validateSeamFile(proposedSurface);
-      if (!result.success) return result.errors;
-
-      // Re-wrap through the root script (no-op if the document has none).
-      // safeWithUpdatedOriginal preserves the rendered body on script
-      // errors, so we still need to validate the resolver runs against
-      // the final compiled form before pushing.
-      const wrapped = safeWithUpdatedOriginal(
-        document as Composition,
-        result.data as Composition
-      );
+      // Compile: re-run scripts, re-render bin references. The walker
+      // accepts intentionally-incomplete input (e.g. a fresh bin
+      // reference with no children) and fills the body from the bin.
+      let compiled: SeamFile;
+      let compileErrors: string[];
       try {
-        resolveDoc(wrapped.comp as SeamFile);
+        const result = compileDocument(proposed as SeamFile);
+        compiled = result.doc;
+        compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
+        if (result.errors.length > 0) {
+          console.warn("[App] handleJsonNodeSave compile errors:", result.errors, {
+            proposed,
+            compiled,
+          });
+        }
       } catch (err) {
+        console.error("[App] handleJsonNodeSave compile threw:", err, { proposed });
         return [String(err)];
       }
 
-      setScriptError(wrapped.error);
-      history.push(wrapped.comp as SeamFile);
+      // Now validate the compiled form. If the user's edit was
+      // structurally invalid (e.g. removed children on a non-bin/non-
+      // script composition), schema validation catches it here.
+      const validated = validateSeamFile(compiled);
+      if (!validated.success) {
+        console.warn("[App] handleJsonNodeSave validate failed:", validated.errors, {
+          compiled,
+        });
+        return [...compileErrors, ...validated.errors];
+      }
+
+      try {
+        resolveDoc(validated.data);
+      } catch (err) {
+        return [...compileErrors, String(err)];
+      }
+
+      setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
+      history.push(validated.data);
       setSelectedIndices([]);
       setMultiSelectMode(false);
       return null;
     },
-    [document, editorDoc, view, history]
+    [document, view, history]
   );
 
   const onSelectionChange = useCallback((next: number[]) => {
@@ -571,6 +622,18 @@ export default function App({ platform }: AppProps) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      // Let the browser/Monaco handle undo/redo when an editable element
+      // owns focus — otherwise typing into a rename input or the JSON /
+      // Script editor and hitting Ctrl+Z would silently roll back the
+      // *document* instead of the input.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      const inEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (t?.isContentEditable ?? false);
+      if (inEditable) return;
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         handleUndo();
@@ -841,6 +904,8 @@ export default function App({ platform }: AppProps) {
                 scriptComposition={scriptComposition}
                 scriptError={scriptError}
                 onScriptApply={handleScriptApply}
+                rootDocument={editorDoc}
+                onRootDocumentChange={updateDocument}
               />
             </div>
             <div style={{ flex: 1, display: 'flex' }}>

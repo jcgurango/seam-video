@@ -9,8 +9,9 @@ import type {
 } from "@seam/core";
 import JsonNodePanel from "./JsonNodePanel.js";
 import ScriptPanel from "./ScriptPanel.js";
+import BinPanel from "./BinPanel.js";
 
-type TabId = "properties" | "filters" | "json" | "script" | "inspector";
+type TabId = "properties" | "filters" | "json" | "script" | "inspector" | "bin";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "properties", label: "Properties" },
@@ -18,6 +19,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "json", label: "JSON" },
   { id: "script", label: "Script" },
   { id: "inspector", label: "Inspector" },
+  { id: "bin", label: "Bin" },
 ];
 
 interface InspectorTabsProps {
@@ -35,6 +37,11 @@ interface InspectorTabsProps {
   scriptError: string | null;
   /** Apply a transformed composition produced by the Script tab. */
   onScriptApply: (next: Composition) => string[] | null;
+  /** Editor-surface root, used by the Bin tab to read + rewrite entries. */
+  rootDocument: SeamFile;
+  /** Push a new editor-surface root back to history (typically the same
+   *  callback used by ControlsBar/TimelinePanel). */
+  onRootDocumentChange: (next: SeamFile) => void;
 }
 
 export default function InspectorTabs({
@@ -46,6 +53,8 @@ export default function InspectorTabs({
   scriptComposition,
   scriptError,
   onScriptApply,
+  rootDocument,
+  onRootDocumentChange,
 }: InspectorTabsProps) {
   const [active, setActive] = useState<TabId>("properties");
 
@@ -128,6 +137,12 @@ export default function InspectorTabs({
           <PaddedTab>
             <InspectorPanel timeline={timeline} viewDocument={viewDocument} />
           </PaddedTab>
+        )}
+        {active === "bin" && (
+          <BinPanel
+            rootDocument={rootDocument}
+            onRootDocumentChange={onRootDocumentChange}
+          />
         )}
       </div>
     </div>
