@@ -4,8 +4,7 @@
 // running `scriptSrc` against `original`. The editor edits `original`
 // and the rendered body is recomputed on every change.
 
-import { validate } from "@seam/core";
-import type { Composition, SeamFile } from "@seam/core";
+import type { Composition } from "@seam/core";
 
 export const SCRIPT_METADATA_KEY = "seam-editor-script";
 
@@ -60,9 +59,12 @@ export function editTarget(comp: Composition): Composition {
 }
 
 /**
- * Run a script against an `original` composition and return the resulting
- * composition. Throws on any execution / validation error so callers can
- * surface a useful message.
+ * Run a script against an `original` composition and return the script's
+ * raw output. Throws on execution failure or if the script doesn't
+ * return a composition object — but does NOT run schema validation,
+ * because a script may legitimately emit bin references whose
+ * `children` get spliced in by the compile pass downstream. Validation
+ * is the compile pipeline's responsibility.
  *
  * The execution environment is a plain `new Function(...)` with `window`
  * and `document` shadowed to `undefined`. This is a footgun-reducer, not a
@@ -101,13 +103,7 @@ export function runScript(
       }" node; only "composition" is allowed.`
     );
   }
-  // Run schema validation through validate() so we get a clear error path.
-  const wrapped = result as SeamFile;
-  const v = validate(wrapped);
-  if (!v.success) {
-    throw new Error(`Script returned an invalid composition:\n - ${v.errors.join("\n - ")}`);
-  }
-  return v.data as Composition;
+  return result as Composition;
 }
 
 /** Splice the script payload into a composition's metadata, preserving any

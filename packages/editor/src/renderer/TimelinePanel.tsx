@@ -14,6 +14,12 @@ import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
+import {
+  editTarget as scriptEditTarget,
+  safeWithUpdatedOriginal,
+} from "./nodeScript.js";
+import { compileDocument } from "./compile.js";
+import type { Composition } from "@seam/core";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -48,6 +54,10 @@ const DEFAULT_PX_PER_SEC = 100;
 const HANDLE_WIDTH = 10;
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_SLOP_PX = 6;
+/** Pixels of movement before a mouse press on a child block is treated
+ *  as drag-to-reorder rather than a click. */
+const REORDER_THRESHOLD_PX = 6;
+const REORDER_LINE_COLOR = "#ff4444";
 
 interface ChildBlock {
   child: ResolvedChild;
@@ -62,6 +72,53 @@ interface ChildBlock {
  * attachments only collide (and thus stack onto a new row) with other
  * attachments, never with the sequential children above them.
  */
+/** Translate a cursor X (in content-coords pixels) into the insertion
+ *  index for a reorder. Slot `k` means "insert before child k" (and
+ *  `N` means "append after the last child"). Splits each child at its
+ *  midpoint — cursor left of the midpoint inserts before, right of it
+ *  inserts after — which feels natural for symmetric drag targets. */
+function computeInsertionIndex(
+  cursorX: number,
+  sortedChildBlocks: ChildBlock[],
+  pxPerSec: number,
+): number {
+  for (let k = 0; k < sortedChildBlocks.length; k++) {
+    const b = sortedChildBlocks[k];
+    const midX = ((b.child.timelineStart + b.child.timelineEnd) / 2) * pxPerSec;
+    if (cursorX < midX) return k;
+  }
+  return sortedChildBlocks.length;
+}
+
+/** Move element at `from` to insertion index `to` (slots are between
+ *  elements: `0` = before the first, `arr.length` = after the last).
+ *  Returns the original array unchanged for no-op moves. */
+function reorderChildren<T>(arr: T[], from: number, to: number): T[] {
+  if (from === to || from === to - 1) return arr;
+  const out = arr.slice();
+  const [item] = out.splice(from, 1);
+  const insertAt = to > from ? to - 1 : to;
+  out.splice(insertAt, 0, item);
+  return out;
+}
+
+/** X position (content-coords px) of the red line for a given insertion
+ *  index. Sequential children play back-to-back, so each boundary is
+ *  the start of the child at that index — except the last slot, which
+ *  is the end of the final child. */
+function insertionIndexToX(
+  insertIdx: number,
+  sortedChildBlocks: ChildBlock[],
+  pxPerSec: number,
+): number {
+  if (sortedChildBlocks.length === 0) return 0;
+  if (insertIdx >= sortedChildBlocks.length) {
+    const last = sortedChildBlocks[sortedChildBlocks.length - 1];
+    return last.child.timelineEnd * pxPerSec;
+  }
+  return sortedChildBlocks[insertIdx].child.timelineStart * pxPerSec;
+}
+
 function layoutBlocks(
   children: ResolvedChild[],
   attachmentStartIndex: number
@@ -205,6 +262,16 @@ interface InnerProps {
   trim?: TrimOverlay;
   /** Provided only in root view, where attachment edits are writable. */
   editHistory?: History<SeamFile>;
+  /** Commit a reorder of sequential children: move `from` to be at
+   *  insertion index `to` (in the post-removal array). Undefined when
+   *  reorder isn't supported in this view. */
+  onReorder?: (from: number, to: number) => void;
+  /** Editor surface (script's `original` when scripted) for anchor
+   *  edits to write to. Paired with `wrapSurface`. */
+  editorSurface?: SeamFile;
+  /** Re-wrap a modified surface back into a stored doc (re-runs the
+   *  script, splices bin refs). Used by anchor-edit history writes. */
+  wrapSurface?: (surface: SeamFile) => SeamFile;
 }
 
 function DesktopTimeline({
@@ -218,10 +285,21 @@ function DesktopTimeline({
   onEnter,
   trim,
   editHistory,
+  onReorder,
+  editorSurface,
+  wrapSurface,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
+  // Reorder drag state. `cursorX` is in content (scroll-relative) px;
+  // `grabOffsetX` is how far inside the source block the user grabbed,
+  // used to keep the ghost's left edge consistent with the cursor.
+  const [reorderDrag, setReorderDrag] = useState<{
+    fromIndex: number;
+    cursorX: number;
+    grabOffsetX: number;
+  } | null>(null);
 
   const splitIndex = attachmentStartIndex ?? timeline.children.length;
   const blocks = useMemo(
@@ -297,6 +375,87 @@ function DesktopTimeline({
     container.scrollLeft = playheadX - container.clientWidth / 2;
   }, [currentTime, pxPerSec, isPlaying]);
 
+  // ── Drag-to-reorder ────────────────────────────────────────────
+  // Sequential child blocks sorted by index, used both to position the
+  // red insertion line and to translate cursor X into an insertion
+  // index. Attachments don't participate (their anchor semantics would
+  // be wrong if reordered).
+  const reorderableBlocks = useMemo(
+    () =>
+      blocks
+        .filter((b) => !b.isAttachment)
+        .sort((a, b) => a.index - b.index),
+    [blocks],
+  );
+
+  const startReorderDrag = useCallback(
+    (index: number, e: PointerEvent) => {
+      if (!onReorder) return;
+      const container = scrollRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left + container.scrollLeft;
+      const block = reorderableBlocks.find((b) => b.index === index);
+      const blockLeftX = block ? block.child.timelineStart * pxPerSec : cursorX;
+      setReorderDrag({
+        fromIndex: index,
+        cursorX,
+        grabOffsetX: cursorX - blockLeftX,
+      });
+    },
+    [onReorder, reorderableBlocks, pxPerSec],
+  );
+
+  // While a reorder is active, follow the cursor on window events
+  // (independent of the source block's capture) and commit on release.
+  // Cleanup of the window listeners is tied to the React effect's
+  // teardown — so a parent unmount or a fresh drag round always wipes
+  // the old subscriptions.
+  useEffect(() => {
+    if (!reorderDrag || !onReorder) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const dragRef = reorderDrag;
+
+    const cursorXFromEvent = (e: PointerEvent): number => {
+      const rect = container.getBoundingClientRect();
+      return e.clientX - rect.left + container.scrollLeft;
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const cursorX = cursorXFromEvent(e);
+      setReorderDrag((prev) => (prev ? { ...prev, cursorX } : null));
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const cursorX = cursorXFromEvent(e);
+      const toIndex = computeInsertionIndex(
+        cursorX,
+        reorderableBlocks,
+        pxPerSec,
+      );
+      const from = dragRef.fromIndex;
+      const isNoop = toIndex === from || toIndex === from + 1;
+      if (!isNoop) onReorder(from, toIndex);
+      setReorderDrag(null);
+    };
+
+    const onCancel = () => setReorderDrag(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    // We deliberately don't include `reorderDrag` here — only its
+    // *existence* matters for setting up listeners; the cursor updates
+    // come through setState. dragRef captures the start state once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reorderDrag !== null, onReorder, reorderableBlocks, pxPerSec]);
+
   const interval = rulerInterval(pxPerSec);
   const rulerTicks: number[] = [];
   for (let t = 0; t <= totalDuration + interval; t += interval) {
@@ -305,11 +464,58 @@ function DesktopTimeline({
 
   const playheadX = currentTime * pxPerSec;
 
+  // Ghost + insertion-line layout. The ghost mirrors the source
+  // block's width and row, but its X follows the cursor offset so the
+  // grabbed point stays under the pointer.
+  const ghost = (() => {
+    if (!reorderDrag) return null;
+    const source = reorderableBlocks.find(
+      (b) => b.index === reorderDrag.fromIndex,
+    );
+    if (!source) return null;
+    const width = Math.max(
+      (source.child.timelineEnd - source.child.timelineStart) * pxPerSec,
+      2,
+    );
+    const top =
+      RULER_HEIGHT + ROW_GAP + source.row * (ROW_HEIGHT + ROW_GAP);
+    const docChild = docRoot?.children[source.index];
+    const label = childLabel(docChild, source.child);
+    const displayType = docChild?.type ?? source.child.type;
+    const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
+    return {
+      left: reorderDrag.cursorX - reorderDrag.grabOffsetX,
+      top,
+      width,
+      label,
+      bg: colors.bg,
+      border: colors.border,
+    };
+  })();
+
+  const insertionX = (() => {
+    if (!reorderDrag) return null;
+    const idx = computeInsertionIndex(
+      reorderDrag.cursorX,
+      reorderableBlocks,
+      pxPerSec,
+    );
+    const isNoop =
+      idx === reorderDrag.fromIndex || idx === reorderDrag.fromIndex + 1;
+    if (isNoop) return null;
+    return insertionIndexToX(idx, reorderableBlocks, pxPerSec);
+  })();
+
   return (
     <div
       ref={scrollRef}
       onPointerDown={handlePointerDown}
-      style={{ flex: 1, overflow: "auto", position: "relative", cursor: "crosshair" }}
+      style={{
+        flex: 1,
+        overflow: "auto",
+        position: "relative",
+        cursor: reorderDrag ? "grabbing" : "crosshair",
+      }}
     >
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
@@ -323,6 +529,8 @@ function DesktopTimeline({
           onEnter={onEnter}
           docRoot={docRoot}
           attachmentStartIndex={splitIndex}
+          reorderDragIndex={reorderDrag?.fromIndex ?? null}
+          onReorderDragStart={onReorder ? startReorderDrag : null}
         />
         <AnchorLinesLayer
           selectedIndices={selectedIndices}
@@ -331,7 +539,54 @@ function DesktopTimeline({
           blocks={blocks}
           pxPerSec={pxPerSec}
           history={editHistory}
+          editorSurface={editorSurface}
+          wrapSurface={wrapSurface}
         />
+        {ghost && (
+          <div
+            style={{
+              position: "absolute",
+              left: ghost.left,
+              top: ghost.top,
+              width: ghost.width,
+              height: ROW_HEIGHT,
+              background: ghost.bg,
+              border: `2px solid ${ghost.border}`,
+              borderRadius: 3,
+              opacity: 0.85,
+              pointerEvents: "none",
+              display: "flex",
+              alignItems: "center",
+              paddingLeft: 6,
+              paddingRight: 6,
+              fontSize: 11,
+              color: "#fff",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              boxSizing: "border-box",
+              zIndex: 20,
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.5)",
+            }}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+              {ghost.label}
+            </span>
+          </div>
+        )}
+        {insertionX != null && (
+          <div
+            style={{
+              position: "absolute",
+              left: insertionX - 1,
+              top: RULER_HEIGHT,
+              width: 2,
+              height: contentHeight - RULER_HEIGHT,
+              background: REORDER_LINE_COLOR,
+              pointerEvents: "none",
+              zIndex: 19,
+            }}
+          />
+        )}
         {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
       </div>
@@ -350,6 +605,8 @@ function MobileTimeline({
   onEnter,
   trim,
   editHistory,
+  editorSurface,
+  wrapSurface,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -448,6 +705,8 @@ function MobileTimeline({
             onEnter={onEnter}
             docRoot={docRoot}
             attachmentStartIndex={splitIndex}
+            reorderDragIndex={null}
+            onReorderDragStart={null}
           />
           <AnchorLinesLayer
             selectedIndices={selectedIndices}
@@ -455,6 +714,9 @@ function MobileTimeline({
             timeline={timeline}
             blocks={blocks}
             pxPerSec={pxPerSec}
+            history={editHistory}
+            editorSurface={editorSurface}
+            wrapSurface={wrapSurface}
           />
           {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
@@ -510,6 +772,8 @@ function ChildrenLayer({
   onEnter,
   docRoot,
   attachmentStartIndex,
+  reorderDragIndex,
+  onReorderDragStart,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
@@ -523,6 +787,12 @@ function ChildrenLayer({
     attachments?: import("@seam/core").Child[];
   };
   attachmentStartIndex: number;
+  /** Index of the child currently being reorder-dragged (fades in the
+   *  block view). `null` when no drag is in progress. */
+  reorderDragIndex: number | null;
+  /** Hand-off callback when a child block's mouse-press passes the
+   *  drag threshold. `null` disables reorder entirely. */
+  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
 }) {
   return (
     <>
@@ -539,6 +809,10 @@ function ChildrenLayer({
           !isAttachment &&
           selectedIndices.length >= 2 &&
           selectedIndices[0] === index;
+        // Reorder only applies to sequential children (attachments
+        // would lose their anchor semantics on move).
+        const blockReorderStart =
+          !isAttachment && onReorderDragStart ? onReorderDragStart : null;
         return (
           <ChildBlockView
             key={index}
@@ -555,6 +829,8 @@ function ChildrenLayer({
             onMultiSelectStart={onMultiSelectStart}
             multiSelectMode={multiSelectMode}
             onEnter={onEnter}
+            isDraggingOut={reorderDragIndex === index}
+            onReorderDragStart={blockReorderStart}
           />
         );
       })}
@@ -576,6 +852,8 @@ function ChildBlockView({
   onMultiSelectStart,
   multiSelectMode,
   onEnter,
+  isDraggingOut,
+  onReorderDragStart,
 }: {
   child: ResolvedChild;
   displayChild?: import("@seam/core").Child;
@@ -590,6 +868,13 @@ function ChildBlockView({
   onMultiSelectStart: (index: number) => void;
   multiSelectMode: boolean;
   onEnter?: (index: number) => void;
+  /** True while this block is the source of an active reorder drag —
+   *  fade it so the user sees the ghost is the live thing. */
+  isDraggingOut: boolean;
+  /** When set, mouse-press + drag past the threshold hands off to the
+   *  parent's reorder tracker. `null` disables reorder for this block
+   *  (e.g. attachments, or views where reordering isn't writable). */
+  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
 }) {
   const left = child.timelineStart * pxPerSec;
   const width = Math.max((child.timelineEnd - child.timelineStart) * pxPerSec, 2);
@@ -603,6 +888,12 @@ function ChildBlockView({
   const longPressTimer = useRef<number | null>(null);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
   const longPressFired = useRef(false);
+  // Mouse-only: drag-to-reorder. `mouseDownPos` records the press
+  // origin; `reorderHandedOff` flips true once we transition past the
+  // movement threshold so the pointerup that follows doesn't fire a
+  // click-to-select.
+  const mouseDownPos = useRef<{ x: number; y: number } | null>(null);
+  const reorderHandedOff = useRef(false);
 
   const clearLongPress = () => {
     if (longPressTimer.current != null) {
@@ -623,7 +914,14 @@ function ChildBlockView({
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     longPressFired.current = false;
-    if (e.pointerType !== "mouse") {
+    reorderHandedOff.current = false;
+    if (e.pointerType === "mouse") {
+      // Capture so pointermove keeps firing on this block even if the
+      // cursor leaves it — that's the only way drag detection can win
+      // when the user yanks the pointer fast.
+      e.currentTarget.setPointerCapture(e.pointerId);
+      mouseDownPos.current = { x: e.clientX, y: e.clientY };
+    } else {
       pointerStart.current = { x: e.clientX, y: e.clientY };
       longPressTimer.current = window.setTimeout(() => {
         longPressFired.current = true;
@@ -633,14 +931,44 @@ function ChildBlockView({
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!pointerStart.current) return;
-    const dx = e.clientX - pointerStart.current.x;
-    const dy = e.clientY - pointerStart.current.y;
-    if (Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX) clearLongPress();
+    if (pointerStart.current) {
+      const dx = e.clientX - pointerStart.current.x;
+      const dy = e.clientY - pointerStart.current.y;
+      if (Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX) clearLongPress();
+    }
+    if (
+      e.pointerType === "mouse" &&
+      mouseDownPos.current &&
+      !reorderHandedOff.current &&
+      onReorderDragStart
+    ) {
+      const dx = e.clientX - mouseDownPos.current.x;
+      const dy = e.clientY - mouseDownPos.current.y;
+      if (Math.hypot(dx, dy) > REORDER_THRESHOLD_PX) {
+        reorderHandedOff.current = true;
+        // Release the capture so DesktopTimeline's window listeners
+        // are the sole pointer trackers from here on; the block no
+        // longer needs to see further movement.
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          // Already released — fine.
+        }
+        mouseDownPos.current = null;
+        onReorderDragStart(index, e.nativeEvent);
+      }
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     clearLongPress();
+    mouseDownPos.current = null;
+    if (reorderHandedOff.current) {
+      // Drag took over — DesktopTimeline owns the rest. Don't toggle
+      // selection on this click-that-wasn't.
+      reorderHandedOff.current = false;
+      return;
+    }
     if (longPressFired.current) return; // long-press handled selection already
     e.stopPropagation();
     const isTouch = e.pointerType !== "mouse";
@@ -700,8 +1028,8 @@ function ChildBlockView({
               ? `2px dashed ${SECONDARY_BORDER}`
               : `2px solid ${PRIMARY_BORDER}`
           : `2px solid ${colors.border}`,
-        cursor: "pointer",
-        opacity: isAttachment ? 0.85 : 1,
+        cursor: onReorderDragStart ? "grab" : "pointer",
+        opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : 1,
       }}
     >
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -950,6 +1278,8 @@ function AnchorLinesLayer({
   blocks,
   pxPerSec,
   history,
+  editorSurface,
+  wrapSurface,
 }: {
   selectedIndices: number[];
   docRoot?: {
@@ -961,6 +1291,15 @@ function AnchorLinesLayer({
   pxPerSec: number;
   /** Provided only when editing is allowed (root view). */
   history?: History<SeamFile>;
+  /** Editor-surface root — the script's `original` when a script is
+   *  attached, otherwise the doc itself. Anchor edits read + write here
+   *  so they don't get silently overwritten by the next compile pass
+   *  (which would re-run the script against the unchanged original). */
+  editorSurface?: SeamFile;
+  /** Wrap a modified surface back into a fully-rendered on-disk doc:
+   *  re-runs any active script, splices bin reference bodies, returns
+   *  something safe to pass through history.replace / history.push. */
+  wrapSurface?: (surface: SeamFile) => SeamFile;
 }) {
   if (!docRoot) return null;
   const childCount = docRoot.children.length;
@@ -1084,13 +1423,20 @@ function AnchorLinesLayer({
     const startX = e.clientX;
     const startY = e.clientY;
     const initialDoc = history.current;
-    const initialAtt = initialDoc.attachments?.[ctx.attIdx];
+    // Read from the editor SURFACE (script's `original` when scripted)
+    // so writes target the source-of-truth — if we read from the
+    // rendered body instead, the next compile would clobber our edit
+    // by re-running the script against the unchanged original.
+    const initialSurface = editorSurface ?? initialDoc;
+    const initialAtt = initialSurface.attachments?.[ctx.attIdx];
     if (!initialAtt) return;
     const initialSpec = (initialAtt as {
       start?: TimeAnchor;
       end?: TimeAnchor;
     })[ctx.side];
     if (!initialSpec) return;
+
+    const wrap = wrapSurface ?? ((s: SeamFile) => s);
 
     try {
       target.setPointerCapture(pointerId);
@@ -1123,9 +1469,13 @@ function AnchorLinesLayer({
         kind === "anchorPoint"
           ? dragAnchorPoint(initialSpec, deltaSec, ctx)
           : dragOffset(initialSpec, deltaSec, ctx);
-      history.replace(
-        setAttachmentSpec(initialDoc, ctx.attIdx, ctx.side, newSpec)
+      const newSurface = setAttachmentSpec(
+        initialSurface,
+        ctx.attIdx,
+        ctx.side,
+        newSpec,
       );
+      history.replace(wrap(newSurface));
     };
     const onUp = (ev: Event) => {
       const me = ev as PointerEvent;
@@ -1140,9 +1490,13 @@ function AnchorLinesLayer({
       }
       if (!dragging && clickToggle) {
         const newSpec = clickToggle(initialSpec);
-        history.push(
-          setAttachmentSpec(initialDoc, ctx.attIdx, ctx.side, newSpec)
+        const newSurface = setAttachmentSpec(
+          initialSurface,
+          ctx.attIdx,
+          ctx.side,
+          newSpec,
         );
+        history.push(wrap(newSurface));
       }
     };
     target.addEventListener("pointermove", onMove);
@@ -1601,6 +1955,46 @@ export default function TimelinePanel({
         // when we're actually rendering the root view (composition view's
         // doc is a derivation that doesn't propagate back).
         const editHistory = view.type === "root" ? history : undefined;
+        // Anchor edits need to read from + write to the EDITOR SURFACE
+        // (the script's `original` when scripted) so the next compile
+        // doesn't blow away the edit by re-running the script against
+        // an unchanged original. `wrapSurface` re-applies the script
+        // and splices bin refs, producing the storable form history
+        // accepts.
+        const editorSurface =
+          view.type === "root" && doc
+            ? (scriptEditTarget(doc as Composition) as SeamFile)
+            : undefined;
+        const wrapSurface =
+          view.type === "root" && doc
+            ? (surface: SeamFile): SeamFile => {
+                const { comp } = safeWithUpdatedOriginal(
+                  doc as Composition,
+                  surface as Composition,
+                );
+                try {
+                  return compileDocument(comp as SeamFile).doc;
+                } catch {
+                  return comp as SeamFile;
+                }
+              }
+            : undefined;
+        // Reorder is only writable in root view (same gating as the
+        // delete shortcut) — composition-view edits would need to
+        // splice into the nested children inside `doc`, which the
+        // current onDocumentChange flow doesn't model.
+        const onReorder =
+          view.type === "root" && doc && onDocumentChange
+            ? (from: number, to: number) => {
+                if (from === to || from === to - 1) return;
+                const next = reorderChildren(doc.children, from, to);
+                onDocumentChange({ ...doc, children: next });
+                // Keep the moved child selected so the user can chain
+                // edits without re-clicking it.
+                const newIndex = to > from ? to - 1 : to;
+                onSelectionChange([newIndex]);
+              }
+            : undefined;
         return isMobile ? (
           <MobileTimeline
             timeline={timeline}
@@ -1613,6 +2007,8 @@ export default function TimelinePanel({
             onEnter={onEnterProp}
             trim={trim}
             editHistory={editHistory}
+            editorSurface={editorSurface}
+            wrapSurface={wrapSurface}
           />
         ) : (
           <DesktopTimeline
@@ -1626,6 +2022,9 @@ export default function TimelinePanel({
             onEnter={onEnterProp}
             trim={trim}
             editHistory={editHistory}
+            onReorder={onReorder}
+            editorSurface={editorSurface}
+            wrapSurface={wrapSurface}
           />
         );
       })()}

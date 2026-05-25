@@ -5,6 +5,7 @@
 // root bin. Errors are collected rather than thrown so a single bad
 // script or missing bin entry doesn't lose the rest of the document.
 
+import { validate } from "@seam/core";
 import type { Child, Composition, SeamFile } from "@seam/core";
 import {
   BIN_METADATA_KEY,
@@ -127,12 +128,26 @@ function compileComposition(
     };
 
     try {
-      const rendered = runScript(script.payload.scriptSrc, compiledOriginal);
+      const rawRendered = runScript(
+        script.payload.scriptSrc,
+        compiledOriginal,
+      );
+      // The script's output may itself contain bin references — splice
+      // their bodies in before validating, otherwise a script that
+      // emits bin refs would always fail the children.min(1) schema
+      // check on the stripped reference compositions.
+      const rendered = spliceBinReferencesIn(rawRendered, bin);
+      const v = validate(rendered);
+      if (!v.success) {
+        throw new Error(
+          `Script returned an invalid composition:\n - ${v.errors.join("\n - ")}`,
+        );
+      }
       // Keep the reference's own metadata (so the script payload stays
       // attached and any extra keys survive); overwrite only the
       // rendered structural fields.
       resolved = {
-        ...rendered,
+        ...(v.data as Composition),
         metadata: storedMetadata,
       };
     } catch (err) {
@@ -147,6 +162,28 @@ function compileComposition(
   }
 
   return resolved;
+}
+
+/** Recursively splice bin entry bodies into every bin-reference
+ *  composition in the tree. Used to fill bodies into a script's raw
+ *  output so schema validation can pass — unresolved references are
+ *  left as-is (validation will then reject them). */
+function spliceBinReferencesIn(comp: Composition, bin: BinEntry[]): Composition {
+  let next: Composition = comp;
+  if (isBinReference(next)) {
+    const id = binReferenceId(next)!;
+    const entry = findBinItem(bin, id);
+    if (entry) next = applyBinItemBody(next, entry);
+  }
+  const newChildren = next.children?.map((c) =>
+    c.type === "composition" ? spliceBinReferencesIn(c, bin) : c,
+  );
+  const newAttachments = next.attachments?.map((c) =>
+    c.type === "composition" ? spliceBinReferencesIn(c, bin) : c,
+  );
+  if (newChildren) next = { ...next, children: newChildren };
+  if (newAttachments) next = { ...next, attachments: newAttachments };
+  return next;
 }
 
 /** Drop `children` / `attachments` off every bin-reference composition

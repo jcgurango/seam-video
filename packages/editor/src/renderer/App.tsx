@@ -434,12 +434,31 @@ export default function App({ platform }: AppProps) {
       // The incoming doc is the *editor surface*. If the on-disk root
       // has a script attached, re-run it against this new `original` and
       // store the rendered body alongside the bumped script payload.
+      // Then compile so bin references in the rendered body (and inside
+      // any nested compositions) get their bodies spliced — without
+      // this, scripts whose `original` has stripped bin refs would
+      // produce a rendered body that fails schema / resolveDoc on the
+      // next read.
       const { comp, error } = safeWithUpdatedOriginal(
         document as Composition,
         surfaceDoc as Composition
       );
-      setScriptError(error);
-      history.push(comp as SeamFile);
+      let compiled: SeamFile = comp as SeamFile;
+      let compileError: string | null = null;
+      try {
+        const result = compileDocument(comp as SeamFile);
+        compiled = result.doc;
+        if (result.errors.length > 0) {
+          compileError = result.errors
+            .map((e) => `${e.source}: ${e.message}`)
+            .join("\n");
+        }
+      } catch (err) {
+        console.error("[App] updateDocument compile failed:", err, { comp });
+      }
+      const combined = [error, compileError].filter(Boolean).join("\n");
+      setScriptError(combined.length > 0 ? combined : null);
+      history.push(compiled);
       setSelectedIndices([]);
       setMultiSelectMode(false);
     },
@@ -462,14 +481,35 @@ export default function App({ platform }: AppProps) {
   // Selection indices are encoded as: [0, children.length) → child,
   // [children.length, total) → attachment. In clip view the JSON node is the
   // clip itself (no children/attachments), so jumping doesn't apply.
+  //
+  // When the displayed node has a script attached, the timeline renders
+  // the script's `original.children` (via the editor-surface unwrap),
+  // so the visible JSON puts those at
+  // `metadata.seam-editor-script.original.children.N` rather than at
+  // the top-level `children.N`. Prefix the path so the JSON tab jumps
+  // to the right block.
   const jsonJumpPath = useMemo<string | null>(() => {
     if (selectedIndices.length !== 1) return null;
     if (view.type === "clip") return null;
     const idx = selectedIndices[0];
     const childCount = viewDocument.children.length;
-    if (idx < childCount) return `children.${idx}`;
-    return `attachments.${idx - childCount}`;
-  }, [selectedIndices, view, viewDocument]);
+    const localPath =
+      idx < childCount
+        ? `children.${idx}`
+        : `attachments.${idx - childCount}`;
+
+    const displayedNode: unknown =
+      view.type === "root" ? document : document.children[view.rootIndex];
+    if (
+      displayedNode &&
+      typeof displayedNode === "object" &&
+      (displayedNode as { type?: unknown }).type === "composition" &&
+      findScript(displayedNode as Composition)
+    ) {
+      return `metadata.seam-editor-script.original.${localPath}`;
+    }
+    return localPath;
+  }, [selectedIndices, view, viewDocument, document]);
 
   // The composition the Script tab targets. Root view → on-disk root
   // composition (so the Script tab sees the existing wrapper, if any).
@@ -502,14 +542,26 @@ export default function App({ platform }: AppProps) {
       } else {
         return ["Scripts can only be attached to compositions."];
       }
+      // Compile before resolving so bin references emitted by the
+      // script (or already present in the surrounding doc) get their
+      // bodies spliced before schema / spatial resolution runs. Same
+      // pattern as handleJsonNodeSave.
+      let compiled: SeamFile;
+      let compileErrors: string[];
       try {
-        resolveDoc(newDoc);
+        const result = compileDocument(newDoc);
+        compiled = result.doc;
+        compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
       } catch (err) {
         return [String(err)];
       }
-      // Reset script-error UI: this apply call already validated.
-      setScriptError(null);
-      history.push(newDoc);
+      try {
+        resolveDoc(compiled);
+      } catch (err) {
+        return [...compileErrors, String(err)];
+      }
+      setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
+      history.push(compiled);
       setSelectedIndices([]);
       setMultiSelectMode(false);
       return null;
