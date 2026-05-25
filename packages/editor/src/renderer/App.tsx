@@ -32,6 +32,7 @@ import {
   resolveCCWords,
   type CCSelection,
 } from "./ccCutTool.js";
+import { isTypingInEditableSurface } from "./keyboardGuards.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
@@ -722,19 +723,12 @@ export default function App({ platform }: AppProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Let the browser / Monaco handle undo / redo when an editable
+      // element owns focus — otherwise typing into a rename input or
+      // the JSON / Script editor and hitting Ctrl+Z would silently
+      // roll back the *document* instead of the input.
+      if (isTypingInEditableSurface(e)) return;
       const mod = e.metaKey || e.ctrlKey;
-      // Let the browser/Monaco handle undo/redo when an editable element
-      // owns focus — otherwise typing into a rename input or the JSON /
-      // Script editor and hitting Ctrl+Z would silently roll back the
-      // *document* instead of the input.
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      const inEditable =
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        (t?.isContentEditable ?? false);
-      if (inEditable) return;
       if (mod && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         handleUndo();

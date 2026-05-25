@@ -185,44 +185,82 @@ function InspectorPanel({
     return <div style={{ color: "#888" }}>No timeline.</div>;
   }
 
-  const attachmentStartIndex = viewDocument.children.length;
-  const docChildren = viewDocument.children;
-  const docAttachments = viewDocument.attachments ?? [];
-
-  const covering = timeline.children
-    .map((child, index) => ({ child, index }))
-    .filter(
-      ({ child }) =>
-        currentTime >= child.timelineStart && currentTime < child.timelineEnd
-    );
+  const blocks = renderCoveringBlocks({
+    resolved: timeline,
+    docComp: viewDocument,
+    currentTime,
+    depth: 0,
+  });
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <Row label="Playhead" value={formatTime(currentTime)} />
 
-      {covering.length === 0 ? (
+      {blocks.length === 0 ? (
         <div style={{ color: "#888", fontStyle: "italic" }}>
           (no children at playhead)
         </div>
       ) : (
-        covering.map(({ child, index }) => {
-          const isAttachment = index >= attachmentStartIndex;
-          const docChild: Child | undefined = isAttachment
-            ? docAttachments[index - attachmentStartIndex]
-            : docChildren[index];
-          return (
-            <NodeBlock
-              key={index}
-              child={child}
-              docChild={docChild}
-              currentTime={currentTime}
-              isAttachment={isAttachment}
-            />
-          );
-        })
+        blocks
       )}
     </div>
   );
+}
+
+/** Walk one composition level, render NodeBlocks for every resolved
+ *  child the playhead is inside, and recurse into compositions. The
+ *  resolver keeps each composition's children in that composition's
+ *  own post-window output coords (starting at 0), so descending one
+ *  level is just `currentTime − parentChild.timelineStart`. */
+function renderCoveringBlocks({
+  resolved,
+  docComp,
+  currentTime,
+  depth,
+}: {
+  resolved: { children: ResolvedChild[] };
+  docComp: { children: Child[]; attachments?: Child[] };
+  currentTime: number;
+  depth: number;
+}): React.ReactNode[] {
+  const attachmentStartIndex = docComp.children.length;
+  const docChildren = docComp.children;
+  const docAttachments = docComp.attachments ?? [];
+
+  const out: React.ReactNode[] = [];
+  resolved.children.forEach((child, index) => {
+    if (
+      currentTime < child.timelineStart ||
+      currentTime >= child.timelineEnd
+    ) {
+      return;
+    }
+    const isAttachment = index >= attachmentStartIndex;
+    const docChild: Child | undefined = isAttachment
+      ? docAttachments[index - attachmentStartIndex]
+      : docChildren[index];
+    out.push(
+      <NodeBlock
+        key={`${depth}-${index}`}
+        child={child}
+        docChild={docChild}
+        currentTime={currentTime}
+        isAttachment={isAttachment}
+        depth={depth}
+      />,
+    );
+    if (child.type === "composition" && docChild?.type === "composition") {
+      out.push(
+        ...renderCoveringBlocks({
+          resolved: child,
+          docComp: docChild,
+          currentTime: currentTime - child.timelineStart,
+          depth: depth + 1,
+        }),
+      );
+    }
+  });
+  return out;
 }
 
 function NodeBlock({
@@ -230,23 +268,41 @@ function NodeBlock({
   docChild,
   currentTime,
   isAttachment,
+  depth,
 }: {
   child: ResolvedChild;
   docChild: Child | undefined;
   currentTime: number;
   isAttachment: boolean;
+  depth: number;
 }) {
   const localTime = currentTime - child.timelineStart;
   const outputDuration = child.timelineEnd - child.timelineStart;
 
-  const hasSource = child.type === "clip" || child.type === "audio";
-  const sourceTime = hasSource
-    ? child.sourceIn + localTime * child.speed
-    : null;
-  const sourceSpan = hasSource ? child.sourceOut - child.sourceIn : 0;
+  // Derive the "source" coordinates for nodes that have an inner
+  // timeline: clip/audio (the underlying media), and composition (its
+  // inner — pre-window — timeline). For compositions the bounds come
+  // from the doc-side `in`/`out` (defaulted to 0..naturalInner) since
+  // the resolver doesn't carry them on `ResolvedComposition`.
+  let sourceIn: number | null = null;
+  let sourceOut: number | null = null;
+  let sourceTime: number | null = null;
+  if (child.type === "clip" || child.type === "audio") {
+    sourceIn = child.sourceIn;
+    sourceOut = child.sourceOut;
+    sourceTime = sourceIn + localTime * child.speed;
+  } else if (child.type === "composition" && docChild?.type === "composition") {
+    sourceIn = docChild.in ?? 0;
+    // out unset → window spans the full inner timeline; reconstruct
+    // its length from the resolved output: innerLen = outputLen * speed.
+    sourceOut = docChild.out ?? sourceIn + child.duration * child.speed;
+    sourceTime = sourceIn + localTime * child.speed;
+  }
+  const hasSource = sourceTime != null && sourceIn != null && sourceOut != null;
+  const sourceSpan = hasSource ? sourceOut! - sourceIn! : 0;
   const sourcePct =
     hasSource && sourceSpan > 0
-      ? ((sourceTime! - child.sourceIn) / sourceSpan) * 100
+      ? ((sourceTime! - sourceIn!) / sourceSpan) * 100
       : null;
 
   return (
@@ -256,6 +312,7 @@ function NodeBlock({
         borderRadius: 4,
         padding: 10,
         background: "#1c1c1c",
+        marginLeft: depth * 16,
       }}
     >
       <div

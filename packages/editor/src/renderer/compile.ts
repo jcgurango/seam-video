@@ -113,6 +113,19 @@ function compileComposition(
       errors,
       [...path, "script-original"],
     );
+
+    // Minimise what we hand back into metadata storage: bin reference
+    // bodies inside `original` are dead weight on disk because compile
+    // re-splices them on every read. The user-authored body of `original`
+    // is preserved — only bin references lose their (recoverable)
+    // children/attachments. Independent of whether the script runs
+    // cleanly, since stripping doesn't depend on the run.
+    const storedOriginal = stripBinReferenceBodies(script.payload.original);
+    const storedMetadata = {
+      ...(resolved.metadata ?? {}),
+      [SCRIPT_METADATA_KEY]: { ...script.payload, original: storedOriginal },
+    };
+
     try {
       const rendered = runScript(script.payload.scriptSrc, compiledOriginal);
       // Keep the reference's own metadata (so the script payload stays
@@ -120,7 +133,7 @@ function compileComposition(
       // rendered structural fields.
       resolved = {
         ...rendered,
-        metadata: resolved.metadata,
+        metadata: storedMetadata,
       };
     } catch (err) {
       errors.push({
@@ -129,10 +142,62 @@ function compileComposition(
       });
       // Leave the existing body in place so the user keeps the last
       // good render while they fix the script.
+      resolved = { ...resolved, metadata: storedMetadata };
     }
   }
 
   return resolved;
+}
+
+/** Drop `children` / `attachments` off every bin-reference composition
+ *  in the tree. Recurses into children, attachments, and any nested
+ *  script payload's `original`. Plain compositions are preserved as-is
+ *  (we need their body for the script to operate on, and for nested
+ *  scripts we keep their last-rendered output as a fallback). */
+function stripBinReferenceBodies(comp: Composition): Composition {
+  let next: Composition = comp;
+  if (isBinReference(next)) {
+    const { children: _c, attachments: _a, ...rest } = next;
+    next = rest as Composition;
+  }
+
+  // Walk into any script payload's original first, so a binref-bearing
+  // original-inside-an-original also gets stripped.
+  const scriptPayload = next.metadata?.[SCRIPT_METADATA_KEY];
+  if (
+    scriptPayload &&
+    typeof scriptPayload === "object" &&
+    "original" in (scriptPayload as Record<string, unknown>)
+  ) {
+    const payload = scriptPayload as { scriptSrc: string; original: unknown };
+    const orig = payload.original;
+    if (
+      orig &&
+      typeof orig === "object" &&
+      (orig as { type?: unknown }).type === "composition"
+    ) {
+      const strippedOriginal = stripBinReferenceBodies(orig as Composition);
+      if (strippedOriginal !== orig) {
+        next = {
+          ...next,
+          metadata: {
+            ...(next.metadata ?? {}),
+            [SCRIPT_METADATA_KEY]: { ...payload, original: strippedOriginal },
+          },
+        };
+      }
+    }
+  }
+
+  const newChildren = next.children?.map((c) =>
+    c.type === "composition" ? stripBinReferenceBodies(c) : c,
+  );
+  const newAttachments = next.attachments?.map((c) =>
+    c.type === "composition" ? stripBinReferenceBodies(c) : c,
+  );
+  if (newChildren) next = { ...next, children: newChildren };
+  if (newAttachments) next = { ...next, attachments: newAttachments };
+  return next;
 }
 
 /** Strip the rendered body off any script-/bin-bearing composition so the

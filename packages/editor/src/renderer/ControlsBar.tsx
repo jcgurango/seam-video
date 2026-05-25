@@ -36,6 +36,7 @@ import {
   walkComposeDependencies,
 } from "./composeTool.js";
 import { applyBin, canBin } from "./binTool.js";
+import { isTypingInEditableSurface } from "./keyboardGuards.js";
 
 interface ControlsBarProps {
   document: SeamFile;
@@ -589,10 +590,13 @@ export default function ControlsBar({
     if (nextDoc) onDocumentChange(nextDoc);
   }, [doc, currentTime, onDocumentChange]);
 
-  // S key shortcut (disabled in non-root views)
+  // S key shortcut (disabled in non-root views and while typing in any
+  // editable surface — otherwise typing "s" into the JSON / Script
+  // editor or a rename input would slice the playhead clip).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (view.type !== "root") return;
+      if (isTypingInEditableSurface(e)) return;
       if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         handleSlice();
       }
@@ -601,10 +605,13 @@ export default function ControlsBar({
     return () => window.removeEventListener("keydown", handler);
   }, [handleSlice, view]);
 
-  // Escape to exit a nested view
+  // Escape to exit a nested view — skipped when typing in an editable
+  // surface so Monaco's own Esc handlers (close suggest widget, exit
+  // find, etc.) and rename inputs work normally.
   useEffect(() => {
     if (view.type === "root") return;
     const handler = (e: KeyboardEvent) => {
+      if (isTypingInEditableSurface(e)) return;
       if (e.key === "Escape") onExit(currentTime);
     };
     window.addEventListener("keydown", handler);
