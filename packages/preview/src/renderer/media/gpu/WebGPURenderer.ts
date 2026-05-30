@@ -10,10 +10,16 @@
  *   opacity — alpha multiply
  */
 
-import type { ResolvedClip, ResolvedText, Filter, Keyframed } from "@seam/core";
+import type {
+  ResolvedClip,
+  ResolvedStatic,
+  ResolvedText,
+  Filter,
+  Keyframed,
+} from "@seam/core";
 import { sampleNumber } from "@seam/core";
 
-type Drawable = ResolvedClip | ResolvedText;
+type Drawable = ResolvedClip | ResolvedStatic | ResolvedText;
 import { TextureManager } from "./TextureManager.js";
 import type { RenderCommand, DrawCommand, GroupCommand } from "./RenderList.js";
 

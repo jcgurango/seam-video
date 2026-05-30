@@ -161,6 +161,19 @@ export const ClipSchema = z.object({
   { message: "Cannot specify both 'speed' and 'duration' on a clip" }
 );
 
+export const StaticSchema = z.object({
+  type: z.literal("static"),
+  source: z.string().min(1),
+  duration: z.number().positive(),
+  /** For video sources: the source timestamp (seconds) to freeze on.
+   *  Ignored for images (which have no timeline). Defaults to 0. */
+  in: z.number().nonnegative().optional(),
+  filters: FiltersArraySchema,
+  ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
+}).strict();
+
 export const EmptySchema = z.object({
   type: z.literal("empty"),
   duration: z.number().positive(),
@@ -258,6 +271,7 @@ const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
     AudioSchema,
+    StaticSchema,
     EmptySchema,
     DataSchema,
     TextSchema,

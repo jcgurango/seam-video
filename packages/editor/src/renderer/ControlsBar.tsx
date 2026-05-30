@@ -937,7 +937,7 @@ export default function ControlsBar({
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/*,audio/*"
+          accept="video/*,audio/*,image/*"
           multiple
           onChange={handleFileInput}
           style={{ display: "none" }}

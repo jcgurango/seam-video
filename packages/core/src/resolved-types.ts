@@ -54,6 +54,22 @@ export interface ResolvedClip {
   spatialInput?: SpatialInput;
 }
 
+export interface ResolvedStatic {
+  type: "static";
+  source: string;
+  /** Source-time freeze offset (seconds). 0 for images; the user's `in`
+   *  value for video freeze-frames. */
+  sourceTime: number;
+  timelineStart: number;
+  timelineEnd: number;
+  filters?: Filter[];
+  spatial?: SpatialRect;
+  objectFit?: ObjectFit;
+  position?: Position;
+  anchor?: SpatialAnchor;
+  spatialInput?: SpatialInput;
+}
+
 export interface ResolvedEmpty {
   type: "empty";
   timelineStart: number;
@@ -124,6 +140,7 @@ export interface ResolvedComposition {
 export type ResolvedChild =
   | ResolvedClip
   | ResolvedAudio
+  | ResolvedStatic
   | ResolvedEmpty
   | ResolvedData
   | ResolvedText

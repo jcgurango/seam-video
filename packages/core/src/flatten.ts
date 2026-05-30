@@ -2,6 +2,7 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedAudio,
+  ResolvedStatic,
   ResolvedEmpty,
   ResolvedData,
   ResolvedText,
@@ -10,6 +11,7 @@ import type {
 export type FlatLeaf =
   | ResolvedClip
   | ResolvedAudio
+  | ResolvedStatic
   | ResolvedEmpty
   | ResolvedData
   | ResolvedText;
@@ -50,6 +52,12 @@ export function flattenResolved(
         timelineEnd: end,
         speed: child.speed * parentSpeed,
         ...(child.volume != null ? { volume: child.volume } : {}),
+      });
+    } else if (child.type === "static") {
+      result.push({
+        ...child,
+        timelineStart: start,
+        timelineEnd: end,
       });
     } else if (child.type === "empty") {
       result.push({

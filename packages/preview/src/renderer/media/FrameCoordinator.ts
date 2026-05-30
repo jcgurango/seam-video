@@ -2,6 +2,7 @@ import type {
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
+  ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
@@ -11,6 +12,7 @@ import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
 import { TextStore } from "./TextStore.js";
+import { StaticStore } from "./StaticStore.js";
 import { resolveSource } from "../components/resolveSource.js";
 
 /** Seconds of source time to keep buffered ahead of the playhead per clip. */
@@ -40,6 +42,7 @@ export class FrameCoordinator {
   private playingClips = new Set<ResolvedClip | ResolvedAudio>();
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
+  private staticStore = new StaticStore();
   private ready = false;
 
   /** Fires when a buffered frame becomes available — used to repaint while paused. */
@@ -66,6 +69,12 @@ export class FrameCoordinator {
     // via Pretext-laid-out canvas drawing — no SVG / `<img>` decode wait.
     this.textStore.onFrameAvailable = () => this.onFrameAvailable?.();
     this.textStore.setTimeline(timeline);
+
+    // Static nodes decode asynchronously — fire and forget so the
+    // initial reconcile doesn't block on them. The first frame
+    // available callback will repaint when each decode lands.
+    this.staticStore.onFrameAvailable = () => this.onFrameAvailable?.();
+    void this.staticStore.setTimeline(timeline, basePath, mediaStore);
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -173,11 +182,14 @@ export class FrameCoordinator {
    * become visible on the next gpuRender call without needing a reconcile.
    */
   getFrame(
-    clip: ResolvedClip | ResolvedText,
+    clip: ResolvedClip | ResolvedText | ResolvedStatic,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
     if (clip.type === "text") {
       return this.textStore.getFrame(clip);
+    }
+    if (clip.type === "static") {
+      return this.staticStore.getFrame(clip);
     }
     const flat = this.flatByClip.get(clip);
     if (!flat) return null;
@@ -189,7 +201,10 @@ export class FrameCoordinator {
     return buffer.getFrame(flat.toSourceTime(timelineTime));
   }
 
-  getIntrinsicSize(clip: ResolvedClip): { w: number; h: number } | null {
+  getIntrinsicSize(
+    clip: ResolvedClip | ResolvedStatic,
+  ): { w: number; h: number } | null {
+    if (clip.type === "static") return this.staticStore.getIntrinsicSize(clip);
     return this.sizes.get(clip) ?? null;
   }
 
@@ -203,6 +218,7 @@ export class FrameCoordinator {
     this.sizes.clear();
     this.playingClips.clear();
     this.textStore.dispose();
+    this.staticStore.dispose();
     this.ready = false;
   }
 

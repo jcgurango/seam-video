@@ -10,6 +10,7 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
+  ResolvedStatic,
   ResolvedText,
   ResolvedComposition,
   SpatialAnchor,
@@ -21,7 +22,7 @@ import { resolveBoxProps } from "@seam/core";
 
 export interface DrawCommand {
   type: "draw";
-  clip: ResolvedClip | ResolvedText;
+  clip: ResolvedClip | ResolvedText | ResolvedStatic;
   scissorX: number;
   scissorY: number;
   scissorW: number;
@@ -81,7 +82,9 @@ interface ClipRect {
   h: number;
 }
 
-type SizeGetter = (clip: ResolvedClip) => { w: number; h: number } | null;
+type SizeGetter = (
+  clip: ResolvedClip | ResolvedStatic,
+) => { w: number; h: number } | null;
 
 export function buildRenderList(
   timeline: ResolvedTimeline,
@@ -122,7 +125,11 @@ export function buildRenderList(
  *  we re-run the box solver against the current parent content dims so
  *  width/height/edges can interpolate frame-to-frame. */
 function dynamicSpatial(
-  child: ResolvedClip | ResolvedText | ResolvedComposition,
+  child:
+    | ResolvedClip
+    | ResolvedStatic
+    | ResolvedText
+    | ResolvedComposition,
   viewport: Viewport,
   localTime: number,
 ): { spatial: SpatialRect | undefined; anchor: SpatialAnchor | undefined } {
@@ -163,7 +170,7 @@ function walkChildren(
       localTime >= child.timelineStart && localTime < child.timelineEnd;
     if (!isActive) continue;
 
-    if (child.type === "clip") {
+    if (child.type === "clip" || child.type === "static") {
       const { spatial, anchor } = dynamicSpatial(child, viewport, localTime);
       const container = absoluteRect(viewport, spatial);
       const scissor = intersect(clipRect, container);

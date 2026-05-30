@@ -24,6 +24,8 @@ function naturalDuration(child: Child): number {
     case "clip":
     case "audio":
       return (child.out - child.in) / clipBaseSpeed(child);
+    case "static":
+      return child.duration;
     case "empty":
       return child.duration;
     case "data":
@@ -56,6 +58,14 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
     child.type === "data"
   ) {
     return undefined;
+  }
+  if (child.type === "static") {
+    const { position, objectFit, top, left, right, bottom, width, height } = child;
+    if (position == null && objectFit == null && top == null && left == null &&
+        right == null && bottom == null && width == null && height == null) {
+      return undefined;
+    }
+    return { position, objectFit, top, left, right, bottom, width, height };
   }
   const { position, objectFit, top, left, right, bottom, width, height } = child;
   if (position == null && objectFit == null && top == null && left == null &&
@@ -99,6 +109,24 @@ function resolveChild(
   }
 
   const spatialInput = collectSpatialInput(child);
+
+  if (child.type === "static") {
+    // Static is a single frame — overflow/underflow collapse to "show
+    // the same image for the target span" (same shape as text). The
+    // sourceTime stays exactly as authored regardless of target.
+    return {
+      resolved: {
+        type: "static" as const,
+        source: child.source,
+        sourceTime: child.in ?? 0,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
+      },
+      actualDuration: target,
+    };
+  }
 
   if (child.type === "text") {
     // Text is static — overflow/underflow strategies all collapse to
@@ -367,6 +395,11 @@ function buildIdMapEntry(
   ) {
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
+  if (resolved.type === "static") {
+    // Source time is the (frozen) freeze offset; speed is 1 since the
+    // frame is static.
+    return { start, end, baseSourceTime: resolved.sourceTime, speed: 1 };
+  }
   // composition — source time is the pre-window inner timeline
   const baseSourceTime =
     original.type === "composition" ? original.in ?? 0 : 0;
@@ -528,7 +561,8 @@ function cropChildrenToWindow(
     } else if (
       child.type === "empty" ||
       child.type === "data" ||
-      child.type === "text"
+      child.type === "text" ||
+      child.type === "static"
     ) {
       result.push({
         ...child,

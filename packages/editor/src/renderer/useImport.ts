@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTimeline } from "@seam/preview";
 import { resolveComposition } from "@seam/core";
-import type { SeamFile, Clip, Audio, Child } from "@seam/core";
+import type { SeamFile, Clip, Audio, Static, Child } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
 import type { Platform } from "./platform/index.js";
 
@@ -15,17 +15,36 @@ const AUDIO_EXTENSIONS = [
   ".flac",
   ".opus",
 ];
+const IMAGE_EXTENSIONS = [
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".avif",
+  ".tif",
+  ".tiff",
+];
 
-type MediaKind = "video" | "audio";
+/** How long an imported image holds on the timeline by default. Same
+ *  rough convention as most NLEs — a five-second still is long enough
+ *  to read but short enough that no one will mistake it for a freeze
+ *  bug. */
+const IMAGE_DEFAULT_DURATION = 5;
+
+type MediaKind = "video" | "audio" | "image";
 
 function classifyMediaFile(file: File): MediaKind | null {
   const name = file.name.toLowerCase();
   if (VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "video";
   if (AUDIO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "audio";
+  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return "image";
   // Fall back to the browser-supplied MIME type when the extension is missing
   // or unfamiliar — picks up things like webm/ogg used for audio-only.
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
+  if (file.type.startsWith("image/")) return "image";
   return null;
 }
 
@@ -93,7 +112,13 @@ export function useImport(
       const baseDir = filePath ? dirname(filePath) : null;
       const newChildren: Child[] = [];
       for (const { file, kind } of classified) {
-        const duration = await probeDuration(file, kind);
+        // Images have no temporal source — skip the probe and use the
+        // default duration. probeDuration on an <img> would just fail
+        // anyway since it expects audio/video.
+        const duration =
+          kind === "image"
+            ? IMAGE_DEFAULT_DURATION
+            : await probeDuration(file, kind);
         const stored = await platform.importClip(file);
         // On Electron, `stored` is an absolute path; collapse to relative if
         // it lives under the .seam file's directory. On Web, it's already
@@ -105,8 +130,11 @@ export function useImport(
         if (kind === "video") {
           const node: Clip = { type: "clip", source, in: 0, out: duration };
           newChildren.push(node);
-        } else {
+        } else if (kind === "audio") {
           const node: Audio = { type: "audio", source, in: 0, out: duration };
+          newChildren.push(node);
+        } else {
+          const node: Static = { type: "static", source, duration };
           newChildren.push(node);
         }
       }

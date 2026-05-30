@@ -46,6 +46,7 @@ import type {
   Keyframed,
   ResolvedChild,
   ResolvedClip,
+  ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
   SpatialAnchor,
@@ -73,7 +74,7 @@ export interface MltOptions {
 /** Field that this builder doesn't yet translate. Surfaced so the
  *  caller can warn the user instead of silently dropping things. */
 export interface MltLimitation {
-  node: "clip" | "audio" | "text" | "composition";
+  node: "clip" | "audio" | "text" | "composition" | "static";
   field: string;
   detail: string;
 }
@@ -147,6 +148,63 @@ export function buildMltDocument(
     return id;
   }
 
+  function addStaticProducer(
+    node: ResolvedStatic,
+    durationFrames: number,
+  ): string {
+    const fullPath = basePath ? resolve(basePath, node.source) : node.source;
+    // Treat sources by extension: images use `qimage` (single frame
+    // held for the entry's length), videos seek to `sourceTime` and
+    // freeze. For the video case we use `avformat` with `seek_pos`
+    // and a `freeze` filter, but melt's simpler `framebuffer` form
+    // (loop-on-one-frame) is more reliable across distributions.
+    const ext = (node.source.split(".").pop() ?? "").toLowerCase();
+    const isImage = [
+      "png",
+      "jpg",
+      "jpeg",
+      "webp",
+      "gif",
+      "bmp",
+      "tif",
+      "tiff",
+    ].includes(ext);
+    // Dedup at the source+sourceTime level so reused stills only
+    // contribute one producer.
+    const cacheKey = isImage
+      ? `static-img:${fullPath}`
+      : `static-vid:${fullPath}@${node.sourceTime}`;
+    const cached = producerIdByResource.get(cacheKey);
+    if (cached) return cached;
+    const id = newProducerId(isImage ? "static_img" : "static_vid");
+    producerIdByResource.set(cacheKey, id);
+    const lines: string[] = [];
+    if (isImage) {
+      lines.push(
+        `  <producer id="${id}" in="0" out="${Math.max(0, durationFrames - 1)}" resource="${escAttr(fullPath)}">`,
+      );
+      lines.push(`    <property name="mlt_service">qimage</property>`);
+      lines.push(`    <property name="ttl">${Math.max(1, durationFrames)}</property>`);
+      lines.push(`  </producer>`);
+    } else {
+      // Video freeze-frame: open the source seeked to the freeze
+      // timestamp, then the `freeze` filter on the playlist entry
+      // holds that single decoded frame for the whole entry length.
+      const seekFrame = Math.max(0, Math.round(node.sourceTime * fps));
+      lines.push(`  <producer id="${id}" resource="${escAttr(fullPath)}">`);
+      lines.push(`    <property name="audio_index">-1</property>`);
+      lines.push(`    <property name="seek">${seekFrame}</property>`);
+      lines.push(`  </producer>`);
+      limitations.push({
+        node: "static",
+        field: "video-source",
+        detail: `${node.source}: video freeze-frame via avformat seek+freeze; exact frame may vary by ±1 if the source isn't keyframe-aligned`,
+      });
+    }
+    producers.set(id, lines.join("\n"));
+    return id;
+  }
+
   function addTextProducer(node: ResolvedText, durationFrames: number): string | null {
     const raster = textRasters.get(node);
     if (!raster) {
@@ -201,9 +259,21 @@ export function buildMltDocument(
     producer: string;
     node: ResolvedText;
   };
+  type StaticSeg = {
+    kind: "static";
+    start: number;
+    end: number;
+    producer: string;
+    /** True when the producer is qimage (image source). For video
+     *  freeze-frames the entry needs a `freeze` filter applied at
+     *  playlist time so the same decoded frame holds. */
+    isImage: boolean;
+    node: ResolvedStatic;
+  };
 
   const clipSegs: ClipSeg[] = [];
   const textSegs: TextSeg[] = [];
+  const staticSegs: StaticSeg[] = [];
 
   // Walk the resolved tree, recursing into nested compositions and
   // compounding their timeline offset and speed onto inner children.
@@ -257,6 +327,35 @@ export function buildMltDocument(
     }
     if (child.type === "audio") {
       // Audio is rendered by the ffmpeg audio path; ignore it here.
+      return;
+    }
+    if (child.type === "static") {
+      const dur = end - start;
+      const durationFrames = fr(dur);
+      const prod = addStaticProducer(child, durationFrames);
+      const ext = (child.source.split(".").pop() ?? "").toLowerCase();
+      const isImage = [
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff",
+      ].includes(ext);
+      staticSegs.push({
+        kind: "static",
+        start,
+        end,
+        producer: prod,
+        isImage,
+        node: child,
+      });
+      // Flag non-opacity filters — they'd need MLT filter chains.
+      const unsupportedFilters = (child.filters ?? []).filter(
+        (f) => f.type !== "opacity",
+      );
+      if (unsupportedFilters.length) {
+        limitations.push({
+          node: "static",
+          field: "filters",
+          detail: `non-opacity static filters not yet translated: ${unsupportedFilters.map((f) => f.type).join(", ")}`,
+        });
+      }
       return;
     }
     if (child.type === "text") {
@@ -333,7 +432,7 @@ export function buildMltDocument(
    *  entirely between two frame centers owns 0 frames and is silently
    *  not displayed (audio is rendered separately by ffmpeg, so the
    *  content isn't lost). */
-  function clipFrameOwnership(seg: ClipSeg | TextSeg): { startK: number; endK: number } {
+  function clipFrameOwnership(seg: ClipSeg | TextSeg | StaticSeg): { startK: number; endK: number } {
     return {
       startK: Math.ceil(seg.start * fps),
       endK: Math.ceil(seg.end * fps),
@@ -413,6 +512,44 @@ export function buildMltDocument(
    *  composite transition then keeps painting that frozen frame
    *  underneath later text overlays. With an explicit blank, the
    *  b_track is unambiguously empty post-entry. */
+  /** Same as renderSingleTextPlaylist but for a static node. Image
+   *  producers are qimage with ttl matching the entry length, so the
+   *  entry just spans `[0, segLen-1]`. Video-source statics need a
+   *  freeze filter so subsequent producer frames don't decode. */
+  function renderSingleStaticPlaylist(
+    id: string,
+    seg: StaticSeg,
+    totalFrames: number,
+  ): string {
+    const { startK, endK } = clipFrameOwnership(seg);
+    const segLen = endK - startK;
+    if (segLen < 1) return "";
+    const lines = [`  <playlist id="${id}">`];
+    if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
+    lines.push(`    <entry producer="${seg.producer}" in="0" out="${segLen - 1}"/>`);
+    const trailing = totalFrames - endK;
+    if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
+    if (!seg.isImage) {
+      // Hold the seeked frame across the entry's full length.
+      lines.push(
+        [
+          `    <filter in="${startK}" out="${endK - 1}">`,
+          `      <property name="mlt_service">freeze</property>`,
+          `      <property name="frame">${Math.max(0, Math.round(seg.node.sourceTime * fps))}</property>`,
+          `      <property name="freeze_after">1</property>`,
+          `    </filter>`,
+        ].join("\n"),
+      );
+    }
+    const filterIn = startK;
+    const filterOut = endK - 1;
+    const dur = seg.end - seg.start;
+    const filtersXml = compileNonOpacityFilters(seg.node.filters, filterIn, filterOut, dur);
+    if (filtersXml) lines.push(filtersXml);
+    lines.push(`  </playlist>`);
+    return lines.join("\n");
+  }
+
   function renderSingleTextPlaylist(id: string, seg: TextSeg, totalFrames: number): string {
     const { startK, endK } = clipFrameOwnership(seg);
     const segLen = endK - startK;
@@ -614,6 +751,23 @@ export function buildMltDocument(
     }
   }
 
+  // Static overlays sit on their own tracks, between positioned clips
+  // and text. Sort by start time so track indices loosely mirror
+  // timeline order.
+  const staticSegsSorted = [...staticSegs].sort((a, b) => a.start - b.start);
+  const staticTrackInfo: { id: string; seg: StaticSeg }[] = [];
+  const staticPlaylistsXml: string[] = [];
+  for (const seg of staticSegsSorted) {
+    const segLen = fr(seg.end) - fr(seg.start);
+    if (segLen < 1) continue;
+    const id = `static_v${staticTrackInfo.length + 1}`;
+    const xml = renderSingleStaticPlaylist(id, seg, totalFrames);
+    if (xml) {
+      staticTrackInfo.push({ id, seg });
+      staticPlaylistsXml.push(xml);
+    }
+  }
+
   // Each text gets its own track id `text_v<i>` so the tractor can
   // attach a unique composite transition to it. Track indices are
   // 1-based to leave 0 for the video track.
@@ -657,7 +811,7 @@ export function buildMltDocument(
   // re-interpret bare numbers as percentages instead of pixels, which
   // sends y=-800 to y=0 (clamped) and explains the (0,0) drift we
   // saw when ¥400 coexisted with another animated overlay.
-  function buildOverlayGeometry(seg: TextSeg | ClipSeg): string {
+  function buildOverlayGeometry(seg: TextSeg | ClipSeg | StaticSeg): string {
     const node = seg.node;
     const len = fr(seg.end) - fr(seg.start);
     const dur = seg.end - seg.start;
@@ -739,7 +893,11 @@ export function buildMltDocument(
   for (const c of clipTrackInfo) {
     trackEntries.push(`    <track producer="${c.id}"/>`);
   }
-  const textTrackBase = clipTrackBase + clipTrackInfo.length;
+  const staticTrackBase = clipTrackBase + clipTrackInfo.length;
+  for (const s of staticTrackInfo) {
+    trackEntries.push(`    <track producer="${s.id}"/>`);
+  }
+  const textTrackBase = staticTrackBase + staticTrackInfo.length;
   for (const t of textTrackInfo) {
     trackEntries.push(`    <track producer="${t.id}"/>`);
   }
@@ -770,6 +928,26 @@ export function buildMltDocument(
   for (let i = 0; i < clipTrackInfo.length; i++) {
     const trackIdx = clipTrackBase + i;
     const { seg } = clipTrackInfo[i];
+    const { startK, endK } = clipFrameOwnership(seg);
+    const geometry = buildOverlayGeometry(seg);
+    transitionsXml.push(
+      [
+        `    <transition>`,
+        `      <property name="a_track">0</property>`,
+        `      <property name="b_track">${trackIdx}</property>`,
+        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="compositing">over</property>`,
+        `      <property name="in">${startK}</property>`,
+        `      <property name="out">${endK - 1}</property>`,
+        `      <property name="rect">${escAttr(geometry)}</property>`,
+        `    </transition>`,
+      ].join("\n"),
+    );
+  }
+
+  for (let i = 0; i < staticTrackInfo.length; i++) {
+    const trackIdx = staticTrackBase + i;
+    const { seg } = staticTrackInfo[i];
     const { startK, endK } = clipFrameOwnership(seg);
     const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
@@ -831,7 +1009,7 @@ ${bgPlaylistXmlStr}
 
 ${videoPlaylistXml}
 
-${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}
+${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${staticPlaylistsXml.join("\n\n")}${staticPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}
 ${audioPlaylistXml ? `\n${audioPlaylistXml}\n` : ""}
   <tractor id="main_tractor" in="0" out="${Math.max(0, totalFrames - 1)}">
 ${trackEntries.join("\n")}

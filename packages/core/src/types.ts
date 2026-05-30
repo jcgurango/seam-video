@@ -116,6 +116,26 @@ export interface Clip extends ChildTimingFields {
   volume?: Keyframed<number>;
 }
 
+/**
+ * A frozen frame. Source can be an image (any single-frame format) or a
+ * video — in the video case, `in` selects which timestamp to freeze on.
+ * Visual only; no audio, no overflow/underflow (target span just shows
+ * the same frame for `duration` seconds, like `text`).
+ */
+export interface Static extends SpatialFields {
+  type: "static";
+  source: string;
+  duration: number;
+  /** Video-source freeze timestamp in seconds (ignored for images).
+   *  Defaults to 0. */
+  in?: number;
+  filters?: Filter[];
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+  metadata?: Metadata;
+}
+
 export interface Empty {
   type: "empty";
   duration: number;
@@ -251,5 +271,5 @@ export interface Composition extends ChildTimingFields {
   contentHeight?: number;
 }
 
-export type Child = Clip | Audio | Empty | Data | Text | Composition;
+export type Child = Clip | Audio | Static | Empty | Data | Text | Composition;
 export type SeamFile = Composition;

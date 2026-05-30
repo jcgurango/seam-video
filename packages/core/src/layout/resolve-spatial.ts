@@ -86,7 +86,7 @@ function resolveNode(
         spatial,
       };
     }
-    // Clip: receives parent's objectFit for its own sizing
+    // Clip / static: receives parent's objectFit for its own sizing
     return { ...node, objectFit: parentObjectFit };
   }
 
@@ -104,8 +104,8 @@ function resolveNode(
     return rest as T;
   };
 
-  if (node.type === "clip") {
-    // When both dimensions are explicitly set, the clip is overconstrained — stretch
+  if (node.type === "clip" || node.type === "static") {
+    // When both dimensions are explicitly set, the node is overconstrained — stretch
     const widthExplicit = input.width != null || (input.left != null && input.right != null);
     const heightExplicit = input.height != null || (input.top != null && input.bottom != null);
     const overconstrained = widthExplicit && heightExplicit;

@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are six node types: **clip**, **audio**, **empty**, **data**, **text**, and **composition**.
+There are seven node types: **clip**, **audio**, **static**, **empty**, **data**, **text**, and **composition**.
 
 ### Clip
 
@@ -91,6 +91,29 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `metadata` | object | no | See [Metadata](#metadata) |
 
 Visual props (`filters`, `position`, `objectFit`, box dimensions) are rejected by the schema — `audio` doesn't render to a quad.
+
+### Static
+
+A frozen frame held for `duration` seconds. The `source` can be an image file (PNG/JPG/WebP/etc.) or a video file — in the video case `in` picks the source timestamp to freeze on. Visual only; no audio. Like `text`, there's no temporal source to overflow or underflow against, so `overflow`/`underflow` don't apply and the frame is held regardless of `target`.
+
+```json
+{ "type": "static", "source": "logo.png", "duration": 5 }
+```
+
+```json
+{ "type": "static", "source": "clip.mp4", "duration": 5, "in": 4 }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"static"` | yes | Must be `"static"` |
+| `source` | string | yes | Path to the image or video file |
+| `duration` | number | yes | How long the frame is shown for (> 0) |
+| `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
+| `filters` | array | no | See [Filters](#filters) |
+| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | See [Spatial Layout](#spatial-layout) |
+| `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
+| `metadata` | object | no | See [Metadata](#metadata) |
 
 ### Empty
 

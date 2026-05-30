@@ -117,7 +117,12 @@ function collectAudioLabels(
 ): string[] {
   const out: string[] = [];
   for (const child of children) {
-    if (child.type === "empty" || child.type === "data" || child.type === "text") continue;
+    if (
+      child.type === "empty" ||
+      child.type === "data" ||
+      child.type === "text" ||
+      child.type === "static"
+    ) continue;
     if (child.type === "composition") {
       const inner = collectAudioLabels(ctx, child.children, parentSpeed * child.speed);
       // Delay the inner composite's audio by the composition's
