@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CC_COLORS,
   type CCSelection,
@@ -12,102 +11,147 @@ export interface CCCutViewProps {
   /** Current selections (composition-time ranges). */
   selections: CCSelection[];
   onSelectionsChange: (next: CCSelection[]) => void;
+  /** Indices into `selections` currently focused on the timeline. When
+   *  non-empty, only those selections highlight in the ribbon — the
+   *  rest dim so the user can concentrate on the focused range. Empty
+   *  means "no focus", and all selections render at full strength. */
+  focusedSelectionIndices: number[];
 }
 
-/** A word's index in the rendered ribbon. Used internally for drag
- *  ranges — we resolve back to actual time on commit. */
 type WordIndex = number;
 
-interface DragState {
-  /** Index of the word the user mousedown'd on. */
-  anchor: WordIndex;
-  /** Index of the word the cursor is currently over (or `anchor`
-   *  before any move). */
-  cursor: WordIndex;
-  /** If non-null, this drag started on an existing selection and is
-   *  editing it in place (rather than creating a new one). */
-  editingIndex: number | null;
-}
+type DragState =
+  | { kind: "create"; anchorWord: WordIndex; cursorWord: WordIndex }
+  | {
+      kind: "resize";
+      selIdx: number;
+      side: "start" | "end";
+      cursorWord: WordIndex;
+    };
 
 export default function CCCutView({
   words,
   selections,
   onSelectionsChange,
+  focusedSelectionIndices,
 }: CCCutViewProps) {
   const [drag, setDrag] = useState<DragState | null>(null);
 
-  // Build a quick "which selection covers this word" lookup so we can
-  // shade words inside an existing selection (and detect mousedown on
-  // an existing selection for in-place editing).
-  const selectionForWord = useMemo(() => {
-    const out: (number | null)[] = new Array(words.length).fill(null);
-    selections.forEach((sel, selIdx) => {
+  // Apply the in-progress drag to a copy of `selections` so the
+  // ribbon visuals (highlight + handle positions) preview the
+  // would-be final shape before the user releases. The committed
+  // selections stay in props until mouseup.
+  const effectiveSelections = useMemo<CCSelection[]>(() => {
+    if (!drag || drag.kind !== "resize") return selections;
+    const w = words[drag.cursorWord];
+    if (!w) return selections;
+    return selections.map((sel, i) => {
+      if (i !== drag.selIdx) return sel;
+      if (drag.side === "start") {
+        return { start: Math.min(w.start, sel.end), end: sel.end };
+      }
+      return { start: sel.start, end: Math.max(w.end, sel.start) };
+    });
+  }, [drag, words, selections]);
+
+  // For each word, the list of selection indices that cover it. Built
+  // once per render so the handle layout + per-word styling can both
+  // share it without recomputing.
+  const selectionsForWord = useMemo<number[][]>(() => {
+    const out: number[][] = words.map(() => []);
+    effectiveSelections.forEach((sel, selIdx) => {
       words.forEach((w, i) => {
-        if (out[i] != null) return;
-        if (wordOverlapsRange(w, sel)) out[i] = selIdx;
+        if (wordOverlapsRange(w, sel)) out[i].push(selIdx);
       });
     });
     return out;
-  }, [words, selections]);
+  }, [words, effectiveSelections]);
 
-  // Words covered by the in-progress drag — used purely for visual
-  // feedback while the mouse is down.
+  // First/last word index covered by each effective selection. Drives
+  // where the start/end handles get inserted in the ribbon.
+  const selectionBounds = useMemo(() => {
+    return effectiveSelections.map((sel) => {
+      let first = -1;
+      let last = -1;
+      for (let i = 0; i < words.length; i++) {
+        if (wordOverlapsRange(words[i], sel)) {
+          if (first === -1) first = i;
+          last = i;
+        }
+      }
+      return first === -1 ? null : { first, last };
+    });
+  }, [words, effectiveSelections]);
+
   const dragRange = useMemo(() => {
-    if (!drag) return null;
-    const lo = Math.min(drag.anchor, drag.cursor);
-    const hi = Math.max(drag.anchor, drag.cursor);
+    if (!drag || drag.kind !== "create") return null;
+    const lo = Math.min(drag.anchorWord, drag.cursorWord);
+    const hi = Math.max(drag.anchorWord, drag.cursorWord);
     return { lo, hi };
   }, [drag]);
 
-  // Global mouseup ends the drag and commits the selection. Anchoring
-  // to window means the user can drag past the ribbon edge without the
-  // drag getting stuck if they release outside a word.
+  const focusedSet = useMemo(
+    () => new Set(focusedSelectionIndices),
+    [focusedSelectionIndices],
+  );
+  const hasFocus = focusedSet.size > 0;
+
+  // Commit the drag on global mouseup so the gesture survives the
+  // cursor leaving the ribbon. Create-drags push (or replace if a
+  // handle drag is mistakenly stuck in create); resize-drags rewrite
+  // the corresponding selection.
   useEffect(() => {
     if (!drag) return;
     const onUp = () => {
-      const lo = Math.min(drag.anchor, drag.cursor);
-      const hi = Math.max(drag.anchor, drag.cursor);
-      const first = words[lo];
-      const last = words[hi];
-      if (!first || !last) {
-        setDrag(null);
-        return;
-      }
-      const newSel: CCSelection = { start: first.start, end: last.end };
-
-      const next = [...selections];
-      if (drag.editingIndex != null) {
-        next[drag.editingIndex] = newSel;
+      if (drag.kind === "create") {
+        const lo = Math.min(drag.anchorWord, drag.cursorWord);
+        const hi = Math.max(drag.anchorWord, drag.cursorWord);
+        const first = words[lo];
+        const last = words[hi];
+        if (first && last) {
+          onSelectionsChange([
+            ...selections,
+            { start: first.start, end: last.end },
+          ]);
+        }
       } else {
-        next.push(newSel);
+        const w = words[drag.cursorWord];
+        if (w) {
+          const next = selections.map((sel, i) => {
+            if (i !== drag.selIdx) return sel;
+            if (drag.side === "start") {
+              return { start: Math.min(w.start, sel.end), end: sel.end };
+            }
+            return { start: sel.start, end: Math.max(w.end, sel.start) };
+          });
+          onSelectionsChange(next);
+        }
       }
-      onSelectionsChange(next);
       setDrag(null);
     };
     window.addEventListener("mouseup", onUp);
     return () => window.removeEventListener("mouseup", onUp);
   }, [drag, words, selections, onSelectionsChange]);
 
-  const handleMouseDownWord = (i: WordIndex, e: React.MouseEvent) => {
+  const handleWordMouseDown = (i: WordIndex, e: React.MouseEvent) => {
     e.preventDefault();
-    // Mousedown on a word already inside a selection: edit-in-place
-    // mode — the drag rewrites that selection's range. Mousedown
-    // elsewhere: start a fresh selection.
-    const existingSelIdx = selectionForWord[i];
-    setDrag({
-      anchor: i,
-      cursor: i,
-      editingIndex: existingSelIdx,
-    });
+    setDrag({ kind: "create", anchorWord: i, cursorWord: i });
   };
 
-  const handleMouseEnterWord = (i: WordIndex) => {
+  const handleWordMouseEnter = (i: WordIndex) => {
     if (!drag) return;
-    setDrag({ ...drag, cursor: i });
+    setDrag({ ...drag, cursorWord: i });
   };
 
-  const handleDeleteSelection = (idx: number) => {
-    onSelectionsChange(selections.filter((_, i) => i !== idx));
+  const handleStartResize = (
+    selIdx: number,
+    side: "start" | "end",
+    initialWord: WordIndex,
+    e: React.MouseEvent,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDrag({ kind: "resize", selIdx, side, cursorWord: initialWord });
   };
 
   if (words.length === 0) {
@@ -126,57 +170,104 @@ export default function CCCutView({
       <div style={RIBBON_WRAP_STYLE}>
         <div style={RIBBON_STYLE}>
           {words.map((w, i) => {
-            const color = CC_COLORS[w.transcriptionIndex % CC_COLORS.length];
-            const inExisting = selectionForWord[i] != null;
+            const baseColor =
+              CC_COLORS[w.transcriptionIndex % CC_COLORS.length];
+            const covering = selectionsForWord[i];
+            const inAnySelection = covering.length > 0;
+            const inFocused = !hasFocus || covering.some((s) => focusedSet.has(s));
             const inDrag =
               dragRange != null && i >= dragRange.lo && i <= dragRange.hi;
-            const inActiveDragEdit =
-              drag?.editingIndex != null &&
-              selectionForWord[i] === drag.editingIndex;
-            const highlight = inDrag || (inExisting && !inActiveDragEdit);
+            const highlight = inDrag || (inAnySelection && inFocused);
+            const dim = !inDrag && inAnySelection && hasFocus && !inFocused;
+
+            const startsHere: number[] = [];
+            const endsHere: number[] = [];
+            selectionBounds.forEach((b, selIdx) => {
+              if (!b) return;
+              if (b.first === i) startsHere.push(selIdx);
+              if (b.last === i) endsHere.push(selIdx);
+            });
+
             return (
-              <span
-                key={i}
-                onMouseDown={(e) => handleMouseDownWord(i, e)}
-                onMouseEnter={() => handleMouseEnterWord(i)}
-                style={wordStyle(color, highlight)}
-                title={`${formatTime(w.start)} → ${formatTime(w.end)}`}
-              >
-                {w.text}
-              </span>
+              <React.Fragment key={i}>
+                {startsHere.map((selIdx) => (
+                  <SelectionHandle
+                    key={`s${selIdx}`}
+                    side="start"
+                    selectionWord={selectionBounds[selIdx]!.first}
+                    transcriptionIndex={w.transcriptionIndex}
+                    focused={!hasFocus || focusedSet.has(selIdx)}
+                    onMouseDown={(e) =>
+                      handleStartResize(selIdx, "start", i, e)
+                    }
+                  />
+                ))}
+                <span
+                  data-word-index={i}
+                  onMouseDown={(e) => handleWordMouseDown(i, e)}
+                  onMouseEnter={() => handleWordMouseEnter(i)}
+                  style={wordStyle(baseColor, highlight, dim)}
+                  title={`${formatTime(w.start)} → ${formatTime(w.end)}`}
+                >
+                  {w.text}
+                </span>
+                {endsHere.map((selIdx) => (
+                  <SelectionHandle
+                    key={`e${selIdx}`}
+                    side="end"
+                    selectionWord={selectionBounds[selIdx]!.last}
+                    transcriptionIndex={w.transcriptionIndex}
+                    focused={!hasFocus || focusedSet.has(selIdx)}
+                    onMouseDown={(e) =>
+                      handleStartResize(selIdx, "end", i, e)
+                    }
+                  />
+                ))}
+              </React.Fragment>
             );
           })}
         </div>
       </div>
-      <div style={SELECTIONS_HEADER}>
-        Selections ({selections.length})
-      </div>
-      <div style={SELECTIONS_LIST}>
-        {selections.length === 0 ? (
-          <div style={{ color: "#888", fontSize: 12, padding: 8 }}>
-            Click and drag across words to make a selection. Drag inside
-            an existing selection to edit it.
-          </div>
-        ) : (
-          selections.map((sel, i) => (
-            <div key={i} style={SELECTION_ROW}>
-              <span style={SELECTION_NUM}>{i + 1}.</span>
-              <span style={SELECTION_RANGE}>
-                {formatTime(sel.start)} → {formatTime(sel.end)} (
-                {(sel.end - sel.start).toFixed(2)}s)
-              </span>
-              <button
-                onClick={() => handleDeleteSelection(i)}
-                style={DELETE_BTN}
-                title="Delete selection"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          ))
-        )}
-      </div>
     </div>
+  );
+}
+
+function SelectionHandle({
+  side,
+  transcriptionIndex,
+  focused,
+  onMouseDown,
+}: {
+  side: "start" | "end";
+  /** Word index this handle is currently anchored to — only used as a
+   *  React debug-key hint; not part of the drag math. */
+  selectionWord: WordIndex;
+  transcriptionIndex: number;
+  focused: boolean;
+  onMouseDown: (e: React.MouseEvent) => void;
+}) {
+  const color = CC_COLORS[transcriptionIndex % CC_COLORS.length];
+  return (
+    <span
+      onMouseDown={onMouseDown}
+      role="slider"
+      aria-label={side === "start" ? "Resize selection start" : "Resize selection end"}
+      style={{
+        display: "inline-block",
+        width: 8,
+        height: 22,
+        verticalAlign: "middle",
+        background: focused ? color : `${color}55`,
+        border: `1px solid ${focused ? "#fff" : color}aa`,
+        borderRadius: 2,
+        cursor: "ew-resize",
+        margin: side === "start" ? "0 -2px 0 2px" : "0 2px 0 -2px",
+        opacity: focused ? 1 : 0.7,
+        boxShadow: focused
+          ? "0 0 0 2px rgba(255, 255, 255, 0.18)"
+          : "none",
+      }}
+    />
   );
 }
 
@@ -196,18 +287,24 @@ function formatTime(t: number): string {
 function wordStyle(
   color: string,
   highlighted: boolean,
+  dim: boolean,
 ): React.CSSProperties {
   return {
     display: "inline-block",
     padding: "3px 7px",
     margin: "2px",
-    background: highlighted ? color : `${color}22`,
-    color: highlighted ? "#fff" : "#ddd",
+    background: highlighted
+      ? color
+      : dim
+        ? "#1c1c1c"
+        : `${color}22`,
+    color: highlighted ? "#fff" : dim ? "#555" : "#ddd",
     borderRadius: 4,
     fontSize: 13,
     cursor: "text",
     userSelect: "none",
-    border: `1px solid ${color}55`,
+    border: `1px solid ${highlighted ? color : dim ? "#2a2a2a" : `${color}55`}`,
+    opacity: dim ? 0.45 : 1,
   };
 }
 
@@ -229,57 +326,6 @@ const RIBBON_WRAP_STYLE: React.CSSProperties = {
 const RIBBON_STYLE: React.CSSProperties = {
   fontFamily: "ui-monospace, monospace",
   lineHeight: 1.6,
-};
-
-const SELECTIONS_HEADER: React.CSSProperties = {
-  padding: "6px 12px",
-  background: "#1f1f1f",
-  color: "#aaa",
-  fontSize: 11,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  borderTop: "1px solid #333",
-};
-
-const SELECTIONS_LIST: React.CSSProperties = {
-  maxHeight: 180,
-  overflow: "auto",
-  background: "#1a1a1a",
-  borderTop: "1px solid #2a2a2a",
-};
-
-const SELECTION_ROW: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "6px 12px",
-  borderBottom: "1px solid #2a2a2a",
-};
-
-const SELECTION_NUM: React.CSSProperties = {
-  color: "#666",
-  fontSize: 11,
-  minWidth: 18,
-};
-
-const SELECTION_RANGE: React.CSSProperties = {
-  flex: 1,
-  color: "#ddd",
-  fontFamily: "ui-monospace, monospace",
-  fontSize: 12,
-};
-
-const DELETE_BTN: React.CSSProperties = {
-  background: "none",
-  border: "1px solid #555",
-  color: "#aaa",
-  width: 22,
-  height: 22,
-  borderRadius: 4,
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
 };
 
 const EMPTY_STYLE: React.CSSProperties = {

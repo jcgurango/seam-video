@@ -743,17 +743,65 @@ export default function App({ platform }: AppProps) {
       view.binId,
       ccSelections,
     );
-    // Append to the on-disk root's children. Compile will re-splice the
-    // bin bodies on the next pass so each reference renders correctly.
-    const newDoc: SeamFile = {
-      ...document,
-      children: [...document.children, ...spliced],
+    // Append to the editor SURFACE (the script's `original` when one
+    // is attached, otherwise the doc itself) — appending directly to
+    // `document.children` would only land in the rendered body, which
+    // the next compile blows away by re-running the script against
+    // the unchanged original.
+    const surface = scriptEditTarget(document as Composition) as SeamFile;
+    const newSurface: SeamFile = {
+      ...surface,
+      children: [...surface.children, ...spliced],
     };
-    history.push(newDoc);
+    // Re-wrap through any active script and compile so bin references
+    // (including the ones we just inserted) get their bodies spliced
+    // in the on-disk form.
+    const { comp, error } = safeWithUpdatedOriginal(
+      document as Composition,
+      newSurface as Composition,
+    );
+    let compiled: SeamFile = comp as SeamFile;
+    let compileError: string | null = null;
+    try {
+      const result = compileDocument(comp as SeamFile);
+      compiled = result.doc;
+      if (result.errors.length > 0) {
+        compileError = result.errors
+          .map((e) => `${e.source}: ${e.message}`)
+          .join("\n");
+      }
+    } catch (err) {
+      console.error("[App] handleCCCutOk compile failed:", err);
+    }
+    const combined = [error, compileError].filter(Boolean).join("\n");
+    setScriptError(combined.length > 0 ? combined : null);
+    history.push(compiled);
     setView(ROOT_VIEW);
     setCcSelections([]);
     setInitialTime(0);
   }, [view, ccBinEntry, ccSelections, document, history, handleCCCutCancel]);
+
+  // Delete in CC-cut view: drop the timeline-selected entries from
+  // `ccSelections` (which the timeline + word ribbon both drive off of).
+  // TimelinePanel's own delete handler is root-only, so this runs at
+  // the App level for the cc-cut case.
+  useEffect(() => {
+    if (view.type !== "cc-cut") return;
+    const handler = (e: KeyboardEvent) => {
+      if (isTypingInEditableSurface(e)) return;
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (selectedIndices.length === 0) return;
+      e.preventDefault();
+      const drop = new Set(
+        selectedIndices.filter((i) => i < ccSelections.length),
+      );
+      if (drop.size === 0) return;
+      setCcSelections(ccSelections.filter((_, i) => !drop.has(i)));
+      setSelectedIndices([]);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [view, selectedIndices, ccSelections]);
 
   // ── Undo / Redo ────────────────────────────────────────────────
 
@@ -1047,6 +1095,9 @@ export default function App({ platform }: AppProps) {
                   words={ccWords}
                   selections={ccSelections}
                   onSelectionsChange={setCcSelections}
+                  focusedSelectionIndices={selectedIndices.filter(
+                    (i) => i < ccSelections.length,
+                  )}
                 />
               ) : (
                 <InspectorTabs
