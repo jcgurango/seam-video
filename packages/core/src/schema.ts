@@ -289,6 +289,9 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
     filters: FiltersArraySchema,
+    /** Any valid SVG/CSS fill value (e.g. "#000", "rgba(...)", "red").
+     *  Painted across the composition's container rect under the children. */
+    backgroundColor: z.string().optional(),
     contentWidth: z.number().positive().optional(),
     contentHeight: z.number().positive().optional(),
     ...SpatialFieldsSchema,

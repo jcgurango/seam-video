@@ -267,6 +267,9 @@ export interface Composition extends ChildTimingFields {
    * order, last on top.
    */
   attachments?: Child[];
+  /** Any valid SVG/CSS fill value. Painted across the composition's
+   *  container rect under all children. */
+  backgroundColor?: string;
   contentWidth?: number;
   contentHeight?: number;
 }

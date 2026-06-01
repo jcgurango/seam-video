@@ -248,6 +248,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |

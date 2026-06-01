@@ -133,6 +133,7 @@ export interface ResolvedComposition {
   position?: Position;
   anchor?: SpatialAnchor;
   spatialInput?: SpatialInput;
+  backgroundColor?: string;
   contentWidth?: number;
   contentHeight?: number;
 }
@@ -151,6 +152,7 @@ export interface ResolvedTimeline {
   width?: number;
   height?: number;
   objectFit?: ObjectFit;
+  backgroundColor?: string;
   contentWidth?: number;
   contentHeight?: number;
   children: ResolvedChild[];

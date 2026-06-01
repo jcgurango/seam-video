@@ -4,9 +4,11 @@
  * textures by clip identity so they can be reused across frames.
  */
 
-import type { ResolvedClip, ResolvedText } from "@seam/core";
-
-type TextureKey = ResolvedClip | ResolvedText;
+/** Anything addressable by stable object identity — clips, statics,
+ *  text nodes, and compositions (used as the cache key for fill
+ *  commands). The manager doesn't care about the value's shape, only
+ *  that the same key is passed across frames for the same content. */
+type TextureKey = object;
 
 interface TextureEntry {
   texture: GPUTexture;

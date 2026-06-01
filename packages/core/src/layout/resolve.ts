@@ -213,6 +213,7 @@ function resolveChild(
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },
@@ -351,6 +352,9 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     duration: containerDuration,
     children: resolvedChildren,
     ...(composition.objectFit ? { objectFit: composition.objectFit } : {}),
+    ...(composition.backgroundColor != null
+      ? { backgroundColor: composition.backgroundColor }
+      : {}),
     ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
     ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
   };

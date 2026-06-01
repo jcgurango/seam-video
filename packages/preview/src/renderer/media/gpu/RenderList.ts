@@ -38,6 +38,26 @@ export interface DrawCommand {
   nodeDuration: number;
 }
 
+/** Solid-color fill of an axis-aligned rect. Emitted under a
+ *  composition's children when it has `backgroundColor` set. */
+export interface FillCommand {
+  type: "fill";
+  /** Stable identity for the texture cache — typically the resolved
+   *  composition (or the timeline root) the fill belongs to. Reused
+   *  across frames so the renderer doesn't churn the 1x1 color tile. */
+  key: object;
+  color: string;
+  destX: number;
+  destY: number;
+  destW: number;
+  destH: number;
+  scissorX: number;
+  scissorY: number;
+  scissorW: number;
+  scissorH: number;
+  opacity: number;
+}
+
 export interface GroupCommand {
   type: "group";
   /** Where to draw the FBO result on the parent target. */
@@ -63,7 +83,7 @@ export interface GroupCommand {
   nodeDuration: number;
 }
 
-export type RenderCommand = DrawCommand | GroupCommand;
+export type RenderCommand = DrawCommand | GroupCommand | FillCommand;
 
 /** Internal viewport tracking during tree walk. */
 interface Viewport {
@@ -105,6 +125,23 @@ export function buildRenderList(
   };
 
   const rootClip: ClipRect = { x: 0, y: 0, w: canvasW, h: canvasH };
+
+  if (timeline.backgroundColor != null) {
+    commands.push({
+      type: "fill",
+      key: timeline,
+      color: timeline.backgroundColor,
+      destX: rootViewport.x,
+      destY: rootViewport.y,
+      destW: rootViewport.w,
+      destH: rootViewport.h,
+      scissorX: rootClip.x,
+      scissorY: rootClip.y,
+      scissorW: rootClip.w,
+      scissorH: rootClip.h,
+      opacity: 1,
+    });
+  }
 
   walkChildren(
     timeline.children,
@@ -263,6 +300,24 @@ function walkChildren(
         const fboClip: ClipRect = { x: 0, y: 0, w: fboW, h: fboH };
 
         const groupChildren: RenderCommand[] = [];
+        if (child.backgroundColor != null) {
+          // Fill the FBO before any children draw so the bg lands
+          // under the kids inside the group.
+          groupChildren.push({
+            type: "fill",
+            key: child,
+            color: child.backgroundColor,
+            destX: 0,
+            destY: 0,
+            destW: fboW,
+            destH: fboH,
+            scissorX: 0,
+            scissorY: 0,
+            scissorW: fboW,
+            scissorH: fboH,
+            opacity: 1,
+          });
+        }
         walkChildren(
           child.children,
           childLocalTime,
@@ -301,6 +356,23 @@ function walkChildren(
           contentW: child.contentWidth ?? container.w,
           contentH: child.contentHeight ?? container.h,
         };
+
+        if (child.backgroundColor != null) {
+          commands.push({
+            type: "fill",
+            key: child,
+            color: child.backgroundColor,
+            destX: container.x,
+            destY: container.y,
+            destW: container.w,
+            destH: container.h,
+            scissorX: childClip.x,
+            scissorY: childClip.y,
+            scissorW: childClip.w,
+            scissorH: childClip.h,
+            opacity,
+          });
+        }
 
         walkChildren(
           child.children,

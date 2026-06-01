@@ -21,7 +21,12 @@ import { sampleNumber } from "@seam/core";
 
 type Drawable = ResolvedClip | ResolvedStatic | ResolvedText;
 import { TextureManager } from "./TextureManager.js";
-import type { RenderCommand, DrawCommand, GroupCommand } from "./RenderList.js";
+import type {
+  RenderCommand,
+  DrawCommand,
+  FillCommand,
+  GroupCommand,
+} from "./RenderList.js";
 
 // ── WGSL Shader ──
 
@@ -133,13 +138,20 @@ export class WebGPURenderer {
 
   private uniformBindGroups: GPUBindGroup[] = [];
   private texBindGroupCache = new Map<
-    Drawable | symbol,
+    object | symbol,
     { view: GPUTextureView; bg: GPUBindGroup }
   >();
   private uniformStaging = new ArrayBuffer(MAX_DRAWS * UNIFORM_ALIGN);
   private frameCount = 0;
   private drawSlot = 0;
-  private activeClips = new Set<Drawable>();
+  private activeClips = new Set<object>();
+  /** Last color rasterised per fill key. Lets us skip re-uploading the
+   *  1x1 tile when the bg color is stable across frames. */
+  private fillColors = new Map<object, string>();
+  /** Reusable scratch canvas for rasterising solid-color tiles. Sized
+   *  1x1 — the renderer stretches it across the destination quad. */
+  private fillTile: OffscreenCanvas | null = null;
+  private fillTileCtx: OffscreenCanvasRenderingContext2D | null = null;
 
   // FBO pool: keyed by "WxH", reused across frames
   private fboPool = new Map<string, GPUTexture[]>();
@@ -333,6 +345,9 @@ export class WebGPURenderer {
     // Prune stale textures periodically
     if (this.frameCount % 60 === 0) {
       this.textures.prune(this.activeClips);
+      for (const key of this.fillColors.keys()) {
+        if (!this.activeClips.has(key)) this.fillColors.delete(key);
+      }
       for (const clip of this.texBindGroupCache.keys()) {
         if (typeof clip !== "symbol" && !this.activeClips.has(clip)) {
           this.texBindGroupCache.delete(clip);
@@ -352,10 +367,46 @@ export class WebGPURenderer {
     for (const cmd of commands) {
       if (cmd.type === "draw") {
         this.prepareDraw(cmd, getFrame);
+      } else if (cmd.type === "fill") {
+        this.prepareFill(cmd);
       } else {
         this.prepareGroup(cmd, getFrame);
       }
     }
+  }
+
+  private prepareFill(cmd: FillCommand): void {
+    const slot = this.drawSlot++;
+    if (slot >= MAX_DRAWS) return;
+    (cmd as any)._slot = slot;
+    this.activeClips.add(cmd.key);
+
+    // Lazily build the 1x1 scratch canvas and re-rasterise if the
+    // composition's color changed since last frame.
+    if (!this.fillTile) {
+      this.fillTile = new OffscreenCanvas(1, 1);
+      this.fillTileCtx = this.fillTile.getContext("2d");
+    }
+    if (this.fillColors.get(cmd.key) !== cmd.color) {
+      const ctx = this.fillTileCtx;
+      if (ctx) {
+        ctx.clearRect(0, 0, 1, 1);
+        ctx.fillStyle = cmd.color;
+        ctx.fillRect(0, 0, 1, 1);
+      }
+      this.fillColors.set(cmd.key, cmd.color);
+      const view = this.textures.upload(cmd.key, this.fillTile);
+      this.cacheTexBindGroup(cmd.key, view);
+    } else {
+      // Color stable — re-upload the same pixel so the texture entry
+      // stays alive (TextureManager.prune drops entries not seen this
+      // frame; the upload counts as a "touch").
+      if (this.fillTile) {
+        const view = this.textures.upload(cmd.key, this.fillTile);
+        this.cacheTexBindGroup(cmd.key, view);
+      }
+    }
+    this.writeFillUniforms(slot, cmd);
   }
 
   private prepareDraw(
@@ -438,6 +489,28 @@ export class WebGPURenderer {
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
   }
 
+  private writeFillUniforms(slot: number, cmd: FillCommand): void {
+    const f32 = new Float32Array(
+      this.uniformStaging,
+      slot * UNIFORM_ALIGN,
+      UNIFORM_SIZE / 4,
+    );
+    f32[0] = cmd.destX;
+    f32[1] = cmd.destY;
+    f32[2] = cmd.destW;
+    f32[3] = cmd.destH;
+    f32[4] = 0; // canvas_w — set during encode
+    f32[5] = 0; // canvas_h — set during encode
+    f32[6] = cmd.opacity;
+    f32[7] = 0;
+    // Identity filter params — fill has no per-channel transforms.
+    f32[8] = 0; f32[9] = 1; f32[10] = 1; f32[11] = 1;
+    f32[12] = 0; f32[13] = 0; f32[14] = 0; f32[15] = 0;
+    f32[16] = 0; f32[17] = 0; f32[18] = 0; f32[19] = 0;
+    f32[20] = 0; f32[21] = 0; f32[22] = 0; f32[23] = 0;
+    f32[24] = 1; f32[25] = 1; f32[26] = 1; f32[27] = 0;
+  }
+
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
     const fp = extractFilterParams(cmd.filters, cmd.nodeTime, cmd.nodeDuration);
     const f32 = new Float32Array(
@@ -509,6 +582,38 @@ export class WebGPURenderer {
     for (const cmd of commands) {
       const slot = (cmd as any)._slot as number;
       if (slot == null || slot >= MAX_DRAWS) continue;
+
+      if (cmd.type === "fill") {
+        const cached = this.texBindGroupCache.get(cmd.key);
+        if (!cached) continue;
+
+        const f32 = new Float32Array(
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN,
+          UNIFORM_SIZE / 4,
+        );
+        f32[4] = targetW;
+        f32[5] = targetH;
+        this.device.queue.writeBuffer(
+          this.uniformBuffer,
+          slot * UNIFORM_ALIGN + 16,
+          this.uniformStaging,
+          slot * UNIFORM_ALIGN + 16,
+          8,
+        );
+
+        const sx = Math.max(0, Math.round(cmd.scissorX));
+        const sy = Math.max(0, Math.round(cmd.scissorY));
+        const sw = Math.min(Math.round(cmd.scissorW), targetW - sx);
+        const sh = Math.min(Math.round(cmd.scissorH), targetH - sy);
+        if (sw <= 0 || sh <= 0) continue;
+
+        pass.setScissorRect(sx, sy, sw, sh);
+        pass.setBindGroup(0, this.uniformBindGroups[slot]);
+        pass.setBindGroup(1, cached.bg);
+        pass.draw(6);
+        continue;
+      }
 
       if (cmd.type === "draw") {
         if (!(cmd as any)._hasFrame) continue;
@@ -639,6 +744,9 @@ export class WebGPURenderer {
     // against the new device rather than appending to a stale list.
     this.uniformBindGroups.length = 0;
     this.activeClips.clear();
+    this.fillColors.clear();
+    this.fillTile = null;
+    this.fillTileCtx = null;
     this._ready = false;
   }
 }
