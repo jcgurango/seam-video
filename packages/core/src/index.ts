@@ -3,7 +3,7 @@ export * from "./types.js";
 export * from "./resolved-types.js";
 export * from "./validate.js";
 export { compileSeamFile, runScript } from "./compile.js";
-export type { CompileError, CompileResult } from "./compile.js";
+export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { resolveComposition } from "./layout/resolve.js";
 export {
   resolveSpatial,

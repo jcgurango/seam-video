@@ -32,6 +32,7 @@ import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
 import { dirname, relative, isAbsolute } from "./pathUtils.js";
 import { useHistory } from "./useHistory.js";
+import { useEvent } from "./useEvent.js";
 import {
   getViewDocument,
   timeOnEnter,
@@ -91,6 +92,17 @@ function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
 }
 
 function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
+  // Compile first so `binItem` references get spliced with their bin
+  // body — otherwise clips that only appear inside a bin entry never
+  // reach this walker. Compile errors don't matter here; whatever was
+  // resolvable will carry its source through to the compiled tree.
+  let resolved: SeamFile;
+  try {
+    resolved = compileDocument(doc).doc;
+  } catch {
+    resolved = doc;
+  }
+
   const visit = (child: import("@seam/core").Child) => {
     if (
       child.type === "clip" ||
@@ -103,8 +115,8 @@ function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
       if (child.attachments) child.attachments.forEach(visit);
     }
   };
-  doc.children.forEach(visit);
-  if (doc.attachments) doc.attachments.forEach(visit);
+  resolved.children.forEach(visit);
+  if (resolved.attachments) resolved.attachments.forEach(visit);
   return out;
 }
 
@@ -164,11 +176,6 @@ export default function App({ platform }: AppProps) {
     isEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   });
   const document = history.current;
-  // With bin/binItem/script as first-party schema fields, the authored
-  // `document` IS the editor surface — no shadow `original` to unwrap,
-  // no rendered bodies to splice. The compile pass runs lazily for
-  // preview/render purposes only.
-  const editorDoc = document;
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -223,23 +230,6 @@ export default function App({ platform }: AppProps) {
   // failures still produce a usable preview.
   const [scriptError, setScriptError] = useState<string | null>(null);
 
-  // Resolve root: compile (bin + script) first so the resolver sees a
-  // fully-rendered tree. Compile errors get reported via scriptError.
-  const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
-    try {
-      const { doc: compiled, errors } = compileDocument(document);
-      setScriptError(
-        errors.length > 0
-          ? errors.map((e) => `${e.source}: ${e.message}`).join("\n")
-          : null,
-      );
-      return resolveDoc(compiled);
-    } catch (err) {
-      console.error("[App] rootTimeline resolve failed:", err, { document });
-      return null;
-    }
-  }, [document]);
-
   // Bin entry currently being CC-cut (null outside cc-cut view). The
   // resolved word ribbon + preview doc derive from this.
   const ccBinEntry = useMemo(() => {
@@ -253,26 +243,66 @@ export default function App({ platform }: AppProps) {
     return resolveCCWords(ccBinEntry, document);
   }, [ccBinEntry, document]);
 
-  // The view's effective document (what the timeline panel shows). For
-  // root it's the authored document; for nested views it's the subtree
-  // being drilled into. CC-cut synthesises a preview doc from the
-  // user's in-progress selections.
+  // The view's effective document. Root view shows the whole doc;
+  // composition/clip views drill into a sub-tree; CC-cut synthesises a
+  // preview doc from the user's in-progress selections.
   const viewDocument = useMemo<SeamFile>(() => {
     if (view.type === "cc-cut") {
-      if (!ccBinEntry) return editorDoc;
+      if (!ccBinEntry) return document;
       return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
     }
-    return view.type === "root" ? editorDoc : getViewDocument(editorDoc, view);
-  }, [editorDoc, view, ccBinEntry, document, ccSelections]);
+    return view.type === "root" ? document : getViewDocument(document, view);
+  }, [view, ccBinEntry, document, ccSelections]);
 
-  // The timeline panel and the preview canvas both use compiled forms
-  // so bin references render with their bin body and scripts run. The
-  // editor-surface vs rendered-body split from the old metadata-based
-  // model is gone — there's a single authored doc.
-  const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
+  // Two resolved timelines per view:
+  //   - playerTimeline: bins spliced + scripts run; what the canvas plays.
+  //   - editorTimeline: bins spliced, scripts NOT run; what the
+  //     timeline panel renders. Skipping scripts means the panel shows
+  //     the user's authored body, so drag/trim/delete writes back to
+  //     positions that match what the user sees. Running scripts would
+  //     replace those authored children with the script's output and
+  //     edits would map onto compiled nodes that don't exist in the
+  //     authored doc.
+  // `rootTimeline` is the playerTimeline of root view, hoisted because
+  // view-navigation math (timeOnEnter / translateTimeOnExit) needs it
+  // and because we use it to publish compile/resolve errors.
+  const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
+    try {
+      const { doc: compiled, errors: compileErrors } = compileDocument(document);
+      setScriptError(
+        compileErrors.length > 0
+          ? compileErrors.map((e) => `${e.source}: ${e.message}`).join("\n")
+          : null,
+      );
+      const resolved = resolveDoc(compiled);
+      setErrors([]);
+      return resolved;
+    } catch (err) {
+      console.error("[App] rootTimeline resolve failed:", err, { document });
+      setErrors([String(err)]);
+      return null;
+    }
+  }, [document]);
+
+  const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
+    if (view.type === "root") return rootTimeline;
     try {
       const { doc: compiled } = compileDocument(viewDocument);
       return resolveDoc(compiled);
+    } catch (err) {
+      console.error("[App] playerTimeline resolve failed:", err, {
+        viewDocument,
+      });
+      return null;
+    }
+  }, [view.type, viewDocument, rootTimeline]);
+
+  const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
+    try {
+      const { doc: panelCompiled } = compileDocument(viewDocument, {
+        runScripts: false,
+      });
+      return resolveDoc(panelCompiled);
     } catch (err) {
       console.error("[App] editorTimeline resolve failed:", err, {
         viewDocument,
@@ -280,41 +310,6 @@ export default function App({ platform }: AppProps) {
       return null;
     }
   }, [viewDocument]);
-
-  const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
-    if (view.type === "cc-cut") {
-      try {
-        const { doc: compiled } = compileDocument(viewDocument);
-        return resolveDoc(compiled);
-      } catch (err) {
-        console.error("[App] playerTimeline (cc-cut) resolve failed:", err, {
-          viewDocument,
-        });
-        return null;
-      }
-    }
-    if (!rootTimeline) return null;
-    if (view.type === "root") return rootTimeline;
-    try {
-      const { doc: compiled } = compileDocument(getViewDocument(document, view));
-      return resolveDoc(compiled);
-    } catch (err) {
-      console.error("[App] playerTimeline resolve failed:", err, {
-        view,
-        document,
-      });
-      return null;
-    }
-  }, [view, rootTimeline, document, viewDocument]);
-
-  useEffect(() => {
-    try {
-      resolveDoc(document);
-      setErrors([]);
-    } catch (err) {
-      setErrors([String(err)]);
-    }
-  }, [document]);
 
   // Guard: if the child we're viewing no longer exists (or changed type),
   // bounce to root.
@@ -343,18 +338,6 @@ export default function App({ platform }: AppProps) {
     }
   }, [document, view]);
 
-  const filePathRef = useRef(filePath);
-  filePathRef.current = filePath;
-
-  const handleSaveRef = useRef<() => void>(() => { });
-  const handleSaveAsRef = useRef<() => void>(() => { });
-  const loadDocumentRef = useRef<
-    (doc: SeamFile, fp: string | null) => Promise<void>
-  >(async () => { });
-  const openFromJsonRef = useRef<(json: string, fp: string) => Promise<void>>(
-    async () => { }
-  );
-
   const updateTitle = useCallback(
     (fp: string | null) => {
       platform.setTitle(
@@ -364,43 +347,40 @@ export default function App({ platform }: AppProps) {
     [platform]
   );
 
-  const loadDocument = useCallback(
-    async (doc: SeamFile, fp: string | null) => {
-      // On web, warm up the blob URL cache for every referenced clip *before*
-      // we commit the document to state. Otherwise <Timeline>'s setTimeline
-      // runs synchronously and resolveSource returns raw filenames → mediabunny
-      // fetches the SPA fallback HTML and fails.
-      if (platform.kind === "web") {
-        const wp = platform as WebPlatform;
-        wp.clearBlobUrlCache();
-        await wp.preloadBlobUrls(collectClipSources(doc));
-      }
-      // The authored doc is the source of truth — bin references and
-      // script outputs are resolved at compile time by the preview /
-      // render pipeline, not stored back into the doc.
-      history.reset(doc);
-      setFilePath(fp);
-      setErrors([]);
-      setSelectedIndices([]);
-      setMultiSelectMode(false);
-      setView(ROOT_VIEW);
-      setInitialTime(0);
-      updateTitle(fp);
-    },
-    [history, updateTitle, platform]
-  );
+  // `useEvent`: stable identity, latest closure. Lets the menu/action
+  // wiring `useEffect` register once at mount without needing a ref
+  // mirror for every callback it touches.
+  const loadDocument = useEvent(async (doc: SeamFile, fp: string | null) => {
+    // On web, warm up the blob URL cache for every referenced clip *before*
+    // we commit the document to state. Otherwise <Timeline>'s setTimeline
+    // runs synchronously and resolveSource returns raw filenames → mediabunny
+    // fetches the SPA fallback HTML and fails.
+    if (platform.kind === "web") {
+      const wp = platform as WebPlatform;
+      wp.clearBlobUrlCache();
+      await wp.preloadBlobUrls(collectClipSources(doc));
+    }
+    // The authored doc is the source of truth — bin references and
+    // script outputs are resolved at compile time by the preview /
+    // render pipeline, not stored back into the doc.
+    history.reset(doc);
+    setFilePath(fp);
+    setErrors([]);
+    setSelectedIndices([]);
+    setMultiSelectMode(false);
+    setView(ROOT_VIEW);
+    setInitialTime(0);
+    updateTitle(fp);
+  });
 
-  const openFromJson = useCallback(
-    async (json: string, fp: string) => {
-      const result = parseSeamFile(json);
-      if (!result.success) {
-        setErrors(result.errors);
-        return;
-      }
-      await loadDocument(result.data, fp);
-    },
-    [loadDocument]
-  );
+  const openFromJson = useEvent(async (json: string, fp: string) => {
+    const result = parseSeamFile(json);
+    if (!result.success) {
+      setErrors(result.errors);
+      return;
+    }
+    await loadDocument(result.data, fp);
+  });
 
   const updateDocument = useCallback(
     (newDoc: SeamFile) => {
@@ -569,9 +549,7 @@ export default function App({ platform }: AppProps) {
       if (!target) return;
 
       if (target.type === "clip") {
-        const basePath = filePathRef.current
-          ? dirname(filePathRef.current)
-          : "";
+        const basePath = filePath ? dirname(filePath) : "";
         try {
           const sourceDuration = await probeSourceDuration(
             target.source,
@@ -603,7 +581,7 @@ export default function App({ platform }: AppProps) {
       }
       // Other types (empty, ref) aren't enterable yet.
     },
-    [document, rootTimeline]
+    [document, rootTimeline, filePath]
   );
 
   const handleExit = useCallback(
@@ -750,26 +728,23 @@ export default function App({ platform }: AppProps) {
     [history, updateTitle, platform]
   );
 
-  const handleSave = useCallback(async () => {
-    if (filePathRef.current) {
-      await saveToFile(filePathRef.current);
+  const handleSave = useEvent(async () => {
+    if (filePath) {
+      await saveToFile(filePath);
     } else {
       const fp = await platform.pickSavePath();
       if (fp) await saveToFile(fp);
     }
-  }, [saveToFile, platform]);
+  });
 
-  const handleSaveAs = useCallback(async () => {
+  const handleSaveAs = useEvent(async () => {
     const fp = await platform.pickSavePath();
     if (fp) await saveToFile(fp);
-  }, [saveToFile, platform]);
+  });
 
-  const handleExport = useCallback(async () => {
-    const fp = filePathRef.current;
-    const defaultName = fp
-      ? basenameWithoutExt(fp)
-      : "untitled";
-    const basePath = fp ? dirname(fp) : "";
+  const handleExport = useEvent(async () => {
+    const defaultName = filePath ? basenameWithoutExt(filePath) : "untitled";
+    const basePath = filePath ? dirname(filePath) : "";
     setExportProgress({ phase: "read", progress: 0 });
     try {
       await platform.exportProject(
@@ -783,70 +758,61 @@ export default function App({ platform }: AppProps) {
     } finally {
       setExportProgress(null);
     }
-  }, [history, platform]);
+  });
 
-  const handleImport = useCallback(
-    async (file: File) => {
-      if (!platform.importProject) return;
-      try {
-        const result = await platform.importProject(file);
-        if (result) {
-          openFromJsonRef.current(result.json, result.filePath);
-          setShowBrowser(false);
-        }
-      } catch (err) {
-        setErrors([String(err)]);
+  const handleImport = useEvent(async (file: File) => {
+    if (!platform.importProject) return;
+    try {
+      const result = await platform.importProject(file);
+      if (result) {
+        await openFromJson(result.json, result.filePath);
+        setShowBrowser(false);
       }
-    },
-    [platform]
-  );
+    } catch (err) {
+      setErrors([String(err)]);
+    }
+  });
 
   // Web-only: bare .seam JSON import (no clip bundle). Confirms with
   // the user before overwriting an existing project of the same name.
-  const handleImportSeam = useCallback(
-    async (file: File) => {
-      if (platform.kind !== "web") return;
-      const wp = platform as WebPlatform;
-      const targetName = file.name.endsWith(".seam")
-        ? file.name
-        : `${file.name}.seam`;
-      try {
-        if (await wp.projectExists(targetName)) {
-          const ok = window.confirm(
-            `"${targetName}" already exists in projects/. ` +
-              `Importing will overwrite it. Continue?`,
-          );
-          if (!ok) return;
-        }
-        const result = await wp.importSeamFile(file);
-        openFromJsonRef.current(result.json, result.filePath);
-        setShowBrowser(false);
-      } catch (err) {
-        setErrors([String(err)]);
-      }
-    },
-    [platform],
-  );
-
-  // Web-only: download just the .seam JSON, no clips bundled.
-  const handleExportSeam = useCallback(async () => {
+  const handleImportSeam = useEvent(async (file: File) => {
     if (platform.kind !== "web") return;
     const wp = platform as WebPlatform;
-    const fp = filePathRef.current;
-    const defaultName = fp ? basenameWithoutExt(fp) : "untitled";
+    const targetName = file.name.endsWith(".seam")
+      ? file.name
+      : `${file.name}.seam`;
+    try {
+      if (await wp.projectExists(targetName)) {
+        const ok = window.confirm(
+          `"${targetName}" already exists in projects/. ` +
+            `Importing will overwrite it. Continue?`,
+        );
+        if (!ok) return;
+      }
+      const result = await wp.importSeamFile(file);
+      await openFromJson(result.json, result.filePath);
+      setShowBrowser(false);
+    } catch (err) {
+      setErrors([String(err)]);
+    }
+  });
+
+  // Web-only: download just the .seam JSON, no clips bundled.
+  const handleExportSeam = useEvent(async () => {
+    if (platform.kind !== "web") return;
+    const wp = platform as WebPlatform;
+    const defaultName = filePath ? basenameWithoutExt(filePath) : "untitled";
     try {
       await wp.exportSeamFile(history.current, defaultName);
     } catch (err) {
       setErrors([String(err)]);
     }
-  }, [platform, history]);
+  });
 
-  handleSaveRef.current = handleSave;
-  handleSaveAsRef.current = handleSaveAs;
-  loadDocumentRef.current = loadDocument;
-  openFromJsonRef.current = openFromJson;
-
-  // Export hooks: Electron's File menu + web Cmd+E shortcut
+  // Export hooks: Electron's File menu + web Cmd+E shortcut. These
+  // optional platform methods are still typed any while the platform
+  // abstraction catches up — see Task 54 for the eventual consolidation
+  // into onAction("export").
   useEffect(() => {
     const platformAny = platform as {
       onExportRequested?: (cb: () => void) => void;
@@ -865,14 +831,14 @@ export default function App({ platform }: AppProps) {
 
     platform.getInitial().then((data) => {
       if (data) {
-        openFromJsonRef.current(data.json, data.filePath);
+        void openFromJson(data.json, data.filePath);
       } else {
-        loadDocumentRef.current(EMPTY_DOCUMENT, null);
+        void loadDocument(EMPTY_DOCUMENT, null);
       }
     });
 
     platform.onAction("new", () => {
-      loadDocumentRef.current({ type: "composition", children: [] }, null);
+      void loadDocument({ type: "composition", children: [] }, null);
       setShowBrowser(false);
     });
 
@@ -883,14 +849,16 @@ export default function App({ platform }: AppProps) {
         setErrors([result.error]);
         return;
       }
-      openFromJsonRef.current(result.json, result.filePath);
+      await openFromJson(result.json, result.filePath);
       setShowBrowser(false);
     });
 
-    platform.onAction("save", () => handleSaveRef.current());
-    platform.onAction("save-as", () => handleSaveAsRef.current());
+    platform.onAction("save", () => void handleSave());
+    platform.onAction("save-as", () => void handleSaveAs());
     platform.onAction("settings", () => setSettingsOpen(true));
-  }, [platform]); // eslint-disable-line react-hooks/exhaustive-deps
+    // useEvent-wrapped handlers have stable identity — listing them as
+    // deps is honest and won't re-fire this effect.
+  }, [platform, openFromJson, loadDocument, handleSave, handleSaveAs]);
 
   const basePath = filePath ? dirname(filePath) : "";
 
@@ -927,39 +895,33 @@ export default function App({ platform }: AppProps) {
     ? multiSelectMode
     : selectedIndices.length >= 2;
 
-  const handleOpenFromBrowser = useCallback(
-    (fp: string, json: string) => {
-      openFromJsonRef.current(json, fp);
-      setShowBrowser(false);
-    },
-    []
-  );
-
-  const handleNewFromBrowser = useCallback(() => {
-    loadDocumentRef.current({ type: "composition", children: [] }, null);
+  // ProjectBrowser uses (fp, json) order; WebTopBar's open flow goes
+  // through platform.openProject(). Same destination, different entry
+  // points — both clear the browser overlay on success.
+  const handleOpenFromBrowser = useEvent((fp: string, json: string) => {
+    void openFromJson(json, fp);
     setShowBrowser(false);
-  }, []);
+  });
 
-  // WebTopBar handlers that also exit the browser if we're in it
-  const topBarNew = useCallback(() => {
-    loadDocumentRef.current({ type: "composition", children: [] }, null);
+  const handleNewProject = useEvent(() => {
+    void loadDocument({ type: "composition", children: [] }, null);
     setShowBrowser(false);
-  }, []);
+  });
 
-  const topBarOpen = useCallback(async () => {
+  const topBarOpen = useEvent(async () => {
     const result = await platform.openProject();
     if (!result) return;
     if ("error" in result) {
       setErrors([result.error]);
       return;
     }
-    openFromJsonRef.current(result.json, result.filePath);
+    await openFromJson(result.json, result.filePath);
     setShowBrowser(false);
-  }, [platform]);
+  });
 
-  const topBarBrowseProjects = useCallback(() => {
+  const topBarBrowseProjects = useEvent(() => {
     setShowBrowser(true);
-  }, []);
+  });
 
   const renderMain = () => {
     if (errors.length > 0) {
@@ -980,7 +942,7 @@ export default function App({ platform }: AppProps) {
         <ProjectBrowser
           platform={platform as WebPlatform}
           onOpen={handleOpenFromBrowser}
-          onNew={handleNewFromBrowser}
+          onNew={handleNewProject}
         />
       );
     }
@@ -1041,7 +1003,7 @@ export default function App({ platform }: AppProps) {
                   scriptComposition={scriptComposition}
                   scriptError={scriptError}
                   onScriptApply={handleScriptApply}
-                  rootDocument={editorDoc}
+                  rootDocument={document}
                   onRootDocumentChange={updateDocument}
                   onEnterCCCut={handleEnterCCCut}
                 />
@@ -1053,7 +1015,7 @@ export default function App({ platform }: AppProps) {
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <ControlsBar
-              document={editorDoc}
+              document={document}
               filePath={filePath}
               selectedIndices={selectedIndices}
               onSelectionChange={onSelectionChange}
@@ -1074,7 +1036,7 @@ export default function App({ platform }: AppProps) {
             />
             <TimelinePanel
               timeline={editorTimeline}
-              document={editorDoc}
+              document={document}
               viewDocument={viewDocument}
               filePath={filePath}
               isMobile={isMobile}
@@ -1111,7 +1073,7 @@ export default function App({ platform }: AppProps) {
     >
       {platform.kind === "web" && (
         <WebTopBar
-          onNew={topBarNew}
+          onNew={handleNewProject}
           onOpen={topBarOpen}
           onSave={handleSave}
           onSaveAs={handleSaveAs}

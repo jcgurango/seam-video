@@ -7,16 +7,19 @@
 import { compileSeamFile } from "@seam/core";
 import type {
   CompileError as CoreCompileError,
+  CompileOptions as CoreCompileOptions,
   CompileResult as CoreCompileResult,
 } from "@seam/core";
 
 export type CompileError = CoreCompileError;
+export type CompileOptions = CoreCompileOptions;
 export type CompileResult = CoreCompileResult;
 
 export function compileDocument(
   doc: Parameters<typeof compileSeamFile>[0],
+  options: CompileOptions = {},
 ): CompileResult {
-  return compileSeamFile(doc);
+  return compileSeamFile(doc, options);
 }
 
 /** No-op identity. The new schema stores no rendered shadow alongside

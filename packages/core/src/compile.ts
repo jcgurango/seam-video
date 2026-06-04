@@ -35,11 +35,30 @@ export interface CompileResult {
   errors: CompileError[];
 }
 
+export interface CompileOptions {
+  /** When false, `script` fields are left intact on the output and not
+   *  executed; bin references still splice as usual. Useful for the
+   *  editor's timeline panel, which renders the user's authored body
+   *  so edits map 1:1 — running the script would replace what they
+   *  see with the script's output and any drag/trim writes would
+   *  vanish on the next compile. Defaults to true. */
+  runScripts?: boolean;
+}
+
 /** Compile a document — bottom-up: splice bin references, recurse into
  *  children/attachments, then run scripts on each composition. */
-export function compileSeamFile(doc: SeamFile): CompileResult {
+export function compileSeamFile(
+  doc: SeamFile,
+  options: CompileOptions = {},
+): CompileResult {
   const errors: CompileError[] = [];
-  const compiled = compileComposition(doc as Composition, [], errors);
+  const runScripts = options.runScripts ?? true;
+  const compiled = compileComposition(
+    doc as Composition,
+    [],
+    errors,
+    runScripts,
+  );
   return { doc: compiled as SeamFile, errors };
 }
 
@@ -47,15 +66,17 @@ function compileChild(
   child: Child,
   binStack: BinEntry[][],
   errors: CompileError[],
+  runScripts: boolean,
 ): Child {
   if (child.type !== "composition") return child;
-  return compileComposition(child, binStack, errors);
+  return compileComposition(child, binStack, errors, runScripts);
 }
 
 function compileComposition(
   comp: Composition,
   callerBinStack: BinEntry[][],
   errors: CompileError[],
+  runScripts: boolean,
 ): Composition {
   // 1. Bin reference: replace body with the looked-up entry's body.
   //    The reference's own bin/script/spatial/timing fields stay; only
@@ -82,12 +103,16 @@ function compileComposition(
   //    win over inherited ones with the same id (nearest-enclosing).
   const innerStack = staged.bin ? [staged.bin, ...callerBinStack] : callerBinStack;
 
-  // 3. Recurse children/attachments with the inner stack.
-  const newChildren = staged.children.map((c) =>
-    compileChild(c, innerStack, errors),
+  // 3. Recurse children/attachments with the inner stack. Tolerate a
+  //    missing `children` field — a bin-ref or empty composition can
+  //    legitimately omit it. The output always has `children` populated
+  //    so the resolver downstream doesn't need to defensive-check.
+  const inputChildren = staged.children ?? [];
+  const newChildren = inputChildren.map((c) =>
+    compileChild(c, innerStack, errors, runScripts),
   );
   const newAttachments = staged.attachments?.map((c) =>
-    compileChild(c, innerStack, errors),
+    compileChild(c, innerStack, errors, runScripts),
   );
   staged = {
     ...staged,
@@ -98,7 +123,10 @@ function compileComposition(
   // 4. Script (last): runs against `staged` with bins+descendants
   //    already resolved. Output replaces us; recompile in the caller's
   //    scope since the replacement supersedes our own bin definitions.
-  if (staged.script != null) {
+  //    `runScripts: false` skips this step and leaves the `script`
+  //    field on the output so the editor's timeline panel can render
+  //    the user's authored body for direct editing.
+  if (staged.script != null && runScripts) {
     try {
       const rawResult = runScript(staged.script, staged);
       const v = validate(rawResult);
@@ -116,6 +144,7 @@ function compileComposition(
         withoutScript as Composition,
         callerBinStack,
         errors,
+        runScripts,
       );
     } catch (err) {
       errors.push({
@@ -127,10 +156,15 @@ function compileComposition(
     }
   }
 
-  // 5. Strip `binItem` and `script` from the compiled output — both
-  //    have been consumed. `bin` survives (it's just data; harmless if
-  //    no descendant references it).
-  const { binItem: _bi, script: _s, ...rest } = staged;
+  // 5. Strip `binItem` from the compiled output (consumed). Keep
+  //    `script` in panel mode (runScripts: false) so the editor knows
+  //    a script is attached; strip it in normal mode. `bin` always
+  //    survives — it's just addressable data.
+  if (runScripts) {
+    const { binItem: _bi, script: _s, ...rest } = staged;
+    return rest as Composition;
+  }
+  const { binItem: _bi, ...rest } = staged;
   return rest as Composition;
 }
 
