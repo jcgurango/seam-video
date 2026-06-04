@@ -1,13 +1,11 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
-import { resolveComposition } from "@seam/core";
 import type {
   ResolvedTimeline,
   ResolvedChild,
   SeamFile,
   Child,
   Clip,
-  TimeAnchor,
 } from "@seam/core";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
@@ -15,6 +13,13 @@ import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import type { Composition } from "@seam/core";
+import {
+  ROW_HEIGHT,
+  ROW_GAP,
+  RULER_HEIGHT,
+  type ChildBlock,
+} from "./timelineLayout.js";
+import AnchorLinesLayer from "./AnchorLinesLayer.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -40,9 +45,6 @@ export interface TimelinePanelProps {
   platform: Platform;
 }
 
-const ROW_HEIGHT = 32;
-const ROW_GAP = 2;
-const RULER_HEIGHT = 24;
 const MIN_PX_PER_SEC = 10;
 const MAX_PX_PER_SEC = 1000;
 const DEFAULT_PX_PER_SEC = 100;
@@ -53,13 +55,6 @@ const LONG_PRESS_SLOP_PX = 6;
  *  as drag-to-reorder rather than a click. */
 const REORDER_THRESHOLD_PX = 6;
 const REORDER_LINE_COLOR = "#ff4444";
-
-interface ChildBlock {
-  child: ResolvedChild;
-  index: number;
-  row: number;
-  isAttachment: boolean;
-}
 
 /**
  * Greedy row-packer. Items past `attachmentStartIndex` are laid out into a
@@ -263,6 +258,153 @@ interface InnerProps {
   onReorder?: (from: number, to: number) => void;
 }
 
+// ── Shared timeline surface (hook + body) ────────────────────────────
+//
+// Both DesktopTimeline and MobileTimeline boil down to: scroll
+// container + playhead + this body. The body is identical between
+// them; the shells differ in scroll behaviour, playhead positioning,
+// and (Desktop only) the reorder-drag overlay.
+
+interface TimelineSurfaceState {
+  pxPerSec: number;
+  setPxPerSec: React.Dispatch<React.SetStateAction<number>>;
+  splitIndex: number;
+  blocks: ChildBlock[];
+  rowCount: number;
+  contentHeight: number;
+  rulerTicks: number[];
+}
+
+/** State + effects shared by Desktop and Mobile shells: zoom level,
+ *  block layout, content height, ruler ticks, and the Ctrl/Cmd+wheel
+ *  zoom listener attached to the scroll container. */
+function useTimelineSurfaceState(
+  timeline: ResolvedTimeline,
+  attachmentStartIndex: number | undefined,
+  scrollRef: React.RefObject<HTMLDivElement | null>,
+): TimelineSurfaceState {
+  const { totalDuration } = useTimeline();
+  const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
+
+  const splitIndex = attachmentStartIndex ?? timeline.children.length;
+  const blocks = useMemo(
+    () => layoutBlocks(timeline.children, splitIndex),
+    [timeline, splitIndex],
+  );
+  const rowCount =
+    blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
+  const contentHeight =
+    RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
+
+  // Non-passive wheel listener so Ctrl/Cmd+wheel zoom can preventDefault
+  // (React's onWheel is passive by default).
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      setPxPerSec((prev) =>
+        Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor)),
+      );
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, [scrollRef]);
+
+  const interval = rulerInterval(pxPerSec);
+  const rulerTicks: number[] = [];
+  for (let t = 0; t <= totalDuration + interval; t += interval) {
+    rulerTicks.push(t);
+  }
+
+  return {
+    pxPerSec,
+    setPxPerSec,
+    splitIndex,
+    blocks,
+    rowCount,
+    contentHeight,
+    rulerTicks,
+  };
+}
+
+interface TimelineSurfaceProps {
+  surface: TimelineSurfaceState;
+  timeline: ResolvedTimeline;
+  docRoot?: {
+    children: import("@seam/core").Child[];
+    attachments?: import("@seam/core").Child[];
+  };
+  selectedIndices: number[];
+  onSelectionChange: (indices: number[]) => void;
+  onMultiSelectStart: (index: number) => void;
+  multiSelectMode: boolean;
+  onEnter?: (index: number) => void;
+  trim?: TrimOverlay;
+  editHistory?: History<SeamFile>;
+  /** Index of the child currently being reorder-dragged (fades its
+   *  block view). Pass `null` when the shell doesn't support reorder. */
+  reorderDragIndex: number | null;
+  /** Hand-off callback when a child block's mouse-press passes the
+   *  drag threshold. Pass `null` to disable reorder for this shell. */
+  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+}
+
+/** Body of the timeline: ruler + child blocks + anchor lines + optional
+ *  trim overlay. Positioned absolutely within the parent's content box,
+ *  so each shell wraps it in its own scroll/padding/playhead layout. */
+function TimelineSurface({
+  surface,
+  timeline,
+  docRoot,
+  selectedIndices,
+  onSelectionChange,
+  onMultiSelectStart,
+  multiSelectMode,
+  onEnter,
+  trim,
+  editHistory,
+  reorderDragIndex,
+  onReorderDragStart,
+}: TimelineSurfaceProps) {
+  const { pxPerSec, splitIndex, blocks, contentHeight, rulerTicks } = surface;
+  return (
+    <>
+      <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
+      <ChildrenLayer
+        blocks={blocks}
+        pxPerSec={pxPerSec}
+        selectedIndices={selectedIndices}
+        onSelectionChange={onSelectionChange}
+        onMultiSelectStart={onMultiSelectStart}
+        multiSelectMode={multiSelectMode}
+        onEnter={onEnter}
+        docRoot={docRoot}
+        attachmentStartIndex={splitIndex}
+        reorderDragIndex={reorderDragIndex}
+        onReorderDragStart={onReorderDragStart}
+      />
+      <AnchorLinesLayer
+        selectedIndices={selectedIndices}
+        docRoot={docRoot}
+        timeline={timeline}
+        blocks={blocks}
+        pxPerSec={pxPerSec}
+        history={editHistory}
+      />
+      {trim && (
+        <TrimOverlayLayer
+          trim={trim}
+          pxPerSec={pxPerSec}
+          height={contentHeight}
+        />
+      )}
+    </>
+  );
+}
+
 function DesktopTimeline({
   timeline,
   docRoot,
@@ -278,7 +420,13 @@ function DesktopTimeline({
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
+  const surface = useTimelineSurfaceState(
+    timeline,
+    attachmentStartIndex,
+    scrollRef,
+  );
+  const { pxPerSec, blocks, contentHeight } = surface;
+
   // Reorder drag state. `cursorX` is in content (scroll-relative) px;
   // `grabOffsetX` is how far inside the source block the user grabbed,
   // used to keep the ghost's left edge consistent with the cursor.
@@ -288,32 +436,7 @@ function DesktopTimeline({
     grabOffsetX: number;
   } | null>(null);
 
-  const splitIndex = attachmentStartIndex ?? timeline.children.length;
-  const blocks = useMemo(
-    () => layoutBlocks(timeline.children, splitIndex),
-    [timeline, splitIndex]
-  );
-  const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
-
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
-  const contentHeight = RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
-
-  // Attach wheel listener with { passive: false } so preventDefault works
-  // (React's onWheel is passive by default).
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      const factor = e.deltaY > 0 ? 0.9 : 1.1;
-      setPxPerSec((prev) =>
-        Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
-      );
-    };
-    container.addEventListener("wheel", onWheel, { passive: false });
-    return () => container.removeEventListener("wheel", onWheel);
-  }, []);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -443,12 +566,6 @@ function DesktopTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reorderDrag !== null, onReorder, reorderableBlocks, pxPerSec]);
 
-  const interval = rulerInterval(pxPerSec);
-  const rulerTicks: number[] = [];
-  for (let t = 0; t <= totalDuration + interval; t += interval) {
-    rulerTicks.push(t);
-  }
-
   const playheadX = currentTime * pxPerSec;
 
   // Ghost + insertion-line layout. The ghost mirrors the source
@@ -505,27 +622,19 @@ function DesktopTimeline({
       }}
     >
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
-        <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-        <ChildrenLayer
-          blocks={blocks}
-          pxPerSec={pxPerSec}
+        <TimelineSurface
+          surface={surface}
+          timeline={timeline}
+          docRoot={docRoot}
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
           onMultiSelectStart={onMultiSelectStart}
           multiSelectMode={multiSelectMode}
           onEnter={onEnter}
-          docRoot={docRoot}
-          attachmentStartIndex={splitIndex}
+          trim={trim}
+          editHistory={editHistory}
           reorderDragIndex={reorderDrag?.fromIndex ?? null}
           onReorderDragStart={onReorder ? startReorderDrag : null}
-        />
-        <AnchorLinesLayer
-          selectedIndices={selectedIndices}
-          docRoot={docRoot}
-          timeline={timeline}
-          blocks={blocks}
-          pxPerSec={pxPerSec}
-          history={editHistory}
         />
         {ghost && (
           <div
@@ -572,7 +681,6 @@ function DesktopTimeline({
             }}
           />
         )}
-        {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         <Playhead x={playheadX} height={contentHeight} />
       </div>
     </div>
@@ -593,17 +701,17 @@ function MobileTimeline({
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
+  const surface = useTimelineSurfaceState(
+    timeline,
+    attachmentStartIndex,
+    scrollRef,
+  );
+  const { pxPerSec, contentHeight } = surface;
   const [padding, setPadding] = useState(0);
   const programmaticScroll = useRef(false);
 
-  const splitIndex = attachmentStartIndex ?? timeline.children.length;
-  const blocks = useMemo(
-    () => layoutBlocks(timeline.children, splitIndex),
-    [timeline, splitIndex]
-  );
-  const rowCount = blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
-
+  // Mobile shell pads each side with half the container's width so the
+  // playhead can sit at the center even at the timeline's start/end.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -615,8 +723,10 @@ function MobileTimeline({
   }, []);
 
   const contentWidth = padding + totalDuration * pxPerSec + padding;
-  const contentHeight = RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
 
+  // Auto-scroll the timeline so the (sticky) playhead stays at the
+  // container's left edge during playback. `programmaticScroll` flags
+  // the next scroll event so `handleScroll` doesn't echo back into seek.
   useEffect(() => {
     if (!isPlaying) return;
     const container = scrollRef.current;
@@ -637,34 +747,14 @@ function MobileTimeline({
     seek(time);
   }, [isPlaying, pxPerSec, totalDuration, seek]);
 
-  // Non-passive wheel listener so Ctrl/Cmd+wheel zoom can preventDefault.
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      const factor = e.deltaY > 0 ? 0.9 : 1.1;
-      setPxPerSec((prev) =>
-        Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, prev * factor))
-      );
-    };
-    container.addEventListener("wheel", onWheel, { passive: false });
-    return () => container.removeEventListener("wheel", onWheel);
-  }, []);
-
+  // Re-snap scroll to the current playhead on zoom so the timeline
+  // doesn't drift sideways when the user resizes via Ctrl/Cmd+wheel.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     programmaticScroll.current = true;
     container.scrollLeft = currentTime * pxPerSec;
   }, [pxPerSec]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const interval = rulerInterval(pxPerSec);
-  const rulerTicks: number[] = [];
-  for (let t = 0; t <= totalDuration + interval; t += interval) {
-    rulerTicks.push(t);
-  }
 
   return (
     <div
@@ -677,29 +767,20 @@ function MobileTimeline({
       </div>
       <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <div style={{ position: "absolute", left: padding, top: 0, right: padding }}>
-          <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-          <ChildrenLayer
-            blocks={blocks}
-            pxPerSec={pxPerSec}
+          <TimelineSurface
+            surface={surface}
+            timeline={timeline}
+            docRoot={docRoot}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
             onMultiSelectStart={onMultiSelectStart}
             multiSelectMode={multiSelectMode}
             onEnter={onEnter}
-            docRoot={docRoot}
-            attachmentStartIndex={splitIndex}
+            trim={trim}
+            editHistory={editHistory}
             reorderDragIndex={null}
             onReorderDragStart={null}
           />
-          <AnchorLinesLayer
-            selectedIndices={selectedIndices}
-            docRoot={docRoot}
-            timeline={timeline}
-            blocks={blocks}
-            pxPerSec={pxPerSec}
-            history={editHistory}
-          />
-          {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
       </div>
     </div>
@@ -1020,575 +1101,6 @@ function ChildBlockView({
   );
 }
 
-// ── Anchor-line overlay ──────────────────────────────────────────────
-//
-// When an attachment is selected, draw a line from the anchored node to the
-// attachment for each of its `start`/`end` anchors:
-//
-//   ── on the anchor's row, a circle at the anchorPoint location;
-//   ── on the attachment's row, a circle at the resolved edge (start or end);
-//   ── a straight line connecting the two.
-//
-// Each circle is labelled `s` (anchorPoint/offset is a number — seconds) or
-// `%` (a percentage string). The labels follow the actual JSON shape, with
-// timeSource-implied defaults when the field is omitted.
-
-interface AnchorLineSpec {
-  key: string;
-  topX: number;
-  topY: number;
-  bottomX: number;
-  bottomY: number;
-  topLabel: "s" | "%";
-  bottomLabel: "s" | "%";
-  edit: AnchorEditCtx;
-}
-
-function parsePct(s: string): number {
-  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
-  return m ? parseFloat(m[1]) / 100 : 0;
-}
-
-/**
- * Resolved-output time of the anchor *point* (no offset applied). Mirrors
- * the resolver's source/output formulas so the dot lands exactly where the
- * resolver would put it; the attachment's edge is `pointTime + offsetSec`,
- * which we already have on the resolved attachment as `timelineStart` /
- * `timelineEnd`.
- */
-function computePointTime(
-  spec: TimeAnchor,
-  anchorDoc: Child,
-  anchorResolved: ResolvedChild
-): number | null {
-  const start = anchorResolved.timelineStart;
-  const end = anchorResolved.timelineEnd;
-
-  let baseSourceTime = 0;
-  let speed = 1;
-  if (anchorResolved.type === "clip" || anchorResolved.type === "audio") {
-    baseSourceTime = anchorResolved.sourceIn;
-    speed = anchorResolved.speed;
-  } else if (anchorResolved.type === "composition") {
-    baseSourceTime =
-      anchorDoc.type === "composition" ? (anchorDoc.in ?? 0) : 0;
-    speed = anchorResolved.speed;
-  }
-
-  const timeSource = spec.timeSource ?? "output";
-  if (timeSource === "source") {
-    const sourceTime =
-      typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
-    return start + (sourceTime - baseSourceTime) / speed;
-  }
-  const pct =
-    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
-  return start + (end - start) * pct;
-}
-
-function findAnchorById(
-  id: string,
-  docRoot: { children: Child[]; attachments?: Child[] },
-  timeline: ResolvedTimeline
-): { doc: Child; resolved: ResolvedChild; blockIndex: number } | null {
-  const childCount = docRoot.children.length;
-  for (let i = 0; i < docRoot.children.length; i++) {
-    if ((docRoot.children[i] as { id?: string }).id === id) {
-      return {
-        doc: docRoot.children[i],
-        resolved: timeline.children[i],
-        blockIndex: i,
-      };
-    }
-  }
-  const atts = docRoot.attachments ?? [];
-  for (let j = 0; j < atts.length; j++) {
-    if ((atts[j] as { id?: string }).id === id) {
-      return {
-        doc: atts[j],
-        resolved: timeline.children[childCount + j],
-        blockIndex: childCount + j,
-      };
-    }
-  }
-  return null;
-}
-
-function anchorPointKind(spec: TimeAnchor): "s" | "%" {
-  if (typeof spec.anchorPoint === "string") return "%";
-  if (typeof spec.anchorPoint === "number") return "s";
-  // Omitted: follow the timeSource-implied default (source → 0sec, output → "0%")
-  return spec.timeSource === "source" ? "s" : "%";
-}
-
-function offsetKind(spec: TimeAnchor): "s" | "%" {
-  return typeof spec.offset === "string" ? "%" : "s";
-}
-
-function rowYTop(row: number): number {
-  return RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
-}
-
-// ── Anchor edit math ─────────────────────────────────────────────────
-//
-// Per-line context the handlers need to translate horizontal pixel motion
-// into anchorPoint / offset value changes (and to convert units on toggle
-// without moving the resolved point).
-
-interface AnchorEditCtx {
-  attIdx: number;
-  side: "start" | "end";
-  pointTime: number;
-  anchorStart: number;
-  anchorEnd: number;
-  anchorBase: number;
-  anchorSpeed: number;
-  attNatDur: number;
-}
-
-const SEC_DECIMALS = 1000;
-const PCT_DECIMALS = 10000;
-const fmtSec = (s: number) => Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
-const fmtPct = (frac: number) =>
-  `${Math.round(frac * 100 * PCT_DECIMALS) / PCT_DECIMALS}%`;
-
-function naturalDurOf(node: Child): number {
-  if (node.type === "clip" || node.type === "audio") {
-    if (node.duration != null) return node.duration;
-    const speed = node.speed ?? 1;
-    return (node.out - node.in) / speed;
-  }
-  if (node.type === "empty") return node.duration;
-  if (node.type === "data") return node.duration ?? 0;
-  if (node.type === "composition") {
-    if (node.in != null && node.out != null) return node.out - node.in;
-    try {
-      return resolveComposition(node).duration;
-    } catch {
-      return 0;
-    }
-  }
-  return 0;
-}
-
-/** Drag the anchorPoint to shift the resolved point time by `deltaSec`. */
-function dragAnchorPoint(
-  spec: TimeAnchor,
-  deltaSec: number,
-  ctx: AnchorEditCtx
-): TimeAnchor {
-  if (spec.timeSource === "source") {
-    const oldVal = typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
-    return {
-      ...spec,
-      anchorPoint: fmtSec(oldVal + deltaSec * ctx.anchorSpeed),
-      timeSource: "source",
-    };
-  }
-  // output / undefined → output mode (percentage of anchor's output range)
-  const range = ctx.anchorEnd - ctx.anchorStart;
-  const oldPct =
-    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
-  const newPct = oldPct + (range > 0 ? deltaSec / range : 0);
-  return {
-    ...spec,
-    anchorPoint: fmtPct(newPct),
-    timeSource: "output",
-  };
-}
-
-/** Drag offset by `deltaSec` (output seconds). */
-function dragOffset(
-  spec: TimeAnchor,
-  deltaSec: number,
-  ctx: AnchorEditCtx
-): TimeAnchor {
-  if (typeof spec.offset === "string") {
-    const oldPct = parsePct(spec.offset);
-    const newPct =
-      oldPct + (ctx.attNatDur > 0 ? deltaSec / ctx.attNatDur : 0);
-    return { ...spec, offset: fmtPct(newPct) };
-  }
-  const oldSec = typeof spec.offset === "number" ? spec.offset : 0;
-  return { ...spec, offset: fmtSec(oldSec + deltaSec) };
-}
-
-/**
- * Toggle anchorPoint between source-seconds and output-percent. Recomputes
- * from `pointTime` so the dot stays put on the timeline through the toggle.
- */
-function toggleAnchorPoint(spec: TimeAnchor, ctx: AnchorEditCtx): TimeAnchor {
-  if (anchorPointKind(spec) === "s") {
-    const range = ctx.anchorEnd - ctx.anchorStart;
-    const pct = range > 0 ? (ctx.pointTime - ctx.anchorStart) / range : 0;
-    return { ...spec, anchorPoint: fmtPct(pct), timeSource: "output" };
-  }
-  const sourceTime =
-    ctx.anchorBase + (ctx.pointTime - ctx.anchorStart) * ctx.anchorSpeed;
-  return { ...spec, anchorPoint: fmtSec(sourceTime), timeSource: "source" };
-}
-
-/** Toggle offset between seconds and percent of attachment natural duration. */
-function toggleOffset(spec: TimeAnchor, ctx: AnchorEditCtx): TimeAnchor {
-  if (offsetKind(spec) === "s") {
-    const sec = typeof spec.offset === "number" ? spec.offset : 0;
-    const pct = ctx.attNatDur > 0 ? sec / ctx.attNatDur : 0;
-    return { ...spec, offset: fmtPct(pct) };
-  }
-  const pct = typeof spec.offset === "string" ? parsePct(spec.offset) : 0;
-  return { ...spec, offset: fmtSec(pct * ctx.attNatDur) };
-}
-
-function setAttachmentSpec(
-  doc: SeamFile,
-  attIdx: number,
-  side: "start" | "end",
-  newSpec: TimeAnchor
-): SeamFile {
-  const atts = [...(doc.attachments ?? [])];
-  const att = atts[attIdx];
-  if (!att) return doc;
-  atts[attIdx] = { ...att, [side]: newSpec } as Child;
-  return { ...doc, attachments: atts };
-}
-
-function AnchorLinesLayer({
-  selectedIndices,
-  docRoot,
-  timeline,
-  blocks,
-  pxPerSec,
-  history,
-}: {
-  selectedIndices: number[];
-  docRoot?: {
-    children: import("@seam/core").Child[];
-    attachments?: import("@seam/core").Child[];
-  };
-  timeline: ResolvedTimeline;
-  blocks: ChildBlock[];
-  pxPerSec: number;
-  /** Provided only when editing is allowed (root view). */
-  history?: History<SeamFile>;
-}) {
-  if (!docRoot) return null;
-  const childCount = docRoot.children.length;
-
-  const rowByIndex = new Map<number, number>();
-  for (const b of blocks) rowByIndex.set(b.index, b.row);
-
-  const lines: AnchorLineSpec[] = [];
-
-  for (const sel of selectedIndices) {
-    if (sel < childCount) continue; // only attachments draw lines
-    const j = sel - childCount;
-    const attDoc = docRoot.attachments?.[j];
-    const attResolved = timeline.children[sel];
-    if (!attDoc || !attResolved) continue;
-    const attRow = rowByIndex.get(sel);
-    if (attRow == null) continue;
-
-    for (const side of ["start", "end"] as const) {
-      const spec = (attDoc as { start?: TimeAnchor; end?: TimeAnchor })[side];
-      if (!spec || spec.anchor == null) continue;
-
-      const found = findAnchorById(spec.anchor, docRoot, timeline);
-      if (!found) continue;
-      const anchorRow = rowByIndex.get(found.blockIndex);
-      if (anchorRow == null) continue;
-
-      const pointTime = computePointTime(spec, found.doc, found.resolved);
-      if (pointTime == null) continue;
-
-      // The line is a plumb line dropped from the anchor point — always
-      // perfectly vertical at `pointTime * pxPerSec`, regardless of where
-      // the attachment's resolved edge lands. Offset shifts the clip
-      // sideways relative to the line, not the line.
-      const anchorY0 = rowYTop(anchorRow);
-      const attY0 = rowYTop(attRow);
-      const EXT = 10;
-      let anchorOuterY: number;
-      let attOuterY: number;
-      if (anchorRow < attRow) {
-        anchorOuterY = anchorY0 - EXT;
-        attOuterY = attY0 + ROW_HEIGHT + EXT;
-      } else if (anchorRow > attRow) {
-        anchorOuterY = anchorY0 + ROW_HEIGHT + EXT;
-        attOuterY = attY0 - EXT;
-      } else {
-        anchorOuterY = anchorY0 + ROW_HEIGHT / 2;
-        attOuterY = anchorOuterY;
-      }
-
-      // Build the per-line edit context. Source-base/speed mirror what
-      // `buildIdMapEntry` in the resolver tracks; clip/audio use the
-      // resolved sourceIn + speed, composition uses the doc's `in` (the
-      // pre-window inner-timeline base) + resolved.speed.
-      let anchorBase = 0;
-      let anchorSpeed = 1;
-      if (
-        found.resolved.type === "clip" ||
-        found.resolved.type === "audio"
-      ) {
-        anchorBase = found.resolved.sourceIn;
-        anchorSpeed = found.resolved.speed;
-      } else if (found.resolved.type === "composition") {
-        anchorBase = found.doc.type === "composition" ? found.doc.in ?? 0 : 0;
-        anchorSpeed = found.resolved.speed;
-      }
-
-      const editCtx: AnchorEditCtx = {
-        attIdx: j,
-        side,
-        pointTime,
-        anchorStart: found.resolved.timelineStart,
-        anchorEnd: found.resolved.timelineEnd,
-        anchorBase,
-        anchorSpeed,
-        attNatDur: naturalDurOf(attDoc),
-      };
-
-      const lineX = pointTime * pxPerSec;
-      lines.push({
-        key: `${sel}-${side}`,
-        topX: lineX,
-        topY: anchorOuterY,
-        bottomX: lineX,
-        bottomY: attOuterY,
-        topLabel: anchorPointKind(spec),
-        bottomLabel: offsetKind(spec),
-        edit: editCtx,
-      });
-    }
-  }
-
-  if (lines.length === 0) return null;
-
-  const RADIUS = 9;
-  const STROKE = "#ffcc00";
-  const HIT_THICKNESS = 14;
-  const CLICK_THRESHOLD_PX = 4;
-  const editable = history != null;
-
-  // Begin a drag (or click+drag from a circle). `kind` selects which field
-  // moves; `clickToggle` runs on pointerup if the user never crossed the
-  // movement threshold (used for circles, not for line halves).
-  //
-  // We use explicit pointer capture on the originating SVG element so the
-  // drag survives state-driven re-renders: each `replace` causes React to
-  // reconcile, and without explicit capture the implicit capture browsers
-  // do for pointer events can be lost mid-drag — which strands the user
-  // with no `pointerup` and the cursor "tied to the mouse".
-  const startEdit = (
-    e: React.PointerEvent,
-    ctx: AnchorEditCtx,
-    kind: "anchorPoint" | "offset",
-    clickToggle: ((spec: TimeAnchor) => TimeAnchor) | null
-  ) => {
-    e.stopPropagation();
-    if (!history) return;
-    e.preventDefault();
-    const target = e.currentTarget as Element;
-    const pointerId = e.pointerId;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const initialDoc = history.current;
-    const initialAtt = initialDoc.attachments?.[ctx.attIdx];
-    if (!initialAtt) return;
-    const initialSpec = (initialAtt as {
-      start?: TimeAnchor;
-      end?: TimeAnchor;
-    })[ctx.side];
-    if (!initialSpec) return;
-
-    try {
-      target.setPointerCapture(pointerId);
-    } catch {
-      /* element gone — fall back to ambient pointer events */
-    }
-
-    let pastSnapshot = false;
-    let dragging = !clickToggle; // line halves are pure-drag
-    if (dragging) {
-      history.pushPast(initialDoc);
-      pastSnapshot = true;
-    }
-
-    const onMove = (ev: Event) => {
-      const me = ev as PointerEvent;
-      if (me.pointerId !== pointerId) return;
-      const dx = me.clientX - startX;
-      const dy = me.clientY - startY;
-      if (!dragging && Math.hypot(dx, dy) > CLICK_THRESHOLD_PX) {
-        dragging = true;
-        if (!pastSnapshot) {
-          history.pushPast(initialDoc);
-          pastSnapshot = true;
-        }
-      }
-      if (!dragging) return;
-      const deltaSec = dx / pxPerSec;
-      const newSpec =
-        kind === "anchorPoint"
-          ? dragAnchorPoint(initialSpec, deltaSec, ctx)
-          : dragOffset(initialSpec, deltaSec, ctx);
-      const newDoc = setAttachmentSpec(
-        initialDoc,
-        ctx.attIdx,
-        ctx.side,
-        newSpec,
-      );
-      history.replace(newDoc);
-    };
-    const onUp = (ev: Event) => {
-      const me = ev as PointerEvent;
-      if (me.pointerId !== pointerId) return;
-      target.removeEventListener("pointermove", onMove);
-      target.removeEventListener("pointerup", onUp);
-      target.removeEventListener("pointercancel", onUp);
-      try {
-        target.releasePointerCapture(pointerId);
-      } catch {
-        /* ignore */
-      }
-      if (!dragging && clickToggle) {
-        const newSpec = clickToggle(initialSpec);
-        const newDoc = setAttachmentSpec(
-          initialDoc,
-          ctx.attIdx,
-          ctx.side,
-          newSpec,
-        );
-        history.push(newDoc);
-      }
-    };
-    target.addEventListener("pointermove", onMove);
-    target.addEventListener("pointerup", onUp);
-    target.addEventListener("pointercancel", onUp);
-  };
-
-  return (
-    <svg
-      style={{
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: "100%",
-        height: "100%",
-        overflow: "visible",
-        pointerEvents: "none",
-        zIndex: 4,
-      }}
-    >
-      {lines.map((l) => {
-        const midX = (l.topX + l.bottomX) / 2;
-        const midY = (l.topY + l.bottomY) / 2;
-        return (
-          <g key={l.key}>
-            {/* Top-half hit area — drag anchorPoint. */}
-            <line
-              x1={l.topX}
-              y1={l.topY}
-              x2={midX}
-              y2={midY}
-              stroke="transparent"
-              strokeWidth={HIT_THICKNESS}
-              style={{
-                pointerEvents: editable ? "stroke" : "none",
-                cursor: editable ? "grab" : "default",
-              }}
-              onPointerDown={(e) => startEdit(e, l.edit, "anchorPoint", null)}
-            />
-            {/* Bottom-half hit area — drag offset. */}
-            <line
-              x1={midX}
-              y1={midY}
-              x2={l.bottomX}
-              y2={l.bottomY}
-              stroke="transparent"
-              strokeWidth={HIT_THICKNESS}
-              style={{
-                pointerEvents: editable ? "stroke" : "none",
-                cursor: editable ? "grab" : "default",
-              }}
-              onPointerDown={(e) => startEdit(e, l.edit, "offset", null)}
-            />
-            {/* Visible cosmetic line. */}
-            <line
-              x1={l.topX}
-              y1={l.topY}
-              x2={l.bottomX}
-              y2={l.bottomY}
-              stroke={STROKE}
-              strokeWidth={2}
-              style={{ pointerEvents: "none" }}
-            />
-            {/* Top circle — click to toggle anchorPoint units, drag to move. */}
-            <circle
-              cx={l.topX}
-              cy={l.topY}
-              r={RADIUS}
-              fill={STROKE}
-              stroke="#1e1e1e"
-              strokeWidth={1}
-              style={{
-                pointerEvents: editable ? "visiblePainted" : "none",
-                cursor: editable ? "pointer" : "default",
-              }}
-              onPointerDown={(e) =>
-                startEdit(e, l.edit, "anchorPoint", (spec) =>
-                  toggleAnchorPoint(spec, l.edit)
-                )
-              }
-            />
-            <text
-              x={l.topX}
-              y={l.topY}
-              textAnchor="middle"
-              dominantBaseline="central"
-              fill="#1e1e1e"
-              fontSize={10}
-              fontWeight={700}
-              style={{ userSelect: "none", pointerEvents: "none" }}
-            >
-              {l.topLabel}
-            </text>
-            {/* Bottom circle — click to toggle offset units, drag to move. */}
-            <circle
-              cx={l.bottomX}
-              cy={l.bottomY}
-              r={RADIUS}
-              fill={STROKE}
-              stroke="#1e1e1e"
-              strokeWidth={1}
-              style={{
-                pointerEvents: editable ? "visiblePainted" : "none",
-                cursor: editable ? "pointer" : "default",
-              }}
-              onPointerDown={(e) =>
-                startEdit(e, l.edit, "offset", (spec) =>
-                  toggleOffset(spec, l.edit)
-                )
-              }
-            />
-            <text
-              x={l.bottomX}
-              y={l.bottomY}
-              textAnchor="middle"
-              dominantBaseline="central"
-              fill="#1e1e1e"
-              fontSize={10}
-              fontWeight={700}
-              style={{ userSelect: "none", pointerEvents: "none" }}
-            >
-              {l.bottomLabel}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
 
 function Playhead({ x, height }: { x: number; height: number }) {
   return (
