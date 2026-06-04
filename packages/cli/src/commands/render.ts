@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
+  DEFAULT_CANVAS_HEIGHT,
+  DEFAULT_CANVAS_WIDTH,
   compileSeamFile,
   parseSeamFile,
   resolveComposition,
@@ -63,8 +65,12 @@ export async function renderCommand(file: string, options: RenderOptions) {
   }
   const temporal = resolveComposition(compiled);
 
-  const width = options.width ? parseInt(options.width, 10) : (temporal.contentWidth ?? 1920);
-  const height = options.height ? parseInt(options.height, 10) : (temporal.contentHeight ?? 1080);
+  const width = options.width
+    ? parseInt(options.width, 10)
+    : (temporal.contentWidth ?? DEFAULT_CANVAS_WIDTH);
+  const height = options.height
+    ? parseInt(options.height, 10)
+    : (temporal.contentHeight ?? DEFAULT_CANVAS_HEIGHT);
   const timeline = resolveSpatial(temporal, width, height);
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);

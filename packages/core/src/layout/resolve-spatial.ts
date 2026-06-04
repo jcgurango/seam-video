@@ -1,6 +1,13 @@
 import type { ResolvedTimeline, ResolvedChild, SpatialRect, SpatialInput, SpatialAnchor, ObjectFit, Position } from "../resolved-types.js";
 import { sampleDimension, isKeyframed } from "../animation/keyframes.js";
 
+/** Fallback canvas dimensions used when a document doesn't set
+ *  `contentWidth` / `contentHeight`. Portrait 1080×1920 — picked once
+ *  so the editor, preview, and exported renders all agree on the same
+ *  default and a doc rendered in one tool looks identical in the next. */
+export const DEFAULT_CANVAS_WIDTH = 1080;
+export const DEFAULT_CANVAS_HEIGHT = 1920;
+
 const SPATIAL_DIM_KEYS = ["top", "left", "right", "bottom", "width", "height"] as const;
 type SpatialDimKey = typeof SPATIAL_DIM_KEYS[number];
 

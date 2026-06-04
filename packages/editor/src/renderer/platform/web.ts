@@ -557,7 +557,7 @@ export class WebPlatform implements Platform {
         this.actionHandlers.get("save-as")?.();
       } else if (key === "e") {
         e.preventDefault();
-        this.exportHandler?.();
+        this.actionHandlers.get("export")?.();
       } else if (key === ",") {
         e.preventDefault();
         this.actionHandlers.get("settings")?.();
@@ -565,9 +565,4 @@ export class WebPlatform implements Platform {
     });
   }
 
-  /** Registered by App for the export shortcut. */
-  private exportHandler: (() => void) | null = null;
-  setExportHandler(cb: () => void): void {
-    this.exportHandler = cb;
-  }
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { renderCommand } from "./commands/render.js";
 import { previewCommand } from "./commands/preview.js";
 import { resolveCommand } from "./commands/resolve.js";
@@ -33,8 +34,16 @@ program
   .command("resolve <file>")
   .description("Print the resolved timeline JSON for a .seam file")
   .option("-o, --output <path>", "Write to file instead of stdout")
-  .option("--width <number>", "Canvas width in pixels", "1920")
-  .option("--height <number>", "Canvas height in pixels", "1080")
+  .option(
+    "--width <number>",
+    "Canvas width in pixels",
+    String(DEFAULT_CANVAS_WIDTH),
+  )
+  .option(
+    "--height <number>",
+    "Canvas height in pixels",
+    String(DEFAULT_CANVAS_HEIGHT),
+  )
   .option("--no-spatial", "Skip spatial resolution (temporal layout only)")
   .option("--no-pretty", "Emit minified JSON")
   .action(resolveCommand);

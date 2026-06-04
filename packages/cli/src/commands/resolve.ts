@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  DEFAULT_CANVAS_HEIGHT,
+  DEFAULT_CANVAS_WIDTH,
   compileSeamFile,
   parseSeamFile,
   resolveComposition,
@@ -17,8 +19,12 @@ export interface ResolveOptions {
 
 export async function resolveCommand(file: string, options: ResolveOptions) {
   const filePath = resolve(file);
-  const width = options.width ? parseInt(options.width, 10) : 1920;
-  const height = options.height ? parseInt(options.height, 10) : 1080;
+  const width = options.width
+    ? parseInt(options.width, 10)
+    : DEFAULT_CANVAS_WIDTH;
+  const height = options.height
+    ? parseInt(options.height, 10)
+    : DEFAULT_CANVAS_HEIGHT;
   const applySpatial = options.spatial !== false;
 
   const json = readFileSync(filePath, "utf-8");

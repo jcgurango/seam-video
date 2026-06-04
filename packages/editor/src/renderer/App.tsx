@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Timeline, VideoCanvas } from "@seam/preview";
 import {
+  DEFAULT_CANVAS_HEIGHT,
+  DEFAULT_CANVAS_WIDTH,
   parseSeamFile,
   resolveComposition,
   resolveSpatial,
@@ -56,7 +58,11 @@ const ROOT_VIEW: View = { type: "root" };
 
 function resolveDoc(doc: SeamFile): ResolvedTimeline {
   const temporal = resolveComposition(doc);
-  return resolveSpatial(temporal, doc.contentWidth ?? 1080, doc.contentHeight ?? 1920);
+  return resolveSpatial(
+    temporal,
+    doc.contentWidth ?? DEFAULT_CANVAS_WIDTH,
+    doc.contentHeight ?? DEFAULT_CANVAS_HEIGHT,
+  );
 }
 
 function SelectionBar({
@@ -743,19 +749,6 @@ export default function App({ platform }: AppProps) {
     }
   });
 
-  // Export hooks: Electron's File menu + web Cmd+E shortcut. These
-  // optional platform methods are still typed any while the platform
-  // abstraction catches up — see Task 54 for the eventual consolidation
-  // into onAction("export").
-  useEffect(() => {
-    const platformAny = platform as {
-      onExportRequested?: (cb: () => void) => void;
-      setExportHandler?: (cb: () => void) => void;
-    };
-    platformAny.onExportRequested?.(() => handleExport());
-    platformAny.setExportHandler?.(() => handleExport());
-  }, [platform, handleExport]);
-
   // ── Init + menu / action wiring ────────────────────────────────
 
   useEffect(() => {
@@ -789,10 +782,18 @@ export default function App({ platform }: AppProps) {
 
     platform.onAction("save", () => void handleSave());
     platform.onAction("save-as", () => void handleSaveAs());
+    platform.onAction("export", () => void handleExport());
     platform.onAction("settings", () => setSettingsOpen(true));
     // useEvent-wrapped handlers have stable identity — listing them as
     // deps is honest and won't re-fire this effect.
-  }, [platform, openFromJson, loadDocument, handleSave, handleSaveAs]);
+  }, [
+    platform,
+    openFromJson,
+    loadDocument,
+    handleSave,
+    handleSaveAs,
+    handleExport,
+  ]);
 
   const basePath = filePath ? dirname(filePath) : "";
 

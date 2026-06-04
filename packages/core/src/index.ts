@@ -9,6 +9,8 @@ export {
   resolveSpatial,
   resolveBoxProps,
   hasAnimatedSpatialInput,
+  DEFAULT_CANVAS_WIDTH,
+  DEFAULT_CANVAS_HEIGHT,
 } from "./layout/resolve-spatial.js";
 export { parseDimension, resolveDimension } from "./layout/units.js";
 export { flattenResolved } from "./flatten.js";

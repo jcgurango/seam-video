@@ -1,7 +1,13 @@
 import type { SeamFile } from "@seam/core";
 
 export type PlatformKind = "electron" | "web" | "mobile";
-export type ActionName = "new" | "open" | "save" | "save-as" | "settings";
+export type ActionName =
+  | "new"
+  | "open"
+  | "save"
+  | "save-as"
+  | "export"
+  | "settings";
 
 export type OpenResult =
   | { filePath: string; json: string }

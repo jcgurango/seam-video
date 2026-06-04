@@ -3,6 +3,8 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { watch } from "chokidar";
 import {
+  DEFAULT_CANVAS_HEIGHT,
+  DEFAULT_CANVAS_WIDTH,
   compileSeamFile,
   parseSeamFile,
   resolveComposition,
@@ -21,7 +23,11 @@ function loadAndSend() {
     if (result.success) {
       const { doc: compiled } = compileSeamFile(result.data);
       const temporal = resolveComposition(compiled);
-      const timeline = resolveSpatial(temporal, compiled.contentWidth ?? 1920, compiled.contentHeight ?? 1080);
+      const timeline = resolveSpatial(
+        temporal,
+        compiled.contentWidth ?? DEFAULT_CANVAS_WIDTH,
+        compiled.contentHeight ?? DEFAULT_CANVAS_HEIGHT,
+      );
       mainWindow.webContents.send("timeline-update", {
         timeline,
         basePath: dirname(seamFilePath),
@@ -178,7 +184,11 @@ app.whenReady().then(() => {
         const { doc: compiled } = compileSeamFile(result.data);
       const temporal = resolveComposition(compiled);
         return {
-          timeline: resolveSpatial(temporal, compiled.contentWidth ?? 1920, compiled.contentHeight ?? 1080),
+          timeline: resolveSpatial(
+        temporal,
+        compiled.contentWidth ?? DEFAULT_CANVAS_WIDTH,
+        compiled.contentHeight ?? DEFAULT_CANVAS_HEIGHT,
+      ),
           basePath: dirname(seamFilePath),
         };
       }

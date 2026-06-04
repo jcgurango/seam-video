@@ -46,6 +46,10 @@ declare global {
 export class ElectronPlatform implements Platform {
   readonly kind = "electron" as const;
 
+  // Holds the latest "export" callback registered via onAction. The
+  // native menu's "Export…" item is wired separately via onMenuExport,
+  // so we keep a single slot here and let the menu fire whatever the
+  // app last registered.
   private exportHandler: (() => void) | null = null;
 
   constructor() {
@@ -95,18 +99,16 @@ export class ElectronPlatform implements Platform {
       case "save-as":
         window.seamApi.onMenuSaveAs(cb);
         break;
+      case "export":
+        // The native menu's "Export…" item dispatches via
+        // `onMenuExport` in the constructor; we just hold the latest
+        // callback here so it can fire it.
+        this.exportHandler = cb;
+        break;
       case "settings":
         window.seamApi.onMenuSettings(cb);
         break;
     }
-  }
-
-  /**
-   * Register an Export handler separate from onAction because Electron's
-   * native menu has its own "Export…" item wired via onMenuExport.
-   */
-  onExportRequested(cb: () => void): void {
-    this.exportHandler = cb;
   }
 
   async exportProject(

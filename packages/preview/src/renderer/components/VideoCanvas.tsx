@@ -1,4 +1,5 @@
 import React, { useContext, useEffect, useRef } from "react";
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { TimelineCanvasContext } from "./TimelineContext.js";
 
 interface VideoCanvasProps {
@@ -9,8 +10,8 @@ interface VideoCanvasProps {
 }
 
 export default function VideoCanvas({
-  width = 1920,
-  height = 1080,
+  width = DEFAULT_CANVAS_WIDTH,
+  height = DEFAULT_CANVAS_HEIGHT,
   style,
   className,
 }: VideoCanvasProps) {
