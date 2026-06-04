@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import { basename } from "../pathUtils.js";
 import type { SeamFile } from "@seam/core";
 import type {
   ActionName,
@@ -569,9 +570,4 @@ export class WebPlatform implements Platform {
   setExportHandler(cb: () => void): void {
     this.exportHandler = cb;
   }
-}
-
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i < 0 ? p : p.slice(i + 1);
 }

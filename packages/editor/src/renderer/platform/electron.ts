@@ -7,6 +7,7 @@ import type {
   Platform,
 } from "./types.js";
 import { buildExportPlan } from "../exportHelpers.js";
+import { isAbsolute } from "../pathUtils.js";
 
 interface ElectronSeamApi {
   onMenuNew: (cb: () => void) => void;
@@ -40,15 +41,6 @@ declare global {
   interface Window {
     seamApi: ElectronSeamApi;
   }
-}
-
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i < 0 ? p : p.slice(i + 1);
-}
-
-function isAbsolute(p: string): boolean {
-  return p.startsWith("/") || /^[A-Z]:\\/i.test(p);
 }
 
 export class ElectronPlatform implements Platform {
@@ -147,7 +139,6 @@ export class ElectronPlatform implements Platform {
       return true;
     } finally {
       unsubscribe?.();
-      void basename;
     }
   }
 

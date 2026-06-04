@@ -8,6 +8,19 @@ export function dirname(p: string): string {
   return p.slice(0, last);
 }
 
+/** Last segment of a path. Handles both `/` and `\` separators. */
+export function basename(p: string): string {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i < 0 ? p : p.slice(i + 1);
+}
+
+/** Basename with the final extension stripped. */
+export function basenameWithoutExt(p: string): string {
+  const file = basename(p);
+  const dot = file.lastIndexOf(".");
+  return dot > 0 ? file.slice(0, dot) : file;
+}
+
 /** Check if a path is absolute. */
 export function isAbsolute(p: string): boolean {
   return p.startsWith("/") || /^[A-Z]:\\/i.test(p);

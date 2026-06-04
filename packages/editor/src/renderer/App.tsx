@@ -30,7 +30,11 @@ import {
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
-import { dirname, relative, isAbsolute } from "./pathUtils.js";
+import { basenameWithoutExt, dirname } from "./pathUtils.js";
+import {
+  collectClipSources,
+  remapSourcesToRelative,
+} from "./exportHelpers.js";
 import { useHistory } from "./useHistory.js";
 import { useEvent } from "./useEvent.js";
 import {
@@ -49,76 +53,6 @@ interface AppProps {
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
 const ROOT_VIEW: View = { type: "root" };
-
-function basenameWithoutExt(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  const file = i < 0 ? p : p.slice(i + 1);
-  const dot = file.lastIndexOf(".");
-  return dot > 0 ? file.slice(0, dot) : file;
-}
-
-function toRelative(absPath: string, baseDir: string): string {
-  const rel = relative(baseDir, absPath);
-  if (!rel.startsWith("..") && !isAbsolute(rel)) return rel;
-  return absPath;
-}
-
-function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
-  const walk = (child: import("@seam/core").Child): import("@seam/core").Child => {
-    if (
-      (child.type === "clip" ||
-        child.type === "audio" ||
-        child.type === "static") &&
-      isAbsolute(child.source)
-    ) {
-      return { ...child, source: toRelative(child.source, baseDir) };
-    }
-    if (child.type === "composition") {
-      return {
-        ...child,
-        children: child.children.map(walk),
-        ...(child.attachments
-          ? { attachments: child.attachments.map(walk) }
-          : {}),
-      };
-    }
-    return child;
-  };
-  return {
-    ...doc,
-    children: doc.children.map(walk),
-    ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
-  };
-}
-
-function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
-  // Compile first so `binItem` references get spliced with their bin
-  // body — otherwise clips that only appear inside a bin entry never
-  // reach this walker. Compile errors don't matter here; whatever was
-  // resolvable will carry its source through to the compiled tree.
-  let resolved: SeamFile;
-  try {
-    resolved = compileDocument(doc).doc;
-  } catch {
-    resolved = doc;
-  }
-
-  const visit = (child: import("@seam/core").Child) => {
-    if (
-      child.type === "clip" ||
-      child.type === "audio" ||
-      child.type === "static"
-    ) {
-      out.push(child.source);
-    } else if (child.type === "composition") {
-      child.children.forEach(visit);
-      if (child.attachments) child.attachments.forEach(visit);
-    }
-  };
-  resolved.children.forEach(visit);
-  if (resolved.attachments) resolved.attachments.forEach(visit);
-  return out;
-}
 
 function resolveDoc(doc: SeamFile): ResolvedTimeline {
   const temporal = resolveComposition(doc);

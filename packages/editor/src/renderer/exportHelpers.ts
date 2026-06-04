@@ -1,13 +1,10 @@
+import { compileSeamFile } from "@seam/core";
 import type { SeamFile, Child } from "@seam/core";
-
-/** Basename (last segment of a path). Works for both / and \ separators. */
-export function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i < 0 ? p : p.slice(i + 1);
-}
+import { basename, isAbsolute, relative } from "./pathUtils.js";
+import { isMediaSource } from "./mediaSource.js";
 
 export interface ExportPlan {
-  /** Rewritten document: clip.source fields are flat basenames. */
+  /** Rewritten document: media-source fields are flat basenames. */
   document: SeamFile;
   /**
    * Map from the *original* source (as it appeared in the input document)
@@ -17,8 +14,8 @@ export interface ExportPlan {
 }
 
 /**
- * Walk the document and flatten every clip.source to a basename suitable for
- * a flat zip, renaming on basename collisions.
+ * Walk the document and flatten every media-source field to a basename
+ * suitable for a flat zip, renaming on basename collisions.
  */
 export function buildExportPlan(doc: SeamFile): ExportPlan {
   const sourceToExport = new Map<string, string>();
@@ -44,11 +41,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
   };
 
   const rewriteChild = (child: Child): Child => {
-    if (
-      child.type === "clip" ||
-      child.type === "audio" ||
-      child.type === "static"
-    ) {
+    if (isMediaSource(child)) {
       return { ...child, source: pickExportName(child.source) };
     }
     if (child.type === "composition") {
@@ -78,4 +71,66 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
   }
 
   return { document, entries };
+}
+
+/**
+ * Rewrite absolute media-source paths to relative-to-baseDir paths.
+ * Used by the Electron save flow so a saved .seam file refers to its
+ * clips/etc. by paths relative to where the file lives. Compositions
+ * recurse; non-media nodes pass through unchanged.
+ */
+export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
+  const toRelative = (absPath: string): string => {
+    const rel = relative(baseDir, absPath);
+    if (!rel.startsWith("..") && !isAbsolute(rel)) return rel;
+    return absPath;
+  };
+
+  const walk = (child: Child): Child => {
+    if (isMediaSource(child) && isAbsolute(child.source)) {
+      return { ...child, source: toRelative(child.source) };
+    }
+    if (child.type === "composition") {
+      return {
+        ...child,
+        children: child.children.map(walk),
+        ...(child.attachments ? { attachments: child.attachments.map(walk) } : {}),
+      };
+    }
+    return child;
+  };
+  return {
+    ...doc,
+    children: doc.children.map(walk),
+    ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
+  };
+}
+
+/**
+ * Walk the document and collect every media-source path. Compiles the
+ * doc first so `binItem` references get spliced with their bin body —
+ * otherwise clips that only appear inside a bin entry never reach the
+ * walker. Compile failures fall back to the raw doc; whatever was
+ * resolvable still carries through. Used by the web platform to warm
+ * up its blob URL cache before mounting a document.
+ */
+export function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
+  let resolved: SeamFile;
+  try {
+    resolved = compileSeamFile(doc).doc;
+  } catch {
+    resolved = doc;
+  }
+
+  const visit = (child: Child) => {
+    if (isMediaSource(child)) {
+      out.push(child.source);
+    } else if (child.type === "composition") {
+      child.children.forEach(visit);
+      if (child.attachments) child.attachments.forEach(visit);
+    }
+  };
+  resolved.children.forEach(visit);
+  if (resolved.attachments) resolved.attachments.forEach(visit);
+  return out;
 }
