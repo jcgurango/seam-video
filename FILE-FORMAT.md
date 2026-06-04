@@ -239,8 +239,11 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | yes | One or more child nodes (clip, audio, empty, data, composition). Children play sequentially — each takes its own natural duration. |
+| `children` | array | no | Child nodes (clip, audio, static, empty, data, text, composition) played sequentially. Optional; defaults to `[]` for bin-reference and script compositions whose body comes from elsewhere |
 | `attachments` | array | no | Anchored children rendered on top of `children` (see [Attachments](#attachments)) |
+| `bin` | array | no | Reusable bodies addressable by id. See [Bin & Scripts](#bin--scripts) |
+| `binItem` | string | no | Names a bin entry whose body this composition adopts at compile time. See [Bin & Scripts](#bin--scripts) |
+| `script` | string | no | JavaScript source. The compile pass runs it against this composition; the return value replaces it in the rendered tree. See [Bin & Scripts](#bin--scripts) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
 | `overflow` | string | no | Strategy when the composition is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
@@ -405,6 +408,59 @@ Attachments are resolved in array order. Each attachment's `id`, once resolved, 
 ```
 
 `a` starts at t=5 (from composition origin), running to t=7. The second attachment begins at t=7.
+
+## Bin & Scripts
+
+Compositions can carry a reusable-content **bin** and a **script** that transforms the composition at compile time.
+
+A separate **compile pass** resolves these before the resolver runs. Both the renderer and the preview run it automatically; if you're authoring tools that consume `.seam` files, run `compileSeamFile(doc)` first.
+
+### Bin entries
+
+```json
+{
+  "type": "composition",
+  "bin": [
+    {
+      "id": "intro",
+      "children": [
+        { "type": "clip", "source": "title.mp4", "in": 0, "out": 3 }
+      ]
+    }
+  ],
+  "children": [
+    { "type": "composition", "binItem": "intro" },
+    { "type": "clip", "source": "body.mp4", "in": 0, "out": 30 }
+  ]
+}
+```
+
+A bin entry is `{ id, children, attachments? }` — strictly a reusable body, not a full composition. Instance-level fields (spatial, in/out, filters, metadata) live on each `binItem` reference, so swapping a bin entry can't reach out and overwrite a reference's authored properties.
+
+A composition with `binItem: "<id>"` adopts the named bin entry's `children` and `attachments` at compile time. The reference's own `children`/`attachments` are ignored.
+
+#### Scope
+
+Bin entries are **lexically scoped**: a `binItem` reference resolves against the nearest enclosing composition whose `bin` array contains a matching id. A child composition's `bin` shadows ancestors' entries with the same id. References that walk past the document root without finding a match are left unresolved and the compile pass reports an error.
+
+### Scripts
+
+```json
+{
+  "type": "composition",
+  "script": "currentNode.children.reverse(); return currentNode;",
+  "children": [
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 2 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 2 }
+  ]
+}
+```
+
+`script` is the body of an anonymous function `(currentNode) => Composition`. At compile time the script receives the composition itself (with bins already resolved and descendants already compiled) and its return value replaces the composition in the rendered tree. The authored `children` / `attachments` stay on the original doc — they're the script's input.
+
+The execution environment is a plain `new Function(...)` with `window` and `document` shadowed to `undefined`. This is a footgun-reducer, not a sandbox: never load untrusted scripts.
+
+A script's output is itself compiled (bins inside the output resolve against the *parent's* scope, since the script-bearing composition is being replaced wholesale).
 
 ## Metadata
 

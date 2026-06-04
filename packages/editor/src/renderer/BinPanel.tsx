@@ -15,8 +15,7 @@ export interface BinPanelProps {
 
 /** Barebones bin panel: list every entry by id, let the user rename one
  *  in place. Rename reuses `renameBinItemId`, which rewrites every
- *  `seam-editor-bin-item` reference in the document tree (including
- *  inside a script's `original`) to point at the new id. */
+ *  `binItem` reference in the document tree to point at the new id. */
 export default function BinPanel({
   rootDocument,
   onRootDocumentChange,

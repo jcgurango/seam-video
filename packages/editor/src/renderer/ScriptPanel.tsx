@@ -6,7 +6,7 @@ import {
   bakeScript,
   disableScript,
   enableScript,
-  findScript,
+  getScript,
   withUpdatedScriptSrc,
 } from "./nodeScript.js";
 
@@ -29,20 +29,20 @@ export default function ScriptPanel({
   scriptError,
   onApply,
 }: ScriptPanelProps) {
-  const script = useMemo(
-    () => (currentComposition ? findScript(currentComposition) : null),
+  const scriptSrc = useMemo(
+    () => (currentComposition ? getScript(currentComposition) : null),
     [currentComposition]
   );
 
-  const [draft, setDraft] = useState<string>(script?.payload.scriptSrc ?? "");
-  const [baseline, setBaseline] = useState<string>(script?.payload.scriptSrc ?? "");
+  const [draft, setDraft] = useState<string>(scriptSrc ?? "");
+  const [baseline, setBaseline] = useState<string>(scriptSrc ?? "");
   const [errors, setErrors] = useState<string[] | null>(null);
 
   // When the active composition (or its script source) changes, sync the
   // editor — but preserve dirty edits if the user is mid-typing on the
   // same composition.
   useEffect(() => {
-    const next = script?.payload.scriptSrc ?? "";
+    const next = scriptSrc ?? "";
     if (draft === baseline) {
       setDraft(next);
       setBaseline(next);
@@ -53,7 +53,7 @@ export default function ScriptPanel({
       setBaseline(next);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script?.payload.scriptSrc]);
+  }, [scriptSrc]);
 
   if (!currentComposition) {
     return (
@@ -96,7 +96,7 @@ export default function ScriptPanel({
   };
 
   const handleSave = () => {
-    if (!script) return;
+    if (scriptSrc == null) return;
     setErrors(null);
     try {
       const next = withUpdatedScriptSrc(currentComposition, draft);
@@ -111,7 +111,7 @@ export default function ScriptPanel({
     }
   };
 
-  if (!script) {
+  if (scriptSrc == null) {
     return (
       <div
         style={{
@@ -127,13 +127,12 @@ export default function ScriptPanel({
           No script attached to this composition.
         </div>
         <div style={{ color: "#888", fontSize: 11 }}>
-          Enabling a script captures the current composition as{" "}
-          <code style={CODE_STYLE}>original</code> and starts with an
-          identity script (<code style={CODE_STYLE}>return currentNode;</code>).
-          The composition's body becomes the rendered output of running the
-          script against <code style={CODE_STYLE}>original</code>; future
-          edits to the timeline panel update <code style={CODE_STYLE}>original</code>{" "}
-          and the script re-runs.
+          Enabling a script attaches an identity script (
+          <code style={CODE_STYLE}>return currentNode;</code>) to this
+          composition. At render time the script receives the
+          composition itself as <code style={CODE_STYLE}>currentNode</code>{" "}
+          and its return value replaces the composition in the
+          rendered tree. The authored body stays intact as the input.
         </div>
         <div>
           <button onClick={handleEnable} style={BTN_PRIMARY}>

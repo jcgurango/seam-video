@@ -279,11 +279,38 @@ const ChildSchema: z.ZodType<any> = z.lazy(() =>
   ])
 );
 
+/** A reusable composition body, addressed by `id` and referenced from
+ *  any descendant composition via `binItem: "<id>"`. Bin entries don't
+ *  carry instance-level fields (spatial / timing / filters / metadata);
+ *  those live on each reference, so swapping a bin entry can't reach
+ *  out and overwrite a reference's authored properties. */
+export const BinEntrySchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    id: z.string().min(1),
+    children: z.array(ChildSchema).optional().default([]),
+    attachments: z.array(ChildSchema).optional(),
+  }).strict()
+);
+
 export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
-    children: z.array(ChildSchema).min(1),
+    children: z.array(ChildSchema).optional().default([]),
     attachments: z.array(ChildSchema).optional(),
+    /** Bin entries scoped to this composition's subtree. A descendant
+     *  composition with `binItem: "<id>"` resolves to the nearest
+     *  enclosing bin entry with that id (this composition's own
+     *  entries win over any inherited from ancestors). */
+    bin: z.array(BinEntrySchema).optional(),
+    /** Names a bin entry whose body this composition adopts at compile
+     *  time. The reference's own `children`/`attachments` are ignored
+     *  in favour of the bin entry's. */
+    binItem: z.string().min(1).optional(),
+    /** JavaScript source — body of an anonymous function that takes
+     *  `currentNode` (this composition, with bins already resolved) and
+     *  must `return` a composition. Runs at compile time; the output
+     *  replaces this composition in the rendered tree. */
+    script: z.string().optional(),
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),

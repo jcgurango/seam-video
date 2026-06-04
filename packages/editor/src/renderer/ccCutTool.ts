@@ -11,7 +11,6 @@ import type {
   SeamFile,
 } from "@seam/core";
 import type { BinEntry } from "./nodeBin.js";
-import { BIN_ITEM_METADATA_KEY } from "./nodeBin.js";
 
 /** Stable colours per transcription index, used to tell overlapping CC
  *  blocks apart visually. Cycles modulo length for >palette entries. */
@@ -234,24 +233,23 @@ export function buildCCPreviewDoc(
 }
 
 /** Build the bin-reference children that the user wants spliced into
- *  the higher-level composition on OK. Each selection becomes a
- *  composition referencing `binId` with `in`/`out` set to the
- *  selection's range. Carries the bin entry's body so the on-disk file
- *  stays schema-valid until the compile pass re-splices. */
+ *  the higher-level composition on OK. Each selection becomes an empty
+ *  composition with `binItem: binId` and `in`/`out` set to the
+ *  selection's range — the compile pass resolves the body from the
+ *  root bin at render time. */
 export function buildCCSpliceChildren(
-  entry: BinEntry,
+  _entry: BinEntry,
   binId: string,
   selections: CCSelection[],
 ): Child[] {
   return selections.map((sel) => {
     const c: Composition = {
       type: "composition",
-      children: entry.children,
+      children: [],
+      binItem: binId,
       in: sel.start,
       out: sel.end,
-      metadata: { [BIN_ITEM_METADATA_KEY]: binId },
     };
-    if (entry.attachments) c.attachments = entry.attachments;
     return c;
   });
 }

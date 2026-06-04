@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
+import {
+  compileSeamFile,
+  parseSeamFile,
+  resolveComposition,
+  resolveSpatial,
+} from "@seam/core";
 import {
   buildFfmpegAudioCommand,
   buildMeltArgs,
@@ -48,7 +53,15 @@ export async function renderCommand(file: string, options: RenderOptions) {
     process.exit(1);
   }
 
-  const temporal = resolveComposition(result.data);
+  const { doc: compiled, errors: compileErrors } = compileSeamFile(result.data);
+  if (compileErrors.length > 0) {
+    console.error("Compile errors:");
+    for (const err of compileErrors) {
+      console.error(`  - ${err.source}: ${err.message}`);
+    }
+    process.exit(1);
+  }
+  const temporal = resolveComposition(compiled);
 
   const width = options.width ? parseInt(options.width, 10) : (temporal.contentWidth ?? 1920);
   const height = options.height ? parseInt(options.height, 10) : (temporal.contentHeight ?? 1080);

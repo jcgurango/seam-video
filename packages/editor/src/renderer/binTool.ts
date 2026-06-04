@@ -1,23 +1,19 @@
 // Bin tool: promote a selected composition into a reusable bin entry on
-// the root composition's metadata, and replace the selected node with a
-// bin reference pointing at the new entry. Instance-level fields
-// (spatial, in/out, filters, other metadata) stay on the reference;
-// only the structural body (children + attachments) moves into the bin.
-//
-// The reference also keeps the body verbatim so the saved document
-// stays schema-valid (compositions need `children.length >= 1`) — the
-// compile pass re-splices it on every load/save, but the on-disk form
-// would otherwise be invalid the moment it's written.
+// the root composition's `bin` field, and replace the selected node
+// with a bin reference (`binItem: "<id>"`). Instance-level fields
+// (spatial, in/out, filters, metadata) stay on the reference; only the
+// structural body (children + attachments) moves into the bin. The
+// reference drops its own children/attachments — the compile pass
+// inlines the bin entry's body at render time.
 
 import type { Composition, SeamFile } from "@seam/core";
 import {
-  BIN_ITEM_METADATA_KEY,
   findBin,
   isBinReference,
   withUpdatedBin,
   type BinEntry,
 } from "./nodeBin.js";
-import { findScript } from "./nodeScript.js";
+import { hasScript } from "./nodeScript.js";
 
 /** Pick the next unused id of the form `bin-<n>` for a new entry. */
 export function pickFreshBinId(existing: readonly BinEntry[]): string {
@@ -34,7 +30,7 @@ export function canBin(doc: SeamFile, index: number): boolean {
   const child = doc.children[index];
   if (!child || child.type !== "composition") return false;
   if (isBinReference(child)) return false;
-  if (findScript(child)) return false;
+  if (hasScript(child)) return false;
   return true;
 }
 
@@ -57,16 +53,14 @@ export function applyBin(doc: SeamFile, index: number): BinResult | null {
   const newEntry: BinEntry = { id: newId, children: child.children };
   if (child.attachments) newEntry.attachments = child.attachments;
 
-  // Build the bin reference: keep every authored field on the reference
-  // (spatial, in/out, filters, other metadata) and just add the bin-id
-  // pointer to metadata. The body is preserved verbatim so the saved
-  // doc remains valid until compile re-splices on next load.
+  // The reference keeps every authored field except the structural
+  // body — children/attachments come from the bin entry at compile
+  // time, so storing them on the reference would just go stale.
+  const { children: _c, attachments: _a, ...rest } = child;
   const newReference: Composition = {
-    ...child,
-    metadata: {
-      ...(child.metadata ?? {}),
-      [BIN_ITEM_METADATA_KEY]: newId,
-    },
+    ...(rest as Composition),
+    children: [],
+    binItem: newId,
   };
 
   const newChildren = doc.children.slice();

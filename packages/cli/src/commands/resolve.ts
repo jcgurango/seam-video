@@ -1,6 +1,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
+import {
+  compileSeamFile,
+  parseSeamFile,
+  resolveComposition,
+  resolveSpatial,
+} from "@seam/core";
 
 export interface ResolveOptions {
   output?: string;
@@ -26,7 +31,15 @@ export async function resolveCommand(file: string, options: ResolveOptions) {
     process.exit(1);
   }
 
-  const temporal = resolveComposition(result.data);
+  const { doc: compiled, errors: compileErrors } = compileSeamFile(result.data);
+  if (compileErrors.length > 0) {
+    console.error("Compile errors:");
+    for (const err of compileErrors) {
+      console.error(`  - ${err.source}: ${err.message}`);
+    }
+    process.exit(1);
+  }
+  const temporal = resolveComposition(compiled);
   const timeline = applySpatial
     ? resolveSpatial(temporal, width, height)
     : temporal;

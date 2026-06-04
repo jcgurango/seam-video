@@ -103,12 +103,16 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects empty children array", () => {
+  it("accepts empty children array", () => {
+    // children was relaxed when bin/script became first-party — a
+    // scripted composition can legitimately have no children, and a
+    // bin reference takes its body from the bin entry. The resolver
+    // handles a zero-duration empty composition fine.
     const result = validate({
       type: "composition",
       children: [],
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it("rejects missing type", () => {

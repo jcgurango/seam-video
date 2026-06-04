@@ -14,11 +14,6 @@ import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
-import {
-  editTarget as scriptEditTarget,
-  safeWithUpdatedOriginal,
-} from "./nodeScript.js";
-import { compileDocument } from "./compile.js";
 import type { Composition } from "@seam/core";
 
 export interface TimelinePanelProps {
@@ -266,12 +261,6 @@ interface InnerProps {
    *  insertion index `to` (in the post-removal array). Undefined when
    *  reorder isn't supported in this view. */
   onReorder?: (from: number, to: number) => void;
-  /** Editor surface (script's `original` when scripted) for anchor
-   *  edits to write to. Paired with `wrapSurface`. */
-  editorSurface?: SeamFile;
-  /** Re-wrap a modified surface back into a stored doc (re-runs the
-   *  script, splices bin refs). Used by anchor-edit history writes. */
-  wrapSurface?: (surface: SeamFile) => SeamFile;
 }
 
 function DesktopTimeline({
@@ -286,8 +275,6 @@ function DesktopTimeline({
   trim,
   editHistory,
   onReorder,
-  editorSurface,
-  wrapSurface,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -539,8 +526,6 @@ function DesktopTimeline({
           blocks={blocks}
           pxPerSec={pxPerSec}
           history={editHistory}
-          editorSurface={editorSurface}
-          wrapSurface={wrapSurface}
         />
         {ghost && (
           <div
@@ -605,8 +590,6 @@ function MobileTimeline({
   onEnter,
   trim,
   editHistory,
-  editorSurface,
-  wrapSurface,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -715,8 +698,6 @@ function MobileTimeline({
             blocks={blocks}
             pxPerSec={pxPerSec}
             history={editHistory}
-            editorSurface={editorSurface}
-            wrapSurface={wrapSurface}
           />
           {trim && <TrimOverlayLayer trim={trim} pxPerSec={pxPerSec} height={contentHeight} />}
         </div>
@@ -1278,8 +1259,6 @@ function AnchorLinesLayer({
   blocks,
   pxPerSec,
   history,
-  editorSurface,
-  wrapSurface,
 }: {
   selectedIndices: number[];
   docRoot?: {
@@ -1291,15 +1270,6 @@ function AnchorLinesLayer({
   pxPerSec: number;
   /** Provided only when editing is allowed (root view). */
   history?: History<SeamFile>;
-  /** Editor-surface root — the script's `original` when a script is
-   *  attached, otherwise the doc itself. Anchor edits read + write here
-   *  so they don't get silently overwritten by the next compile pass
-   *  (which would re-run the script against the unchanged original). */
-  editorSurface?: SeamFile;
-  /** Wrap a modified surface back into a fully-rendered on-disk doc:
-   *  re-runs any active script, splices bin reference bodies, returns
-   *  something safe to pass through history.replace / history.push. */
-  wrapSurface?: (surface: SeamFile) => SeamFile;
 }) {
   if (!docRoot) return null;
   const childCount = docRoot.children.length;
@@ -1423,20 +1393,13 @@ function AnchorLinesLayer({
     const startX = e.clientX;
     const startY = e.clientY;
     const initialDoc = history.current;
-    // Read from the editor SURFACE (script's `original` when scripted)
-    // so writes target the source-of-truth — if we read from the
-    // rendered body instead, the next compile would clobber our edit
-    // by re-running the script against the unchanged original.
-    const initialSurface = editorSurface ?? initialDoc;
-    const initialAtt = initialSurface.attachments?.[ctx.attIdx];
+    const initialAtt = initialDoc.attachments?.[ctx.attIdx];
     if (!initialAtt) return;
     const initialSpec = (initialAtt as {
       start?: TimeAnchor;
       end?: TimeAnchor;
     })[ctx.side];
     if (!initialSpec) return;
-
-    const wrap = wrapSurface ?? ((s: SeamFile) => s);
 
     try {
       target.setPointerCapture(pointerId);
@@ -1469,13 +1432,13 @@ function AnchorLinesLayer({
         kind === "anchorPoint"
           ? dragAnchorPoint(initialSpec, deltaSec, ctx)
           : dragOffset(initialSpec, deltaSec, ctx);
-      const newSurface = setAttachmentSpec(
-        initialSurface,
+      const newDoc = setAttachmentSpec(
+        initialDoc,
         ctx.attIdx,
         ctx.side,
         newSpec,
       );
-      history.replace(wrap(newSurface));
+      history.replace(newDoc);
     };
     const onUp = (ev: Event) => {
       const me = ev as PointerEvent;
@@ -1490,13 +1453,13 @@ function AnchorLinesLayer({
       }
       if (!dragging && clickToggle) {
         const newSpec = clickToggle(initialSpec);
-        const newSurface = setAttachmentSpec(
-          initialSurface,
+        const newDoc = setAttachmentSpec(
+          initialDoc,
           ctx.attIdx,
           ctx.side,
           newSpec,
         );
-        history.push(wrap(newSurface));
+        history.push(newDoc);
       }
     };
     target.addEventListener("pointermove", onMove);
@@ -1955,30 +1918,6 @@ export default function TimelinePanel({
         // when we're actually rendering the root view (composition view's
         // doc is a derivation that doesn't propagate back).
         const editHistory = view.type === "root" ? history : undefined;
-        // Anchor edits need to read from + write to the EDITOR SURFACE
-        // (the script's `original` when scripted) so the next compile
-        // doesn't blow away the edit by re-running the script against
-        // an unchanged original. `wrapSurface` re-applies the script
-        // and splices bin refs, producing the storable form history
-        // accepts.
-        const editorSurface =
-          view.type === "root" && doc
-            ? (scriptEditTarget(doc as Composition) as SeamFile)
-            : undefined;
-        const wrapSurface =
-          view.type === "root" && doc
-            ? (surface: SeamFile): SeamFile => {
-                const { comp } = safeWithUpdatedOriginal(
-                  doc as Composition,
-                  surface as Composition,
-                );
-                try {
-                  return compileDocument(comp as SeamFile).doc;
-                } catch {
-                  return comp as SeamFile;
-                }
-              }
-            : undefined;
         // Reorder is only writable in root view (same gating as the
         // delete shortcut) — composition-view edits would need to
         // splice into the nested children inside `doc`, which the
@@ -2007,8 +1946,6 @@ export default function TimelinePanel({
             onEnter={onEnterProp}
             trim={trim}
             editHistory={editHistory}
-            editorSurface={editorSurface}
-            wrapSurface={wrapSurface}
           />
         ) : (
           <DesktopTimeline
@@ -2023,8 +1960,6 @@ export default function TimelinePanel({
             trim={trim}
             editHistory={editHistory}
             onReorder={onReorder}
-            editorSurface={editorSurface}
-            wrapSurface={wrapSurface}
           />
         );
       })()}

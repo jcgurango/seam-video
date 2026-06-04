@@ -14,6 +14,8 @@ interface WebTopBarProps {
   onSaveAs: () => void;
   onExport: () => void;
   onImport: (file: File) => void;
+  onExportSeam: () => void;
+  onImportSeam: (file: File) => void;
   onBrowseProjects: () => void;
   onSettings: () => void;
   canSave: boolean; // false if no document loaded
@@ -26,6 +28,8 @@ export default function WebTopBar({
   onSaveAs,
   onExport,
   onImport,
+  onExportSeam,
+  onImportSeam,
   onBrowseProjects,
   onSettings,
   canSave,
@@ -33,12 +37,20 @@ export default function WebTopBar({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const importSeamInputRef = useRef<HTMLInputElement>(null);
 
   const triggerImport = () => importInputRef.current?.click();
+  const triggerImportSeam = () => importSeamInputRef.current?.click();
 
   const handleImportChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) onImport(file);
+    e.target.value = "";
+  };
+
+  const handleImportSeamChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) onImportSeam(file);
     e.target.value = "";
   };
 
@@ -81,6 +93,13 @@ export default function WebTopBar({
       disabled: !canSave,
     },
     { label: "—", onClick: () => {} },
+    { label: "Import .seam…", onClick: triggerImportSeam },
+    {
+      label: "Export .seam…",
+      onClick: onExportSeam,
+      disabled: !canSave,
+    },
+    { label: "—", onClick: () => {} },
     { label: "Import Zip…", onClick: triggerImport },
     {
       label: "Export Zip…",
@@ -120,6 +139,13 @@ export default function WebTopBar({
         type="file"
         accept=".zip,application/zip"
         onChange={handleImportChange}
+        style={{ display: "none" }}
+      />
+      <input
+        ref={importSeamInputRef}
+        type="file"
+        accept=".seam,application/json"
+        onChange={handleImportSeamChange}
         style={{ display: "none" }}
       />
       <div ref={ref} style={{ position: "relative" }}>

@@ -25,7 +25,7 @@ export default function Player({ timeline, basePath, width, height }: PlayerProp
           minHeight: 0,
         }}
       >
-        <VideoCanvas width={width} height={height} />
+        <VideoCanvas width={timeline.contentWidth ?? width} height={timeline.contentHeight ?? height} />
         <TransportControls />
       </div>
     </Timeline>

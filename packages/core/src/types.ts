@@ -258,6 +258,20 @@ export interface Text extends SpatialFields, TextStyleFields {
   metadata?: Metadata;
 }
 
+/**
+ * Reusable composition body addressable by `id`. Referenced from any
+ * descendant composition via `binItem: "<id>"`. Holds only the body
+ * (`children` + optional `attachments`) — instance-level fields
+ * (spatial / timing / filters / metadata) live on each reference, so
+ * swapping a bin entry can't accidentally overwrite a reference's
+ * authored properties.
+ */
+export interface BinEntry {
+  id: string;
+  children: Child[];
+  attachments?: Child[];
+}
+
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
@@ -267,6 +281,26 @@ export interface Composition extends ChildTimingFields {
    * order, last on top.
    */
   attachments?: Child[];
+  /**
+   * Bin entries scoped to this composition's subtree. Descendant
+   * compositions with `binItem: "<id>"` resolve to the nearest
+   * enclosing bin entry with that id — this composition's own entries
+   * win over any inherited from ancestors.
+   */
+  bin?: BinEntry[];
+  /**
+   * Names a bin entry whose body this composition adopts at compile
+   * time. The reference's own `children`/`attachments` are ignored in
+   * favour of the bin entry's; all other fields stay as-authored.
+   */
+  binItem?: string;
+  /**
+   * JavaScript source — body of an anonymous function `(currentNode) => Composition`.
+   * Runs at compile time against this composition (with bins already
+   * resolved); the return value replaces this composition in the
+   * rendered tree.
+   */
+  script?: string;
   /** Any valid SVG/CSS fill value. Painted across the composition's
    *  container rect under all children. */
   backgroundColor?: string;

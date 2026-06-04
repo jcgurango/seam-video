@@ -2,7 +2,12 @@ import { app, BrowserWindow, ipcMain, protocol } from "electron";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { watch } from "chokidar";
-import { parseSeamFile, resolveComposition, resolveSpatial } from "@seam/core";
+import {
+  compileSeamFile,
+  parseSeamFile,
+  resolveComposition,
+  resolveSpatial,
+} from "@seam/core";
 
 let mainWindow: BrowserWindow | null = null;
 let seamFilePath: string | null = null;
@@ -14,8 +19,9 @@ function loadAndSend() {
     const json = readFileSync(seamFilePath, "utf-8");
     const result = parseSeamFile(json);
     if (result.success) {
-      const temporal = resolveComposition(result.data);
-      const timeline = resolveSpatial(temporal, 1920, 1080);
+      const { doc: compiled } = compileSeamFile(result.data);
+      const temporal = resolveComposition(compiled);
+      const timeline = resolveSpatial(temporal, compiled.contentWidth ?? 1920, compiled.contentHeight ?? 1080);
       mainWindow.webContents.send("timeline-update", {
         timeline,
         basePath: dirname(seamFilePath),
@@ -169,9 +175,10 @@ app.whenReady().then(() => {
       const json = readFileSync(seamFilePath, "utf-8");
       const result = parseSeamFile(json);
       if (result.success) {
-        const temporal = resolveComposition(result.data);
+        const { doc: compiled } = compileSeamFile(result.data);
+      const temporal = resolveComposition(compiled);
         return {
-          timeline: resolveSpatial(temporal, 1920, 1080),
+          timeline: resolveSpatial(temporal, compiled.contentWidth ?? 1920, compiled.contentHeight ?? 1080),
           basePath: dirname(seamFilePath),
         };
       }

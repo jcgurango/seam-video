@@ -5,13 +5,12 @@
  *
  *   children.<i>
  *   attachments.<i>
- *   metadata.seam-editor-script.original.children.<i>
+ *   bin.<i>.children.<i>
  *   …
  *
- * Recording at any depth lets the JSON editor jump into nested edit
- * surfaces — e.g. when a script wraps the visible composition, the
- * selection's `children.N` index needs to resolve inside the script's
- * `original`, which lives at `metadata.seam-editor-script.original`.
+ * Recording at any depth lets the JSON editor jump into nested
+ * surfaces — e.g. a bin entry's children show up under
+ * `bin.N.children.M`.
  *
  * Output is byte-identical to JSON.stringify(value, null, 2) for the data
  * shapes we ship (no NaN/Infinity, no functions, no class instances).

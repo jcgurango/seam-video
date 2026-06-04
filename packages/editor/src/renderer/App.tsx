@@ -18,13 +18,8 @@ import { useSettings } from "./useSettings.js";
 import { useTranscribe } from "./useTranscribe.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
-import {
-  editTarget as scriptEditTarget,
-  findScript,
-  safeWithUpdatedOriginal,
-} from "./nodeScript.js";
-import { compileDocument, stripForJsonEditing } from "./compile.js";
-import { findBin, withUpdatedBin } from "./nodeBin.js";
+import { compileDocument } from "./compile.js";
+import { findBin } from "./nodeBin.js";
 import CCCutView from "./CCCutView.js";
 import {
   buildCCPreviewDoc,
@@ -169,34 +164,11 @@ export default function App({ platform }: AppProps) {
     isEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   });
   const document = history.current;
-  // Editor-surface root: when the root composition has a node-script
-  // attached, this is the pre-script `original` so the timeline panel,
-  // selection, JSON tab, etc. all operate on the source-of-truth shape.
-  // The on-disk `document` retains the rendered body + script attachment.
-  const editorDoc = useMemo<SeamFile>(() => {
-    const surface = scriptEditTarget(document) as SeamFile;
-    // When a script is attached, the surface is the user's stored
-    // `original` — which holds bin REFERENCES (no bodies) because the
-    // JSON editor strips them and the user's last save persisted the
-    // stripped form. Inject the document's bin into the surface and
-    // compile so the timeline panel / resolver see fully-rendered
-    // bodies. For documents without a script this is a no-op:
-    // `surface === document`, and re-compiling an already-compiled doc
-    // is idempotent.
-    const rootBin = findBin(document as Composition);
-    const surfaceWithBin =
-      rootBin.length > 0
-        ? withUpdatedBin(surface as Composition, rootBin)
-        : (surface as Composition);
-    try {
-      return compileDocument(surfaceWithBin as SeamFile).doc;
-    } catch (err) {
-      console.error("[App] editorDoc compile failed:", err, {
-        surfaceWithBin,
-      });
-      return surface;
-    }
-  }, [document]);
+  // With bin/binItem/script as first-party schema fields, the authored
+  // `document` IS the editor surface — no shadow `original` to unwrap,
+  // no rendered bodies to splice. The compile pass runs lazily for
+  // preview/render purposes only.
+  const editorDoc = document;
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -246,10 +218,22 @@ export default function App({ platform }: AppProps) {
     }
   }, [platform]);
 
-  // Resolve root (always based on real document). View timeline is derived.
+  // Track the most recent compile/script error so the Script tab can
+  // surface it. Compile errors are collected (not thrown) so partial
+  // failures still produce a usable preview.
+  const [scriptError, setScriptError] = useState<string | null>(null);
+
+  // Resolve root: compile (bin + script) first so the resolver sees a
+  // fully-rendered tree. Compile errors get reported via scriptError.
   const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
-      return resolveDoc(document);
+      const { doc: compiled, errors } = compileDocument(document);
+      setScriptError(
+        errors.length > 0
+          ? errors.map((e) => `${e.source}: ${e.message}`).join("\n")
+          : null,
+      );
+      return resolveDoc(compiled);
     } catch (err) {
       console.error("[App] rootTimeline resolve failed:", err, { document });
       return null;
@@ -269,38 +253,26 @@ export default function App({ platform }: AppProps) {
     return resolveCCWords(ccBinEntry, document);
   }, [ccBinEntry, document]);
 
-  // The view's effective document (i.e. what the timeline panel shows).
-  // For root it's the editor-surface document; for nested views it's the
-  // subtree being drilled into. `getViewDocument` operates on the editor
-  // surface so nested compositions with their own scripts get the same
-  // unwrap treatment automatically. In cc-cut view we synthesize a doc
-  // from the user's current selections so the timeline + canvas reflect
-  // what would be spliced if they hit OK.
+  // The view's effective document (what the timeline panel shows). For
+  // root it's the authored document; for nested views it's the subtree
+  // being drilled into. CC-cut synthesises a preview doc from the
+  // user's in-progress selections.
   const viewDocument = useMemo<SeamFile>(() => {
     if (view.type === "cc-cut") {
       if (!ccBinEntry) return editorDoc;
       return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
     }
-    const base =
-      view.type === "root" ? editorDoc : getViewDocument(editorDoc, view);
-    return scriptEditTarget(base) as SeamFile;
+    return view.type === "root" ? editorDoc : getViewDocument(editorDoc, view);
   }, [editorDoc, view, ccBinEntry, document, ccSelections]);
 
-  // Two distinct resolved timelines:
-  //   - `editorTimeline` is what the timeline panel renders (and what the
-  //     inspector reads). It comes from the editor surface (= `original`
-  //     when a script is attached), so the blocks the user sees match
-  //     the source-of-truth shape they can actually edit.
-  //   - `playerTimeline` is what the preview canvas plays. It comes from
-  //     the on-disk document (post-script rendered body), so the user
-  //     sees what'll actually export.
-  //
-  // Both axes share the playhead clock, so scrubbing the panel moves the
-  // preview. If a script changes the doc's duration the two won't line
-  // up perfectly — that's a known trade-off of using scripts.
+  // The timeline panel and the preview canvas both use compiled forms
+  // so bin references render with their bin body and scripts run. The
+  // editor-surface vs rendered-body split from the old metadata-based
+  // model is gone — there's a single authored doc.
   const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
-      return resolveDoc(viewDocument);
+      const { doc: compiled } = compileDocument(viewDocument);
+      return resolveDoc(compiled);
     } catch (err) {
       console.error("[App] editorTimeline resolve failed:", err, {
         viewDocument,
@@ -312,7 +284,8 @@ export default function App({ platform }: AppProps) {
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
     if (view.type === "cc-cut") {
       try {
-        return resolveDoc(viewDocument);
+        const { doc: compiled } = compileDocument(viewDocument);
+        return resolveDoc(compiled);
       } catch (err) {
         console.error("[App] playerTimeline (cc-cut) resolve failed:", err, {
           viewDocument,
@@ -323,7 +296,8 @@ export default function App({ platform }: AppProps) {
     if (!rootTimeline) return null;
     if (view.type === "root") return rootTimeline;
     try {
-      return resolveDoc(getViewDocument(document, view));
+      const { doc: compiled } = compileDocument(getViewDocument(document, view));
+      return resolveDoc(compiled);
     } catch (err) {
       console.error("[App] playerTimeline resolve failed:", err, {
         view,
@@ -401,11 +375,10 @@ export default function App({ platform }: AppProps) {
         wp.clearBlobUrlCache();
         await wp.preloadBlobUrls(collectClipSources(doc));
       }
-      // Heal stale rendered bodies: a saved .seam file might have been
-      // edited externally so its bin references / script outputs lag the
-      // current sources. compileDocument is a no-op for plain docs.
-      const compiled = compileDocument(doc).doc;
-      history.reset(compiled);
+      // The authored doc is the source of truth — bin references and
+      // script outputs are resolved at compile time by the preview /
+      // render pipeline, not stored back into the doc.
+      history.reset(doc);
       setFilePath(fp);
       setErrors([]);
       setSelectedIndices([]);
@@ -429,58 +402,27 @@ export default function App({ platform }: AppProps) {
     [loadDocument]
   );
 
-  // Track the most recent script execution error so the Script tab can
-  // surface it. Mutations that bump `original` always succeed at the
-  // doc-state level (we keep the last-good rendered body); only the
-  // script's last-run status is reflected here.
-  const [scriptError, setScriptError] = useState<string | null>(null);
-
   const updateDocument = useCallback(
-    (surfaceDoc: SeamFile) => {
-      // The incoming doc is the *editor surface*. If the on-disk root
-      // has a script attached, re-run it against this new `original` and
-      // store the rendered body alongside the bumped script payload.
-      // Then compile so bin references in the rendered body (and inside
-      // any nested compositions) get their bodies spliced — without
-      // this, scripts whose `original` has stripped bin refs would
-      // produce a rendered body that fails schema / resolveDoc on the
-      // next read.
-      const { comp, error } = safeWithUpdatedOriginal(
-        document as Composition,
-        surfaceDoc as Composition
-      );
-      let compiled: SeamFile = comp as SeamFile;
-      let compileError: string | null = null;
-      try {
-        const result = compileDocument(comp as SeamFile);
-        compiled = result.doc;
-        if (result.errors.length > 0) {
-          compileError = result.errors
-            .map((e) => `${e.source}: ${e.message}`)
-            .join("\n");
-        }
-      } catch (err) {
-        console.error("[App] updateDocument compile failed:", err, { comp });
-      }
-      const combined = [error, compileError].filter(Boolean).join("\n");
-      setScriptError(combined.length > 0 ? combined : null);
-      history.push(compiled);
+    (newDoc: SeamFile) => {
+      // No more script-original / rendered-body bookkeeping — the
+      // authored doc is the canonical state and the compile pass runs
+      // lazily in rootTimeline. Any compile errors get reported there.
+      history.push(newDoc);
       setSelectedIndices([]);
       setMultiSelectMode(false);
     },
-    [history, document]
+    [history]
   );
 
-  // The "node" the JSON tab is editing. We strip rendered bodies off any
-  // script- or bin-bearing composition so the user only sees what they
-  // actually author (the script payload or the bin-item id) — anything
-  // under `children` / `attachments` on those compositions is regenerated
-  // on save by `compileDocument` and would otherwise be silently
-  // overwritten. Plain compositions are shown verbatim.
+  // The JSON tab shows the authored doc directly — there's no rendered
+  // shadow to hide. Bin references appear as compositions with a
+  // `binItem` field (and whatever children/attachments the user has
+  // authored, typically none). Scripts appear as a `script` string.
   const jsonNode = useMemo<unknown>(() => {
-    const isRoot = view.type === "root";
-    const node: unknown = isRoot ? document : document.children[view.rootIndex];
-    return stripForJsonEditing(node, { isRoot });
+    if (view.type === "clip" || view.type === "composition") {
+      return document.children[view.rootIndex];
+    }
+    return document;
   }, [document, view]);
 
   // Translate the current selection into a JSON path inside `jsonNode`.
@@ -491,31 +433,19 @@ export default function App({ platform }: AppProps) {
   // When the displayed node has a script attached, the timeline renders
   // the script's `original.children` (via the editor-surface unwrap),
   // so the visible JSON puts those at
-  // `metadata.seam-editor-script.original.children.N` rather than at
-  // the top-level `children.N`. Prefix the path so the JSON tab jumps
-  // to the right block.
+  // Translate the current selection into a JSON path inside the JSON
+  // tab's view. Selection indices encode [0, children.length) → child,
+  // [children.length, total) → attachment. With no rendered-shadow
+  // wrap, the path maps directly onto the authored doc's fields.
   const jsonJumpPath = useMemo<string | null>(() => {
     if (selectedIndices.length !== 1) return null;
     if (view.type === "clip") return null;
     const idx = selectedIndices[0];
     const childCount = viewDocument.children.length;
-    const localPath =
-      idx < childCount
-        ? `children.${idx}`
-        : `attachments.${idx - childCount}`;
-
-    const displayedNode: unknown =
-      view.type === "root" ? document : document.children[view.rootIndex];
-    if (
-      displayedNode &&
-      typeof displayedNode === "object" &&
-      (displayedNode as { type?: unknown }).type === "composition" &&
-      findScript(displayedNode as Composition)
-    ) {
-      return `metadata.seam-editor-script.original.${localPath}`;
-    }
-    return localPath;
-  }, [selectedIndices, view, viewDocument, document]);
+    return idx < childCount
+      ? `children.${idx}`
+      : `attachments.${idx - childCount}`;
+  }, [selectedIndices, view, viewDocument]);
 
   // The composition the Script tab targets. Root view → on-disk root
   // composition (so the Script tab sees the existing wrapper, if any).
@@ -532,11 +462,10 @@ export default function App({ platform }: AppProps) {
 
   const handleScriptApply = useCallback(
     (next: Composition): string[] | null => {
-      // Splice the new composition back into the on-disk document at the
-      // current view's position. We push directly (bypassing the root
-      // script re-wrap path of `updateDocument`) because enable/disable
-      // and scriptSrc edits already manage the script attachment shape
-      // for us — re-wrapping here would double-apply.
+      // Splice the (script-bearing or script-removed) composition back
+      // into the document at the current view's position. The compile
+      // pass runs lazily on render — we just validate up-front that the
+      // resulting doc can be compiled + resolved cleanly.
       let newDoc: SeamFile;
       if (view.type === "root") {
         newDoc = next as SeamFile;
@@ -548,26 +477,16 @@ export default function App({ platform }: AppProps) {
       } else {
         return ["Scripts can only be attached to compositions."];
       }
-      // Compile before resolving so bin references emitted by the
-      // script (or already present in the surrounding doc) get their
-      // bodies spliced before schema / spatial resolution runs. Same
-      // pattern as handleJsonNodeSave.
-      let compiled: SeamFile;
-      let compileErrors: string[];
+      let compileErrors: string[] = [];
       try {
         const result = compileDocument(newDoc);
-        compiled = result.doc;
         compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
-      } catch (err) {
-        return [String(err)];
-      }
-      try {
-        resolveDoc(compiled);
+        resolveDoc(result.doc);
       } catch (err) {
         return [...compileErrors, String(err)];
       }
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
-      history.push(compiled);
+      history.push(newDoc);
       setSelectedIndices([]);
       setMultiSelectMode(false);
       return null;
@@ -585,7 +504,7 @@ export default function App({ platform }: AppProps) {
       let proposed: unknown;
       if (view.type === "root") {
         proposed = next;
-      } else {
+      } else if (view.type === "clip" || view.type === "composition") {
         const idx = view.rootIndex;
         if (!document.children[idx]) {
           return ["View target no longer exists in the document."];
@@ -593,41 +512,29 @@ export default function App({ platform }: AppProps) {
         const newChildren = document.children.slice();
         newChildren[idx] = next as Child;
         proposed = { ...document, children: newChildren };
+      } else {
+        // cc-cut view doesn't expose a JSON tab — defensive no-op.
+        return ["Cannot save JSON in this view."];
       }
 
-      // Compile: re-run scripts, re-render bin references. The walker
-      // accepts intentionally-incomplete input (e.g. a fresh bin
-      // reference with no children) and fills the body from the bin.
-      let compiled: SeamFile;
-      let compileErrors: string[];
-      try {
-        const result = compileDocument(proposed as SeamFile);
-        compiled = result.doc;
-        compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
-        if (result.errors.length > 0) {
-          console.warn("[App] handleJsonNodeSave compile errors:", result.errors, {
-            proposed,
-            compiled,
-          });
-        }
-      } catch (err) {
-        console.error("[App] handleJsonNodeSave compile threw:", err, { proposed });
-        return [String(err)];
-      }
-
-      // Now validate the compiled form. If the user's edit was
-      // structurally invalid (e.g. removed children on a non-bin/non-
-      // script composition), schema validation catches it here.
-      const validated = validateSeamFile(compiled);
+      // Validate the authored shape directly — bin/binItem/script are
+      // first-party schema fields now, so a bin reference with no
+      // children is structurally valid. The compile pass runs lazily
+      // for preview/render and surfaces any unresolved references
+      // through scriptError.
+      const validated = validateSeamFile(proposed);
       if (!validated.success) {
         console.warn("[App] handleJsonNodeSave validate failed:", validated.errors, {
-          compiled,
+          proposed,
         });
-        return [...compileErrors, ...validated.errors];
+        return validated.errors;
       }
 
+      let compileErrors: string[] = [];
       try {
-        resolveDoc(validated.data);
+        const result = compileDocument(validated.data);
+        compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
+        resolveDoc(result.doc);
       } catch (err) {
         return [...compileErrors, String(err)];
       }
@@ -749,39 +656,14 @@ export default function App({ platform }: AppProps) {
       view.binId,
       ccSelections,
     );
-    // Append to the editor SURFACE (the script's `original` when one
-    // is attached, otherwise the doc itself) — appending directly to
-    // `document.children` would only land in the rendered body, which
-    // the next compile blows away by re-running the script against
-    // the unchanged original.
-    const surface = scriptEditTarget(document as Composition) as SeamFile;
-    const newSurface: SeamFile = {
-      ...surface,
-      children: [...surface.children, ...spliced],
+    // Append the bin-reference children directly to the authored
+    // document. The compile pass at preview/render time resolves them
+    // against the doc's `bin`.
+    const newDoc: SeamFile = {
+      ...document,
+      children: [...document.children, ...spliced],
     };
-    // Re-wrap through any active script and compile so bin references
-    // (including the ones we just inserted) get their bodies spliced
-    // in the on-disk form.
-    const { comp, error } = safeWithUpdatedOriginal(
-      document as Composition,
-      newSurface as Composition,
-    );
-    let compiled: SeamFile = comp as SeamFile;
-    let compileError: string | null = null;
-    try {
-      const result = compileDocument(comp as SeamFile);
-      compiled = result.doc;
-      if (result.errors.length > 0) {
-        compileError = result.errors
-          .map((e) => `${e.source}: ${e.message}`)
-          .join("\n");
-      }
-    } catch (err) {
-      console.error("[App] handleCCCutOk compile failed:", err);
-    }
-    const combined = [error, compileError].filter(Boolean).join("\n");
-    setScriptError(combined.length > 0 ? combined : null);
-    history.push(compiled);
+    history.push(newDoc);
     setView(ROOT_VIEW);
     setCcSelections([]);
     setInitialTime(0);
@@ -919,6 +801,46 @@ export default function App({ platform }: AppProps) {
     [platform]
   );
 
+  // Web-only: bare .seam JSON import (no clip bundle). Confirms with
+  // the user before overwriting an existing project of the same name.
+  const handleImportSeam = useCallback(
+    async (file: File) => {
+      if (platform.kind !== "web") return;
+      const wp = platform as WebPlatform;
+      const targetName = file.name.endsWith(".seam")
+        ? file.name
+        : `${file.name}.seam`;
+      try {
+        if (await wp.projectExists(targetName)) {
+          const ok = window.confirm(
+            `"${targetName}" already exists in projects/. ` +
+              `Importing will overwrite it. Continue?`,
+          );
+          if (!ok) return;
+        }
+        const result = await wp.importSeamFile(file);
+        openFromJsonRef.current(result.json, result.filePath);
+        setShowBrowser(false);
+      } catch (err) {
+        setErrors([String(err)]);
+      }
+    },
+    [platform],
+  );
+
+  // Web-only: download just the .seam JSON, no clips bundled.
+  const handleExportSeam = useCallback(async () => {
+    if (platform.kind !== "web") return;
+    const wp = platform as WebPlatform;
+    const fp = filePathRef.current;
+    const defaultName = fp ? basenameWithoutExt(fp) : "untitled";
+    try {
+      await wp.exportSeamFile(history.current, defaultName);
+    } catch (err) {
+      setErrors([String(err)]);
+    }
+  }, [platform, history]);
+
   handleSaveRef.current = handleSave;
   handleSaveAsRef.current = handleSaveAs;
   loadDocumentRef.current = loadDocument;
@@ -993,7 +915,11 @@ export default function App({ platform }: AppProps) {
   }, [transcriber, document, view, selectedIndices]);
 
   const viewKey =
-    view.type === "root" ? "root" : `${view.type}-${view.rootIndex}`;
+    view.type === "root"
+      ? "root"
+      : view.type === "cc-cut"
+        ? `cc-cut-${view.binId}`
+        : `${view.type}-${view.rootIndex}`;
 
   // Selection bar: desktop shows when 2+ selected; mobile shows throughout
   // the explicit multi-select mode (started by a long-press).
@@ -1191,6 +1117,8 @@ export default function App({ platform }: AppProps) {
           onSaveAs={handleSaveAs}
           onExport={handleExport}
           onImport={handleImport}
+          onExportSeam={handleExportSeam}
+          onImportSeam={handleImportSeam}
           onBrowseProjects={topBarBrowseProjects}
           onSettings={() => setSettingsOpen(true)}
           canSave={!showBrowser}

@@ -417,6 +417,46 @@ export class WebPlatform implements Platform {
     return true;
   }
 
+  /** Trigger a browser download of just the document's JSON as a
+   *  `.seam` file. No clips bundled — the user owns the asset side. */
+  async exportSeamFile(doc: SeamFile, defaultName: string): Promise<void> {
+    const json = JSON.stringify(doc, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${defaultName}.seam`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** True if `projects/<name>` already exists. Lets the caller warn
+   *  before `importSeamFile` overwrites it. */
+  async projectExists(name: string): Promise<boolean> {
+    const dir = await getDir(PROJECTS_DIR);
+    try {
+      await dir.getFileHandle(name);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Import a bare `.seam` JSON file into `projects/`. Overwrites a
+   *  project with the same filename if it exists (caller is responsible
+   *  for confirming with the user first). Returns the loaded
+   *  `{filePath, json}` ready to hand to `openFromJson`. */
+  async importSeamFile(
+    file: File,
+  ): Promise<{ filePath: string; json: string }> {
+    const json = await file.text();
+    const name = file.name.endsWith(".seam") ? file.name : `${file.name}.seam`;
+    await writeFileToDir(PROJECTS_DIR, name, json);
+    return { filePath: `projects/${name}`, json };
+  }
+
   async importProject(
     file: File
   ): Promise<{ filePath: string; json: string } | null> {
