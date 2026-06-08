@@ -92,54 +92,68 @@ function findInsertionIndex(doc: SeamFile, currentTime: number): number {
   return bestIdx;
 }
 
+/** Classify each file, probe duration where needed, store via the
+ *  platform, and build a Child node per file. Unrecognised files are
+ *  skipped. Caller decides where to place the returned nodes. */
+export async function buildItemsFromFiles(
+  fileList: FileList | File[],
+  platform: Platform,
+  baseDir: string | null,
+): Promise<Child[]> {
+  const classified = Array.from(fileList)
+    .map((file) => ({ file, kind: classifyMediaFile(file) }))
+    .filter((e): e is { file: File; kind: MediaKind } => e.kind !== null);
+  if (classified.length === 0) return [];
+
+  const newChildren: Child[] = [];
+  for (const { file, kind } of classified) {
+    // Images have no temporal source — skip the probe and use the
+    // default duration. probeDuration on an <img> would just fail
+    // anyway since it expects audio/video.
+    const duration =
+      kind === "image"
+        ? IMAGE_DEFAULT_DURATION
+        : await probeDuration(file, kind);
+    const stored = await platform.importClip(file);
+    // On Electron, `stored` is an absolute path; collapse to relative if
+    // it lives under the .seam file's directory. On Web, it's already
+    // just a filename inside clips/ and stays as-is.
+    const source =
+      platform.kind === "electron" && baseDir && isAbsolute(stored)
+        ? toRelativeSource(stored, baseDir)
+        : stored;
+    if (kind === "video") {
+      const node: Clip = { type: "clip", source, in: 0, out: duration };
+      newChildren.push(node);
+    } else if (kind === "audio") {
+      const node: Audio = { type: "audio", source, in: 0, out: duration };
+      newChildren.push(node);
+    } else {
+      const node: Static = { type: "static", source, duration };
+      newChildren.push(node);
+    }
+  }
+  return newChildren;
+}
+
 export function useImport(
   doc: SeamFile,
   filePath: string | null,
   onDocumentChange: (doc: SeamFile) => void,
   platform: Platform
-): (files: FileList | File[]) => Promise<void> {
+): (files: FileList | File[], insertIndex?: number) => Promise<void> {
   const { currentTime } = useTimeline();
 
   return useCallback(
-    async (fileList: FileList | File[]) => {
-      const classified = Array.from(fileList)
-        .map((file) => ({ file, kind: classifyMediaFile(file) }))
-        .filter(
-          (e): e is { file: File; kind: MediaKind } => e.kind !== null
-        );
-      if (classified.length === 0) return;
-
+    async (fileList: FileList | File[], insertIndex?: number) => {
       const baseDir = filePath ? dirname(filePath) : null;
-      const newChildren: Child[] = [];
-      for (const { file, kind } of classified) {
-        // Images have no temporal source — skip the probe and use the
-        // default duration. probeDuration on an <img> would just fail
-        // anyway since it expects audio/video.
-        const duration =
-          kind === "image"
-            ? IMAGE_DEFAULT_DURATION
-            : await probeDuration(file, kind);
-        const stored = await platform.importClip(file);
-        // On Electron, `stored` is an absolute path; collapse to relative if
-        // it lives under the .seam file's directory. On Web, it's already
-        // just a filename inside clips/ and stays as-is.
-        const source =
-          platform.kind === "electron" && baseDir && isAbsolute(stored)
-            ? toRelativeSource(stored, baseDir)
-            : stored;
-        if (kind === "video") {
-          const node: Clip = { type: "clip", source, in: 0, out: duration };
-          newChildren.push(node);
-        } else if (kind === "audio") {
-          const node: Audio = { type: "audio", source, in: 0, out: duration };
-          newChildren.push(node);
-        } else {
-          const node: Static = { type: "static", source, duration };
-          newChildren.push(node);
-        }
-      }
+      const newChildren = await buildItemsFromFiles(fileList, platform, baseDir);
+      if (newChildren.length === 0) return;
 
-      const insertAt = findInsertionIndex(doc, currentTime);
+      // Cursor-based callers pass `insertIndex` (computed via the same
+      // reorder snap math); the file picker / fallback path falls back
+      // to the nearest playhead boundary.
+      const insertAt = insertIndex ?? findInsertionIndex(doc, currentTime);
       const merged = [...doc.children];
       merged.splice(insertAt, 0, ...newChildren);
       onDocumentChange({ ...doc, children: merged });

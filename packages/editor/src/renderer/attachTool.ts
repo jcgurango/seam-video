@@ -142,3 +142,73 @@ export function applyAttach(
     attachments: [...(doc.attachments ?? []), ...newAttachments],
   };
 }
+
+/**
+ * Append `newItems` as attachments anchored to `primaryIndex` at the
+ * source-mode point corresponding to `currentTime` on the primary.
+ * Used by the drag-drop attach zone: dropped files become attachments
+ * pre-anchored to the selected clip at the playhead. Auto-assigns an
+ * id to the primary if it lacks one.
+ *
+ * `side === "start"` anchors each new item's `start` to the playhead
+ * (item lives to the right of the playhead); `side === "end"` anchors
+ * the `end` (item lives to the left). Returns null when the primary's
+ * type has no source axis.
+ */
+export function attachNewItems(
+  doc: SeamFile,
+  currentTime: number,
+  primaryIndex: number,
+  newItems: Child[],
+  side: "start" | "end",
+): SeamFile | null {
+  if (newItems.length === 0) return null;
+  const primary = doc.children[primaryIndex];
+  if (!primary) return null;
+
+  let resolved;
+  try {
+    resolved = resolveComposition(doc);
+  } catch {
+    return null;
+  }
+  const resolvedPrimary = resolved.children[primaryIndex];
+  if (!resolvedPrimary) return null;
+
+  const anchorPoint = sourceAnchorPoint(primary, resolvedPrimary, currentTime);
+  if (anchorPoint == null) return null;
+
+  const existingIds = collectAllIds(doc);
+  let primaryId = (primary as { id?: string }).id;
+  let updatedPrimary: Child = primary;
+  if (primaryId == null) {
+    primaryId = pickFreshId(existingIds, "anchor");
+    updatedPrimary = { ...primary, id: primaryId } as Child;
+  }
+
+  const anchor: TimeAnchor = {
+    anchor: primaryId,
+    timeSource: "source",
+    anchorPoint,
+    offset: 0,
+  };
+
+  const anchored: Child[] = newItems.map((item) => {
+    const updated = { ...item } as Child;
+    if (side === "start") {
+      (updated as { start?: TimeAnchor }).start = anchor;
+    } else {
+      (updated as { end?: TimeAnchor }).end = anchor;
+    }
+    return updated;
+  });
+
+  const newChildren = [...doc.children];
+  newChildren[primaryIndex] = updatedPrimary;
+
+  return {
+    ...doc,
+    children: newChildren,
+    attachments: [...(doc.attachments ?? []), ...anchored],
+  };
+}

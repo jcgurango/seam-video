@@ -7,7 +7,9 @@ import type {
   Child,
   Clip,
 } from "@seam/core";
-import { useImport } from "./useImport.js";
+import { buildItemsFromFiles, useImport } from "./useImport.js";
+import { attachNewItems } from "./attachTool.js";
+import { dirname } from "./pathUtils.js";
 import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
@@ -258,6 +260,19 @@ interface InnerProps {
    *  insertion index `to` (in the post-removal array). Undefined when
    *  reorder isn't supported in this view. */
   onReorder?: (from: number, to: number) => void;
+  /** Index of the single child that's selected AND a valid anchor
+   *  target — null otherwise. When non-null and a file is being
+   *  dragged, the attach zone appears beneath the blocks. */
+  attachIndex?: number | null;
+  /** Receives a drop on the attach zone. The shell computes `side`
+   *  from cursor X relative to the playhead. */
+  onAttachDrop?: (side: "start" | "end", files: FileList) => void;
+  /** Cursor-based file import. `insertIndex` is the slot computed via
+   *  the same reorder snap math; omit for the playhead-snap fallback. */
+  importFiles?: (
+    files: FileList | File[],
+    insertIndex?: number,
+  ) => Promise<void>;
 }
 
 // ── Shared timeline surface (hook + body) ────────────────────────────
@@ -352,6 +367,15 @@ interface TimelineSurfaceProps {
   /** Hand-off callback when a child block's mouse-press passes the
    *  drag threshold. Pass `null` to disable reorder for this shell. */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+  /** Content-X (px) of the cursor-snap insertion line during a file
+   *  drag. Null hides the insertion ghost. */
+  insertionGhostX?: number | null;
+  /** True when the attach zone should be rendered (shell-decided based
+   *  on dragOver + a clip selection). */
+  showAttachZone?: boolean;
+  /** Highlight state for the attach zone's two halves. Null when the
+   *  cursor isn't over the zone. */
+  attachHoverSide?: "start" | "end" | null;
 }
 
 /** Body of the timeline: ruler + child blocks + anchor lines + optional
@@ -370,6 +394,9 @@ function TimelineSurface({
   editHistory,
   reorderDragIndex,
   onReorderDragStart,
+  insertionGhostX,
+  showAttachZone,
+  attachHoverSide,
 }: TimelineSurfaceProps) {
   const { pxPerSec, splitIndex, blocks, contentHeight, rulerTicks } = surface;
   const { currentTime, seek } = useTimeline();
@@ -476,7 +503,121 @@ function TimelineSurface({
           height={contentHeight}
         />
       )}
+      {insertionGhostX != null && (
+        <InsertionGhost x={insertionGhostX} height={contentHeight} />
+      )}
+      {showAttachZone && (
+        <AttachZone
+          top={contentHeight}
+          playheadX={currentTime * pxPerSec}
+          hoverSide={attachHoverSide ?? null}
+        />
+      )}
     </>
+  );
+}
+
+const ATTACH_ZONE_HEIGHT = 40;
+
+function InsertionGhost({ x, height }: { x: number; height: number }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x - 1,
+        top: 0,
+        width: 2,
+        height,
+        background: "#4a9eff",
+        boxShadow: "0 0 6px rgba(74, 158, 255, 0.8)",
+        zIndex: 8,
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+/** Display-only strip rendered just below the timeline rows when a
+ *  clip is selected and a file is being dragged. The shell owns the
+ *  actual drop event — it computes `hoverSide` from cursor X relative
+ *  to the playhead and routes the drop to `attachNewItems`. */
+function AttachZone({
+  top,
+  playheadX,
+  hoverSide,
+}: {
+  top: number;
+  playheadX: number;
+  hoverSide: "start" | "end" | null;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        top: top + 4,
+        right: 0,
+        height: ATTACH_ZONE_HEIGHT - 4,
+        zIndex: 9,
+        pointerEvents: "none",
+      }}
+    >
+      {/* Left half: end-anchor */}
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: playheadX,
+          height: "100%",
+          background:
+            hoverSide === "end"
+              ? "rgba(255, 204, 0, 0.35)"
+              : "rgba(255, 204, 0, 0.12)",
+          border: `1px ${hoverSide === "end" ? "solid" : "dashed"} #ffcc00`,
+          borderRadius: 3,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          paddingRight: 12,
+          color: "#ffcc00",
+          fontSize: 11,
+          fontWeight: 600,
+          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          pointerEvents: "none",
+          boxSizing: "border-box",
+        }}
+      >
+        end-anchored ⟧
+      </div>
+      {/* Right half: start-anchor */}
+      <div
+        style={{
+          position: "absolute",
+          left: playheadX,
+          top: 0,
+          right: 0,
+          height: "100%",
+          background:
+            hoverSide === "start"
+              ? "rgba(81, 207, 102, 0.35)"
+              : "rgba(81, 207, 102, 0.12)",
+          border: `1px ${hoverSide === "start" ? "solid" : "dashed"} #51cf66`,
+          borderRadius: 3,
+          display: "flex",
+          alignItems: "center",
+          paddingLeft: 12,
+          color: "#51cf66",
+          fontSize: 11,
+          fontWeight: 600,
+          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          pointerEvents: "none",
+          boxSizing: "border-box",
+        }}
+      >
+        ⟦ start-anchored
+      </div>
+    </div>
   );
 }
 
@@ -492,6 +633,9 @@ function DesktopTimeline({
   trim,
   editHistory,
   onReorder,
+  attachIndex,
+  onAttachDrop,
+  importFiles,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -511,7 +655,17 @@ function DesktopTimeline({
     grabOffsetX: number;
   } | null>(null);
 
+  // File-drag state. cursorContentX drives the insertion ghost +
+  // cursor-based snap; cursorContentY decides attach zone vs main area.
+  const [fileDrag, setFileDrag] = useState<{
+    cursorContentX: number;
+    cursorContentY: number;
+  } | null>(null);
+
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
+
+  const showAttachZone = fileDrag != null && attachIndex != null && !!onAttachDrop;
+  const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -641,7 +795,78 @@ function DesktopTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reorderDrag !== null, onReorder, reorderableBlocks, pxPerSec]);
 
+  // ── File drag-and-drop ────────────────────────────────────────
+  const cursorToContent = (e: React.DragEvent) => {
+    const container = scrollRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left + container.scrollLeft,
+      y: e.clientY - rect.top + container.scrollTop,
+    };
+  };
+
+  const handleFileDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    const pos = cursorToContent(e);
+    if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y });
+  };
+
+  const handleFileDragLeave = (e: React.DragEvent) => {
+    // Only clear if leaving the scroll container's rect — dragleave
+    // fires whenever we cross any descendant element, which would
+    // otherwise blink the ghost off whenever the cursor passes between
+    // children.
+    const container = scrollRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (
+      e.clientX < rect.left ||
+      e.clientX >= rect.right ||
+      e.clientY < rect.top ||
+      e.clientY >= rect.bottom
+    ) {
+      setFileDrag(null);
+    }
+  };
+
+  const handleFileDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    const pos = cursorToContent(e);
+    setFileDrag(null);
+    if (!pos) return;
+    if (e.dataTransfer.files.length === 0) return;
+
+    const inAttachZone =
+      showAttachZone && pos.y >= contentHeight && onAttachDrop != null;
+    if (inAttachZone) {
+      const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
+      onAttachDrop!(side, e.dataTransfer.files);
+      return;
+    }
+    if (importFiles) {
+      const idx = computeInsertionIndex(pos.x, reorderableBlocks, pxPerSec);
+      void importFiles(e.dataTransfer.files, idx);
+    }
+  };
+
   const playheadX = currentTime * pxPerSec;
+  const insertionGhostX =
+    fileDrag != null && (fileDrag.cursorContentY < contentHeight || !showAttachZone)
+      ? insertionIndexToX(
+          computeInsertionIndex(fileDrag.cursorContentX, reorderableBlocks, pxPerSec),
+          reorderableBlocks,
+          pxPerSec,
+        )
+      : null;
+  const attachHoverSide: "start" | "end" | null =
+    fileDrag != null && showAttachZone && fileDrag.cursorContentY >= contentHeight
+      ? fileDrag.cursorContentX >= playheadX
+        ? "start"
+        : "end"
+      : null;
 
   // Ghost + insertion-line layout. The ghost mirrors the source
   // block's width and row, but its X follows the cursor offset so the
@@ -689,6 +914,9 @@ function DesktopTimeline({
     <div
       ref={scrollRef}
       onPointerDown={handlePointerDown}
+      onDragOver={handleFileDragOver}
+      onDragLeave={handleFileDragLeave}
+      onDrop={handleFileDrop}
       style={{
         flex: 1,
         overflow: "auto",
@@ -696,7 +924,7 @@ function DesktopTimeline({
         cursor: reorderDrag ? "grabbing" : "crosshair",
       }}
     >
-      <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
+      <div style={{ width: contentWidth, height: totalContentHeight, position: "relative" }}>
         <TimelineSurface
           surface={surface}
           timeline={timeline}
@@ -710,6 +938,9 @@ function DesktopTimeline({
           editHistory={editHistory}
           reorderDragIndex={reorderDrag?.fromIndex ?? null}
           onReorderDragStart={onReorder ? startReorderDrag : null}
+          insertionGhostX={insertionGhostX}
+          showAttachZone={showAttachZone}
+          attachHoverSide={attachHoverSide}
         />
         {ghost && (
           <div
@@ -773,6 +1004,9 @@ function MobileTimeline({
   onEnter,
   trim,
   editHistory,
+  attachIndex,
+  onAttachDrop,
+  importFiles,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -781,9 +1015,26 @@ function MobileTimeline({
     attachmentStartIndex,
     scrollRef,
   );
-  const { pxPerSec, contentHeight } = surface;
+  const { pxPerSec, blocks, contentHeight } = surface;
   const [padding, setPadding] = useState(0);
   const programmaticScroll = useRef(false);
+
+  // File-drag state. Same shape and dispatch logic as DesktopTimeline;
+  // mobile shell has no reorder, but the snap math is identical.
+  const [fileDrag, setFileDrag] = useState<{
+    cursorContentX: number;
+    cursorContentY: number;
+  } | null>(null);
+  const showAttachZone = fileDrag != null && attachIndex != null && !!onAttachDrop;
+  const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
+
+  const reorderableBlocks = useMemo(
+    () =>
+      blocks
+        .filter((b) => !b.isAttachment)
+        .sort((a, b) => a.index - b.index),
+    [blocks],
+  );
 
   // Mobile shell pads each side with half the container's width so the
   // playhead can sit at the center even at the timeline's start/end.
@@ -831,16 +1082,91 @@ function MobileTimeline({
     container.scrollLeft = currentTime * pxPerSec;
   }, [pxPerSec]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── File drag-and-drop ────────────────────────────────────────
+  // The inner content div is inset by `padding` on both sides; the
+  // shell's cursor → content X needs to subtract that offset so the
+  // ghost lines up with the timeline at X=0.
+  const cursorToContent = (e: React.DragEvent) => {
+    const container = scrollRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left + container.scrollLeft - padding,
+      y: e.clientY - rect.top + container.scrollTop,
+    };
+  };
+
+  const handleFileDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    const pos = cursorToContent(e);
+    if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y });
+  };
+
+  const handleFileDragLeave = (e: React.DragEvent) => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (
+      e.clientX < rect.left ||
+      e.clientX >= rect.right ||
+      e.clientY < rect.top ||
+      e.clientY >= rect.bottom
+    ) {
+      setFileDrag(null);
+    }
+  };
+
+  const handleFileDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    const pos = cursorToContent(e);
+    setFileDrag(null);
+    if (!pos) return;
+    if (e.dataTransfer.files.length === 0) return;
+
+    const inAttachZone =
+      showAttachZone && pos.y >= contentHeight && onAttachDrop != null;
+    if (inAttachZone) {
+      const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
+      onAttachDrop!(side, e.dataTransfer.files);
+      return;
+    }
+    if (importFiles) {
+      const idx = computeInsertionIndex(pos.x, reorderableBlocks, pxPerSec);
+      void importFiles(e.dataTransfer.files, idx);
+    }
+  };
+
+  const playheadXContent = currentTime * pxPerSec;
+  const insertionGhostX =
+    fileDrag != null && (fileDrag.cursorContentY < contentHeight || !showAttachZone)
+      ? insertionIndexToX(
+          computeInsertionIndex(fileDrag.cursorContentX, reorderableBlocks, pxPerSec),
+          reorderableBlocks,
+          pxPerSec,
+        )
+      : null;
+  const attachHoverSide: "start" | "end" | null =
+    fileDrag != null && showAttachZone && fileDrag.cursorContentY >= contentHeight
+      ? fileDrag.cursorContentX >= playheadXContent
+        ? "start"
+        : "end"
+      : null;
+
   return (
     <div
       ref={scrollRef}
       onScroll={handleScroll}
+      onDragOver={handleFileDragOver}
+      onDragLeave={handleFileDragLeave}
+      onDrop={handleFileDrop}
       style={{ flex: 1, overflow: "auto", position: "relative" }}
     >
       <div style={{ position: "sticky", left: 0, width: "100%", height: 0, zIndex: 4, pointerEvents: "none" }}>
-        <Playhead x={padding} height={contentHeight} />
+        <Playhead x={padding} height={totalContentHeight} />
       </div>
-      <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
+      <div style={{ width: contentWidth, height: totalContentHeight, position: "relative" }}>
         <div style={{ position: "absolute", left: padding, top: 0, right: padding }}>
           <TimelineSurface
             surface={surface}
@@ -855,6 +1181,9 @@ function MobileTimeline({
             editHistory={editHistory}
             reorderDragIndex={null}
             onReorderDragStart={null}
+            insertionGhostX={insertionGhostX}
+            showAttachZone={showAttachZone}
+            attachHoverSide={attachHoverSide}
           />
         </div>
       </div>
@@ -1435,13 +1764,51 @@ export default function TimelinePanel({
   platform,
 }: TimelinePanelProps) {
   const { currentTime } = useTimeline();
-  const [dragOver, setDragOver] = useState(false);
   const emptyDoc: SeamFile = { type: "composition", children: [] };
   const importFiles = useImport(
     doc ?? emptyDoc,
     filePath ?? null,
     onDocumentChange ?? (() => {}),
     platform
+  );
+
+  // Single sequential-child selection that's a valid anchor target —
+  // drives the attach zone's existence during drag.
+  const attachIndex = useMemo<number | null>(() => {
+    if (view.type !== "root") return null;
+    if (!doc) return null;
+    if (selectedIndices.length !== 1) return null;
+    const idx = selectedIndices[0];
+    if (idx < 0 || idx >= doc.children.length) return null;
+    const child = doc.children[idx];
+    if (
+      child.type !== "clip" &&
+      child.type !== "audio" &&
+      child.type !== "composition"
+    ) {
+      return null;
+    }
+    return idx;
+  }, [view, doc, selectedIndices]);
+
+  const handleAttachDrop = useCallback(
+    async (side: "start" | "end", files: FileList) => {
+      if (view.type !== "root") return;
+      if (!doc || !onDocumentChange) return;
+      if (attachIndex == null) return;
+      const baseDir = filePath ? dirname(filePath) : null;
+      const newItems = await buildItemsFromFiles(files, platform, baseDir);
+      if (newItems.length === 0) return;
+      const next = attachNewItems(
+        doc,
+        currentTime,
+        attachIndex,
+        newItems,
+        side,
+      );
+      if (next) onDocumentChange(next);
+    },
+    [view, doc, onDocumentChange, attachIndex, filePath, platform, currentTime],
   );
 
   // Delete/Backspace to remove selected blocks — handles both `children` and
@@ -1463,27 +1830,6 @@ export default function TimelinePanel({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [selectedIndices, doc, onDocumentChange, onSelectionChange, view]);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      if (view.type !== "root") return; // no import in nested views
-      if (e.dataTransfer.files.length > 0) {
-        importFiles(e.dataTransfer.files);
-      }
-    },
-    [importFiles, view]
-  );
 
   // Build trim overlay if we're in clip view
   const trim: TrimOverlay | undefined = useMemo(() => {
@@ -1522,11 +1868,14 @@ export default function TimelinePanel({
   // Clip view: the `onEnter` doesn't apply (already inside)
   const onEnterProp = view.type === "root" ? handleEnter : undefined;
 
+  // Only forward file drop callbacks to the shells in root view; nested
+  // views aren't writable so dropping there should no-op.
+  const shellImportFiles = view.type === "root" ? importFiles : undefined;
+  const shellAttachIndex = view.type === "root" ? attachIndex : null;
+  const shellOnAttachDrop = view.type === "root" ? handleAttachDrop : undefined;
+
   return (
     <div
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
       style={{
         background: "#1e1e1e",
         borderTop: "1px solid #333",
@@ -1539,28 +1888,6 @@ export default function TimelinePanel({
         position: "relative",
       }}
     >
-      {dragOver && view.type === "root" && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(74, 158, 255, 0.15)",
-            border: "2px dashed #4a9eff",
-            borderRadius: 4,
-            zIndex: 10,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#4a9eff",
-            fontSize: 14,
-            fontWeight: 600,
-            pointerEvents: "none",
-          }}
-        >
-          Drop video files to import
-        </div>
-      )}
-
       {/* Playback constraint (clip view only) */}
       {trim && <ClipPlaybackConstraint inTime={trim.inTime} outTime={trim.outTime} />}
 
@@ -1607,6 +1934,9 @@ export default function TimelinePanel({
             onEnter={onEnterProp}
             trim={trim}
             editHistory={editHistory}
+            attachIndex={shellAttachIndex}
+            onAttachDrop={shellOnAttachDrop}
+            importFiles={shellImportFiles}
           />
         ) : (
           <DesktopTimeline
@@ -1621,6 +1951,9 @@ export default function TimelinePanel({
             trim={trim}
             editHistory={editHistory}
             onReorder={onReorder}
+            attachIndex={shellAttachIndex}
+            onAttachDrop={shellOnAttachDrop}
+            importFiles={shellImportFiles}
           />
         );
       })()}
