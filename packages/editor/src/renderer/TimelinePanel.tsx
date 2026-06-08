@@ -20,6 +20,8 @@ import {
   type ChildBlock,
 } from "./timelineLayout.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
+import { resizeChild } from "./resizeTool.js";
+import { useEvent } from "./useEvent.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -370,6 +372,78 @@ function TimelineSurface({
   onReorderDragStart,
 }: TimelineSurfaceProps) {
   const { pxPerSec, splitIndex, blocks, contentHeight, rulerTicks } = surface;
+  const { currentTime, seek } = useTimeline();
+
+  // Per-block drag-resize. Stable identity via useEvent so re-renders
+  // (and rAF ticks of currentTime) don't churn the prop on every block.
+  // The latest editHistory / pxPerSec / currentTime / seek are read
+  // inside the closure when a handle is pressed.
+  const startResize = useEvent(
+    (
+      index: number,
+      isAttachment: boolean,
+      side: "left" | "right",
+      e: React.PointerEvent,
+    ) => {
+      if (!editHistory) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const target = e.currentTarget as Element;
+      const pointerId = e.pointerId;
+      const startX = e.clientX;
+      const initialDoc = editHistory.current;
+      const initialTime = currentTime;
+
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        /* element gone — fall back to ambient pointer events */
+      }
+
+      // Defer the past-snapshot to the first actual move so a click that
+      // doesn't drag at all leaves history clean.
+      let pushed = false;
+
+      const onMove = (ev: Event) => {
+        const me = ev as PointerEvent;
+        if (me.pointerId !== pointerId) return;
+        const deltaPx = me.clientX - startX;
+        const deltaSec = deltaPx / pxPerSec;
+        if (!pushed) {
+          editHistory.pushPast(initialDoc);
+          pushed = true;
+        }
+        editHistory.replace(
+          resizeChild(initialDoc, index, isAttachment, side, deltaSec),
+        );
+        if (side === "left") {
+          // Best-effort playhead preservation: as the source content shifts
+          // (or the trailing siblings shift), keep the visible content under
+          // the playhead lined up by translating the playhead by the same
+          // delta. Naive, no speed math — same convention as the resize.
+          seek(Math.max(0, initialTime - deltaSec));
+        }
+      };
+      const onUp = (ev: Event) => {
+        const me = ev as PointerEvent;
+        if (me.pointerId !== pointerId) return;
+        target.removeEventListener("pointermove", onMove);
+        target.removeEventListener("pointerup", onUp);
+        target.removeEventListener("pointercancel", onUp);
+        try {
+          target.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      };
+      target.addEventListener("pointermove", onMove);
+      target.addEventListener("pointerup", onUp);
+      target.addEventListener("pointercancel", onUp);
+    },
+  );
+
+  const onResizeDragStart = editHistory ? startResize : null;
+
   return (
     <>
       <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
@@ -385,6 +459,7 @@ function TimelineSurface({
         attachmentStartIndex={splitIndex}
         reorderDragIndex={reorderDragIndex}
         onReorderDragStart={onReorderDragStart}
+        onResizeDragStart={onResizeDragStart}
       />
       <AnchorLinesLayer
         selectedIndices={selectedIndices}
@@ -836,6 +911,7 @@ function ChildrenLayer({
   attachmentStartIndex,
   reorderDragIndex,
   onReorderDragStart,
+  onResizeDragStart,
 }: {
   blocks: ChildBlock[];
   pxPerSec: number;
@@ -855,6 +931,16 @@ function ChildrenLayer({
   /** Hand-off callback when a child block's mouse-press passes the
    *  drag threshold. `null` disables reorder entirely. */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+  /** Hand-off when a selected block's resize-handle is pressed. `null`
+   *  disables resize entirely (e.g. non-root views without history). */
+  onResizeDragStart:
+    | ((
+        index: number,
+        isAttachment: boolean,
+        side: "left" | "right",
+        e: React.PointerEvent,
+      ) => void)
+    | null;
 }) {
   return (
     <>
@@ -875,6 +961,10 @@ function ChildrenLayer({
         // would lose their anchor semantics on move).
         const blockReorderStart =
           !isAttachment && onReorderDragStart ? onReorderDragStart : null;
+        // Resize is gated to non-attachment children for now; the pure
+        // tool handles attachments too if we ever turn this on.
+        const blockResizeStart =
+          !isAttachment && onResizeDragStart ? onResizeDragStart : null;
         return (
           <ChildBlockView
             key={index}
@@ -893,6 +983,7 @@ function ChildrenLayer({
             onEnter={onEnter}
             isDraggingOut={reorderDragIndex === index}
             onReorderDragStart={blockReorderStart}
+            onResizeDragStart={blockResizeStart}
           />
         );
       })}
@@ -916,6 +1007,7 @@ function ChildBlockView({
   onEnter,
   isDraggingOut,
   onReorderDragStart,
+  onResizeDragStart,
 }: {
   child: ResolvedChild;
   displayChild?: import("@seam/core").Child;
@@ -937,6 +1029,16 @@ function ChildBlockView({
    *  parent's reorder tracker. `null` disables reorder for this block
    *  (e.g. attachments, or views where reordering isn't writable). */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+  /** When set, pointer-down on a side handle hands off to the parent's
+   *  resize tracker. `null` hides the handles. */
+  onResizeDragStart:
+    | ((
+        index: number,
+        isAttachment: boolean,
+        side: "left" | "right",
+        e: React.PointerEvent,
+      ) => void)
+    | null;
 }) {
   const left = child.timelineStart * pxPerSec;
   const width = Math.max((child.timelineEnd - child.timelineStart) * pxPerSec, 2);
@@ -1097,10 +1199,57 @@ function ChildBlockView({
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
         {label}
       </span>
+      {isSelected && onResizeDragStart && width > 2 * RESIZE_HANDLE_WIDTH && (
+        <>
+          <ResizeHandle
+            side="left"
+            onPointerDown={(e) =>
+              onResizeDragStart(index, isAttachment, "left", e)
+            }
+          />
+          <ResizeHandle
+            side="right"
+            onPointerDown={(e) =>
+              onResizeDragStart(index, isAttachment, "right", e)
+            }
+          />
+        </>
+      )}
     </div>
   );
 }
 
+const RESIZE_HANDLE_WIDTH = 8;
+
+/** Translucent 8px grip at the left/right edge of a selected block.
+ *  Stops pointer/click propagation so it doesn't trip the block's
+ *  selection / reorder / double-click handlers. */
+function ResizeHandle({
+  side,
+  onPointerDown,
+}: {
+  side: "left" | "right";
+  onPointerDown: (e: React.PointerEvent) => void;
+}) {
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  const base: React.CSSProperties = {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: RESIZE_HANDLE_WIDTH,
+    cursor: "ew-resize",
+    background: "rgba(255, 255, 255, 0.55)",
+    zIndex: 2,
+  };
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      onClick={stop}
+      onDoubleClick={stop}
+      style={side === "left" ? { ...base, left: 0 } : { ...base, right: 0 }}
+    />
+  );
+}
 
 function Playhead({ x, height }: { x: number; height: number }) {
   return (
