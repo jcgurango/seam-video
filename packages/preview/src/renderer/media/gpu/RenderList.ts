@@ -19,6 +19,7 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   ResolvedClip,
+  ResolvedGraphic,
   ResolvedStatic,
   ResolvedText,
   ResolvedComposition,
@@ -30,7 +31,7 @@ import { resolveBoxProps } from "@seam/core";
 
 export interface DrawCommand {
   type: "draw";
-  clip: ResolvedClip | ResolvedText | ResolvedStatic;
+  clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedGraphic;
   scissorX: number;
   scissorY: number;
   scissorW: number;
@@ -184,6 +185,7 @@ function dynamicSpatial(
     | ResolvedClip
     | ResolvedStatic
     | ResolvedText
+    | ResolvedGraphic
     | ResolvedComposition,
   viewport: Viewport,
   localTime: number,
@@ -276,7 +278,7 @@ function walkChildren(
         nodeTime: localTime - child.timelineStart,
         nodeDuration: child.timelineEnd - child.timelineStart,
       });
-    } else if (child.type === "text") {
+    } else if (child.type === "text" || child.type === "graphic") {
       const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
       const quad = absoluteRect(viewport, spatial);
       const scissor = intersect(clipRect, quad);

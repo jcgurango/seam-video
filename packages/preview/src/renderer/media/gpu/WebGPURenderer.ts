@@ -12,6 +12,7 @@
 
 import type {
   ResolvedClip,
+  ResolvedGraphic,
   ResolvedStatic,
   ResolvedText,
   Filter,
@@ -19,7 +20,7 @@ import type {
 } from "@seam/core";
 import { sampleNumber } from "@seam/core";
 
-type Drawable = ResolvedClip | ResolvedStatic | ResolvedText;
+type Drawable = ResolvedClip | ResolvedStatic | ResolvedText | ResolvedGraphic;
 import { TextureManager } from "./TextureManager.js";
 import type {
   RenderCommand,

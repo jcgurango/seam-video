@@ -36,7 +36,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are seven node types: **clip**, **audio**, **static**, **empty**, **data**, **text**, and **composition**.
+There are eight node types: **clip**, **audio**, **static**, **empty**, **data**, **text**, **graphic**, and **composition**.
 
 ### Clip
 
@@ -230,6 +230,89 @@ Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's
 
 Both backends share Pretext for layout. The editor preview measures + draws on `OffscreenCanvas`; the FFmpeg CLI path does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side, then writes one PNG per static text node and a numbered sequence per animated text node, which ffmpeg pulls in via `overlay`. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
 
+### Graphic
+
+A motion-graphics layer with its own internal keyframe timeline. The inner content is described in **fabric.js** terms (`Rect`, `Circle`, `Path`, `Polygon`, `Textbox`, `Image`, `Group`, plus seam-specific `Clip` and `Map`); each keyframe is a snapshot of that object tree, and the runtime tweens between adjacent keyframes.
+
+```json
+{
+  "type": "graphic",
+  "duration": 3,
+  "contentWidth": 1080, "contentHeight": 1920,
+  "frames": [
+    [0,    [{ "id": "r", "type": "Rect", "left": 0,   "top": 200, "width": 200, "height": 200, "fill": "tomato" }]],
+    ["50%",[{ "id": "r", "type": "Rect", "left": 400, "top": 800, "width": 200, "height": 200, "fill": "tomato" }], "ease-out"],
+    [3,    [{ "id": "r", "type": "Rect", "left": 800, "top": 200, "width": 200, "height": 200, "fill": "tomato", "angle": 360 }]]
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"graphic"` | yes | Must be `"graphic"` |
+| `frames` | array | yes | Keyframe tuples: `[stamp, objectTree]` or `[stamp, objectTree, easing]`. At least one entry. `stamp` is a `Length` (number of seconds or `"50%"` of `duration`). Easing applies to the segment leading into this keyframe |
+| `duration` | `Length` | no¹ | Internal timeline length in seconds. Defaults to the last keyframe's stamp. Required for percent-stamped frames |
+| `loop` | boolean | no | When `true`, the animation wraps from the last keyframe back to the first via a ghost-keyframe pair at the seam |
+| `contentWidth`, `contentHeight` | `Length` | no | Design canvas dimensions for the inner objects. Inner-object `left`/`top`/`width`/`height` resolve against this rect (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
+| `clips` | array | no | Reusable sub-clips referenced from inside `frames` by `Clip` objects. See [Sub-clips](#sub-clips) |
+| `in`, `out`, `overflow`, `underflow` | — | no | Window into the internal timeline. Same shape as Composition. Defaults: full internal duration |
+| `filters` | array | no | Visual effects applied to the rasterized graphic (see [Filters](#filters)) |
+| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
+| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
+| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `metadata` | object | no | See [Metadata](#metadata) |
+
+¹ `duration` is required unless `start` and `end` are both pinned, or every keyframe stamp is an absolute number (then it defaults to the last stamp).
+
+#### Inner-object boundary
+
+Inside `frames[i][1]` is **fabric's domain**, not seam's. The numeric props on inner objects (`left`, `top`, `width`, `height`, `scaleX`, `radius`, `strokeWidth`, etc.) are plain numbers — the `Length` system (`"50%"`, `"100% - 5"`) stops at the graphic boundary. Inner-object `left: "10%"` is rejected by the schema. Treat each graphic as a single compositable contained sub-scene.
+
+Identity is path-based: across keyframes, an object at the same hierarchical path (its `id`, or its positional index when `id` is omitted) is the same object. Different paths between two adjacent keyframes are not tweened — the prev-side structure holds until the next keyframe replaces it.
+
+#### Object types
+
+| `type` | Notes |
+|--------|-------|
+| `Rect`, `Circle`, `Polygon`, `Path`, `Textbox`, `Image`, `Group` | Standard fabric.js classes; consult the fabric docs for the full prop list |
+| `Clip` | References a sub-clip from `clips`. Fields: `clipId` (required), `startPosition` (sub-clip-local seconds, optional), `repeat` (integer or `-1` for infinite), plus the usual fabric transform props |
+| `Map` | Pmtiles-backed map. Fields: `source` (pmtiles filename), `latitude`, `longitude`, `zoom`, `width`, `height`, optionally `paths` (array of `{ color, points: [[lng, lat], …], progress?, lineWidth? }`) for route overlays |
+
+#### Sub-clips
+
+A graphic can declare reusable inner animations under `clips`. Each clip is itself a self-contained sub-animation with its own `frames` array; references from outer keyframes use `{ type: "Clip", clipId, startPosition, repeat }`. Anchors are tracked per outer `Clip` instance — an outer keyframe that re-asserts `startPosition` re-anchors that instance's local clock at that outer time. `repeat: -1` (the default) loops the clip indefinitely.
+
+```json
+{
+  "type": "graphic",
+  "duration": 3,
+  "clips": [{
+    "id": "pulse",
+    "duration": 1,
+    "loop": true,
+    "contentWidth": 300, "contentHeight": 300,
+    "frames": [
+      [0, [{ "id": "c", "type": "Circle", "left": 50,  "top": 50, "radius": 50,  "fill": "magenta" }]],
+      [1, [{ "id": "c", "type": "Circle", "left": 50,  "top": 50, "radius": 120, "fill": "magenta" }]]
+    ]
+  }],
+  "frames": [
+    [0, [{ "id": "p1", "type": "Clip", "clipId": "pulse", "startPosition": 0, "left": 100, "top": 200 }]],
+    [3, [{ "id": "p1", "type": "Clip", "clipId": "pulse",                       "left": 700, "top": 1400 }]]
+  ]
+}
+```
+
+#### Maps
+
+`Map` elements composite a maplibre-rendered pmtiles view. `source` resolves the same way as clip sources (relative filename → platform-specific lookup). On web the pmtiles file lives in OPFS; reads are byte-range only — multi-GB pmtiles never fully materialise. Style dispatch picks OSM Bright for vector tiles or a passthrough raster style for raster tiles. The `paths` array overlays geojson lines with optional `progress` (0..1, partial line draw) and `lineWidth`.
+
+Animating a Map across keyframes pans + zooms the same maplibre instance (path-id pooling), so a 30s animated map keeps using one GL context across all frames. Map updates are throttled to one flush per ~16 ms to keep maplibre's tile loader from falling behind.
+
+#### Renderer support
+
+Both the editor preview and the CLI rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement` → WebGPU texture; the CLI goes to `fabric/node` → PNG sequence → MLT `qimage` producer (one PNG per output frame, `ttl=1`). Maps render via maplibre-gl in the browser and via `@maplibre/maplibre-gl-native` (Node 22+ prebuilt) server-side.
+
 ### Composition
 
 A container that holds other nodes in sequence. The root of every `.seam` file is a composition, and compositions can be nested.
@@ -247,7 +330,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | no | Child nodes (clip, audio, static, empty, data, text, composition) played sequentially. Optional; defaults to `[]` for bin-reference and script compositions whose body comes from elsewhere |
+| `children` | array | no | Child nodes (clip, audio, static, empty, data, text, graphic, composition) played sequentially. Optional; defaults to `[]` for bin-reference and script compositions whose body comes from elsewhere |
 | `attachments` | array | no | Anchored children rendered on top of `children` (see [Attachments](#attachments)) |
 | `bin` | array | no | Reusable bodies addressable by id. See [Bin & Scripts](#bin--scripts) |
 | `binItem` | string | no | Names a bin entry whose body this composition adopts at compile time. See [Bin & Scripts](#bin--scripts) |
@@ -722,6 +805,7 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 | **Composition** | `origin`, `translation`, `size` |
 | **Static** | `origin`, `translation`, `size` |
 | **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size` |
+| **Graphic** | Outer wrapper: `origin`, `translation`, `size`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
 | **Filters** | every numeric value: `adjust.{brightness,contrast,saturation,gamma}`, `opacity.value`, `colorbalance.{rs,gs,bs,rm,gm,bm,rh,gh,bh}`, `colortemperature.temperature` |
 
 ### Renderer support
@@ -731,6 +815,7 @@ The CLI ffmpeg / melt path supports every animatable field:
 | Field | How it's rendered |
 |---|---|
 | Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
+| Graphic frames (fabric objects + sub-clips + maps) | Pre-rasterized to a PNG sequence at output fps via `fabric/node` (and `@maplibre/maplibre-gl-native` for Map elements). One PNG per static graphic, numbered sequence per animated. Same MLT `qimage` + `ttl=1` pipeline as text. |
 | `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into qtblend's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect (qtblend has no native cover/center mode), so authoring with non-default `size` overrides means stretching is intentional. |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
 | Filter parameters | `eq` (adjust) uses `eval=frame` + per-parameter expressions. `colorchannelmixer` (opacity), `colorbalance`, and `colortemperature` use `sendcmd` to deliver one stepwise update per output frame to a labelled filter instance. |

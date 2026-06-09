@@ -12,3 +12,5 @@ export {
   resetSourceResolver,
 } from "./components/resolveSource.js";
 export type { SourceResolver } from "./components/resolveSource.js";
+export { setPmtilesResolver } from "./media/graphic/MapLibreMap.js";
+export type { PmtilesResolver } from "./media/graphic/MapLibreMap.js";

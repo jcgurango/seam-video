@@ -207,6 +207,7 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   empty: { bg: "#555", border: "#666" },
   data: { bg: "#7a5a3a", border: "#a47a52" },
   text: { bg: "#a04060", border: "#c45582" },
+  graphic: { bg: "#b03a8f", border: "#d957b8" },
 };
 
 const PRIMARY_BORDER = "#ffcc00";

@@ -2,6 +2,7 @@ import type {
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
+  ResolvedGraphic,
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
@@ -13,6 +14,7 @@ import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
 import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
+import { GraphicStore } from "./GraphicStore.js";
 import { resolveSource } from "../components/resolveSource.js";
 
 /** Seconds of source time to keep buffered ahead of the playhead per clip. */
@@ -43,6 +45,7 @@ export class FrameCoordinator {
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
   private staticStore = new StaticStore();
+  private graphicStore = new GraphicStore();
   private ready = false;
 
   /** Fires when a buffered frame becomes available — used to repaint while paused. */
@@ -75,6 +78,9 @@ export class FrameCoordinator {
     // available callback will repaint when each decode lands.
     this.staticStore.onFrameAvailable = () => this.onFrameAvailable?.();
     void this.staticStore.setTimeline(timeline, basePath, mediaStore);
+
+    this.graphicStore.onFrameAvailable = () => this.onFrameAvailable?.();
+    void this.graphicStore.setTimeline(timeline);
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -182,7 +188,7 @@ export class FrameCoordinator {
    * become visible on the next gpuRender call without needing a reconcile.
    */
   getFrame(
-    clip: ResolvedClip | ResolvedText | ResolvedStatic,
+    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedGraphic,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
     if (clip.type === "text") {
@@ -190,6 +196,9 @@ export class FrameCoordinator {
     }
     if (clip.type === "static") {
       return this.staticStore.getFrame(clip);
+    }
+    if (clip.type === "graphic") {
+      return this.graphicStore.getFrame(clip);
     }
     const flat = this.flatByClip.get(clip);
     if (!flat) return null;
@@ -219,6 +228,7 @@ export class FrameCoordinator {
     this.playingClips.clear();
     this.textStore.dispose();
     this.staticStore.dispose();
+    this.graphicStore.dispose();
     this.ready = false;
   }
 
@@ -291,6 +301,8 @@ export class FrameCoordinator {
 
     // Animated text styles: re-rasterize each frame. Static texts noop.
     this.textStore.update(currentTime);
+    // Animated graphics: re-rasterize via fabric. Static graphics noop.
+    void this.graphicStore.update(currentTime);
 
     // Animated clip volumes: sample once per tick and push to the
     // scheduler. Static-volume clips skip the lookup so we don't wake up

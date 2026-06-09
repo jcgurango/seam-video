@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTimeline } from "@seam/preview";
 import { resolveComposition } from "@seam/core";
-import type { SeamFile, Clip, Audio, Static, Child } from "@seam/core";
+import type { SeamFile, Clip, Audio, Static, Child, Graphic } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
 import type { Platform } from "./platform/index.js";
 
@@ -33,15 +33,21 @@ const IMAGE_EXTENSIONS = [
  *  bug. */
 const IMAGE_DEFAULT_DURATION = 5;
 
-type MediaKind = "video" | "audio" | "image";
+type MediaKind = "video" | "audio" | "image" | "pmtiles";
+
+/** Sensible default for a pmtiles drop — 5s static map. Authors can
+ *  then animate camera + paths in the graphic JSON. */
+const PMTILES_DEFAULT_DURATION = 5;
+/** Default map view. Authors should set their own; 0,0 just centers
+ *  somewhere visible until they update it. */
+const PMTILES_DEFAULT_VIEW = { latitude: 0, longitude: 0, zoom: 1 };
 
 function classifyMediaFile(file: File): MediaKind | null {
   const name = file.name.toLowerCase();
+  if (name.endsWith(".pmtiles")) return "pmtiles";
   if (VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "video";
   if (AUDIO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "audio";
   if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return "image";
-  // Fall back to the browser-supplied MIME type when the extension is missing
-  // or unfamiliar — picks up things like webm/ogg used for audio-only.
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
   if (file.type.startsWith("image/")) return "image";
@@ -107,13 +113,15 @@ export async function buildItemsFromFiles(
 
   const newChildren: Child[] = [];
   for (const { file, kind } of classified) {
-    // Images have no temporal source — skip the probe and use the
-    // default duration. probeDuration on an <img> would just fail
-    // anyway since it expects audio/video.
+    // Images and pmtiles have no temporal source — skip the probe and
+    // use the default duration. probeDuration on a non-AV blob would
+    // just fail anyway.
     const duration =
       kind === "image"
         ? IMAGE_DEFAULT_DURATION
-        : await probeDuration(file, kind);
+        : kind === "pmtiles"
+          ? PMTILES_DEFAULT_DURATION
+          : await probeDuration(file, kind);
     const stored = await platform.importClip(file);
     // On Electron, `stored` is an absolute path; collapse to relative if
     // it lives under the .seam file's directory. On Web, it's already
@@ -128,12 +136,45 @@ export async function buildItemsFromFiles(
     } else if (kind === "audio") {
       const node: Audio = { type: "audio", source, in: 0, out: duration };
       newChildren.push(node);
+    } else if (kind === "pmtiles") {
+      newChildren.push(makeMapGraphic(source, duration));
     } else {
       const node: Static = { type: "static", source, duration };
       newChildren.push(node);
     }
   }
   return newChildren;
+}
+
+/** A graphic with a single Map element filling the canvas, ready for
+ *  the author to set lat/lng/zoom. Static (one keyframe) for now —
+ *  refining the editing experience comes later. */
+function makeMapGraphic(source: string, duration: number): Graphic {
+  return {
+    type: "graphic",
+    duration,
+    contentWidth: 1080,
+    contentHeight: 1920,
+    frames: [
+      [
+        0,
+        [
+          {
+            id: "map",
+            type: "Map",
+            source,
+            left: 0,
+            top: 0,
+            width: 1080,
+            height: 1920,
+            latitude: PMTILES_DEFAULT_VIEW.latitude,
+            longitude: PMTILES_DEFAULT_VIEW.longitude,
+            zoom: PMTILES_DEFAULT_VIEW.zoom,
+          },
+        ],
+      ],
+    ],
+  };
 }
 
 export function useImport(

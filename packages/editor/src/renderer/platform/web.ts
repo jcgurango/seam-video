@@ -208,9 +208,16 @@ export class WebPlatform implements Platform {
   }
 
   async importClip(file: File): Promise<string> {
+    // pmtiles never need a blob URL — Map elements go through
+    // openPmtilesSource() which reads byte ranges directly from the
+    // OPFS file. Creating a blob URL would force the entire pmtiles
+    // file into memory once for nothing.
+    const isPmtiles = file.name.toLowerCase().endsWith(".pmtiles");
+
     // Check if we already have an identical clip; reuse its filename if so.
     const existing = await this.findExistingClip(file);
     if (existing) {
+      if (isPmtiles) return existing;
       if (!this.blobUrlCache.has(existing)) {
         try {
           const f = await readFileFromDir(CLIPS_DIR, existing);
@@ -224,7 +231,9 @@ export class WebPlatform implements Platform {
 
     const name = await uniqueClipName(file.name);
     await writeFileToDir(CLIPS_DIR, name, file);
-    this.blobUrlCache.set(name, URL.createObjectURL(file));
+    if (!isPmtiles) {
+      this.blobUrlCache.set(name, URL.createObjectURL(file));
+    }
 
     // Keep index fresh
     const fp = await fingerprint(file);
@@ -232,6 +241,32 @@ export class WebPlatform implements Platform {
     index.set(fp, name);
 
     return name;
+  }
+
+  /** Open a pmtiles file directly from OPFS as a File-backed pmtiles
+   *  Source. Multi-GB pmtiles files stay on disk — File.slice() backs
+   *  pmtiles' byte-range protocol, so only the requested ranges actually
+   *  read into memory. */
+  async openPmtilesSource(
+    source: string,
+    _basePath: string,
+  ): Promise<unknown | null> {
+    if (source.startsWith("http://") || source.startsWith("https://")) {
+      // Remote pmtiles — let pmtiles' FetchSource handle it.
+      const { FetchSource } = await import("pmtiles");
+      return new FetchSource(source);
+    }
+    try {
+      const file = await readFileFromDir(CLIPS_DIR, source);
+      const { FileSource } = await import("pmtiles");
+      return new FileSource(file);
+    } catch (err) {
+      console.warn(
+        `WebPlatform.openPmtilesSource: ${source} not in OPFS clips/`,
+        err,
+      );
+      return null;
+    }
   }
 
   resolveSource(source: string, _basePath: string): string {

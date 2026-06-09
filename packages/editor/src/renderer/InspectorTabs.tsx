@@ -364,8 +364,68 @@ function NodeBlock({
           }
         />
       )}
+      {child.type === "graphic" ? <GraphicReadOnlySummary child={child} /> : null}
     </div>
   );
+}
+
+function GraphicReadOnlySummary({
+  child,
+}: {
+  child: import("@seam/core").ResolvedGraphic;
+}) {
+  const frameCount = child.frames.length;
+  const clipCount = child.clips?.length ?? 0;
+  const cw = typeof child.contentWidth === "number" ? child.contentWidth : "auto";
+  const ch = typeof child.contentHeight === "number" ? child.contentHeight : "auto";
+  const dur = typeof child.duration === "number" ? `${child.duration}s` : "auto";
+  // Collect distinct Map sources for at-a-glance overview.
+  const mapSources = new Set<string>();
+  for (const f of child.frames) {
+    walkObjs(f[1] as ReadonlyArray<unknown>, (o) => {
+      if (
+        o.type === "Map" &&
+        typeof o.source === "string"
+      ) {
+        mapSources.add(o.source);
+      }
+    });
+  }
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        paddingTop: 8,
+        borderTop: "1px dashed #333",
+        color: "#bbb",
+      }}
+    >
+      <div style={{ color: "#888", fontSize: 10, marginBottom: 4 }}>
+        GRAPHIC (read-only)
+      </div>
+      <Row label="Duration" value={dur} />
+      <Row label="Content" value={`${cw} × ${ch}`} />
+      <Row label="Frames" value={String(frameCount)} />
+      <Row label="Clips" value={String(clipCount)} />
+      <Row label="Loop" value={child.loop ? "true" : "false"} />
+      {mapSources.size > 0 ? (
+        <Row label="Maps" value={[...mapSources].join(", ")} />
+      ) : null}
+    </div>
+  );
+}
+
+function walkObjs(
+  arr: ReadonlyArray<unknown>,
+  visit: (o: Record<string, unknown>) => void,
+): void {
+  for (const o of arr) {
+    if (o && typeof o === "object") {
+      visit(o as Record<string, unknown>);
+      const inner = (o as Record<string, unknown>).objects;
+      if (Array.isArray(inner)) walkObjs(inner, visit);
+    }
+  }
 }
 
 function Row({ label, value }: { label: string; value: string }) {

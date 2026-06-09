@@ -72,6 +72,17 @@ export interface Platform {
    */
   resolveSource(source: string, basePath: string): string;
 
+  /**
+   * Open a `.pmtiles` source as a byte-range capable pmtiles `Source`.
+   * Multi-GB files must not be fully materialised (no blob: URL); web
+   * returns a `FileSource(File)` backed by OPFS, Electron a future
+   * fs-backed source. Returns null when the file can't be located.
+   *
+   * The return type is `unknown` here so this types module doesn't have
+   * to depend on `pmtiles`; consumers cast to `Source` at the call site.
+   */
+  openPmtilesSource(source: string, basePath: string): Promise<unknown | null>;
+
   // ── Menu / keyboard actions ──────────────────────────────────────
 
   /** Register a callback to run when the platform fires an action (from

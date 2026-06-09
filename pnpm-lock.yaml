@@ -84,6 +84,9 @@ importers:
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
+      pmtiles:
+        specifier: ^4.4.1
+        version: 4.4.1
       react:
         specifier: ^19.0.0
         version: 19.2.4
@@ -164,9 +167,18 @@ importers:
       chokidar:
         specifier: ^4.0.0
         version: 4.0.3
+      fabric:
+        specifier: ^7.4.0
+        version: 7.4.0
+      maplibre-gl:
+        specifier: ^5.24.0
+        version: 5.24.0
       mediabunny:
         specifier: ^1.38.0
         version: 1.38.0
+      pmtiles:
+        specifier: ^4.4.1
+        version: 4.4.1
       react:
         specifier: ^19.0.0
         version: 19.2.4
@@ -232,6 +244,9 @@ importers:
       '@seam/preview':
         specifier: workspace:*
         version: link:../preview
+      pmtiles:
+        specifier: ^4.4.1
+        version: 4.4.1
       react:
         specifier: ^19.0.0
         version: 19.2.4

@@ -1,6 +1,7 @@
 // Server-side maplibre rendering for graphic Map elements. Loads
-// @maplibre/maplibre-gl-native (which ships prebuilt binaries for Node
-// 22 LTS — see the repo .nvmrc / package engines field), wires a custom
+// @maplibre/maplibre-gl-native (which ships prebuilt binaries for the
+// Node 22 and 24 LTS lines — ABI 127/137; Node 23 and 25 have no
+// prebuilt — see the package engines field), wires a custom
 // request callback into pmtiles + an http fetcher for glyphs/sprites,
 // and renders the requested view into an RGBA buffer.
 //

@@ -17,7 +17,7 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=22 <23 || >=24 <25"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",

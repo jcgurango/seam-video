@@ -37,6 +37,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/layout/resolve.ts` | `resolveComposition()` — sequential `children` + anchored `attachments` |
 | `src/layout/resolve-spatial.ts` | `resolveSpatial()` + `DEFAULT_CANVAS_WIDTH/HEIGHT` (1080×1920) |
 | `src/flatten.ts` | Linearises the resolved tree into leaves |
+| `src/animation/interp.ts` | `buildFlat` (mutates a `FlatFrame` — does NOT return one) + `interpolateFrames` for graphic keyframe tweening |
 
 ## Renderer (`@seam/renderer`)
 
@@ -46,6 +47,12 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/mlt-runner.ts` | Executes melt |
 | `src/ffmpeg-audio.ts` | Pre-renders a sample-accurate mixed audio file with ffmpeg |
 | `src/text/textRaster.ts` | Pretext-laid-out text → PNG (Skia via `@napi-rs/canvas`) for melt's qimage |
+| `src/graphic/fill.ts` | Round-trips an authored object through `fabric/node` to apply default props before interpolation. `CUSTOM_PROPS` keeps seam-specific fields (`source`, `latitude`, `clipId`, …) from being dropped by fabric's serialization |
+| `src/graphic/playback.ts` | `precomputeGraphicPlayback` (fills every keyframe + builds extKfs with loop ghosts) + `snapshotAt(t)` (pair lookup + `interpolateFrames` from `@seam/core`). `isStatic` short-circuit |
+| `src/graphic/clip.ts` | Sub-clip playback: `precomputeClipPlayback`, `getClipAnchorsAtPath` (reads from **raw authored** outer frames, not filled — so `startPosition: 0` is distinguishable from "missing"), `computeLocalTime` (anchor + elapsed + repeat), `clipSnapAtLocalTime` |
+| `src/graphic/render.ts` | Snapshot → PNG via `fabric/node` StaticCanvas + `enlivenObjects`. Walks the tree handling `Group` (recurse), `Clip` (materialize from clipDef), `Map` (renderMapToFabric via the pool). Output via `getNodeCanvas().toBuffer("image/png")` |
+| `src/graphic/map-render.ts` | `MapInstance` wraps `@maplibre/maplibre-gl-native` (Node 22 LTS prebuilt — see `.nvmrc` / engines field). `NodeFileSource` does pmtiles byte-range reads via `fs/promises` file handle. `MapPool` keys `${path}\|${source}` so animating maps share one GL context across frames; rasterizer owns the pool for one ResolvedGraphic's lifetime |
+| `src/graphic/raster.ts` | `rasterizeAllGraphics(timeline, dir, fps, mapBasePath?)` → PNG (static) or `graphic-N-%04d.png` (animated) per ResolvedGraphic. Mirrors `textRaster.ts` so the MLT builder treats both identically |
 
 ## Preview (`@seam/preview`)
 
@@ -59,6 +66,9 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/media/FrameCoordinator.ts` | Manages ClipPlayers, decodes video frames via mediabunny |
 | `src/renderer/media/StaticStore.ts` | Decodes one frame per `static` node (image or video freeze-frame) |
 | `src/renderer/media/TextStore.ts` | Rasterises text nodes to OffscreenCanvas via Pretext |
+| `src/renderer/media/GraphicStore.ts` | Per-`ResolvedGraphic` HTMLCanvasElement + fabric `StaticCanvas`. `update(t)` re-rasterizes the snapshot via `materializeTree`. Caches `MapLibreMap` instances by path-id (`mapCache`) with `isPreEnliven=true` so fabric's add/remove churn doesn't kill the pool refs. `after:render` → `onFrameAvailable` lets async maplibre tile loads push frames through the GPU pipeline while paused |
+| `src/renderer/media/graphic/fill.ts`, `playback.ts`, `clip.ts` | Browser mirrors of the renderer's modules; use fabric's browser build's `classRegistry` so we don't pull in `node-canvas`. **Watch out:** `buildFlat` is `void`, mutates the third arg — don't write `const flat = buildFlat(...)` |
+| `src/renderer/media/graphic/MapLibreMap.ts` | Fabric subclass; registered in `classRegistry.setClass(MapLibreMap, "Map")` at module load (side-effect import from GraphicStore). `SharedMaplibre` pool keyed by `${path}\|${source}` with a per-instance **16 ms flush interval** that drains the `pendingUpdate` buffer — every camera / size / paths write goes through `_queuePending`, last-write-wins per field. Bundled OSM Bright `style.json` lives at `./osm-bright/style.json`. Host registers `setPmtilesResolver` so pmtiles `Source` resolution stays platform-specific |
 | `src/renderer/media/AudioScheduler.ts` | Web Audio API master clock + per-clip scheduling |
 
 ## Editor (`@seam/editor`) — pure-logic modules
@@ -76,6 +86,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/anchorEdit.ts` | Anchor-line math (computePointTime, dragAnchorPoint, dragOffset, toggle{AnchorPoint,Offset}, setAttachmentSpec) |
 | `src/renderer/exportHelpers.ts` | `buildExportPlan` (zip), `remapSourcesToRelative` (Save As), `collectClipSources` (compile-then-walk) |
 | `src/renderer/mediaSource.ts` | `isMediaSource(child): child is Clip | Audio | Static` — single canonical predicate |
+| `src/renderer/useImport.ts` | File-drop importer. `.pmtiles` → graphic node with a Map element (no blob URL, OPFS-direct byte-range reads). Standard media kinds route to `clip`/`audio`/`static` |
 | `src/renderer/pathUtils.ts` | `dirname`, `basename`, `basenameWithoutExt`, `isAbsolute`, `relative` |
 | `src/renderer/views.ts` | `getViewDocument`, `timeOnEnter`, `translateTimeOnExit` for view navigation |
 | `src/renderer/selection.ts` | `removeSelected` + selection-set helpers |
@@ -100,13 +111,14 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/WebTopBar.tsx` | Web's File menu (New / Open / Save / Import/Export .seam / Import/Export Zip / Browse) |
 | `src/renderer/ProjectBrowser.tsx` | Web project listing |
 | `src/renderer/ProjectPicker.tsx`, `SettingsDialog.tsx` | UI dialogs |
-| `src/renderer/platform/{electron,web}.ts` | `Platform` implementations; `onAction` covers `"new" | "open" | "save" | "save-as" | "export" | "settings"` |
+| `src/renderer/platform/{electron,web}.ts` | `Platform` implementations; `onAction` covers `"new" | "open" | "save" | "save-as" | "export" | "settings"`. `openPmtilesSource(filename)` → byte-range pmtiles `Source` (Web: `FileSource(OPFS File)`. Electron: `FetchSource(file://)`). Wired in `main.tsx` via `setPmtilesResolver` |
 
 ## Conventions
 
 - **Seconds everywhere** — frames only at the MLT boundary (default 30fps).
 - **`children`** = sequential body; **`attachments`** = anchored overlays. Both arrays of `Child`.
-- **Node types**: `clip`, `audio`, `static`, `empty`, `data`, `text`, `composition`.
+- **Node types**: `clip`, `audio`, `static`, `empty`, `data`, `text`, `graphic`, `composition`.
+- **Graphic boundary**: inside a graphic's `frames[i][1]` is **fabric's domain**, NOT seam's. Inner-object numeric props (`left`, `top`, `width`, `height`, `radius`, …) are plain numbers — the `Length` system (`"50%"`, `"100% - 5"`) stops at the graphic. The schema rejects Length strings on inner objects. Outer-world fields on the graphic itself (`duration`, `contentWidth/Height`, frame stamps) still take `Length`. Treat each graphic as a single compositable sub-scene that doesn't interact with anything outside its hierarchy.
 - **`isMediaSource(child)`** = `clip | audio | static` — anything with an external `source` path. Use this for blob-URL preloading, path rewriting, export bundling. Source-time-aware paths (split, attach, JSON inspector) keep the narrower `clip | audio` check because static has no in/out trim.
 - **Compositions carry first-party `bin`, `binItem`, `script`** (not metadata conventions). The compile pass in `@seam/core` resolves them:
   - `binItem: "<id>"` adopts the named bin entry's body; lookup is lexically scoped (nearest-enclosing wins).
@@ -127,7 +139,11 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 - **`overflow`/`underflow`** are flex strategies (`trim-end`, `stretch`, etc.) only meaningful for attachments with both ends pinned and for composition windowing. Default `"trim-end"`.
 - **`ChildTimingFields`** shared interface for `in`, `out`, `overflow`, `underflow`, `id`, `start`, `end`, `metadata` — extended by Clip, Composition.
 - Preview renders via a single WebGPU canvas; `RenderList` walks the resolved tree into draw/group/fill commands. Compositions with filters use FBO render-to-texture; without filters, children flatten into the parent pass. `backgroundColor` renders as a stretched 1×1 color tile under the children.
-- Web platform: `WebPlatform.preloadBlobUrls(sources)` must run before mounting the document so `resolveSource` returns blob URLs rather than bare filenames. `collectClipSources` compiles the doc first so clips inside bin entries are reachable.
+- Web platform: `WebPlatform.preloadBlobUrls(sources)` must run before mounting the document so `resolveSource` returns blob URLs rather than bare filenames. `collectClipSources` compiles the doc first so clips inside bin entries are reachable. **pmtiles skip blob URL creation** in `importClip` — they go through `openPmtilesSource` (byte-range OPFS reads), never `resolveSource`.
+- **Graphic pipeline (preview)**: per-tick, `GraphicStore.materializeTree` clears the fabric canvas and re-adds objects. `Map` instances are CACHED per (graphic, path) — re-using `MapLibreMap` survives fabric's add/remove because `isPreEnliven=true` disables `dispose` on `removed`. New maps create fresh; subsequent ticks call `cached.set(filled)` which routes through the 16 ms `pendingUpdate` flush. Without the cache, maplibre would churn its setup on every frame.
+- **Graphic pipeline (CLI)**: rasterize each ResolvedGraphic to a PNG sequence, wire into MLT alongside text (`qimage` + `ttl=1`, one track per graphic with its own qtblend transition + rect). Inspect `<file>.seam-rendered/graphic/` for spot-check PNGs.
+- **Node 22 LTS** is pinned at the repo root (`.nvmrc`) and on the renderer/CLI packages' `engines` because `@maplibre/maplibre-gl-native` only ships prebuilt binaries through Node 22's ABI. Editor / preview / web all run on whatever Node version the user's on, since they use the browser maplibre-gl.
+- **Timeline block colors** in TimelinePanel's `BLOCK_COLORS` — `graphic` is deep magenta (`#b03a8f` bg / `#d957b8` border) to distinguish from text's rose and composition's violet.
 
 ## Tech
 
@@ -140,5 +156,8 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 - mediabunny for in-browser audio/video decode
 - WebGPU for preview compositing
 - @napi-rs/canvas (Skia) for server-side text rasterization
+- fabric.js (browser + `fabric/node`) for graphic object rendering
+- maplibre-gl (browser) + @maplibre/maplibre-gl-native (Node 22) for Map elements
+- pmtiles for byte-range vector/raster tile reads (OPFS on web, fs on node)
 - JSZip for web import/export
 - melt + ffmpeg externally for final render

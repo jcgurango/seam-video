@@ -123,7 +123,11 @@ function resolveNode(
   // dims as a stand-in for the natural size to keep the pipeline simple.
   let intrinsicW: number | undefined;
   let intrinsicH: number | undefined;
-  if (node.type === "composition" || node.type === "text") {
+  if (
+    node.type === "composition" ||
+    node.type === "text" ||
+    node.type === "graphic"
+  ) {
     intrinsicW = resolveContentDim(node.contentWidth, parentW, parentW);
     intrinsicH = resolveContentDim(node.contentHeight, parentH, parentH);
   }
@@ -170,7 +174,7 @@ function resolveNode(
     });
   }
 
-  if (node.type === "text") {
+  if (node.type === "text" || node.type === "graphic") {
     const displayW = spatial ? spatial.width : naturalWidth;
     const displayH = spatial ? spatial.height : naturalHeight;
     return stripIfStatic({

@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts"
   },
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=22 <23 || >=24 <25"
   },
   "dependencies": {
     "@seam/core": "workspace:*",

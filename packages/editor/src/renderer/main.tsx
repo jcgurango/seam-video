@@ -1,8 +1,13 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { loadLiberationSans, setSourceResolver } from "@seam/preview";
+import {
+  loadLiberationSans,
+  setSourceResolver,
+  setPmtilesResolver,
+} from "@seam/preview";
 import App from "./App.js";
 import { detectPlatform } from "./platform/index.js";
+import type { Source } from "pmtiles";
 
 const platform = detectPlatform();
 
@@ -15,6 +20,13 @@ loadLiberationSans();
 setSourceResolver((source, basePath) =>
   platform.resolveSource(source, basePath)
 );
+
+// pmtiles → byte-range Source — same shape on web (OPFS) + electron
+// (file:// FetchSource). MapLibreMap uses it when opening pmtiles.
+setPmtilesResolver(async (filename: string) => {
+  const src = await platform.openPmtilesSource(filename, "");
+  return (src as Source | null) ?? null;
+});
 
 const root = createRoot(document.getElementById("root")!);
 root.render(<App platform={platform} />);

@@ -14,7 +14,10 @@
     "@chenglou/pretext": "^0.0.6",
     "@seam/core": "workspace:*",
     "chokidar": "^4.0.0",
+    "fabric": "^7.4.0",
+    "maplibre-gl": "^5.24.0",
     "mediabunny": "^1.38.0",
+    "pmtiles": "^4.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

@@ -85,6 +85,22 @@ export class ElectronPlatform implements Platform {
     return defaultResolveSource(source, basePath);
   }
 
+  async openPmtilesSource(
+    source: string,
+    basePath: string,
+  ): Promise<unknown | null> {
+    // Electron renderer can fetch its own filesystem paths via file://.
+    // pmtiles' FetchSource will do byte-range Range requests, which the
+    // Electron protocol honors. Not byte-range optimal vs a native fs
+    // handle, but good enough until we route through the main process.
+    const url = defaultResolveSource(source, basePath);
+    if (!url.startsWith("file://") && !url.startsWith("http")) {
+      return null;
+    }
+    const { FetchSource } = await import("pmtiles");
+    return new FetchSource(url);
+  }
+
   onAction(action: ActionName, cb: () => void) {
     switch (action) {
       case "new":
