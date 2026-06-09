@@ -12,7 +12,13 @@ export {
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
 } from "./layout/resolve-spatial.js";
-export { parseDimension, resolveDimension } from "./layout/units.js";
+export {
+  parseLength,
+  resolveLength,
+  hasPercent,
+  type Length,
+  type ParsedLength,
+} from "./layout/units.js";
 export { flattenResolved } from "./flatten.js";
 export * from "./animation/index.js";
 export {

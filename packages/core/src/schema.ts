@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-export const PositionSchema = z.enum(["absolute", "relative"]);
 export const ObjectFitSchema = z.enum(["center", "fit", "cover"]);
 
 // ── Animation primitives ───────────────────────────────────────────
@@ -9,6 +8,24 @@ const PercentStringSchema = z.string().regex(
   /^-?\d+(?:\.\d+)?%$/,
   "Must be a percentage string (e.g. '50%', '-25%')"
 );
+
+// A length expression: a pixel number, a "<n>%" percentage, or a
+// combined "<n>% +/- <n>" form. Property-specific defaults handle the
+// "no percent given" case in `resolveLength`.
+const LengthStringSchema = z.string().regex(
+  /^-?\d+(?:\.\d+)?%(?:\s*[+-]\s*-?\d+(?:\.\d+)?)?$/,
+  "Must be a number, '<n>%', or '<n>% +/- <n>'"
+);
+export const LengthSchema = z.union([z.number(), LengthStringSchema]);
+
+// Two-axis input: bare Length (applies to both axes) or object form.
+export const Point2DSchema = z.union([
+  LengthSchema,
+  z.object({
+    x: LengthSchema.optional(),
+    y: LengthSchema.optional(),
+  }).strict(),
+]);
 
 // A keyframe time expression: either bare seconds, "<n>%" of node duration,
 // or "<n>% + <n>" / "<n>% - <n>" combined.
@@ -74,10 +91,6 @@ export const FilterSchema = z.discriminatedUnion("type", [
 
 export const FiltersArraySchema = z.array(FilterSchema).optional();
 
-// A spatial dimension. Numbers are pixels; strings must be "<n>%". No more
-// "100px" — pixel values are bare numbers.
-export const DimensionSchema = z.union([z.number(), PercentStringSchema]);
-
 export const TimeAnchorSchema = z.object({
   anchor: z.string().min(1).optional(),
   anchorPoint: z.union([PercentStringSchema, z.number()]).optional(),
@@ -118,14 +131,10 @@ const MetadataFieldsSchema = {
 };
 
 const SpatialFieldsSchema = {
-  position: PositionSchema.optional(),
   objectFit: ObjectFitSchema.optional(),
-  top: keyframed(DimensionSchema).optional(),
-  left: keyframed(DimensionSchema).optional(),
-  right: keyframed(DimensionSchema).optional(),
-  bottom: keyframed(DimensionSchema).optional(),
-  width: keyframed(DimensionSchema).optional(),
-  height: keyframed(DimensionSchema).optional(),
+  origin: keyframed(Point2DSchema).optional(),
+  translation: keyframed(Point2DSchema).optional(),
+  size: keyframed(Point2DSchema).optional(),
 };
 
 export const OverflowSchema = z.enum([
@@ -250,8 +259,8 @@ export const TextSchema = z.object({
   textAlign: z.enum(["left", "center", "right"]).optional(),
   verticalAlign: z.enum(["top", "center", "bottom"]).optional(),
   padding: TextPaddingSchema.optional(),
-  contentWidth: z.number().positive().optional(),
-  contentHeight: z.number().positive().optional(),
+  contentWidth: LengthSchema.optional(),
+  contentHeight: LengthSchema.optional(),
   duration: z.number().positive().optional(),
   filters: FiltersArraySchema,
   ...TextStyleFieldsSchema,
@@ -319,8 +328,8 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     /** Any valid SVG/CSS fill value (e.g. "#000", "rgba(...)", "red").
      *  Painted across the composition's container rect under the children. */
     backgroundColor: z.string().optional(),
-    contentWidth: z.number().positive().optional(),
-    contentHeight: z.number().positive().optional(),
+    contentWidth: LengthSchema.optional(),
+    contentHeight: LengthSchema.optional(),
     ...SpatialFieldsSchema,
     ...AnchorFieldsSchema,
     ...MetadataFieldsSchema,

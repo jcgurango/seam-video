@@ -65,8 +65,9 @@ async function rasterizeNode(
   fps: number,
   index: number,
 ): Promise<TextRasterEntry> {
-  const W = Math.max(1, Math.round(node.contentWidth));
-  const H = Math.max(1, Math.round(node.contentHeight));
+  // Spatial pass collapses contentWidth/Height to a pixel number.
+  const W = Math.max(1, Math.round(node.contentWidth as number));
+  const H = Math.max(1, Math.round(node.contentHeight as number));
   const meta = {
     width: W,
     height: H,

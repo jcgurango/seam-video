@@ -9,8 +9,16 @@ export type Underflow =
   | "extend-center"
   | "stretch";
 
-export type Position = "absolute" | "relative";
 export type ObjectFit = "center" | "fit" | "cover";
+
+/** A length expression: pixel number, percentage string, or a combined
+ *  "<n>% +/- <n>" form. Percent reference and pixel default vary by the
+ *  property using it — see `resolveLength` in layout/units.ts. */
+export type Length = number | string;
+
+/** Two-axis length input. A bare number or string applies to both axes
+ *  (treated as a scalar shorthand by `origin`/`translation`/`size`). */
+export type Point2D = Length | { x?: Length; y?: Length };
 
 // ── Filters ────────────────────────────────────────────────────────
 
@@ -41,19 +49,20 @@ export interface ColorTemperatureFilter {
 
 export type Filter = AdjustFilter | OpacityFilter | ColorBalanceFilter | ColorTemperatureFilter;
 
-/** A spatial dimension. Numbers are pixels; strings must be percentages
- *  like "50%" or "-25%". */
-export type Dimension = number | string;
-
 export interface SpatialFields {
-  position?: Position;
   objectFit?: ObjectFit;
-  top?: Keyframed<Dimension>;
-  left?: Keyframed<Dimension>;
-  right?: Keyframed<Dimension>;
-  bottom?: Keyframed<Dimension>;
-  width?: Keyframed<Dimension>;
-  height?: Keyframed<Dimension>;
+  /** Point on the item that lines up with `translation` in the parent.
+   *  Per-axis: percent (0..100%) selects a position along the item's
+   *  size, pixel offset adds to it. Default `"50%"` = item center. */
+  origin?: Keyframed<Point2D>;
+  /** Point in the parent where this item's `origin` lands. Per-axis:
+   *  percent (0..100%) selects a position along the parent's content
+   *  size, pixel offset adds to it. Default `0` = parent center. */
+  translation?: Keyframed<Point2D>;
+  /** Final pixel size of this item. Per-axis: percent (0..100%) is
+   *  a fraction of the post-objectFit "natural" size, pixel offset
+   *  adds to it. Default `"100%"` = natural (fit/cover/center) box. */
+  size?: Keyframed<Point2D>;
 }
 
 /**
@@ -245,8 +254,11 @@ export interface Text extends SpatialFields, TextStyleFields {
    *  (number / `[v,h]` / `[t,r,b,l]`). Useful for keeping
    *  background/stroke from clipping the content edges. */
   padding?: TextPadding;
-  contentWidth?: number;
-  contentHeight?: number;
+  /** Intrinsic SVG canvas width. Same shape as composition's
+   *  `contentWidth` — number = pixels, percentage = fraction of the
+   *  parent container. */
+  contentWidth?: Length;
+  contentHeight?: Length;
   /** Display duration. Required for sequential / single-anchor
    *  attachment use; optional only when both `start` and `end` are
    *  pinned (the anchor span dictates the target). */
@@ -304,8 +316,12 @@ export interface Composition extends ChildTimingFields {
   /** Any valid SVG/CSS fill value. Painted across the composition's
    *  container rect under all children. */
   backgroundColor?: string;
-  contentWidth?: number;
-  contentHeight?: number;
+  /** Inner canvas width. Number = pixels; percentage = fraction of the
+   *  parent container's content width. The root composition must use a
+   *  pixel number (no parent reference to resolve against). */
+  contentWidth?: Length;
+  /** Inner canvas height. Same shape as `contentWidth`. */
+  contentHeight?: Length;
 }
 
 export type Child = Clip | Audio | Static | Empty | Data | Text | Composition;

@@ -155,11 +155,9 @@ describe("validate", () => {
           source: "v.mp4",
           in: 0,
           out: 5,
-          position: "absolute",
-          left: 10,
-          top: "20%",
-          width: 480,
-          height: 270,
+          translation: { x: 10, y: "20%" },
+          size: { x: 480, y: 270 },
+          origin: "0%",
           objectFit: "cover",
         },
       ],
@@ -174,10 +172,9 @@ describe("validate", () => {
       children: [
         {
           type: "composition",
-          left: 0,
-          top: 0,
-          width: "50%",
-          height: "50%",
+          translation: "0%",
+          origin: "0%",
+          size: "50%",
           children: [
             { type: "clip", source: "v.mp4", in: 0, out: 5 },
           ],
@@ -193,9 +190,7 @@ describe("validate", () => {
       children: [
         {
           type: "composition",
-          position: "relative",
-          width: "100%",
-          height: "100%",
+          size: "100%",
           objectFit: "center",
           children: [
             { type: "clip", source: "v.mp4", in: 0, out: 5 },
@@ -206,7 +201,7 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects invalid dimension strings", () => {
+  it("rejects invalid length strings", () => {
     const result = validate({
       type: "composition",
       children: [
@@ -215,7 +210,7 @@ describe("validate", () => {
           source: "v.mp4",
           in: 0,
           out: 5,
-          width: "10em",
+          size: "10em",
         },
       ],
     });
@@ -361,7 +356,7 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid position value", () => {
+  it("rejects unknown spatial field (no position any more)", () => {
     const result = validate({
       type: "composition",
       children: [
@@ -396,8 +391,8 @@ describe("validate", () => {
       children: [
         {
           type: "clip", source: "v.mp4", in: 0, out: 5,
-          left: [[0, 0], [2, 100]],
-          width: [[0, "50%"], ["100%", "75%"]],
+          translation: [[0, { x: 0, y: 0 }], [2, { x: 100, y: 0 }]],
+          size: [[0, "50%"], ["100%", "75%"]],
         },
       ],
     });

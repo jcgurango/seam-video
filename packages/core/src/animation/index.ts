@@ -14,5 +14,5 @@ export {
   sampleNumber,
   sampleColor,
   samplePadding,
-  sampleDimension,
+  sampleLength,
 } from "./keyframes.js";

@@ -117,6 +117,13 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
   - `editorTimeline` — `runScripts: false`. Drives the timeline panel so drag/trim/delete writes back to positions the user can see.
 - **Schema is the single source of truth**; types mirror it. Defaults flow through Zod (`children` defaults to `[]`).
 - **Default canvas**: `DEFAULT_CANVAS_WIDTH = 1080`, `DEFAULT_CANVAS_HEIGHT = 1920` (portrait). Used by App.tsx, preview main, VideoCanvas, CLI render/resolve.
+- **Spatial model**: every node lays out via `origin` + `translation` + `size` (no more `top/left/right/bottom/width/height/position`):
+  - `Length` value = `number | "p%" | "p% +/- n"`. Each property substitutes its own percent default when only a pixel number is given.
+  - `origin` (point on the item, default `"50%"` = center): percent reference = item's own size. `0` evaluates to center.
+  - `translation` (point in parent where origin lands, default `0` = center): percent reference = parent's content size. `0` = center; `"0%"` = top-left.
+  - `size` (final pixel size, default `"100%"` = post-objectFit natural rect): percent reference = post-objectFit size. `100` (bare) = literal 100px box.
+  - Final rect = `(translation - origin, size)`. Renderers consume this `SpatialRect` directly — no further objectFit math at draw time. `objectFit` only determines what `size: "100%"` evaluates to.
+  - `contentWidth`/`contentHeight` accept `Length` too. Percentages resolve against the parent container; root composition must use pixel numbers.
 - **`overflow`/`underflow`** are flex strategies (`trim-end`, `stretch`, etc.) only meaningful for attachments with both ends pinned and for composition windowing. Default `"trim-end"`.
 - **`ChildTimingFields`** shared interface for `in`, `out`, `overflow`, `underflow`, `id`, `start`, `end`, `metadata` — extended by Clip, Composition.
 - Preview renders via a single WebGPU canvas; `RenderList` walks the resolved tree into draw/group/fill commands. Compositions with filters use FBO render-to-texture; without filters, children flatten into the parent pass. `backgroundColor` renders as a stretched 1×1 color tile under the children.

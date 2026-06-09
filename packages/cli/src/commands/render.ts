@@ -65,12 +65,16 @@ export async function renderCommand(file: string, options: RenderOptions) {
   }
   const temporal = resolveComposition(compiled);
 
+  // Root contentWidth/Height must be pixel numbers (resolveSpatial will
+  // reject a root percentage anyway). The Length type is widened on
+  // the resolved tree to carry authored percent strings through nested
+  // compositions; cast to number at the root.
   const width = options.width
     ? parseInt(options.width, 10)
-    : (temporal.contentWidth ?? DEFAULT_CANVAS_WIDTH);
+    : ((temporal.contentWidth as number | undefined) ?? DEFAULT_CANVAS_WIDTH);
   const height = options.height
     ? parseInt(options.height, 10)
-    : (temporal.contentHeight ?? DEFAULT_CANVAS_HEIGHT);
+    : ((temporal.contentHeight as number | undefined) ?? DEFAULT_CANVAS_HEIGHT);
   const timeline = resolveSpatial(temporal, width, height);
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);

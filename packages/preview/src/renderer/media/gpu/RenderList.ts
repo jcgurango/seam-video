@@ -4,6 +4,15 @@
  * positions. Compositions with filters become GroupCommands whose children
  * are rendered to an intermediate texture (FBO) so the group's filters can
  * be applied to the composite.
+ *
+ * Spatial model (post origin/translation/size rewrite):
+ *   The resolver writes a `SpatialRect` per node that already accounts
+ *   for objectFit — `size: "100%"` resolves to the post-objectFit natural
+ *   rect, and origin+translation place that rect in parent space. The
+ *   renderer treats `spatial` as the final draw rect: no further
+ *   objectFit math at draw time. For clip/static the resolver doesn't
+ *   know the media's intrinsic size, so we recompute the natural rect
+ *   per-node from the probed media dims before solving spatial.
  */
 
 import type {
@@ -13,7 +22,6 @@ import type {
   ResolvedStatic,
   ResolvedText,
   ResolvedComposition,
-  SpatialAnchor,
   SpatialRect,
   ObjectFit,
   Filter,
@@ -32,19 +40,12 @@ export interface DrawCommand {
   quadW: number;
   quadH: number;
   opacity: number;
-  /** Node-local time (seconds since this clip/text became active) and total
-   *  duration. Used by the renderer to sample animated filter values. */
   nodeTime: number;
   nodeDuration: number;
 }
 
-/** Solid-color fill of an axis-aligned rect. Emitted under a
- *  composition's children when it has `backgroundColor` set. */
 export interface FillCommand {
   type: "fill";
-  /** Stable identity for the texture cache — typically the resolved
-   *  composition (or the timeline root) the fill belongs to. Reused
-   *  across frames so the renderer doesn't churn the 1x1 color tile. */
   key: object;
   color: string;
   destX: number;
@@ -60,32 +61,25 @@ export interface FillCommand {
 
 export interface GroupCommand {
   type: "group";
-  /** Where to draw the FBO result on the parent target. */
   destX: number;
   destY: number;
   destW: number;
   destH: number;
-  /** Scissor for the dest (from ancestor clipping). */
   scissorX: number;
   scissorY: number;
   scissorW: number;
   scissorH: number;
-  /** FBO dimensions (content resolution). */
   fboW: number;
   fboH: number;
-  /** Filters applied when compositing the FBO to the parent. */
   filters: Filter[];
   opacity: number;
-  /** Commands to render into the FBO. */
   children: RenderCommand[];
-  /** Node-local time + duration for sampling animated filter values. */
   nodeTime: number;
   nodeDuration: number;
 }
 
 export type RenderCommand = DrawCommand | GroupCommand | FillCommand;
 
-/** Internal viewport tracking during tree walk. */
 interface Viewport {
   x: number;
   y: number;
@@ -120,8 +114,8 @@ export function buildRenderList(
     y: 0,
     w: canvasW,
     h: canvasH,
-    contentW: timeline.contentWidth ?? canvasW,
-    contentH: timeline.contentHeight ?? canvasH,
+    contentW: (timeline.contentWidth as number | undefined) ?? canvasW,
+    contentH: (timeline.contentHeight as number | undefined) ?? canvasH,
   };
 
   const rootClip: ClipRect = { x: 0, y: 0, w: canvasW, h: canvasH };
@@ -156,11 +150,35 @@ export function buildRenderList(
   return commands;
 }
 
-/** Re-evaluate a node's spatial rect at the current local time. For static
- *  nodes the resolver already baked `spatial`/`anchor`; this just reads them
- *  back. For animated nodes (`spatialInput` retained on the resolved node)
- *  we re-run the box solver against the current parent content dims so
- *  width/height/edges can interpolate frame-to-frame. */
+/** Compute the post-objectFit "natural" rect for a media-bearing node
+ *  given its intrinsic dims and the parent content size. Mirrors the
+ *  core resolver's `computeNaturalSize`. */
+function naturalSize(
+  intrinsicW: number,
+  intrinsicH: number,
+  parentW: number,
+  parentH: number,
+  objectFit: ObjectFit | undefined,
+): { w: number; h: number } {
+  const fit = objectFit ?? "fit";
+  let scale: number;
+  switch (fit) {
+    case "fit":
+      scale = Math.min(parentW / intrinsicW, parentH / intrinsicH);
+      break;
+    case "cover":
+      scale = Math.max(parentW / intrinsicW, parentH / intrinsicH);
+      break;
+    case "center":
+      scale = 1;
+      break;
+  }
+  return { w: intrinsicW * scale, h: intrinsicH * scale };
+}
+
+/** Resolve the per-frame spatial rect for a child in its parent's
+ *  content-coordinate space. Returns `null` when there's no displayable
+ *  rect (rare — only happens if natural dims are zero). */
 function dynamicSpatial(
   child:
     | ResolvedClip
@@ -169,19 +187,51 @@ function dynamicSpatial(
     | ResolvedComposition,
   viewport: Viewport,
   localTime: number,
-): { spatial: SpatialRect | undefined; anchor: SpatialAnchor | undefined } {
+  getIntrinsicSize: SizeGetter,
+): SpatialRect {
+  const parentW = viewport.contentW;
+  const parentH = viewport.contentH;
+
+  // Determine the post-objectFit natural rect (size "100%" reference).
+  let naturalW = parentW;
+  let naturalH = parentH;
+  if (child.type === "clip" || child.type === "static") {
+    const media = getIntrinsicSize(child);
+    if (media && media.w > 0 && media.h > 0) {
+      const n = naturalSize(media.w, media.h, parentW, parentH, child.objectFit);
+      naturalW = n.w;
+      naturalH = n.h;
+    }
+  } else if (child.naturalWidth != null && child.naturalHeight != null) {
+    // Composition / text — resolver baked the natural dims.
+    naturalW = child.naturalWidth;
+    naturalH = child.naturalHeight;
+  }
+
   if (child.spatialInput) {
     const t = localTime - child.timelineStart;
     const duration = child.timelineEnd - child.timelineStart;
     return resolveBoxProps(
       child.spatialInput,
-      viewport.contentW,
-      viewport.contentH,
+      parentW,
+      parentH,
+      naturalW,
+      naturalH,
       t,
       duration,
     );
   }
-  return { spatial: child.spatial, anchor: child.anchor };
+
+  // No animated input: use the resolver's baked rect if it carried one
+  // (composition / text with authored spatial); otherwise center the
+  // natural rect in the parent.
+  if (child.spatial) return child.spatial;
+  return {
+    x: (parentW - naturalW) / 2,
+    y: (parentH - naturalH) / 2,
+    width: naturalW,
+    height: naturalH,
+  };
 }
 
 function walkChildren(
@@ -194,8 +244,6 @@ function walkChildren(
   commands: RenderCommand[],
 ): void {
   for (const child of children) {
-    // Empty, audio, and data nodes have no visible quad — they affect
-    // playback or carry metadata but never produce a draw command.
     if (
       child.type === "empty" ||
       child.type === "audio" ||
@@ -208,21 +256,10 @@ function walkChildren(
     if (!isActive) continue;
 
     if (child.type === "clip" || child.type === "static") {
-      const { spatial, anchor } = dynamicSpatial(child, viewport, localTime);
-      const container = absoluteRect(viewport, spatial);
-      const scissor = intersect(clipRect, container);
+      const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
+      const quad = absoluteRect(viewport, spatial);
+      const scissor = intersect(clipRect, quad);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
-
-      const intrinsic = getIntrinsicSize(child);
-      const videoW = intrinsic?.w ?? container.w;
-      const videoH = intrinsic?.h ?? container.h;
-      const quad = objectFitQuad(
-        container,
-        videoW,
-        videoH,
-        child.objectFit,
-        anchor,
-      );
 
       commands.push({
         type: "draw",
@@ -240,20 +277,10 @@ function walkChildren(
         nodeDuration: child.timelineEnd - child.timelineStart,
       });
     } else if (child.type === "text") {
-      // Text mirrors clip placement: SpatialFields → spatial rect on
-      // the parent, contentWidth/contentHeight → intrinsic dims fed to
-      // objectFit for aspect handling.
-      const { spatial, anchor } = dynamicSpatial(child, viewport, localTime);
-      const container = absoluteRect(viewport, spatial);
-      const scissor = intersect(clipRect, container);
+      const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
+      const quad = absoluteRect(viewport, spatial);
+      const scissor = intersect(clipRect, quad);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
-      const quad = objectFitQuad(
-        container,
-        child.contentWidth,
-        child.contentHeight,
-        child.objectFit,
-        anchor,
-      );
       commands.push({
         type: "draw",
         clip: child,
@@ -276,19 +303,23 @@ function walkChildren(
         child.duration,
       );
 
-      const { spatial } = dynamicSpatial(child, viewport, localTime);
+      const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
       const container = absoluteRect(viewport, spatial);
       const childClip = intersect(clipRect, container);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
       const hasFilters = child.filters && child.filters.length > 0;
 
-      if (hasFilters) {
-        // Render children to FBO, apply filters when compositing
-        const fboW = child.contentWidth ?? Math.round(container.w);
-        const fboH = child.contentHeight ?? Math.round(container.h);
+      // Inner content dim: resolver collapsed contentWidth/Height to a
+      // pixel number, falling back to the display rect when authored
+      // value was absent. Cast to number — see resolved-types.
+      const innerContentW = (child.contentWidth as number | undefined) ?? container.w;
+      const innerContentH = (child.contentHeight as number | undefined) ?? container.h;
 
-        // Children are positioned relative to FBO origin (0,0)
+      if (hasFilters) {
+        const fboW = Math.round(innerContentW);
+        const fboH = Math.round(innerContentH);
+
         const fboViewport: Viewport = {
           x: 0,
           y: 0,
@@ -301,8 +332,6 @@ function walkChildren(
 
         const groupChildren: RenderCommand[] = [];
         if (child.backgroundColor != null) {
-          // Fill the FBO before any children draw so the bg lands
-          // under the kids inside the group.
           groupChildren.push({
             type: "fill",
             key: child,
@@ -323,7 +352,7 @@ function walkChildren(
           childLocalTime,
           fboViewport,
           fboClip,
-          1, // opacity inside FBO is 1; group opacity applied when compositing
+          1,
           getIntrinsicSize,
           groupChildren,
         );
@@ -347,14 +376,13 @@ function walkChildren(
           nodeDuration: child.duration,
         });
       } else {
-        // No filters — flatten children directly (no FBO overhead)
         const childViewport: Viewport = {
           x: container.x,
           y: container.y,
           w: container.w,
           h: container.h,
-          contentW: child.contentWidth ?? container.w,
-          contentH: child.contentHeight ?? container.h,
+          contentW: innerContentW,
+          contentH: innerContentH,
         };
 
         if (child.backgroundColor != null) {
@@ -392,11 +420,8 @@ function walkChildren(
 
 function absoluteRect(
   parent: Viewport,
-  spatial: { x: number; y: number; width: number; height: number } | undefined,
+  spatial: SpatialRect,
 ): ClipRect {
-  if (!spatial) {
-    return { x: parent.x, y: parent.y, w: parent.w, h: parent.h };
-  }
   const sx = parent.w / parent.contentW;
   const sy = parent.h / parent.contentH;
   return {
@@ -413,58 +438,4 @@ function intersect(a: ClipRect, b: ClipRect): ClipRect {
   const right = Math.min(a.x + a.w, b.x + b.w);
   const bottom = Math.min(a.y + a.h, b.y + b.h);
   return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
-}
-
-function objectFitQuad(
-  container: ClipRect,
-  videoW: number,
-  videoH: number,
-  objectFit?: ObjectFit,
-  anchor?: SpatialAnchor,
-): ClipRect {
-  if (!objectFit || objectFit === "fill") {
-    return container;
-  }
-
-  let scaledW: number;
-  let scaledH: number;
-
-  if (objectFit === "center") {
-    scaledW = videoW;
-    scaledH = videoH;
-  } else if (objectFit === "fit") {
-    const scale = Math.min(container.w / videoW, container.h / videoH);
-    scaledW = videoW * scale;
-    scaledH = videoH * scale;
-  } else {
-    // cover
-    const scale = Math.max(container.w / videoW, container.h / videoH);
-    scaledW = videoW * scale;
-    scaledH = videoH * scale;
-  }
-
-  let offsetX: number;
-  if (anchor?.right != null && anchor?.left == null) {
-    offsetX = container.w - scaledW;
-  } else if (anchor?.left != null && anchor?.right == null) {
-    offsetX = 0;
-  } else {
-    offsetX = (container.w - scaledW) / 2;
-  }
-
-  let offsetY: number;
-  if (anchor?.bottom != null && anchor?.top == null) {
-    offsetY = container.h - scaledH;
-  } else if (anchor?.top != null && anchor?.bottom == null) {
-    offsetY = 0;
-  } else {
-    offsetY = (container.h - scaledH) / 2;
-  }
-
-  return {
-    x: container.x + offsetX,
-    y: container.y + offsetY,
-    w: scaledW,
-    h: scaledH,
-  };
 }

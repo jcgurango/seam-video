@@ -1,34 +1,95 @@
-import type { ResolvedTimeline, ResolvedChild, SpatialRect, SpatialInput, SpatialAnchor, ObjectFit, Position } from "../resolved-types.js";
-import { sampleDimension, isKeyframed } from "../animation/keyframes.js";
+// Spatial resolution pass.
+//
+// Model: every node has size + origin + translation. We resolve these
+// from the input fields against parent dims (or item dims, for origin),
+// then place the node so its origin point inside the item lines up with
+// the translation point in the parent. The output is a `SpatialRect`
+// in parent space, ready for renderers to consume directly.
+//
+// Process per node:
+//   1. Resolve contentWidth/contentHeight (Length, against parent dims)
+//      → intrinsic inner canvas, used by compositions and text.
+//   2. Resolve intrinsic media size for the node:
+//        clip / static            → unknown to core; fall through to the
+//                                   parent dims unless overridden later
+//                                   by a renderer (preview probes media)
+//        composition / text       → contentWidth × contentHeight
+//   3. Compute post-objectFit "natural" size from intrinsic vs parent dims.
+//   4. Resolve `size` against natural size → final width/height in px.
+//   5. Resolve `origin` against final size → origin point in item space.
+//   6. Resolve `translation` against parent dims → point in parent space.
+//   7. Final rect: `{x: translation.x - origin.x, y: ..., width/height}`.
 
-/** Fallback canvas dimensions used when a document doesn't set
- *  `contentWidth` / `contentHeight`. Portrait 1080×1920 — picked once
- *  so the editor, preview, and exported renders all agree on the same
- *  default and a doc rendered in one tool looks identical in the next. */
+import type {
+  ResolvedTimeline,
+  ResolvedChild,
+  SpatialRect,
+  SpatialInput,
+} from "../resolved-types.js";
+import type { Length, ObjectFit, Point2D, Keyframed } from "../types.js";
+import { resolveLength, hasPercent } from "./units.js";
+import { isKeyframed, sampleLength } from "../animation/keyframes.js";
+
+/** Fallback canvas dimensions used when the root composition doesn't set
+ *  `contentWidth` / `contentHeight`. Portrait 1080×1920 — picked once so
+ *  the editor, preview, and exported renders all agree. */
 export const DEFAULT_CANVAS_WIDTH = 1080;
 export const DEFAULT_CANVAS_HEIGHT = 1920;
 
-const SPATIAL_DIM_KEYS = ["top", "left", "right", "bottom", "width", "height"] as const;
-type SpatialDimKey = typeof SPATIAL_DIM_KEYS[number];
+// Percent-defaults per property, used when the author writes a bare
+// pixel number with no percentage component:
+//   origin / translation → 50%  (center)
+//   size                 →  0%  (literal pixels)
+const ORIGIN_DEFAULT_PCT = 50;
+const TRANSLATION_DEFAULT_PCT = 50;
+const SIZE_DEFAULT_PCT = 0;
 
+/** True if any of the input's spatial fields are keyframed — the renderer
+ *  needs to keep `spatialInput` on the resolved node to re-sample per frame. */
 export function hasAnimatedSpatialInput(input: SpatialInput | undefined): boolean {
   if (!input) return false;
-  return SPATIAL_DIM_KEYS.some((k) => isKeyframed(input[k] as never));
+  return (
+    isKeyframedPoint(input.origin) ||
+    isKeyframedPoint(input.translation) ||
+    isKeyframedPoint(input.size)
+  );
+}
+
+function isKeyframedPoint(value: Keyframed<Point2D> | undefined): boolean {
+  if (value == null) return false;
+  if (!isKeyframed(value)) {
+    // Static value — definitely not animated.
+    return false;
+  }
+  return true;
 }
 
 export function resolveSpatial(
   timeline: ResolvedTimeline,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
 ): ResolvedTimeline {
   const rootObjectFit = timeline.objectFit ?? "fit";
-  const innerW = timeline.contentWidth ?? canvasWidth;
-  const innerH = timeline.contentHeight ?? canvasHeight;
+  // Root contentWidth/Height must be pixel numbers — no parent reference.
+  const rootInnerW = resolveContentDim(
+    timeline.contentWidth,
+    canvasWidth,
+    canvasWidth,
+    "contentWidth (root)",
+  );
+  const rootInnerH = resolveContentDim(
+    timeline.contentHeight,
+    canvasHeight,
+    canvasHeight,
+    "contentHeight (root)",
+  );
   return {
     ...timeline,
     width: canvasWidth,
     height: canvasHeight,
-    children: resolveChildren(timeline.children, innerW, innerH, rootObjectFit),
+    contentWidth: rootInnerW,
+    contentHeight: rootInnerH,
+    children: resolveChildren(timeline.children, rootInnerW, rootInnerH, rootObjectFit),
   };
 }
 
@@ -36,127 +97,145 @@ function resolveChildren(
   children: ResolvedChild[],
   parentW: number,
   parentH: number,
-  parentObjectFit: ObjectFit
+  parentObjectFit: ObjectFit,
 ): ResolvedChild[] {
-  return children.map((child) => resolveNode(child, parentW, parentH, parentObjectFit));
+  return children.map((c) => resolveNode(c, parentW, parentH, parentObjectFit));
 }
 
 function resolveNode(
   node: ResolvedChild,
   parentW: number,
   parentH: number,
-  parentObjectFit: ObjectFit
+  parentObjectFit: ObjectFit,
 ): ResolvedChild {
-  // Empty, audio, and data have no spatial state — pass through.
-  if (
-    node.type === "empty" ||
-    node.type === "audio" ||
-    node.type === "data"
-  ) {
+  if (node.type === "empty" || node.type === "audio" || node.type === "data") {
     return node;
   }
 
   const input = node.spatialInput;
+  const ownObjectFit: ObjectFit = input?.objectFit ?? parentObjectFit;
+  const fitForSelf: ObjectFit = parentObjectFit;
+  const animated = hasAnimatedSpatialInput(input);
 
-  // Determine this node's own objectFit policy for its children
-  const ownObjectFit: ObjectFit = input?.objectFit ?? "fit";
-
-  if (!input) {
-    // No spatial props — still propagate objectFit
-    if (node.type === "composition") {
-      const intrinsicW = node.contentWidth ?? parentW;
-      const intrinsicH = node.contentHeight ?? parentH;
-      const hasCustomIntrinsic = intrinsicW !== parentW || intrinsicH !== parentH;
-      const spatial = hasCustomIntrinsic
-        ? computeObjectFitRect(parentObjectFit, intrinsicW, intrinsicH, parentW, parentH)
-        : undefined;
-      return {
-        ...node,
-        objectFit: parentObjectFit,
-        spatial,
-        children: resolveChildren(node.children, intrinsicW, intrinsicH, ownObjectFit),
-      };
-    }
-    if (node.type === "text") {
-      // Mirror composition for sizing but no children to recurse into.
-      const intrinsicW = node.contentWidth ?? parentW;
-      const intrinsicH = node.contentHeight ?? parentH;
-      const hasCustomIntrinsic = intrinsicW !== parentW || intrinsicH !== parentH;
-      const spatial = hasCustomIntrinsic
-        ? computeObjectFitRect(parentObjectFit, intrinsicW, intrinsicH, parentW, parentH)
-        : undefined;
-      return {
-        ...node,
-        contentWidth: intrinsicW,
-        contentHeight: intrinsicH,
-        objectFit: parentObjectFit,
-        spatial,
-      };
-    }
-    // Clip / static: receives parent's objectFit for its own sizing
-    return { ...node, objectFit: parentObjectFit };
+  // Step 1+2: figure out the intrinsic dimensions. Core knows them for
+  // compositions and text; for clip/static it's a renderer concern
+  // (intrinsic media size is probed later), so we treat the parent
+  // dims as a stand-in for the natural size to keep the pipeline simple.
+  let intrinsicW: number | undefined;
+  let intrinsicH: number | undefined;
+  if (node.type === "composition" || node.type === "text") {
+    intrinsicW = resolveContentDim(node.contentWidth, parentW, parentW);
+    intrinsicH = resolveContentDim(node.contentHeight, parentH, parentH);
   }
 
-  // Resolve explicit box props to pixel rect + anchor. For animated spatial,
-  // this is the t=0 fallback; the renderer re-resolves per frame.
-  const { spatial, anchor } = resolveBoxProps(input, parentW, parentH);
-  const position: Position = input.position ?? "relative";
-  // Strip spatialInput from the resolved tree when nothing's animated —
-  // baked `spatial`/`anchor` are sufficient. Animated nodes keep the input
-  // so the renderer can sample it per frame.
-  const animated = hasAnimatedSpatialInput(input);
+  // Step 3: post-objectFit natural size (the value of `size: "100%"`).
+  const { naturalWidth, naturalHeight } = computeNaturalSize(
+    fitForSelf,
+    intrinsicW,
+    intrinsicH,
+    parentW,
+    parentH,
+  );
+
+  // Step 4–7: resolve size / origin / translation → final SpatialRect.
+  const spatial = input
+    ? resolveBoxProps(input, parentW, parentH, naturalWidth, naturalHeight)
+    : undefined;
+
   const stripIfStatic = <T extends { spatialInput?: SpatialInput }>(n: T): T => {
     if (animated) return n;
     const { spatialInput: _, ...rest } = n;
     return rest as T;
   };
 
-  if (node.type === "clip" || node.type === "static") {
-    // When both dimensions are explicitly set, the node is overconstrained — stretch
-    const widthExplicit = input.width != null || (input.left != null && input.right != null);
-    const heightExplicit = input.height != null || (input.top != null && input.bottom != null);
-    const overconstrained = widthExplicit && heightExplicit;
-    return stripIfStatic({ ...node, spatial, anchor, position, objectFit: overconstrained ? undefined : parentObjectFit });
-  }
-
-  if (node.type === "text") {
-    const displayW = spatial ? spatial.width : parentW;
-    const displayH = spatial ? spatial.height : parentH;
-    const innerW = node.contentWidth ?? displayW;
-    const innerH = node.contentHeight ?? displayH;
+  if (node.type === "composition") {
+    const displayW = spatial ? spatial.width : naturalWidth;
+    const displayH = spatial ? spatial.height : naturalHeight;
+    // Inner-canvas dim — the inside of the composition's window. Used
+    // both as the recursion's parent dims and as the child node's
+    // intrinsic size when this composition is itself nested.
+    const innerW = intrinsicW ?? displayW;
+    const innerH = intrinsicH ?? displayH;
     return stripIfStatic({
       ...node,
       contentWidth: innerW,
       contentHeight: innerH,
+      intrinsicWidth: intrinsicW,
+      intrinsicHeight: intrinsicH,
+      naturalWidth,
+      naturalHeight,
       spatial,
-      anchor,
-      position,
-      objectFit: parentObjectFit,
+      objectFit: fitForSelf,
+      children: resolveChildren(node.children, innerW, innerH, ownObjectFit),
     });
   }
 
-  // Composition: display size from spatial or parent, inner from contentWidth/contentHeight
-  const displayW = spatial ? spatial.width : parentW;
-  const displayH = spatial ? spatial.height : parentH;
-  const innerW = node.contentWidth ?? displayW;
-  const innerH = node.contentHeight ?? displayH;
-  return stripIfStatic({
+  if (node.type === "text") {
+    const displayW = spatial ? spatial.width : naturalWidth;
+    const displayH = spatial ? spatial.height : naturalHeight;
+    return stripIfStatic({
+      ...node,
+      contentWidth: intrinsicW ?? displayW,
+      contentHeight: intrinsicH ?? displayH,
+      intrinsicWidth: intrinsicW,
+      intrinsicHeight: intrinsicH,
+      naturalWidth,
+      naturalHeight,
+      spatial,
+      objectFit: fitForSelf,
+    });
+  }
+
+  // clip / static: ALWAYS retain `spatialInput` so the renderer can
+  // re-evaluate against the probed intrinsic media size. The resolver
+  // doesn't know media dims, so its `spatial` and `naturalWidth/Height`
+  // bake against parent dims as a stand-in — close enough for static
+  // tooling but stale once the real media size is known. The renderer's
+  // `dynamicSpatial` prefers `spatialInput` (re-eval) over `spatial`
+  // (baked) for these nodes.
+  return {
     ...node,
+    intrinsicWidth: intrinsicW,
+    intrinsicHeight: intrinsicH,
+    naturalWidth,
+    naturalHeight,
     spatial,
-    anchor,
-    position,
-    objectFit: parentObjectFit,
-    children: resolveChildren(node.children, innerW, innerH, ownObjectFit),
-  });
+    objectFit: fitForSelf,
+    ...(input ? { spatialInput: input } : {}),
+  };
 }
 
-function computeObjectFitRect(
+/** Resolve a Length contentWidth/Height. Pixel default = 0% (i.e. literal
+ *  pixels). `parentDim` is the reference for percentages; `fallback` is
+ *  returned when the value is absent. `errorContext` is included in the
+ *  error when a root-level Length uses a percentage. */
+function resolveContentDim(
+  value: Length | undefined,
+  parentDim: number,
+  fallback: number,
+  errorContext?: string,
+): number {
+  if (value == null) return fallback;
+  if (errorContext && hasPercent(value)) {
+    throw new Error(
+      `${errorContext} cannot use a percentage — root composition has no parent to resolve against`,
+    );
+  }
+  return resolveLength(value, parentDim, SIZE_DEFAULT_PCT);
+}
+
+function computeNaturalSize(
   objectFit: ObjectFit,
-  intrinsicW: number,
-  intrinsicH: number,
+  intrinsicW: number | undefined,
+  intrinsicH: number | undefined,
   parentW: number,
-  parentH: number
-): SpatialRect {
+  parentH: number,
+): { naturalWidth: number; naturalHeight: number } {
+  // Without an intrinsic size we treat the natural box as the parent.
+  // Renderers may override later when they probe media dims.
+  if (intrinsicW == null || intrinsicH == null) {
+    return { naturalWidth: parentW, naturalHeight: parentH };
+  }
   let scale: number;
   switch (objectFit) {
     case "fit":
@@ -169,77 +248,111 @@ function computeObjectFitRect(
       scale = 1;
       break;
   }
-  const w = intrinsicW * scale;
-  const h = intrinsicH * scale;
   return {
-    x: (parentW - w) / 2,
-    y: (parentH - h) / 2,
-    width: w,
-    height: h,
+    naturalWidth: intrinsicW * scale,
+    naturalHeight: intrinsicH * scale,
   };
 }
 
-/** Resolve spatial input to a concrete rect at a given local time `t` (in
- *  seconds, relative to the node's start; defaults to 0 for the static
- *  resolve pass). `duration` lets percent-time keyframe expressions resolve
- *  against the node's lifetime. */
+/** Resolve `size` / `origin` / `translation` (at time `t`) into the final
+ *  parent-space SpatialRect for a node. `natural*` is the post-objectFit
+ *  "100% size" reference. Exported so the renderers can re-evaluate per
+ *  frame against the same math. */
 export function resolveBoxProps(
   input: SpatialInput,
   parentW: number,
   parentH: number,
+  naturalW: number,
+  naturalH: number,
   t: number = 0,
-  duration: number = 0
-): { spatial: SpatialRect | undefined; anchor: SpatialAnchor | undefined } {
-  const hasX = input.left != null || input.right != null || input.width != null;
-  const hasY = input.top != null || input.bottom != null || input.height != null;
+  duration: number = 0,
+): SpatialRect {
+  // size → final width/height
+  const sizeXY = samplePoint(input.size, t, duration, naturalW, naturalH, SIZE_DEFAULT_PCT);
+  const width = sizeXY?.x ?? naturalW;
+  const height = sizeXY?.y ?? naturalH;
 
-  if (!hasX && !hasY) return { spatial: undefined, anchor: undefined };
+  // origin → point on this item (origin defaults to 50% — center).
+  const originXY = samplePoint(input.origin, t, duration, width, height, ORIGIN_DEFAULT_PCT);
+  const originX = originXY?.x ?? width / 2;
+  const originY = originXY?.y ?? height / 2;
 
-  const left = input.left != null ? sampleDimension(input.left, t, duration, parentW) : undefined;
-  const right = input.right != null ? sampleDimension(input.right, t, duration, parentW) : undefined;
-  const width = input.width != null ? sampleDimension(input.width, t, duration, parentW) : undefined;
-  const top = input.top != null ? sampleDimension(input.top, t, duration, parentH) : undefined;
-  const bottom = input.bottom != null ? sampleDimension(input.bottom, t, duration, parentH) : undefined;
-  const height = input.height != null ? sampleDimension(input.height, t, duration, parentH) : undefined;
-
-  const anchor: SpatialAnchor = {
-    ...(left != null ? { left } : {}),
-    ...(right != null ? { right } : {}),
-    ...(top != null ? { top } : {}),
-    ...(bottom != null ? { bottom } : {}),
-  };
+  // translation → point in parent (default 50% — center).
+  const transXY = samplePoint(
+    input.translation,
+    t,
+    duration,
+    parentW,
+    parentH,
+    TRANSLATION_DEFAULT_PCT,
+  );
+  const transX = transXY?.x ?? parentW / 2;
+  const transY = transXY?.y ?? parentH / 2;
 
   return {
-    spatial: {
-      x: resolveAxis(left, right, width, parentW),
-      y: resolveAxis(top, bottom, height, parentH),
-      width: resolveSize(left, right, width, parentW),
-      height: resolveSize(top, bottom, height, parentH),
-    },
-    anchor: Object.keys(anchor).length > 0 ? anchor : undefined,
+    x: transX - originX,
+    y: transY - originY,
+    width,
+    height,
   };
 }
 
-function resolveAxis(
-  start: number | undefined,
-  end: number | undefined,
-  size: number | undefined,
-  parentSize: number
-): number {
-  if (start != null) return start;
-  if (end != null && size != null) return parentSize - end - size;
-  if (end != null) return parentSize - end - parentSize; // fallback: full parent
-  if (size != null) return (parentSize - size) / 2; // center when only size is given
-  return 0;
+interface XY {
+  x: number;
+  y: number;
 }
 
-function resolveSize(
-  start: number | undefined,
-  end: number | undefined,
-  size: number | undefined,
-  parentSize: number
+/** Sample a Point2D (object or scalar shorthand). Returns null when the
+ *  field is absent so callers can apply their own default. */
+function samplePoint(
+  value: Keyframed<Point2D> | undefined,
+  t: number,
+  duration: number,
+  refX: number,
+  refY: number,
+  percentDefault: number,
+): XY | null {
+  if (value == null) return null;
+
+  // Keyframed Point2D: each keyframe value is itself a Point2D (scalar
+  // or {x,y}). We expand each side per-frame so axes interpolate
+  // independently and a scalar `"50%"` doesn't mean "the same pixel
+  // value on both axes" when refX !== refY.
+  if (isKeyframed(value)) {
+    const xVal = sampleAxis(value, t, duration, refX, percentDefault, "x");
+    const yVal = sampleAxis(value, t, duration, refY, percentDefault, "y");
+    return { x: xVal, y: yVal };
+  }
+
+  // Static — scalar or object form.
+  if (typeof value === "number" || typeof value === "string") {
+    return {
+      x: resolveLength(value, refX, percentDefault),
+      y: resolveLength(value, refY, percentDefault),
+    };
+  }
+  return {
+    x: value.x != null ? resolveLength(value.x, refX, percentDefault) : refX * (percentDefault / 100),
+    y: value.y != null ? resolveLength(value.y, refY, percentDefault) : refY * (percentDefault / 100),
+  };
+}
+
+/** Project a Keyframed<Point2D> onto a single axis and sample at `t`. */
+function sampleAxis(
+  kf: Exclude<Keyframed<Point2D>, Point2D>,
+  t: number,
+  duration: number,
+  ref: number,
+  percentDefault: number,
+  axis: "x" | "y",
 ): number {
-  if (size != null) return size;
-  if (start != null && end != null) return parentSize - start - end;
-  return parentSize;
+  const projected = kf.map((entry) => {
+    const v = entry[1];
+    const length: Length =
+      typeof v === "number" || typeof v === "string" ? v : (v[axis] ?? `${percentDefault}%`);
+    return entry.length === 3
+      ? ([entry[0], length, entry[2]] as [typeof entry[0], Length, string])
+      : ([entry[0], length] as [typeof entry[0], Length]);
+  });
+  return sampleLength(projected, t, duration, ref, percentDefault);
 }

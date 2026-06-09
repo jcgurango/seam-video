@@ -180,8 +180,11 @@ export interface TextLayoutResult {
  *  time `t` (seconds since the node became active). The values returned
  *  are in the SVG canvas's coordinate space (origin top-left). */
 export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult {
-  const W = node.contentWidth;
-  const H = node.contentHeight;
+  // contentWidth/Height are widened to Length on the resolved-types so
+  // they can carry the authored value through the resolve pass. The
+  // spatial pass collapses them to pixel numbers before layout runs.
+  const W = node.contentWidth as number;
+  const H = node.contentHeight as number;
   const duration = node.timelineEnd - node.timelineStart;
   const fontSize = sN(node.fontSize, duration, t) ?? DEFAULT_FONT_SIZE;
   const lineHeightSampled = sN(node.lineHeight, duration, t);
@@ -200,25 +203,57 @@ export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult 
   // Pre-resolve each run's style so we can read it cheaply per fragment.
   const styles: RunStyle[] = node.runs.map((run) => resolveRunStyle(run, node, duration, t));
 
-  // Convert runs to Pretext items. `extraWidth` carries the horizontal
-  // padding component so layout math accounts for it.
-  const items: RichInlineItem[] = node.runs.map((run, i) => {
-    const style = styles[i];
-    return {
-      text: run.text,
-      font: cssFontShorthand(run, node, duration, t),
-      extraWidth: style.backgroundPadding.left + style.backgroundPadding.right,
-    };
-  });
+  // Split runs by "\n" into paragraphs. Pretext's rich-inline API
+  // collapses all whitespace (including `\n`) into spaces, so to
+  // honour hard breaks we lay out each paragraph independently and
+  // stack their lines. Each piece keeps a back-pointer to its source
+  // run so fragment styles still resolve through the original
+  // `styles[runIndex]` lookup.
+  type Piece = { runIndex: number; text: string };
+  const paragraphs: Piece[][] = [[]];
+  for (let i = 0; i < node.runs.length; i++) {
+    const parts = node.runs[i].text.split("\n");
+    for (let p = 0; p < parts.length; p++) {
+      if (p > 0) paragraphs.push([]);
+      if (parts[p].length > 0) {
+        paragraphs[paragraphs.length - 1].push({ runIndex: i, text: parts[p] });
+      }
+    }
+  }
 
-  const prepared = prepareRichInline(items);
-  const rawLines: RichInlineLineRange[] = [];
-  walkRichInlineLineRanges(prepared, innerW, (line) => {
-    rawLines.push(line);
-  });
-  const lines = rawLines.map((line) =>
-    materializeRichInlineLineRange(prepared, line)
-  );
+  const lines: ReturnType<typeof materializeRichInlineLineRange>[] = [];
+  const EMPTY_CURSOR = { itemIndex: 0, segmentIndex: 0, graphemeIndex: 0 };
+  for (const paragraph of paragraphs) {
+    if (paragraph.length === 0) {
+      // Hard break with no text in between — one blank line of vertical
+      // space, no fragments to render.
+      lines.push({ fragments: [], width: 0, end: EMPTY_CURSOR });
+      continue;
+    }
+    const items: RichInlineItem[] = paragraph.map((piece) => {
+      const style = styles[piece.runIndex];
+      return {
+        text: piece.text,
+        font: cssFontShorthand(node.runs[piece.runIndex], node, duration, t),
+        extraWidth: style.backgroundPadding.left + style.backgroundPadding.right,
+      };
+    });
+    const prepared = prepareRichInline(items);
+    const ranges: RichInlineLineRange[] = [];
+    walkRichInlineLineRanges(prepared, innerW, (range) => {
+      ranges.push(range);
+    });
+    for (const range of ranges) {
+      const materialized = materializeRichInlineLineRange(prepared, range);
+      // Rewrite each fragment's per-paragraph `itemIndex` to the
+      // global run index so the outer style lookup keeps working.
+      for (const frag of materialized.fragments) {
+        (frag as { itemIndex: number }).itemIndex =
+          paragraph[frag.itemIndex].runIndex;
+      }
+      lines.push(materialized);
+    }
+  }
 
   // Vertical placement, in inner-box coordinates.
   const totalHeight = lines.length * lineHeight;
@@ -314,5 +349,5 @@ export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult 
     }
   }
 
-  return { width: W, height: H, rects, glyphs };
+  return { width: W as number, height: H as number, rects, glyphs };
 }

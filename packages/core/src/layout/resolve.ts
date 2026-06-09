@@ -1,6 +1,7 @@
 import type {
   Composition,
   Child,
+  Length,
   Overflow,
   TimeAnchor,
   TextRun,
@@ -59,20 +60,11 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
   ) {
     return undefined;
   }
-  if (child.type === "static") {
-    const { position, objectFit, top, left, right, bottom, width, height } = child;
-    if (position == null && objectFit == null && top == null && left == null &&
-        right == null && bottom == null && width == null && height == null) {
-      return undefined;
-    }
-    return { position, objectFit, top, left, right, bottom, width, height };
-  }
-  const { position, objectFit, top, left, right, bottom, width, height } = child;
-  if (position == null && objectFit == null && top == null && left == null &&
-      right == null && bottom == null && width == null && height == null) {
+  const { objectFit, origin, translation, size } = child;
+  if (objectFit == null && origin == null && translation == null && size == null) {
     return undefined;
   }
-  return { position, objectFit, top, left, right, bottom, width, height };
+  return { objectFit, origin, translation, size };
 }
 
 /**
@@ -161,8 +153,8 @@ function resolveChild(
         type: "text" as const,
         runs,
         ...carried,
-        contentWidth: child.contentWidth as number,
-        contentHeight: child.contentHeight as number,
+        contentWidth: child.contentWidth as Length,
+        contentHeight: child.contentHeight as Length,
         timelineStart: 0,
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),

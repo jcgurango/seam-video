@@ -1,47 +1,66 @@
 import { describe, it, expect } from "vitest";
-import { parseDimension, resolveDimension } from "../layout/units.js";
+import { parseLength, resolveLength, hasPercent } from "../layout/units.js";
 
-describe("parseDimension", () => {
-  it("parses numbers as px", () => {
-    expect(parseDimension(10)).toEqual({ value: 10, unit: "px" });
-    expect(parseDimension(0)).toEqual({ value: 0, unit: "px" });
-    expect(parseDimension(12.5)).toEqual({ value: 12.5, unit: "px" });
-    expect(parseDimension(-10)).toEqual({ value: -10, unit: "px" });
+describe("parseLength", () => {
+  it("parses bare numbers as pixel-only (percent omitted)", () => {
+    expect(parseLength(10)).toEqual({ percent: null, pixels: 10 });
+    expect(parseLength(0)).toEqual({ percent: null, pixels: 0 });
+    expect(parseLength(-25)).toEqual({ percent: null, pixels: -25 });
+    expect(parseLength(12.5)).toEqual({ percent: null, pixels: 12.5 });
   });
 
-  it("parses percentage strings", () => {
-    expect(parseDimension("50%")).toEqual({ value: 50, unit: "%" });
-    expect(parseDimension("33.3%")).toEqual({ value: 33.3, unit: "%" });
-    expect(parseDimension("-25%")).toEqual({ value: -25, unit: "%" });
+  it("parses percentage-only strings", () => {
+    expect(parseLength("50%")).toEqual({ percent: 50, pixels: 0 });
+    expect(parseLength("-25%")).toEqual({ percent: -25, pixels: 0 });
+    expect(parseLength("33.3%")).toEqual({ percent: 33.3, pixels: 0 });
   });
 
-  it("rejects px-suffixed strings (numbers must be bare)", () => {
-    expect(() => parseDimension("10px")).toThrow("Invalid dimension");
-    expect(() => parseDimension("100")).toThrow("Invalid dimension");
+  it("parses combined '<n>% +/- <n>' form", () => {
+    expect(parseLength("100% - 50")).toEqual({ percent: 100, pixels: -50 });
+    expect(parseLength("50% + 10")).toEqual({ percent: 50, pixels: 10 });
+    expect(parseLength("0% - 100")).toEqual({ percent: 0, pixels: -100 });
   });
 
-  it("throws on invalid input", () => {
-    expect(() => parseDimension("abc")).toThrow("Invalid dimension");
-    expect(() => parseDimension("%")).toThrow("Invalid dimension");
-    expect(() => parseDimension("10em")).toThrow("Invalid dimension");
-    expect(() => parseDimension(NaN)).toThrow("Invalid dimension");
-    expect(() => parseDimension(Infinity)).toThrow("Invalid dimension");
+  it("rejects pixel-suffixed and ambiguous strings", () => {
+    expect(() => parseLength("10px")).toThrow("Invalid length");
+    expect(() => parseLength("100")).toThrow("Invalid length");
+    expect(() => parseLength("abc")).toThrow("Invalid length");
+    expect(() => parseLength("%")).toThrow("Invalid length");
+    expect(() => parseLength(NaN)).toThrow("Invalid length");
   });
 });
 
-describe("resolveDimension", () => {
-  it("resolves px values", () => {
-    expect(resolveDimension(100, 1920)).toBe(100);
-    expect(resolveDimension(0, 1920)).toBe(0);
+describe("resolveLength", () => {
+  it("treats bare numbers as percent-default + pixels", () => {
+    // percentDefault: 50 → bare `0` is at the center (50% of 1000 = 500).
+    expect(resolveLength(0, 1000, 50)).toBe(500);
+    expect(resolveLength(20, 1000, 50)).toBe(520);
+    // percentDefault: 0 → bare `100` is literal pixels.
+    expect(resolveLength(100, 1000, 0)).toBe(100);
+    expect(resolveLength(0, 1000, 0)).toBe(0);
   });
 
-  it("resolves percentage values against parent", () => {
-    expect(resolveDimension("50%", 1920)).toBe(960);
-    expect(resolveDimension("25%", 1080)).toBe(270);
+  it("resolves explicit percentages against reference size", () => {
+    expect(resolveLength("50%", 1000, 0)).toBe(500);
+    expect(resolveLength("100%", 1000, 0)).toBe(1000);
+    // Property percent default is overridden by explicit "0%".
+    expect(resolveLength("0%", 1000, 50)).toBe(0);
   });
 
-  it("resolves negative values", () => {
-    expect(resolveDimension(-10, 1920)).toBe(-10);
-    expect(resolveDimension("-50%", 200)).toBe(-100);
+  it("resolves combined form", () => {
+    expect(resolveLength("100% - 50", 1000, 0)).toBe(950);
+    expect(resolveLength("50% + 25", 200, 0)).toBe(125);
+  });
+});
+
+describe("hasPercent", () => {
+  it("returns true for percentage forms", () => {
+    expect(hasPercent("50%")).toBe(true);
+    expect(hasPercent("100% - 50")).toBe(true);
+    expect(hasPercent("0%")).toBe(true);
+  });
+  it("returns false for pixel numbers", () => {
+    expect(hasPercent(100)).toBe(false);
+    expect(hasPercent(0)).toBe(false);
   });
 });

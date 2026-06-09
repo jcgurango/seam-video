@@ -6,7 +6,7 @@
 import { interpolateNumber, interpolateRgb } from "d3-interpolate";
 import { resolveEasing } from "./easing.js";
 import { resolveTimeExpr, type TimeExpr } from "./time.js";
-import { resolveDimension } from "../layout/units.js";
+import { resolveLength } from "../layout/units.js";
 import type { TextPadding } from "../types.js";
 
 export type Keyframe<T> = [TimeExpr, T] | [TimeExpr, T, string];
@@ -105,18 +105,23 @@ export function samplePadding(
   ]);
 }
 
-// Spatial dimensions can be `number | "<n>%"`. Both forms must collapse to
-// pixels (relative to `parentSize`) before interpolating, otherwise mixing
-// "50%" and `100` in the same keyframe set would produce nonsense.
-export function sampleDimension(
+// Length expression: `number | "<n>%" | "<n>% +- <n>"`. Both forms must
+// collapse to pixels (relative to `referenceSize`) before interpolating,
+// otherwise mixing percentages and pixel offsets across keyframes would
+// produce nonsense values mid-tween. `percentDefault` is the property's
+// fallback percent when the input is a bare number — 50 for origin /
+// translation (center), 0 for size / contentWidth (literal pixels).
+export function sampleLength(
   value: Keyframed<number | string>,
   t: number,
   duration: number,
-  parentSize: number
+  referenceSize: number,
+  percentDefault: number,
 ): number {
-  if (!isKeyframed(value)) return resolveDimension(value as number | string, parentSize);
+  if (!isKeyframed(value))
+    return resolveLength(value as number | string, referenceSize, percentDefault);
   const frames = buildFrames(value, duration, (v) =>
-    resolveDimension(v, parentSize)
+    resolveLength(v, referenceSize, percentDefault),
   );
   return sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
 }

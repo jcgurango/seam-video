@@ -4,7 +4,7 @@ import {
   sampleNumber,
   sampleColor,
   samplePadding,
-  sampleDimension,
+  sampleLength,
 } from "../animation/keyframes.js";
 
 describe("isKeyframed", () => {
@@ -96,21 +96,31 @@ describe("samplePadding", () => {
   });
 });
 
-describe("sampleDimension", () => {
-  it("resolves static numeric pixels", () => {
-    expect(sampleDimension(100, 0, 10, 1920)).toBe(100);
+describe("sampleLength", () => {
+  it("resolves static numeric pixels (percentDefault 0 = literal pixels)", () => {
+    expect(sampleLength(100, 0, 10, 1920, 0)).toBe(100);
   });
 
-  it("resolves static percentage", () => {
-    expect(sampleDimension("50%", 0, 10, 1920)).toBe(960);
+  it("resolves static percentage against reference size", () => {
+    expect(sampleLength("50%", 0, 10, 1920, 0)).toBe(960);
+  });
+
+  it("uses percentDefault for bare numbers", () => {
+    // percentDefault 50 → bare `0` = 50% of 1000 = 500.
+    expect(sampleLength(0, 0, 10, 1000, 50)).toBe(500);
   });
 
   it("interpolates between pixel keyframes", () => {
-    expect(sampleDimension([[0, 0], [10, 100]], 5, 10, 1920)).toBe(50);
+    expect(sampleLength([[0, 0], [10, 100]], 5, 10, 1920, 0)).toBe(50);
   });
 
-  it("collapses percent + pixel keyframes against parent before interpolating", () => {
+  it("collapses percent + pixel keyframes before interpolating", () => {
     // 0 → "50%" of 1000 = 500; midpoint = 250
-    expect(sampleDimension([[0, 0], [10, "50%"]], 5, 10, 1000)).toBe(250);
+    expect(sampleLength([[0, 0], [10, "50%"]], 5, 10, 1000, 0)).toBe(250);
+  });
+
+  it("supports combined '<n>% +/- <n>' keyframe values", () => {
+    // 0 → "100% - 50" of 1000 = 950; midpoint = 475
+    expect(sampleLength([[0, 0], [10, "100% - 50"]], 5, 10, 1000, 0)).toBe(475);
   });
 });

@@ -57,9 +57,8 @@ A clip references a segment of a source video file.
 | `volume` | number | no | Audio gain multiplier (default `1`). `0` mutes; values up to `4` are accepted for amplification. |
 | `overflow` | string | no | Strategy when the clip is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
-| `position` | string | no | `"relative"` or `"absolute"` (see [Spatial Layout](#spatial-layout)) |
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
-| `top`, `left`, `right`, `bottom`, `width`, `height` | string | no | Box properties (see [Spatial Layout](#spatial-layout)) |
+| `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
@@ -90,7 +89,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-Visual props (`filters`, `position`, `objectFit`, box dimensions) are rejected by the schema — `audio` doesn't render to a quad.
+Visual props (`filters`, `objectFit`, `origin`, `translation`, `size`) are rejected by the schema — `audio` doesn't render to a quad.
 
 ### Static
 
@@ -111,7 +110,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `duration` | number | yes | How long the frame is shown for (> 0) |
 | `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
 | `filters` | array | no | See [Filters](#filters) |
-| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | See [Spatial Layout](#spatial-layout) |
+| `objectFit`, `origin`, `translation`, `size` | — | no | See [Spatial Layout](#spatial-layout) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
@@ -172,7 +171,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"text"` | yes | Must be `"text"` |
-| `text` | string \| array | yes | Plain string, or an array of strings/`TextRun` objects for inline formatting (see below) |
+| `text` | string \| array | yes | Plain string, or an array of strings/`TextRun` objects for inline formatting (see below). `\n` inserts a hard line break |
 | `duration` | number | no¹ | Display duration in seconds (> 0) |
 | `fontFamily` | string | no | Font family. Default `"sans-serif"` |
 | `fontSize` | number | no | Font size in pixels. Default `16` |
@@ -186,10 +185,9 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `textAlign` | `"left"` \| `"center"` \| `"right"` | no | Horizontal alignment within the inner box. Default `"center"` |
 | `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
-| `contentWidth` | number | no | Intrinsic SVG width in pixels (default: parent display width). Acts like a composition's `contentWidth` for sizing |
-| `contentHeight` | number | no | Intrinsic SVG height in pixels (default: parent display height) |
+| `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
-| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -216,9 +214,19 @@ When `text` is an array, each entry is either a plain string (which inherits the
 
 Style fields on a run override the node-level fallback for that fragment only. Layout-level fields (`textAlign`, `verticalAlign`, `lineHeight`, `padding`, `contentWidth`, `contentHeight`) live only on the top-level node.
 
+#### Hard breaks
+
+`\n` inside a run's `text` forces a line break — the layout breaks at every newline regardless of how much horizontal space is left, and a run of runs / text fragments can span multiple lines. Consecutive `\n`s emit blank lines that still consume one `lineHeight` of vertical space. All other whitespace (spaces, tabs, carriage returns) is collapsed normally.
+
+```json
+{ "type": "text", "text": "line one\nline two\n\nafter a blank", "duration": 3 }
+```
+
+Inline runs participate the same way — `[ "foo\n", { "text": "bar", "color": "red" } ]` puts a styled "bar" on its own line.
+
 #### Sizing
 
-Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's intrinsic canvas (defaulting to the parent display size), then [Spatial Layout](#spatial-layout) places that canvas on the parent. Line wrapping uses the inner box (`contentWidth − padding.left − padding.right`).
+Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's intrinsic canvas (defaulting to the parent display size; percentages resolve against the parent), then [Spatial Layout](#spatial-layout) places that canvas on the parent. Line wrapping uses the inner box (`contentWidth − padding.left − padding.right`). `\n` in the source text still forces a break inside that inner box.
 
 Both backends share Pretext for layout. The editor preview measures + draws on `OffscreenCanvas`; the FFmpeg CLI path does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side, then writes one PNG per static text node and a numbered sequence per animated text node, which ffmpeg pulls in via `overlay`. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
 
@@ -248,11 +256,11 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
 | `overflow` | string | no | Strategy when the composition is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the composition is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
-| `contentWidth` | number | no | Intrinsic width in pixels (default: canvas width). See [Content Dimensions](#content-dimensions) |
-| `contentHeight` | number | no | Intrinsic height in pixels (default: canvas height). See [Content Dimensions](#content-dimensions) |
+| `contentWidth` | `Length` | no | Inner canvas width (default: parent's content width). Percentages resolve against the parent; the **root composition** must use a pixel number. See [Content Dimensions](#content-dimensions) |
+| `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
-| `position`, `objectFit`, `top`, `left`, `right`, `bottom`, `width`, `height` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -553,70 +561,67 @@ Filters can also be applied to compositions, affecting all children as a group:
 
 ## Spatial Layout
 
-Nodes can be positioned and sized within their parent container using box properties.
+A node's on-screen rect is built from three things:
 
-### Box Properties
+- **`size`** — the final pixel width and height of the node.
+- **`origin`** — a point inside the node.
+- **`translation`** — a point in the parent's content space.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `position` | `"relative"` \| `"absolute"` | Placement mode (default: `"relative"`) |
-| `objectFit` | `"center"` \| `"fit"` \| `"cover"` | How children are scaled within this container (default: `"fit"`) |
-| `top` | number \| string | Offset from top edge |
-| `left` | number \| string | Offset from left edge |
-| `right` | number \| string | Offset from right edge |
-| `bottom` | number \| string | Offset from bottom edge |
-| `width` | number \| string | Explicit width |
-| `height` | number \| string | Explicit height |
+The renderer places the node so its `origin` lines up with the `translation` point in the parent. Together with `size`, that gives the final rect: `x = translation.x − origin.x`, `y = translation.y − origin.y`. Renderers consume this rect directly — there's no further objectFit math at draw time, and there's no separate `position` / edge-anchoring concept.
 
-All spatial fields are optional. When no spatial properties are present, the default `objectFit` (`"fit"`) still applies — clips are scaled to fit the canvas preserving aspect ratio.
+### Length values
 
-### Units
+Origin / translation / size and the content-dimension fields all take **`Length`** values:
 
-Dimension values are either a number or a percentage string:
+| Form | Meaning |
+|------|---------|
+| `25` | bare number — pixel-only offset (no percent component) |
+| `"50%"` | percent of the property's reference dim |
+| `"50% + 10"` | combined: 50% of reference, plus 10 pixels |
+| `"100% - 50"` | combined: 100% of reference, minus 50 pixels |
 
-- `10` — pixels (numbers are always pixels — no `"10px"` strings)
-- `"50%"` — percentage of the parent dimension along that axis
+When you write a bare number (no percent), each property uses its own percent default for the missing component:
 
-Negative values are allowed (e.g. `-10` or `"-25%"`).
+| Property | Percent reference | Number-only percent default | Absent default |
+|----------|-------------------|------------------------------|----------------|
+| `origin` | item's own (post-`size`) dim | `50%` | `"50%"` — center of self |
+| `translation` | parent's content dim | `50%` | `0` — center of parent |
+| `size` | post-`objectFit` "natural" dim | `0%` | `"100%"` — fills natural |
+| `contentWidth` / `contentHeight` | parent's content dim | `0%` | inherits parent's |
+
+So bare `0` for `translation` reads as "center of parent + 0px = center of parent", but bare `0` for `size` reads as "0 pixels". `"0%"` on either is "0% of reference + 0 pixels = the reference's start edge". The asymmetry is intentional: it lets you write origin/translation values as plain offsets from center and size values as plain pixel boxes without surprise.
+
+### Point2D shape
+
+`origin`, `translation`, and `size` are all 2D values written either as an object with optional axes, or as a bare `Length` that applies to both axes:
+
+```json
+{ "translation": { "x": 0, "y": -150 } }
+```
+
+```json
+{ "size": "25%" }
+```
+
+In object form, an omitted axis falls back to the absent default — e.g. `{ "size": { "x": "50%" } }` is "half-width, full-height-of-natural".
 
 ### objectFit
 
-`objectFit` is a **container-to-children policy**. It determines how children are scaled within the container:
+`objectFit` decides what `size: "100%"` actually evaluates to for the node, relative to its parent. That's its **only** job — once `size` is in pixels, the source stretches to fill it.
 
-| Value | Effect |
-|-------|--------|
-| `"center"` | Children displayed at native size, centered |
-| `"fit"` | Children scaled to fit within container, preserving aspect ratio (default) |
-| `"cover"` | Children scaled to cover container, preserving aspect ratio (may crop) |
+| Value | "100% size" evaluates to |
+|-------|--------------------------|
+| `"fit"` (default) | Largest box with the source's aspect ratio that fits inside the parent |
+| `"cover"` | Smallest box with the source's aspect ratio that covers the parent |
+| `"center"` | The source's own intrinsic size — no scaling |
 
-The default is `"fit"`, which applies at every level — even with no spatial properties at all, clips are scaled to fit the canvas. A child can specify its own `objectFit`, but that only affects *its own children*, not its own sizing within the parent.
+The natural size comes from intrinsic media dims for clip / static / text (the source video / image dims, or the text canvas), and from `contentWidth`/`contentHeight` for compositions. With the default `size: "100%"` and the default `translation: 0`, a node is rendered at its natural size, centered in its parent — the previous "fit objectFit, centered" behavior is now the default.
 
-Compositions have intrinsic dimensions equal to the canvas size (1920x1080 by default), which can be overridden with `contentWidth`/`contentHeight`. See [Content Dimensions](#content-dimensions).
+`objectFit` only affects the node it's set on. It doesn't cascade to children — each child decides its own `objectFit`.
 
-### Position
+### Content dimensions
 
-| Value | Effect |
-|-------|--------|
-| `"relative"` | Offsets from the objectFit-derived centered position (default) |
-| `"absolute"` | Positions from the container's top-left origin |
-
-### Box Model
-
-The box properties follow CSS-like rules:
-
-- `width` + `left` → placed at left offset, explicit width
-- `width` + `right` → placed at right offset, explicit width
-- `left` + `right` (no width) → width computed from parent minus offsets
-- Same rules apply for the vertical axis (`height`, `top`, `bottom`)
-
-### Content Dimensions
-
-By default, compositions have intrinsic dimensions equal to the canvas (1920x1080). `contentWidth` and `contentHeight` override this, defining the container's internal coordinate space.
-
-When a container has custom content dimensions, two things happen:
-
-1. **The parent's objectFit sizes the container** using the content dimensions as intrinsic size — just like it sizes a video clip using the video's native resolution.
-2. **Children are positioned in the content coordinate space**, which is then scaled to the container's display size.
+Compositions and text nodes carry an inner canvas defined by `contentWidth` / `contentHeight`. These are `Length` values; percentages resolve against the parent's content dim. The root composition is special — it has no parent reference, so the resolver rejects percentage values there.
 
 ```json
 {
@@ -634,62 +639,11 @@ When a container has custom content dimensions, two things happen:
 }
 ```
 
-The inner composition has an 800x600 coordinate space. The parent's default `"fit"` scales it to fit the 1920x1080 canvas: `min(1920/800, 1080/600) = 1.8`, giving a 1440x1080 display area centered horizontally with 240px of black on each side. The clip inside is fit within 800x600.
+The inner composition's canvas is 800×600. The default `objectFit: "fit"` + `size: "100%"` scales it to fit the parent canvas (1080×1920 portrait by default): natural box = `min(1080/800, 1920/600) × (800, 600) = 1.35 × (800, 600) = (1080, 810)`, centered in the parent. Children inside the inner composition position themselves in 800×600 coords, then get scaled along with the composition's display rect.
 
-To stretch a container (breaking its aspect ratio), give it explicit `width` + `height` that don't match the content aspect ratio. The content space maps to the forced display size.
+To stretch a composition past its aspect ratio, override `size` with explicit per-axis values — e.g. `{ "size": { "x": 1080, "y": 1920 } }` forces the 800×600 content space into a 9:16 box.
 
-### Edge Anchoring
-
-When you specify a single edge (`right`, `bottom`, etc.), objectFit-scaled content aligns to that edge instead of centering. This lets you control which part of a video is visible after scaling.
-
-| Edges specified | Alignment |
-|----------------|-----------|
-| `right` only | Content pinned to right edge |
-| `left` only | Content pinned to left edge |
-| Both or neither | Content centered (default) |
-| `top` only | Content pinned to top edge |
-| `bottom` only | Content pinned to bottom edge |
-
-This interacts with all objectFit modes:
-
-- **`"fit"`**: determines where the letterbox padding goes (e.g. `right: 0` puts all padding on the left)
-- **`"cover"`**: determines which part of the video is kept (e.g. `top: 0` crops from the bottom)
-- **`"center"`**: determines where the native-size content sits in the container
-
-```json
-{
-  "type": "composition",
-  "objectFit": "cover",
-  "children": [
-    {
-      "type": "clip",
-      "source": "tall-video.mp4",
-      "in": 0, "out": 10,
-      "top": 0
-    }
-  ]
-}
-```
-
-The video is scaled to cover the canvas, and the `top: 0` anchor keeps the top of the video visible, cropping from the bottom.
-
-### Crop via objectFit
-
-`objectFit: "cover"` scales to fill the container, then crops overflow. A 4:3 video in a 16:9 canvas will be zoomed in and cropped on the sides:
-
-```json
-{
-  "type": "composition",
-  "objectFit": "cover",
-  "children": [
-    { "type": "clip", "source": "4x3-footage.mp4", "in": 0, "out": 10 }
-  ]
-}
-```
-
-With the default `"fit"`, the same clip would be letterboxed (black bars on the sides). With `"center"`, it would be displayed at native resolution.
-
-### Picture-in-Picture Example
+### Picture-in-picture example
 
 ```json
 {
@@ -704,17 +658,28 @@ With the default `"fit"`, the same clip would be letterboxed (black bars on the 
       "in": 0,
       "out": 30,
       "start": { "anchor": "main", "timeSource": "output", "anchorPoint": "0%" },
-      "position": "absolute",
-      "right": 20,
-      "bottom": 20,
-      "width": "25%",
-      "height": "25%"
+      "size": "25%",
+      "origin": "100%",
+      "translation": "100% - 20"
     }
   ]
 }
 ```
 
-The main video fills the frame. The camera feed is placed in the bottom-right corner at 25% size.
+The camera box is 25% of its natural fit-box. Its `origin: "100%"` is the bottom-right corner of the box itself. Its `translation: "100% - 20"` lands 20px in from the parent's bottom-right corner. Pinning origin-bottom-right to translation-bottom-right-minus-20 puts the PiP 20px inside the parent's bottom-right corner.
+
+### Shifting an image without distortion
+
+```json
+{
+  "type": "static",
+  "source": "portrait.jpg",
+  "duration": 5,
+  "translation": { "x": 0, "y": -150 }
+}
+```
+
+Defaults take care of the rest: `size: "100%"` evaluates to the aspect-preserved fit-box of the image, `origin: "50%"` is the center of that box, and `translation: { x: 0, y: -150 }` reads as "parent center, shifted up 150px". The image is centered horizontally, shifted up 150px, with no squish.
 
 ## Animation
 
@@ -739,31 +704,34 @@ A node-local time of `0` is when the node first becomes active; `100%` is when i
   "source": "v.mp4",
   "in": 0, "out": 5,
   "volume": [[0, 0], ["50%", 1, "ease-in"], ["100%", 0, "ease-out"]],
-  "left": [[0, 0], [2, 200]],
+  "translation": [[0, { "x": 0, "y": 0 }], [2, { "x": 200, "y": 0 }]],
   "filters": [
     { "type": "opacity", "value": [[0, 0], [1, 1, "ease-in-out"]] }
   ]
 }
 ```
 
+Keyframe values follow the same shape as the static field. For `Point2D` fields (`origin`/`translation`/`size`), each keyframe value can be a scalar `Length` or a `{ x?, y? }` object — axes interpolate independently.
+
 ### What can be animated
 
 | Node | Fields |
 |------|--------|
-| **Clip** | `volume`, `top`, `left`, `right`, `bottom`, `width`, `height` |
+| **Clip** | `volume`, `origin`, `translation`, `size` |
 | **Audio** | `volume` |
-| **Composition** | `top`, `left`, `right`, `bottom`, `width`, `height` |
-| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `top`, `left`, `right`, `bottom`, `width`, `height` |
+| **Composition** | `origin`, `translation`, `size` |
+| **Static** | `origin`, `translation`, `size` |
+| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size` |
 | **Filters** | every numeric value: `adjust.{brightness,contrast,saturation,gamma}`, `opacity.value`, `colorbalance.{rs,gs,bs,rm,gm,bm,rh,gh,bh}`, `colortemperature.temperature` |
 
 ### Renderer support
 
-The CLI ffmpeg path supports every animatable field:
+The CLI ffmpeg / melt path supports every animatable field:
 
 | Field | How it's rendered |
 |---|---|
 | Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
-| Spatial edges (`top`/`left`/…) | `scale=eval=frame` and `overlay=eval=frame` driven by piecewise-linear expressions baked from the keyframes (one sample per output frame). When spatial is animated, `objectFit` is bypassed — the sampled rect is the on-screen rect, and the source stretches to it. |
+| `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into qtblend's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect (qtblend has no native cover/center mode), so authoring with non-default `size` overrides means stretching is intentional. |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
 | Filter parameters | `eq` (adjust) uses `eval=frame` + per-parameter expressions. `colorchannelmixer` (opacity), `colorbalance`, and `colortemperature` use `sendcmd` to deliver one stepwise update per output frame to a labelled filter instance. |
 

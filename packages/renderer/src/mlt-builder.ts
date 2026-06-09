@@ -49,7 +49,6 @@ import type {
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
-  SpatialAnchor,
   SpatialInput,
   SpatialRect,
 } from "@seam/core";
@@ -90,8 +89,10 @@ export function buildMltDocument(
   timeline: ResolvedTimeline,
   options: MltOptions = {},
 ): MltBuildResult {
-  const W = options.width ?? timeline.contentWidth ?? 1920;
-  const H = options.height ?? timeline.contentHeight ?? 1080;
+  // Resolver collapses contentWidth/Height to a pixel number before this
+  // pass (and rejects percentages on the root), so the cast is safe.
+  const W = options.width ?? (timeline.contentWidth as number | undefined) ?? 1920;
+  const H = options.height ?? (timeline.contentHeight as number | undefined) ?? 1080;
   const fps = options.fps ?? 30;
   const basePath = options.basePath;
   const textRasters = options.textRasters ?? new Map();
@@ -822,26 +823,13 @@ export function buildMltDocument(
 
     const sampleAt = (frameOffset: number) => {
       const t = animated ? frameOffset / fps : 0;
-      const container = sampleContainerRect(node, W, H, t, dur);
-      let rect: SpatialRect;
-      if (seg.kind === "text") {
-        // Text PNGs carry their own intrinsic dims, so applyObjectFit
-        // can place them inside the container (fit/cover/center).
-        const text = node as ResolvedText;
-        rect = applyObjectFit(
-          container,
-          text.contentWidth,
-          text.contentHeight,
-          text.objectFit,
-          text.anchor,
-        );
-      } else {
-        // Clips don't have intrinsic dims at build time (we'd need to
-        // ffprobe each source), so we just hand the container rect to
-        // qtblend — which stretches the source to fill it. Non-fit
-        // objectFit values are flagged separately.
-        rect = container;
-      }
+      // Resolver's spatial pass already accounts for objectFit (the
+      // post-objectFit natural rect is the value of `size: "100%"`),
+      // so the container rect IS the draw rect — no further objectFit
+      // math here. Text PNGs are stretched to fill it like clip
+      // segments are; if the rect matches the text's natural aspect
+      // (default `size: "100%"`), there's no visible distortion.
+      const rect = sampleContainerRect(node, W, H, t, dur);
       const alpha = sampleNodeOpacity(node, t, dur);
       return { rect, alpha };
     };
@@ -1059,61 +1047,46 @@ function formatGeometry(rect: SpatialRect, alpha: number): string {
   return `${Math.round(rect.x)} ${Math.round(rect.y)} ${Math.round(rect.width)} ${Math.round(rect.height)} ${fnum(alpha)}`;
 }
 
+/** Sample a node's spatial rect at output time `t`. For animated input
+ *  the resolver's baked rect is stale, so we re-run resolveBoxProps
+ *  against the node's recorded natural size. For static spatial we
+ *  trust the resolver's `spatial`; fallback is "fill the parent" so
+ *  nodes with no spatial state at all still render. */
 function sampleContainerRect(
-  node: { spatialInput?: SpatialInput; spatial?: SpatialRect },
+  node: {
+    spatialInput?: SpatialInput;
+    spatial?: SpatialRect;
+    naturalWidth?: number;
+    naturalHeight?: number;
+  },
   parentW: number,
   parentH: number,
   t: number,
   duration: number,
 ): SpatialRect {
   if (node.spatialInput && hasAnimatedSpatialInput(node.spatialInput)) {
-    const { spatial } = resolveBoxProps(
+    const naturalW = node.naturalWidth ?? parentW;
+    const naturalH = node.naturalHeight ?? parentH;
+    return resolveBoxProps(
       node.spatialInput,
       parentW,
       parentH,
+      naturalW,
+      naturalH,
       t,
       duration,
     );
-    return spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
   }
-  return node.spatial ?? { x: 0, y: 0, width: parentW, height: parentH };
-}
-
-/** Apply objectFit/anchor to compute the on-screen rect for the source
- *  PNG. Matches the preview's RenderList logic so the rendered output
- *  positions glyphs the same way the editor showed them. */
-function applyObjectFit(
-  container: SpatialRect,
-  contentW: number,
-  contentH: number,
-  objectFit: ResolvedText["objectFit"],
-  anchor: SpatialAnchor | undefined,
-): SpatialRect {
-  const fit = objectFit ?? "fit";
-  let scale: number;
-  if (fit === "fit") {
-    scale = Math.min(container.width / contentW, container.height / contentH);
-  } else if (fit === "cover") {
-    scale = Math.max(container.width / contentW, container.height / contentH);
-  } else {
-    // center
-    scale = 1;
-  }
-  const w = contentW * scale;
-  const h = contentH * scale;
-  let offsetX: number;
-  if (anchor?.right != null && anchor?.left == null) offsetX = container.width - w;
-  else if (anchor?.left != null && anchor?.right == null) offsetX = 0;
-  else offsetX = (container.width - w) / 2;
-  let offsetY: number;
-  if (anchor?.bottom != null && anchor?.top == null) offsetY = container.height - h;
-  else if (anchor?.top != null && anchor?.bottom == null) offsetY = 0;
-  else offsetY = (container.height - h) / 2;
+  if (node.spatial) return node.spatial;
+  // No spatial at all → center the natural rect in parent (matches the
+  // preview's fallback when both spatial and spatialInput are missing).
+  const naturalW = node.naturalWidth ?? parentW;
+  const naturalH = node.naturalHeight ?? parentH;
   return {
-    x: container.x + offsetX,
-    y: container.y + offsetY,
-    width: w,
-    height: h,
+    x: (parentW - naturalW) / 2,
+    y: (parentH - naturalH) / 2,
+    width: naturalW,
+    height: naturalH,
   };
 }
 

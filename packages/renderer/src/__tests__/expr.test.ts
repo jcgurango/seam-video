@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   bakePwl,
-  bakePwlDimension,
   isConstant,
   pwlToMltKeyframes,
 } from "../animation/expr.js";
@@ -24,19 +23,6 @@ describe("bakePwl", () => {
   it("collapses to a constant when all keyframes match", () => {
     const p = bakePwl([[0, 0.5], [10, 0.5]], 10, 30);
     expect(isConstant(p)).toBe(true);
-  });
-});
-
-describe("bakePwlDimension", () => {
-  it("collapses static percent against parent", () => {
-    const p = bakePwlDimension("50%", 2, 30, 1000);
-    expect(p.samples).toEqual([{ t: 0, v: 500 }]);
-  });
-
-  it("samples mixed pixel + percent keyframes against parent", () => {
-    const p = bakePwlDimension([[0, 0], [1, "50%"]], 1, 4, 1000);
-    expect(p.samples[0].v).toBe(0);
-    expect(p.samples[p.samples.length - 1].v).toBe(500);
   });
 });
 
