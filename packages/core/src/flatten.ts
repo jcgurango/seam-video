@@ -5,6 +5,7 @@ import type {
   ResolvedStatic,
   ResolvedEmpty,
   ResolvedData,
+  ResolvedGraphic,
   ResolvedText,
 } from "./resolved-types.js";
 
@@ -14,7 +15,8 @@ export type FlatLeaf =
   | ResolvedStatic
   | ResolvedEmpty
   | ResolvedData
-  | ResolvedText;
+  | ResolvedText
+  | ResolvedGraphic;
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
@@ -74,6 +76,15 @@ export function flattenResolved(
         ...(child.tags?.length ? { tags: child.tags } : {}),
       });
     } else if (child.type === "text") {
+      result.push({
+        ...child,
+        timelineStart: start,
+        timelineEnd: end,
+      });
+    } else if (child.type === "graphic") {
+      // Graphic is a leaf for layout purposes — the renderer/preview
+      // drives the internal animation playhead; flatten just hands the
+      // resolved node downstream.
       result.push({
         ...child,
         timelineStart: start,

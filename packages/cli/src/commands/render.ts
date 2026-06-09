@@ -15,6 +15,7 @@ import {
   buildMltDocument,
   checkFfmpeg,
   checkMelt,
+  rasterizeAllGraphics,
   rasterizeAllText,
   renderWithMelt,
   runFfmpegAudio,
@@ -95,6 +96,13 @@ export async function renderCommand(file: string, options: RenderOptions) {
     // path, so the files have to exist when melt parses the project.
     const textDir = join(assetsDir, "text");
     const textRasters = await rasterizeAllText(timeline, textDir, fps);
+    const graphicDir = join(assetsDir, "graphic");
+    const graphicRasters = await rasterizeAllGraphics(
+      timeline,
+      graphicDir,
+      fps,
+      basePath,
+    );
 
     // Pre-render audio with ffmpeg first. MLT slices audio along the
     // video frame grid which produces audible artifacts at clip
@@ -113,6 +121,7 @@ export async function renderCommand(file: string, options: RenderOptions) {
       height,
       basePath,
       textRasters,
+      graphicRasters,
       audioFile: audioPath,
     });
 

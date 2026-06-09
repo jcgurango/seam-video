@@ -4,6 +4,8 @@ import type {
   ObjectFit,
   Point2D,
   Filter,
+  GraphicClipDef,
+  GraphicFrame,
   TextPadding,
   TextRun,
   TextStyleFields,
@@ -144,6 +146,32 @@ export interface ResolvedComposition {
   naturalHeight?: number;
 }
 
+/** Animated 2D layer after layout resolution. The animation engine
+ *  (env-specific) consumes `frames` + `clips` directly — there's no
+ *  per-keyframe baking at layout time; spatial-only fields here describe
+ *  the graphic's placement in the parent composition. */
+export interface ResolvedGraphic {
+  type: "graphic";
+  duration?: Length;
+  loop?: boolean;
+  /** Animation design space. Renderers resolve authored Length values
+   *  inside keyframes against this rect. */
+  contentWidth?: Length;
+  contentHeight?: Length;
+  clips?: GraphicClipDef[];
+  frames: GraphicFrame[];
+  timelineStart: number;
+  timelineEnd: number;
+  spatial?: SpatialRect;
+  spatialInput?: SpatialInput;
+  objectFit?: ObjectFit;
+  intrinsicWidth?: number;
+  intrinsicHeight?: number;
+  naturalWidth?: number;
+  naturalHeight?: number;
+  filters?: Filter[];
+}
+
 export type ResolvedChild =
   | ResolvedClip
   | ResolvedAudio
@@ -151,6 +179,7 @@ export type ResolvedChild =
   | ResolvedEmpty
   | ResolvedData
   | ResolvedText
+  | ResolvedGraphic
   | ResolvedComposition;
 
 export interface ResolvedTimeline {

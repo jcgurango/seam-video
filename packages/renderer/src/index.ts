@@ -21,3 +21,19 @@ export type {
 } from "./ffmpeg-audio.js";
 export { rasterizeAllText } from "./text/textRaster.js";
 export type { TextRasterEntry, TextRasterMap } from "./text/textRaster.js";
+export { rasterizeAllGraphics } from "./graphic/raster.js";
+export type {
+  GraphicRasterEntry,
+  GraphicRasterMap,
+} from "./graphic/raster.js";
+export {
+  precomputeGraphicPlayback,
+  snapshotAt,
+  isStatic,
+} from "./graphic/playback.js";
+export type { GraphicPlayback } from "./graphic/playback.js";
+export {
+  renderSnapshotToPng,
+  renderFilledFrameToPng,
+} from "./graphic/render.js";
+export { fillObject, fillFrame, CUSTOM_PROPS } from "./graphic/fill.js";

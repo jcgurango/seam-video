@@ -276,6 +276,210 @@ export const TextSchema = z.object({
   }
 );
 
+// ── Graphic (animated 2D layer) ────────────────────────────────────
+//
+// A graphic is a self-contained 2D animation: a list of keyframes, each
+// holding a snapshot of fabric-style objects (Rect, Circle, Path, Polygon,
+// Text, Image, Group, Clip-instance, Map). The renderer/preview run the
+// pure interp engine in `animation/interp.ts` against these snapshots.
+//
+// Inner-object schemas are intentionally permissive (`passthrough`): fabric
+// has a long tail of optional props (cornerStyle, strokeLineCap, ...) we
+// don't want to enumerate, and the animation engine treats unknown props
+// as discrete (no interpolation) by default. The well-known animation
+// props are typed explicitly so authoring tools have something to validate.
+
+// Animation direction for the `angle` property when revolutions != 0.
+const AngleDirectionSchema = z.enum(["shortest", "cw", "ccw"]);
+
+// Fields every inner object can carry. id is the stable cross-frame
+// correspondence key; revolutions/angleDirection drive winding for `angle`;
+// easing overrides the frame-level default for this object only.
+const GraphicObjectBaseSchema = {
+  id: z.string().min(1).optional(),
+  easing: EasingSchema.optional(),
+  revolutions: z.number().optional(),
+  angleDirection: AngleDirectionSchema.optional(),
+};
+
+// Common fabric transform props. Plain numbers — the seam Length system
+// stops at the graphic boundary; inner objects are fabric's domain.
+const FabricTransformSchema = {
+  left: z.number().optional(),
+  top: z.number().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  scaleX: z.number().optional(),
+  scaleY: z.number().optional(),
+  angle: z.number().optional(),
+  opacity: z.number().min(0).max(1).optional(),
+  flipX: z.boolean().optional(),
+  flipY: z.boolean().optional(),
+  originX: z.enum(["left", "center", "right"]).optional(),
+  originY: z.enum(["top", "center", "bottom"]).optional(),
+  fill: z.string().optional(),
+  stroke: z.string().optional(),
+  strokeWidth: z.number().nonnegative().optional(),
+  visible: z.boolean().optional(),
+};
+
+const Point2DCoordSchema = z.object({ x: z.number(), y: z.number() }).strict();
+
+export const RectSchema = z.object({
+  type: z.literal("Rect"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  rx: z.number().optional(),
+  ry: z.number().optional(),
+}).passthrough();
+
+export const CircleSchema = z.object({
+  type: z.literal("Circle"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  radius: z.number().nonnegative().optional(),
+}).passthrough();
+
+export const PathSchema = z.object({
+  type: z.literal("Path"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  // SVG path string or fabric's parsed-array form. Animation engine matches
+  // structures between frames and falls back to discrete on mismatch.
+  path: z.union([z.string(), z.array(z.array(z.union([z.string(), z.number()])))]).optional(),
+}).passthrough();
+
+export const PolygonSchema = z.object({
+  type: z.literal("Polygon"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  points: z.array(Point2DCoordSchema).optional(),
+}).passthrough();
+
+export const GraphicTextSchema = z.object({
+  type: z.literal("Textbox"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  text: z.string().optional(),
+  fontFamily: z.string().optional(),
+  fontSize: z.number().positive().optional(),
+  fontWeight: z.union([z.string(), z.number()]).optional(),
+  fontStyle: z.string().optional(),
+  textAlign: z.enum(["left", "center", "right", "justify"]).optional(),
+  lineHeight: z.number().positive().optional(),
+}).passthrough();
+
+export const GraphicImageSchema = z.object({
+  type: z.literal("Image"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  // Logical id resolved by the host (cache lookup); same convention as
+  // existing `source` fields elsewhere in the schema.
+  src: z.string().min(1).optional(),
+}).passthrough();
+
+// Inner clip-instance: references a ClipDef on the parent Graphic by id.
+// Has its own sub-timeline (startPosition + repeat) per the spec we
+// designed in the motion editor.
+export const GraphicClipInstanceSchema = z.object({
+  type: z.literal("Clip"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  clipId: z.string().min(1),
+  startPosition: z.number().optional(),
+  // -1 = infinite; otherwise count of additional plays after the first.
+  repeat: z.number().int().optional(),
+}).passthrough();
+
+// Geo polyline rendered on a Map. progress fades the gradient; lineWidth
+// stays in display pixels (no Length: maplibre interprets in px directly).
+export const MapPathSchema = z.object({
+  color: z.string(),
+  points: z.array(z.tuple([z.number(), z.number()])).min(2),
+  progress: z.number().min(0).max(1).optional(),
+  lineWidth: z.number().positive().optional(),
+  easing: EasingSchema.optional(),
+}).strict();
+
+export const MapElementSchema = z.object({
+  type: z.literal("Map"),
+  ...GraphicObjectBaseSchema,
+  ...FabricTransformSchema,
+  // pmtiles file path — host-resolved (file:// for renderer/electron,
+  // OPFS for web).
+  source: z.string().min(1),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  zoom: z.number().nonnegative().optional(),
+  paths: z.array(MapPathSchema).optional(),
+}).passthrough();
+
+// Recursive group of graphic objects. fabric semantics: child coordinates
+// are group-local (relative to group center).
+export const GraphicGroupSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal("Group"),
+    ...GraphicObjectBaseSchema,
+    ...FabricTransformSchema,
+    objects: z.array(GraphicObjectSchema).optional(),
+  }).passthrough()
+);
+
+// Recursive due to Group containing more GraphicObjects, so this is a
+// union rather than a discriminated union (Zod's discriminated form
+// doesn't accept lazy-resolved options).
+export const GraphicObjectSchema: z.ZodType<any> = z.lazy(() =>
+  z.union([
+    RectSchema,
+    CircleSchema,
+    PathSchema,
+    PolygonSchema,
+    GraphicTextSchema,
+    GraphicImageSchema,
+    GraphicClipInstanceSchema,
+    MapElementSchema,
+    GraphicGroupSchema,
+  ])
+);
+
+// A keyframe: [stamp, objects, easing?]. Stamp is a Length so authors can
+// write "50%" of the graphic's duration. Easing is the default for
+// animations leaving this keyframe; per-object `easing` overrides it.
+export const GraphicFrameSchema = z.union([
+  z.tuple([LengthSchema, z.array(GraphicObjectSchema)]),
+  z.tuple([LengthSchema, z.array(GraphicObjectSchema), EasingSchema]),
+]);
+
+// A reusable clip definition the parent Graphic exposes by id, referenced
+// from a {type:"Clip", clipId} instance in any keyframe.
+export const GraphicClipDefSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("graphic"),
+  duration: LengthSchema.optional(),
+  loop: z.boolean().optional(),
+  contentWidth: LengthSchema.optional(),
+  contentHeight: LengthSchema.optional(),
+  frames: z.array(GraphicFrameSchema).min(1),
+}).strict();
+
+export const GraphicSchema = z.object({
+  type: z.literal("graphic"),
+  duration: LengthSchema.optional(),
+  loop: z.boolean().optional(),
+  contentWidth: LengthSchema.optional(),
+  contentHeight: LengthSchema.optional(),
+  clips: z.array(GraphicClipDefSchema).optional(),
+  frames: z.array(GraphicFrameSchema).min(1),
+  in: z.number().nonnegative().optional(),
+  out: z.number().positive().optional(),
+  overflow: OverflowSchema.optional(),
+  underflow: UnderflowSchema.optional(),
+  filters: FiltersArraySchema,
+  ...SpatialFieldsSchema,
+  ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
+}).strict();
+
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
     ClipSchema,
@@ -284,6 +488,7 @@ const ChildSchema: z.ZodType<any> = z.lazy(() =>
     EmptySchema,
     DataSchema,
     TextSchema,
+    GraphicSchema,
     CompositionSchema,
   ])
 );

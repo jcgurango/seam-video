@@ -24,7 +24,7 @@ function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
     case "audio":
-      return (child.out - child.in) / clipBaseSpeed(child);
+      return (child.out - child.in) / clipBaseSpeed(child as { in: number; out: number; speed?: number; duration?: number });
     case "static":
       return child.duration;
     case "empty":
@@ -32,10 +32,19 @@ function naturalDuration(child: Child): number {
     case "data":
       return child.duration ?? 0;
     case "text":
-      // Optional when both anchors pinned (anchor span dictates target);
-      // 0 fallback is fine — natural duration is only used by `%`-offset
-      // math against the attachment's own length.
       return child.duration ?? 0;
+    case "graphic":
+      // Graphics carry their own timeline. With both anchors set the
+      // anchor span dictates target duration; otherwise we trust the
+      // authored `duration`, then fall back to the last keyframe's
+      // numeric stamp. (Length-typed stamps default to numeric here —
+      // percent stamps need a duration context to resolve, and at this
+      // point we have none, so they fall back to 0.)
+      if (child.in != null && child.out != null) return child.out - child.in;
+      if (typeof child.duration === "number") return child.duration;
+      const lastFrame = child.frames[child.frames.length - 1];
+      const lastStamp = lastFrame?.[0];
+      return typeof lastStamp === "number" ? lastStamp : 0;
     case "composition": {
       if (child.in != null && child.out != null) {
         return child.out - child.in;
@@ -155,6 +164,32 @@ function resolveChild(
         ...carried,
         contentWidth: child.contentWidth as Length,
         contentHeight: child.contentHeight as Length,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
+      } as ResolvedChild,
+      actualDuration: target,
+    };
+  }
+
+  if (child.type === "graphic") {
+    // Graphic carries its own internal timeline (frames / clips). For the
+    // outer layout pass we treat it like static: a single placeable rect
+    // with content dimensions for the spatial pass to consume. The
+    // animation playhead is driven by the renderer/preview at render
+    // time, not here. overflow/underflow collapse to "play at the rate
+    // implied by target / natural" — same as text/static — and we leave
+    // playback-time mapping (e.g. speed-up) to the consumer.
+    return {
+      resolved: {
+        type: "graphic" as const,
+        duration: child.duration,
+        loop: child.loop,
+        contentWidth: child.contentWidth as Length,
+        contentHeight: child.contentHeight as Length,
+        clips: child.clips,
+        frames: child.frames,
         timelineStart: 0,
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
@@ -387,8 +422,12 @@ function buildIdMapEntry(
   if (
     resolved.type === "empty" ||
     resolved.type === "data" ||
-    resolved.type === "text"
+    resolved.type === "text" ||
+    resolved.type === "graphic"
   ) {
+    // Graphic's internal playhead is owned by the renderer/preview; from
+    // the outer layout's perspective there's no source-time mapping to
+    // expose to attachments.
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   if (resolved.type === "static") {
@@ -558,7 +597,8 @@ function cropChildrenToWindow(
       child.type === "empty" ||
       child.type === "data" ||
       child.type === "text" ||
-      child.type === "static"
+      child.type === "static" ||
+      child.type === "graphic"
     ) {
       result.push({
         ...child,

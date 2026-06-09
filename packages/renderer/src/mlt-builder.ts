@@ -47,6 +47,7 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedStatic,
+  ResolvedGraphic,
   ResolvedText,
   ResolvedTimeline,
   SpatialInput,
@@ -54,6 +55,7 @@ import type {
 } from "@seam/core";
 import { bakePwl, pwlToMltKeyframes } from "./animation/expr.js";
 import type { TextRasterMap } from "./text/textRaster.js";
+import type { GraphicRasterMap } from "./graphic/raster.js";
 
 export interface MltOptions {
   width?: number;
@@ -63,6 +65,8 @@ export interface MltOptions {
   basePath?: string;
   /** PNGs from `rasterizeAllText`, keyed by ResolvedText identity. */
   textRasters?: TextRasterMap;
+  /** PNGs from `rasterizeAllGraphics`, keyed by ResolvedGraphic identity. */
+  graphicRasters?: GraphicRasterMap;
   /** Path to a pre-rendered audio file (any format ffmpeg/melt can
    *  read — typically aac or wav). Added as a single producer that
    *  spans the timeline; the audio in clip and audio nodes is
@@ -73,7 +77,7 @@ export interface MltOptions {
 /** Field that this builder doesn't yet translate. Surfaced so the
  *  caller can warn the user instead of silently dropping things. */
 export interface MltLimitation {
-  node: "clip" | "audio" | "text" | "composition" | "static";
+  node: "clip" | "audio" | "text" | "composition" | "static" | "graphic";
   field: string;
   detail: string;
 }
@@ -96,6 +100,7 @@ export function buildMltDocument(
   const fps = options.fps ?? 30;
   const basePath = options.basePath;
   const textRasters = options.textRasters ?? new Map();
+  const graphicRasters = options.graphicRasters ?? new Map();
   const limitations: MltLimitation[] = [];
 
   const fr = (t: number) => Math.max(0, Math.round(t * fps));
@@ -206,6 +211,36 @@ export function buildMltDocument(
     return id;
   }
 
+  function addGraphicProducer(
+    node: ResolvedGraphic,
+    durationFrames: number,
+  ): string | null {
+    const raster = graphicRasters.get(node);
+    if (!raster) {
+      limitations.push({
+        node: "graphic",
+        field: "raster",
+        detail:
+          "ResolvedGraphic had no rasterized PNG — call rasterizeAllGraphics first",
+      });
+      return null;
+    }
+    const cached = producerIdByResource.get(raster.path);
+    if (cached) return cached;
+    const id = newProducerId("graphic");
+    producerIdByResource.set(raster.path, id);
+    producers.set(
+      id,
+      [
+        `  <producer id="${id}" in="0" out="${Math.max(0, durationFrames - 1)}" resource="${escAttr(raster.path)}">`,
+        `    <property name="mlt_service">qimage</property>`,
+        `    <property name="ttl">1</property>`,
+        `  </producer>`,
+      ].join("\n"),
+    );
+    return id;
+  }
+
   function addTextProducer(node: ResolvedText, durationFrames: number): string | null {
     const raster = textRasters.get(node);
     if (!raster) {
@@ -260,6 +295,13 @@ export function buildMltDocument(
     producer: string;
     node: ResolvedText;
   };
+  type GraphicSeg = {
+    kind: "graphic";
+    start: number;
+    end: number;
+    producer: string;
+    node: ResolvedGraphic;
+  };
   type StaticSeg = {
     kind: "static";
     start: number;
@@ -274,6 +316,7 @@ export function buildMltDocument(
 
   const clipSegs: ClipSeg[] = [];
   const textSegs: TextSeg[] = [];
+  const graphicSegs: GraphicSeg[] = [];
   const staticSegs: StaticSeg[] = [];
 
   // Walk the resolved tree, recursing into nested compositions and
@@ -383,6 +426,29 @@ export function buildMltDocument(
       }
       return;
     }
+    if (child.type === "graphic") {
+      const dur = end - start;
+      const prod = addGraphicProducer(child, fr(dur));
+      if (!prod) return;
+      graphicSegs.push({
+        kind: "graphic",
+        start,
+        end,
+        producer: prod,
+        node: child,
+      });
+      const unsupportedFilters = (child.filters ?? []).filter(
+        (f) => f.type !== "opacity",
+      );
+      if (unsupportedFilters.length) {
+        limitations.push({
+          node: "graphic",
+          field: "filters",
+          detail: `non-opacity graphic filters not yet translated: ${unsupportedFilters.map((f) => f.type).join(", ")}`,
+        });
+      }
+      return;
+    }
     if (child.type === "composition") {
       // Wrapper props (spatial/objectFit/filters/contentWidth/Height)
       // aren't applied to the flattened inner content — flag if any
@@ -424,6 +490,7 @@ export function buildMltDocument(
   // mirror timeline order, which keeps the project navigable in
   // GUI editors.
   const textSegsSorted = [...textSegs].sort((a, b) => a.start - b.start);
+  const graphicSegsSorted = [...graphicSegs].sort((a, b) => a.start - b.start);
 
   // ── Playlists ─────────────────────────────────────────────────
 
@@ -433,7 +500,7 @@ export function buildMltDocument(
    *  entirely between two frame centers owns 0 frames and is silently
    *  not displayed (audio is rendered separately by ffmpeg, so the
    *  content isn't lost). */
-  function clipFrameOwnership(seg: ClipSeg | TextSeg | StaticSeg): { startK: number; endK: number } {
+  function clipFrameOwnership(seg: ClipSeg | TextSeg | StaticSeg | GraphicSeg): { startK: number; endK: number } {
     return {
       startK: Math.ceil(seg.start * fps),
       endK: Math.ceil(seg.end * fps),
@@ -785,6 +852,28 @@ export function buildMltDocument(
     }
   }
 
+  // Graphic tracks: same shape as text — qimage producer + ttl=1 so
+  // animated PNG sequences advance one image per output frame. Each
+  // graphic rides its own track for an independent qtblend rect.
+  const graphicTrackInfo: { id: string; seg: GraphicSeg }[] = [];
+  const graphicPlaylistsXml: string[] = [];
+  for (const seg of graphicSegsSorted) {
+    const segLen = fr(seg.end) - fr(seg.start);
+    if (segLen < 1) continue;
+    const id = `graphic_v${graphicTrackInfo.length + 1}`;
+    const { startK, endK } = clipFrameOwnership(seg);
+    const len = endK - startK;
+    if (len < 1) continue;
+    const lines = [`  <playlist id="${id}">`];
+    if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
+    lines.push(`    <entry producer="${seg.producer}" in="0" out="${len - 1}"/>`);
+    const trailing = totalFrames - endK;
+    if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
+    lines.push(`  </playlist>`);
+    graphicTrackInfo.push({ id, seg });
+    graphicPlaylistsXml.push(lines.join("\n"));
+  }
+
   // Pre-mixed audio file as a single producer + playlist + track.
   // Renders alongside the video without participating in the
   // composite chain (mix transition just sums it into the master).
@@ -812,7 +901,7 @@ export function buildMltDocument(
   // re-interpret bare numbers as percentages instead of pixels, which
   // sends y=-800 to y=0 (clamped) and explains the (0,0) drift we
   // saw when ¥400 coexisted with another animated overlay.
-  function buildOverlayGeometry(seg: TextSeg | ClipSeg | StaticSeg): string {
+  function buildOverlayGeometry(seg: TextSeg | ClipSeg | StaticSeg | GraphicSeg): string {
     const node = seg.node;
     const len = fr(seg.end) - fr(seg.start);
     const dur = seg.end - seg.start;
@@ -889,9 +978,13 @@ export function buildMltDocument(
   for (const t of textTrackInfo) {
     trackEntries.push(`    <track producer="${t.id}"/>`);
   }
+  const graphicTrackBase = textTrackBase + textTrackInfo.length;
+  for (const g of graphicTrackInfo) {
+    trackEntries.push(`    <track producer="${g.id}"/>`);
+  }
   let audioTrackIdx: number | null = null;
   if (audioTrackId) {
-    audioTrackIdx = textTrackBase + textTrackInfo.length;
+    audioTrackIdx = graphicTrackBase + graphicTrackInfo.length;
     trackEntries.push(`    <track producer="${audioTrackId}" hide="video"/>`);
   }
 
@@ -972,6 +1065,25 @@ export function buildMltDocument(
       ].join("\n"),
     );
   }
+  for (let i = 0; i < graphicTrackInfo.length; i++) {
+    const trackIdx = graphicTrackBase + i;
+    const { seg } = graphicTrackInfo[i];
+    const { startK, endK } = clipFrameOwnership(seg);
+    const geometry = buildOverlayGeometry(seg);
+    transitionsXml.push(
+      [
+        `    <transition>`,
+        `      <property name="a_track">0</property>`,
+        `      <property name="b_track">${trackIdx}</property>`,
+        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="compositing">over</property>`,
+        `      <property name="in">${startK}</property>`,
+        `      <property name="out">${endK - 1}</property>`,
+        `      <property name="rect">${escAttr(geometry)}</property>`,
+        `    </transition>`,
+      ].join("\n"),
+    );
+  }
   if (audioTrackIdx != null) {
     transitionsXml.push(
       [
@@ -997,7 +1109,7 @@ ${bgPlaylistXmlStr}
 
 ${videoPlaylistXml}
 
-${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${staticPlaylistsXml.join("\n\n")}${staticPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}
+${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${staticPlaylistsXml.join("\n\n")}${staticPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}${textPlaylistsXml.length > 0 && graphicPlaylistsXml.length > 0 ? "\n\n" : ""}${graphicPlaylistsXml.join("\n\n")}
 ${audioPlaylistXml ? `\n${audioPlaylistXml}\n` : ""}
   <tractor id="main_tractor" in="0" out="${Math.max(0, totalFrames - 1)}">
 ${trackEntries.join("\n")}

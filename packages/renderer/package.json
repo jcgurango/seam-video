@@ -16,10 +16,17 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "engines": {
+    "node": ">=22 <23"
+  },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",
+    "@maplibre/maplibre-gl-native": "^6.4.1",
     "@napi-rs/canvas": "^0.1.100",
-    "@seam/core": "workspace:*"
+    "@seam/core": "workspace:*",
+    "canvas": "^3.2.3",
+    "fabric": "^7.4.0",
+    "pmtiles": "^4.4.1"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
