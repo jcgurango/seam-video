@@ -1,4 +1,5 @@
 import { classRegistry, Color } from "fabric";
+import { resolveEasing } from "./easing.js";
 
 // Props beyond fabric's own that participate in serialization and animation.
 // `logicalSrc` is bookkeeping for Image instances — it round-trips through
@@ -9,6 +10,8 @@ export const CUSTOM_PROPS: string[] = [
   "revolutions",
   "angleDirection",
   "logicalSrc",
+  "easing",
+  "paths",
 ];
 
 export type FilledObject = Record<string, unknown>;
@@ -199,6 +202,7 @@ const DISCRETE_PROPS = new Set<string>([
   "logicalSrc",
   "src",
   "crossOrigin",
+  "easing",
 ]);
 
 type Direction = "shortest" | "cw" | "ccw";
@@ -335,6 +339,35 @@ function interpolateObject(
       out[k] = lerpPath(a as PathCmd[], b as PathCmd[], t);
       continue;
     }
+    if (
+      k === "paths" &&
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length
+    ) {
+      // Map paths: per-index, points stay from prev (discrete by design),
+      // color + progress interpolate.
+      out.paths = a.map((aPath, i) => {
+        const bPath = (b as Array<Record<string, unknown>>)[i];
+        const ap = aPath as Record<string, unknown>;
+        if (!bPath) return ap;
+        const merged: Record<string, unknown> = { ...ap };
+        if (typeof ap.color === "string" && typeof bPath.color === "string") {
+          const lerped = lerpColor(ap.color, bPath.color, t);
+          if (lerped) merged.color = lerped;
+        }
+        const ap_p = typeof ap.progress === "number" ? ap.progress : 1;
+        const bp_p = typeof bPath.progress === "number" ? bPath.progress : 1;
+        merged.progress = lerpNum(ap_p, bp_p, t);
+        const ap_w = typeof ap.lineWidth === "number" ? ap.lineWidth : 4;
+        const bp_w = typeof bPath.lineWidth === "number" ? bPath.lineWidth : 4;
+        merged.lineWidth = lerpNum(ap_w, bp_w, t);
+        // Points always come from the prev side — never lerped.
+        merged.points = ap.points;
+        return merged;
+      });
+      continue;
+    }
     if (typeof a === "number" && typeof b === "number") {
       out[k] = lerpNum(a, b, t);
       continue;
@@ -347,17 +380,25 @@ function interpolateObject(
 // Walk prev.flat — for each path: if next has the same path AND same type,
 // lerp; else freeze at prev. Paths only in `next` are dropped (they appear
 // discretely at next's stamp, when prev structure flips to next's).
+//
+// `frameEasing` is the easing authored on the prev keyframe (3rd tuple
+// element). Per-object `easing` attributes override it. Easing is applied
+// to `t` before object interpolation — every numeric / angle / color lerp
+// inside interpolateObject then runs against the eased fraction.
 export function interpolateFrames(
   prev: FilledFrame,
   next: FilledFrame,
   t: number,
+  frameEasing?: string,
 ): FlatFrame {
   const out: FlatFrame = {};
   for (const path in prev.flat) {
     const a = prev.flat[path];
     const b = next.flat[path];
     if (b && a.type === b.type) {
-      out[path] = interpolateObject(a, b, t);
+      const objEasing = typeof a.easing === "string" ? a.easing : undefined;
+      const easingFn = resolveEasing(objEasing ?? frameEasing);
+      out[path] = interpolateObject(a, b, easingFn(t));
     } else {
       out[path] = { ...a };
     }

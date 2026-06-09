@@ -98,18 +98,30 @@ classRegistry.setClass(Clip, "Clip");
 // Sub-clip playback
 // ───────────────────────────────────────────────────────────────────────────
 
+// Each frame tuple is read positionally: [0]=stamp, [1]=objects, [2]=easing?.
+// Typed loosely as ReadonlyArray<unknown> so the optional 3rd element doesn't
+// force callers to ceremoniously narrow.
+export type FrameTuple = ReadonlyArray<unknown>;
+
 export type ClipDefLike = {
   id: string;
   duration?: number;
   loop?: boolean;
   contentWidth?: number;
   contentHeight?: number;
-  frames: ReadonlyArray<readonly [number, ReadonlyArray<unknown>]>;
+  frames: ReadonlyArray<FrameTuple>;
+};
+
+type ClipExtKf = {
+  stamp: number;
+  snap: FilledFrame;
+  frameIdx: number;
+  easing?: string;
 };
 
 export type ClipPlayback = {
   filledFrames: FilledFrame[];
-  extKfs: Array<{ stamp: number; snap: FilledFrame; frameIdx: number }>;
+  extKfs: ClipExtKf[];
   duration: number;
   loop: boolean;
 };
@@ -122,7 +134,10 @@ export async function precomputeClipPlayback(
       fillFrame(f[1] as unknown[], i),
     ),
   );
-  const stamps = clipDef.frames.map(f => f[0]);
+  const stamps = clipDef.frames.map(f => f[0] as number);
+  const easings = clipDef.frames.map(
+    f => f[2] as string | undefined,
+  );
   const firstStamp = stamps[0] ?? 0;
   const lastStamp = stamps[stamps.length - 1] ?? 0;
   const duration =
@@ -132,21 +147,25 @@ export async function precomputeClipPlayback(
   const loop =
     clipDef.loop === true && duration > 0 && filledFrames.length >= 1;
 
-  const extKfs = filledFrames.map((snap, i) => ({
+  const extKfs: ClipExtKf[] = filledFrames.map((snap, i) => ({
     stamp: stamps[i],
     snap,
     frameIdx: i,
+    easing: easings[i],
   }));
   if (loop && filledFrames.length >= 1) {
+    const lastIdx = filledFrames.length - 1;
     extKfs.unshift({
       stamp: lastStamp - duration,
-      snap: filledFrames[filledFrames.length - 1],
-      frameIdx: filledFrames.length - 1,
+      snap: filledFrames[lastIdx],
+      frameIdx: lastIdx,
+      easing: easings[lastIdx],
     });
     extKfs.push({
       stamp: duration + firstStamp,
       snap: filledFrames[0],
       frameIdx: 0,
+      easing: easings[0],
     });
   }
   extKfs.sort((a, b) => a.stamp - b.stamp);
@@ -159,12 +178,14 @@ export async function precomputeClipPlayback(
 export type ClipAnchor = { outerT: number; startPosition: number };
 
 export function getClipAnchorsAtPath(
-  outerFrames: ReadonlyArray<readonly [number, ReadonlyArray<unknown>]>,
+  outerFrames: ReadonlyArray<FrameTuple>,
   clipPath: string,
 ): ClipAnchor[] {
   const anchors: ClipAnchor[] = [];
   const parts = clipPath.split(".");
-  for (const [outerT, objs] of outerFrames) {
+  for (const f of outerFrames) {
+    const outerT = f[0] as number;
+    const objs = f[1] as ReadonlyArray<unknown>;
     const found = walkAuthoredToPath(objs, parts, 0);
     if (
       found &&
@@ -243,7 +264,12 @@ export function clipSnapAtLocalTime(
   const nextIdx = prevIdx + 1;
   const span = extKfs[nextIdx].stamp - extKfs[prevIdx].stamp;
   const pairT = span > 0 ? (localTime - extKfs[prevIdx].stamp) / span : 0;
-  return interpolateFrames(extKfs[prevIdx].snap, extKfs[nextIdx].snap, pairT);
+  return interpolateFrames(
+    extKfs[prevIdx].snap,
+    extKfs[nextIdx].snap,
+    pairT,
+    extKfs[prevIdx].easing,
+  );
 }
 
 const CLIP_APPLY_SKIP = new Set([
@@ -342,7 +368,7 @@ export async function resolveClipsInTree(
     id: string;
     contentWidth?: number;
     contentHeight?: number;
-    frames: ReadonlyArray<readonly [number, ReadonlyArray<unknown>]>;
+    frames: ReadonlyArray<FrameTuple>;
   }>,
   enliven: (
     specs: Record<string, unknown>[],

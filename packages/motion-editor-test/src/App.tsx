@@ -36,6 +36,7 @@ import {
   rewriteToLogical,
   rewriteToReal,
 } from "./src-registry.js";
+import { MapLibreMap } from "./maplibre-map.js";
 
 const DESIGN_W = 1080;
 const DESIGN_H = 1920;
@@ -44,6 +45,10 @@ const MAX_ZOOM = 20;
 
 type FrameObjects = unknown[];
 
+// A keyframe entry: [stamp, objects, easing?]. The optional 3rd element
+// is the default easing for animations leaving this frame.
+type Frame = [number, FrameObjects, string?];
+
 type ClipDef = {
   id: string;
   type: "graphic";
@@ -51,7 +56,7 @@ type ClipDef = {
   loop?: boolean;
   contentWidth?: number;
   contentHeight?: number;
-  frames: Array<[number, FrameObjects]>;
+  frames: Frame[];
 };
 
 type GraphicDoc = {
@@ -61,7 +66,7 @@ type GraphicDoc = {
   contentWidth?: number;
   contentHeight?: number;
   clips?: ClipDef[];
-  frames: Array<[number, FrameObjects]>;
+  frames: Frame[];
 };
 
 const INITIAL_DOC: GraphicDoc = {
@@ -100,10 +105,14 @@ const INITIAL_DOC: GraphicDoc = {
     [
       0,
       [
+        // Frame-level easing ("ease-out") applies to all animations leaving
+        // this keyframe — tomato + wave1 decelerate into frame 1.
+        // cyan overrides with its own "linear" so it moves uniformly.
         { id: "tomato", type: "Rect", left: 100, top: 200, width: 300, height: 220, fill: "tomato" },
-        { id: "cyan", type: "Rect", left: 600, top: 1200, width: 260, height: 420, fill: "#00bcd4" },
+        { id: "cyan", type: "Rect", left: 600, top: 1200, width: 260, height: 420, fill: "#00bcd4", easing: "linear" },
         { id: "wave1", type: "Clip", clipId: "wave", startPosition: 0, left: 600, top: 200, scaleX: 0.6, scaleY: 0.6 },
       ],
+      "ease-out",
     ],
     [
       1,
@@ -112,6 +121,8 @@ const INITIAL_DOC: GraphicDoc = {
         { id: "cyan", type: "Rect", left: 480, top: 1080, width: 260, height: 420, fill: "#00bcd4", angle: -12 },
         { id: "wave1", type: "Clip", clipId: "wave", left: 300, top: 700, scaleX: 0.8, scaleY: 0.8, angle: 10 },
       ],
+      // Frame 1 → 2 uses ease-in: animations accelerate into the final pose.
+      "ease-in",
     ],
     [
       2,
@@ -156,6 +167,104 @@ function applySnap(
   }
 }
 
+// Try to update the canvas tree to match `newSpecs` *without* tearing down
+// objects. Returns true on success, false when the structure differs and a
+// full loadFromJSON is needed. The structural diff lets editor tweaks of
+// numeric props (and Map lat/lng/zoom!) flow through obj.set() — avoiding
+// the maplibre teardown-then-rebuild that came with every JSON edit.
+function tryPatchInPlace(
+  liveObjects: FabricObject[],
+  newSpecs: ReadonlyArray<unknown>,
+): boolean {
+  if (liveObjects.length !== newSpecs.length) return false;
+  for (let i = 0; i < liveObjects.length; i++) {
+    if (!checkAndPatchOne(liveObjects[i], newSpecs[i])) return false;
+  }
+  return true;
+}
+
+const PATCH_SKIP_KEYS = new Set([
+  "type",
+  "id",
+  "version",
+  "objects",
+  "src", // Image src reload is handled by full loadFromJSON.
+]);
+
+function checkAndPatchOne(live: FabricObject, spec: unknown): boolean {
+  const s = spec as Record<string, unknown>;
+  if (!s || typeof s !== "object") return false;
+  if (live.type !== s.type) return false;
+  const liveId = (live as unknown as { id?: unknown }).id;
+  if (liveId !== s.id) return false;
+
+  // Source-bearing types: any change to the underlying asset means we
+  // need a real reload (image fetch / maplibre init).
+  if (live.type === "Image") {
+    const liveLogical = (live as unknown as { logicalSrc?: string }).logicalSrc;
+    if (typeof liveLogical === "string" && liveLogical !== s.src) return false;
+  }
+  if (live.type === "Map") {
+    const livePmt = (live as unknown as { pmtilesSrc?: string }).pmtilesSrc;
+    if (livePmt !== s.pmtilesSrc) return false;
+  }
+
+  // For non-Clip groups, recurse into children to confirm shape matches.
+  // Clip children are derived from the clip definition and never authored,
+  // so we skip their recursion entirely.
+  if (live instanceof Group && !(live instanceof Clip)) {
+    const liveChildren = live.getObjects();
+    const specChildren = Array.isArray(s.objects)
+      ? (s.objects as unknown[])
+      : [];
+    if (liveChildren.length !== specChildren.length) return false;
+    for (let j = 0; j < liveChildren.length; j++) {
+      if (!checkAndPatchOne(liveChildren[j], specChildren[j])) return false;
+    }
+  }
+
+  const patch: Record<string, unknown> = {};
+  for (const k in s) {
+    if (PATCH_SKIP_KEYS.has(k)) continue;
+    patch[k] = s[k];
+  }
+  live.set(patch);
+  live.setCoords();
+  return true;
+}
+
+// Recursive walker: assigns hierarchical paths to every MapLibreMap in the
+// tree using the same id-or-positional-index scheme used for animation
+// paths. Path-keyed pool sharing keys off these.
+function attachMapPaths(
+  objs: FabricObject[],
+  parentPath: string,
+  isPreEnliven = false,
+): void {
+  for (let i = 0; i < objs.length; i++) {
+    const obj = objs[i];
+    const id = (obj as unknown as { id?: string }).id;
+    const key = typeof id === "string" && id.length > 0 ? id : String(i);
+    const path = parentPath === "" ? key : `${parentPath}.${key}`;
+    if (obj instanceof MapLibreMap) {
+      // Mark pre-enliven first so the constructor's `removed` handler
+      // doesn't dispose during loop-wrap re-adds.
+      obj.isPreEnliven = isPreEnliven;
+      obj.attachToPath(path);
+    }
+    if (
+      typeof (obj as unknown as { getObjects?: () => FabricObject[] })
+        .getObjects === "function"
+    ) {
+      attachMapPaths(
+        (obj as unknown as { getObjects: () => FabricObject[] }).getObjects(),
+        path,
+        isPreEnliven,
+      );
+    }
+  }
+}
+
 // Walk a fabric tree collecting all Clip instances with their hierarchical
 // paths (same id-or-positional-index scheme used for animation paths).
 function collectClips(
@@ -190,7 +299,7 @@ function collectClips(
 function applyAllClips(
   clips: Array<[string, Clip]>,
   outerT: number,
-  outerFrames: ReadonlyArray<readonly [number, ReadonlyArray<unknown>]>,
+  outerFrames: ReadonlyArray<ReadonlyArray<unknown>>,
   playbacks: Map<string, ClipPlayback>,
 ): void {
   for (const [path, clip] of clips) {
@@ -367,8 +476,12 @@ export function App() {
       lastFrameSigRef.current = JSON.stringify(objects);
       const next: GraphicDoc = {
         ...d,
-        frames: d.frames.map((f, i): [number, FrameObjects] =>
-          i === idx ? [f[0], objects] : f,
+        frames: d.frames.map((f, i): Frame =>
+          i === idx
+            ? f.length > 2
+              ? [f[0], objects, f[2] as string]
+              : [f[0], objects]
+            : f,
         ),
       };
       setJsonText(JSON.stringify(next, null, 2));
@@ -395,7 +508,28 @@ export function App() {
       );
       for (const file of files) {
         try {
-          if (file.type === "image/svg+xml" || /\.svg$/i.test(file.name)) {
+          if (/\.pmtiles$/i.test(file.name)) {
+            const logical = registerBlob(file, file.name.split(".")[0]);
+            const map = new MapLibreMap({
+              pmtilesSrc: logical,
+              width: 480,
+              height: 320,
+              latitude: 0,
+              longitude: 0,
+              zoom: 1,
+              left: worldPoint.x,
+              top: worldPoint.y,
+              originX: "center",
+              originY: "center",
+            });
+            c.add(map);
+            // Attach path immediately so the pool acquires before writeBack
+            // round-trips. Path = positional index at top level.
+            const droppedIndex = c.getObjects().length - 1;
+            map.attachToPath(String(droppedIndex));
+            c.setActiveObject(map);
+            c.fire("object:modified", { target: map });
+          } else if (file.type === "image/svg+xml" || /\.svg$/i.test(file.name)) {
             const text = await file.text();
             const result = await loadSVGFromString(text);
             const valid = result.objects.filter(
@@ -472,10 +606,24 @@ export function App() {
     // Swap logical ids to real URLs so fabric's enliven can actually load
     // the bytes. The reverse swap happens in writeBack via toObject.
     const resolved = rewriteToReal(objects) as FrameObjects;
+
+    // Fast path: when the new tree has the same structure (same types, ids,
+    // groupings), patch props in place via obj.set(). Avoids tearing down
+    // maplibre maps, video sources, etc. just because a coordinate changed.
+    // Uses the pre-rewrite `objects` (with logical srcs) so the src check
+    // compares logical-to-logical.
+    if (tryPatchInPlace(fc.getObjects(), objects as unknown[])) {
+      fc.requestRenderAll();
+      isLoadingRef.current = false;
+      return;
+    }
+
     fc.loadFromJSON({ objects: resolved }).then(async () => {
       if (cancelled) return;
       // loadFromJSON clears backgroundImage; restore.
       if (bg) fc.backgroundImage = bg;
+      // Assign hierarchical paths to revived Maps so they can pool.
+      attachMapPaths(fc.getObjects(), "");
       const cur = stateRef.current;
       const clips = cur.doc?.clips ?? [];
       if (clips.length > 0) {
@@ -617,23 +765,33 @@ export function App() {
     const loop = doc?.loop === true && duration > 0 && frames.length >= 1;
 
     // Extended keyframe list — each entry remembers which real frame's
-    // tree should be on the canvas while it's the "prev" side.
-    type ExtKf = { stamp: number; snap: FilledFrame; frameIdx: number };
+    // tree should be on the canvas while it's the "prev" side, plus the
+    // easing authored on that frame for animations leaving it.
+    type ExtKf = {
+      stamp: number;
+      snap: FilledFrame;
+      frameIdx: number;
+      easing?: string;
+    };
     const extKfs: ExtKf[] = filledFrames.map((snap, i) => ({
       stamp: stamps[i],
       snap,
       frameIdx: i,
+      easing: frames[i]?.[2],
     }));
     if (loop && filledFrames.length >= 1) {
+      const lastIdx = filledFrames.length - 1;
       extKfs.unshift({
         stamp: lastStamp - duration,
-        snap: filledFrames[filledFrames.length - 1],
-        frameIdx: filledFrames.length - 1,
+        snap: filledFrames[lastIdx],
+        frameIdx: lastIdx,
+        easing: frames[lastIdx]?.[2],
       });
       extKfs.push({
         stamp: duration + firstStamp,
         snap: filledFrames[0],
         frameIdx: 0,
+        easing: frames[0]?.[2],
       });
     }
     extKfs.sort((a, b) => a.stamp - b.stamp);
@@ -692,6 +850,9 @@ export function App() {
           );
           if (cancelled) return;
         }
+        // Pool acquire happens here — once per frame's Maps. Same path-id
+        // across frames → same maplibre instance under the hood.
+        attachMapPaths(enlivened, "", true);
         treesByFrame[i] = enlivened;
       }
 
@@ -769,6 +930,7 @@ export function App() {
         extKfs[prevIdx].snap,
         extKfs[nextIdx].snap,
         pairT,
+        extKfs[prevIdx].easing,
       );
       applySnap(pathToObj, snap);
       applyClipsAtOuterT(t);
@@ -781,6 +943,24 @@ export function App() {
       cancelled = true;
       if (raf) cancelAnimationFrame(raf);
       if (fc) fc.selection = true;
+      // Drain Map refcounts from pre-enlivened trees. The currently-visible
+      // tree's Maps will additionally be disposed via fabric's 'removed'
+      // event when reload clears the canvas; dispose is idempotent.
+      for (const tree of treesByFrame) {
+        if (!tree) continue;
+        const walk = (objs: FabricObject[]) => {
+          for (const obj of objs) {
+            if (obj instanceof MapLibreMap) {
+              obj.dispose();
+            }
+            const inner = (
+              obj as unknown as { getObjects?: () => FabricObject[] }
+            ).getObjects;
+            if (typeof inner === "function") walk(inner.call(obj));
+          }
+        };
+        walk(tree);
+      }
       // Wash playback mutations by forcing a fresh reload of the current frame.
       lastFrameSigRef.current = "";
       setReloadKey(k => k + 1);
