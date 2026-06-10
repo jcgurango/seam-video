@@ -525,6 +525,14 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
      *  must `return` a composition. Runs at compile time; the output
      *  replaces this composition in the rendered tree. */
     script: z.string().optional(),
+    /** Lexically-scoped string-substitution macros. Anywhere a `"$$NAME"`
+     *  string appears in this composition's subtree, the expander
+     *  substitutes the value here (or in an enclosing composition's
+     *  `macros`, nearest-enclosing wins). Values can be any JSON.
+     *  Expansion runs as the first step of `compileSeamFile`, BEFORE
+     *  bin / script resolution. The field is stripped from the
+     *  compiled output. */
+    macros: z.record(z.unknown()).optional(),
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),

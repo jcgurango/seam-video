@@ -313,6 +313,16 @@ export interface Composition extends ChildTimingFields {
    * rendered tree.
    */
   script?: string;
+  /**
+   * Lexically-scoped string-substitution macros. Anywhere a `"$$NAME"`
+   * string appears in this composition's subtree, the expander
+   * substitutes the value here (or in an enclosing composition's
+   * `macros`, nearest-enclosing wins). Values can be any JSON.
+   * Expansion runs as the first step of `compileSeamFile`, BEFORE bin
+   * / script resolution. The field is stripped from the compiled
+   * output.
+   */
+  macros?: Record<string, unknown>;
   /** Any valid SVG/CSS fill value. Painted across the composition's
    *  container rect under all children. */
   backgroundColor?: string;

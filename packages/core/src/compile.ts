@@ -21,6 +21,7 @@
 // inspect the bin definitions.
 
 import { validate } from "./validate.js";
+import { expandMacros, findUnresolvedMacros } from "./macros.js";
 import type { BinEntry, Child, Composition, SeamFile } from "./types.js";
 
 export interface CompileError {
@@ -45,16 +46,35 @@ export interface CompileOptions {
   runScripts?: boolean;
 }
 
-/** Compile a document — bottom-up: splice bin references, recurse into
- *  children/attachments, then run scripts on each composition. */
+/** Compile a document — bottom-up:
+ *    1. Expand macros (strips `composition.macros` and substitutes
+ *       every `"$$NAME"` reference). Failures land in `errors` and
+ *       bin/script processing is skipped.
+ *    2. Splice bin references.
+ *    3. Recurse into children/attachments.
+ *    4. Run scripts on each composition. */
 export function compileSeamFile(
   doc: SeamFile,
   options: CompileOptions = {},
 ): CompileResult {
   const errors: CompileError[] = [];
   const runScripts = options.runScripts ?? true;
+
+  // Macro expansion comes first — bin / script resolution operates on
+  // the post-expansion document. Failures here propagate as
+  // `CompileError`s tagged "macro:<path>" so the editor can surface
+  // them in the same channel as bin/script errors.
+  const expanded = expandMacros(doc);
+  if (!expanded.success) {
+    for (const message of expanded.errors) {
+      errors.push({ source: "macro", message });
+    }
+    return { doc, errors };
+  }
+  const expandedDoc = expanded.data as Composition;
+
   const compiled = compileComposition(
-    doc as Composition,
+    expandedDoc,
     [],
     errors,
     runScripts,
@@ -129,6 +149,17 @@ function compileComposition(
   if (staged.script != null && runScripts) {
     try {
       const rawResult = runScript(staged.script, staged);
+      // Macro expansion is a one-shot, pre-validation step on the
+      // *source* document. Scripts run after that and emit fresh
+      // content; any "$$…" in their output never had a chance to be
+      // expanded. Treat it as invalid rather than silently leaking
+      // unresolved references downstream.
+      const stray = findUnresolvedMacros(rawResult);
+      if (stray) {
+        throw new Error(
+          `Script output contains an unresolved macro $$${stray.name} at ${stray.path || "<root>"}. Macros are evaluated before scripts run — script output cannot reference them.`,
+        );
+      }
       const v = validate(rawResult);
       if (!v.success) {
         throw new Error(

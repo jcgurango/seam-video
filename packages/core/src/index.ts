@@ -4,6 +4,8 @@ export * from "./resolved-types.js";
 export * from "./validate.js";
 export { compileSeamFile, runScript } from "./compile.js";
 export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
+export { expandMacros, findUnresolvedMacros } from "./macros.js";
+export type { MacroExpandResult } from "./macros.js";
 export { resolveComposition } from "./layout/resolve.js";
 export {
   resolveSpatial,
