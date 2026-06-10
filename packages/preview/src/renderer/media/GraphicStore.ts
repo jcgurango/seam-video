@@ -43,11 +43,23 @@ interface GraphicEntry {
   outerFrames: ReadonlyArray<ReadonlyArray<unknown>>;
   isStaticGraphic: boolean;
   lastT: number;
+  /** Wall-clock timestamp of the last fabric.renderAll for this entry.
+   *  Drives the 60 Hz draw throttle. */
+  lastDrawAtMs: number;
   /** MapLibreMap instances keyed by hierarchical path-id, persisted
    *  across animation frames. Without this, each re-materialize would
    *  spin up a fresh maplibre — destroying any chance of pooling. */
   mapCache: Map<string, MapLibreMap>;
+  /** Unsubscribers for the maplibre onRender hooks installed against
+   *  each cached map. Drained in dispose. */
+  mapRenderUnsubs: Array<() => void>;
 }
+
+/** Wall-clock period between fabric redraws per graphic entry. 60 Hz
+ *  is sufficient for visible smoothness and cheap enough that the
+ *  drawImage from maplibre → fabric (~8MB blit + sync barrier on a
+ *  full-canvas Map) doesn't pile up faster than the GPU can drain. */
+const FRAME_MS = 1000 / 60;
 
 export class GraphicStore {
   private entries = new Map<ResolvedGraphic, GraphicEntry>();
@@ -69,11 +81,10 @@ export class GraphicStore {
           backgroundColor: "rgba(0,0,0,0)",
           enableRetinaScaling: false,
         });
-        // Async re-renders driven by MapLibreMap (maplibre fires when
-        // tiles arrive) bypass the per-tick update loop. Hook the
-        // fabric canvas so each off-tick redraw also tells the GPU
-        // texture manager that this graphic changed.
-        fabric.on("after:render", () => this.onFrameAvailable?.());
+        // (No fabric after:render → onFrameAvailable wiring anymore —
+        // fabric renders are driven exclusively by this store's
+        // throttled update(). Maplibre tile-load wake-ups go through
+        // MapLibreMap.addRenderListener below.)
 
         const playback = await precomputeGraphicPlayback({
           duration:
@@ -107,7 +118,9 @@ export class GraphicStore {
           outerFrames: node.frames as ReadonlyArray<ReadonlyArray<unknown>>,
           isStaticGraphic: isStatic(playback) && clipPlaybacks.size === 0,
           lastT: -1,
+          lastDrawAtMs: 0,
           mapCache: new Map<string, MapLibreMap>(),
+          mapRenderUnsubs: [],
         };
         this.entries.set(node, entry);
         await this.draw(entry, 0);
@@ -119,10 +132,17 @@ export class GraphicStore {
   }
 
   /** Per-tick hook. Each animated graphic re-renders its snapshot if
-   *  its node-local time has advanced; static graphics no-op after the
-   *  one-shot seed in setTimeline. */
+   *  its node-local time has advanced AND at least ~16.67ms has passed
+   *  since the last draw. Static graphics no-op after the one-shot
+   *  seed in setTimeline.
+   *
+   *  The wall-clock gate is the bigger win on high-refresh displays
+   *  and during paused-state maplibre tile loads — without it, fabric
+   *  redraws (and the maplibre→fabric drawImage cost inside each
+   *  Map._render) fire at whatever rate the rAF loop wakes. */
   async update(currentTime: number): Promise<void> {
     if (this.entries.size === 0) return;
+    const nowMs = performance.now();
     let anyRedrew = false;
     for (const entry of this.entries.values()) {
       if (entry.isStaticGraphic) continue;
@@ -130,7 +150,9 @@ export class GraphicStore {
       const duration = entry.node.timelineEnd - entry.node.timelineStart;
       if (t < 0 || t > duration) continue;
       if (Math.abs(t - entry.lastT) < 0.001) continue;
+      if (nowMs - entry.lastDrawAtMs < FRAME_MS) continue;
       entry.lastT = t;
+      entry.lastDrawAtMs = nowMs;
       try {
         await this.draw(entry, t);
         anyRedrew = true;
@@ -147,6 +169,16 @@ export class GraphicStore {
 
   dispose(): void {
     for (const entry of this.entries.values()) {
+      // Drop the maplibre wake-up hooks before disposing the maps,
+      // otherwise the unsubs would dangle.
+      for (const unsub of entry.mapRenderUnsubs) {
+        try {
+          unsub();
+        } catch {
+          // ignore
+        }
+      }
+      entry.mapRenderUnsubs = [];
       // Release pooled maplibre refs explicitly — the fabric canvas's
       // own dispose() removes children which fires "removed", but
       // isPreEnliven Maps short-circuit dispose there to survive
@@ -233,6 +265,15 @@ export class GraphicStore {
         live.isPreEnliven = true;
         live.attachToPath(path);
         entry.mapCache.set(path, live);
+        // Maplibre fires render when tiles arrive / camera applies on
+        // its 16ms flush. Nudge the rAF loop awake so the next
+        // throttled update sees the new map content. (Replaces the
+        // old fabric after:render path, which fired uncontrollably
+        // often and bypassed the throttle.)
+        const unsub = live.addRenderListener(() =>
+          this.onFrameAvailable?.(),
+        );
+        entry.mapRenderUnsubs.push(unsub);
       }
       return live;
     }

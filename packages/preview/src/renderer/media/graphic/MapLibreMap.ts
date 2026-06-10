@@ -563,9 +563,32 @@ export class MapLibreMap extends FabricObject {
   }
 
   private _requestRenderAll(): void {
-    const c = (this as unknown as { canvas?: { requestRenderAll(): void } })
-      .canvas;
-    if (c) c.requestRenderAll();
+    // Deliberate no-op. All fabric renders are driven by
+    // GraphicStore.update, which wall-clock-throttles to 60 Hz.
+    // If we called fabric's requestRenderAll here, maplibre's tile-load
+    // cadence (or display refresh on 120 Hz screens) would defeat the
+    // throttle. Paused-state tile loads still propagate through the
+    // render-listener hook below, which wakes the rAF loop so the
+    // throttled update sees them on the next tick.
+  }
+
+  /** External hook for when the live maplibre repaints — typically a
+   *  tile arriving or a flushPending firing. GraphicStore uses this to
+   *  call onFrameAvailable so the rAF loop wakes (or stays awake);
+   *  the next throttled update picks up the new map content via the
+   *  fabric drawImage in _render. Returns an unsubscriber. */
+  addRenderListener(fn: () => void): () => void {
+    if (!this._shared) {
+      // attachToPath populates _shared synchronously, so this only
+      // fires if a caller forgot to attach first.
+      console.warn(
+        "[MapLibreMap] addRenderListener before attachToPath — no-op",
+      );
+      return () => {};
+    }
+    const shared = this._shared;
+    shared.onRender.add(fn);
+    return () => shared.onRender.delete(fn);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
