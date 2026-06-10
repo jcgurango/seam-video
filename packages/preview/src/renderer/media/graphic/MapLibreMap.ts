@@ -263,12 +263,14 @@ function acquireShared(
 
   (async () => {
     if (!pmtilesResolver) {
-      console.warn("[Map] no pmtilesResolver registered — call setPmtilesResolver()");
+      console.error(
+        "[Map] no pmtilesResolver registered — call setPmtilesResolver()",
+      );
       return;
     }
     const pmSource = await pmtilesResolver(source);
     if (!pmSource) {
-      console.warn(`[Map] pmtiles source unresolved: ${source}`);
+      console.error(`[Map] pmtiles source unresolved: ${source}`);
       return;
     }
     if (!pool.has(key)) return;
@@ -319,9 +321,15 @@ function acquireShared(
       for (const cb of entry.onRender) cb();
     });
     map.on("error", (e) => {
-      console.warn(
-        "[Map pool] maplibre error:",
-        e?.error?.message ?? "(no message)",
+      // Surface the underlying Error object too — its stack pinpoints
+      // the source/tile/style fragment that failed (tile parse errors,
+      // sprite/glyph fetch failures, style validation, etc.). Without
+      // the full object you get a bare message that's often unhelpful.
+      const err = e?.error;
+      console.error(
+        `[Map pool] maplibre error (source=${source}):`,
+        err?.message ?? "(no message)",
+        err ?? e,
       );
     });
   })();

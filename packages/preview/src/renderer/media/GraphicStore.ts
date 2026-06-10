@@ -46,6 +46,12 @@ interface GraphicEntry {
   /** Wall-clock timestamp of the last fabric.renderAll for this entry.
    *  Drives the 60 Hz draw throttle. */
   lastDrawAtMs: number;
+  /** Maplibre fired a render since the last fabric draw — the live map
+   *  canvas advanced (tiles arriving, camera applied, etc.) but the
+   *  snapshot tree didn't. Forces a redraw even when isStaticGraphic
+   *  short-circuits and even when the node-local time hasn't advanced
+   *  (paused playback). Cleared on draw. */
+  pendingMapWake: boolean;
   /** MapLibreMap instances keyed by hierarchical path-id, persisted
    *  across animation frames. Without this, each re-materialize would
    *  spin up a fresh maplibre — destroying any chance of pooling. */
@@ -119,6 +125,7 @@ export class GraphicStore {
           isStaticGraphic: isStatic(playback) && clipPlaybacks.size === 0,
           lastT: -1,
           lastDrawAtMs: 0,
+          pendingMapWake: false,
           mapCache: new Map<string, MapLibreMap>(),
           mapRenderUnsubs: [],
         };
@@ -131,26 +138,46 @@ export class GraphicStore {
     if (this.entries.size > 0) this.onFrameAvailable?.();
   }
 
-  /** Per-tick hook. Each animated graphic re-renders its snapshot if
-   *  its node-local time has advanced AND at least ~16.67ms has passed
-   *  since the last draw. Static graphics no-op after the one-shot
-   *  seed in setTimeline.
+  /** Per-tick hook. Three paths:
+   *    1. Static graphic + pendingMapWake → fabric.renderAll only
+   *       (the snapshot tree is unchanged; we just need fabric to
+   *       re-run Map._render so the new maplibre canvas lands).
+   *    2. Animated graphic + (time advanced OR pendingMapWake) →
+   *       full draw() so a fresh snapshot is interpolated AND the
+   *       map is picked up.
+   *    3. Otherwise → skip.
    *
-   *  The wall-clock gate is the bigger win on high-refresh displays
-   *  and during paused-state maplibre tile loads — without it, fabric
-   *  redraws (and the maplibre→fabric drawImage cost inside each
-   *  Map._render) fire at whatever rate the rAF loop wakes. */
+   *  Wall-clock 60Hz throttle applies uniformly. Without it, fabric
+   *  redraws (and the maplibre→fabric drawImage inside Map._render)
+   *  fire at whatever rate the rAF loop wakes. */
   async update(currentTime: number): Promise<void> {
     if (this.entries.size === 0) return;
     const nowMs = performance.now();
     let anyRedrew = false;
     for (const entry of this.entries.values()) {
-      if (entry.isStaticGraphic) continue;
+      if (nowMs - entry.lastDrawAtMs < FRAME_MS) continue;
+      const mapWake = entry.pendingMapWake;
+
+      if (entry.isStaticGraphic) {
+        // Single-keyframe + no clips. Only redraw on a map wake.
+        if (!mapWake) continue;
+        entry.pendingMapWake = false;
+        entry.lastDrawAtMs = nowMs;
+        try {
+          entry.fabric.renderAll();
+          anyRedrew = true;
+        } catch (err) {
+          console.error("[graphic] static map redraw failed:", err);
+        }
+        continue;
+      }
+
       const t = currentTime - entry.node.timelineStart;
       const duration = entry.node.timelineEnd - entry.node.timelineStart;
       if (t < 0 || t > duration) continue;
-      if (Math.abs(t - entry.lastT) < 0.001) continue;
-      if (nowMs - entry.lastDrawAtMs < FRAME_MS) continue;
+      const tChanged = Math.abs(t - entry.lastT) >= 0.001;
+      if (!tChanged && !mapWake) continue;
+      entry.pendingMapWake = false;
       entry.lastT = t;
       entry.lastDrawAtMs = nowMs;
       try {
@@ -266,13 +293,16 @@ export class GraphicStore {
         live.attachToPath(path);
         entry.mapCache.set(path, live);
         // Maplibre fires render when tiles arrive / camera applies on
-        // its 16ms flush. Nudge the rAF loop awake so the next
-        // throttled update sees the new map content. (Replaces the
-        // old fabric after:render path, which fired uncontrollably
-        // often and bypassed the throttle.)
-        const unsub = live.addRenderListener(() =>
-          this.onFrameAvailable?.(),
-        );
+        // its 16ms flush. Mark the entry as needing a refresh AND wake
+        // the rAF loop. The pendingMapWake flag is what lets a static
+        // single-keyframe graphic (or a paused multi-keyframe graphic)
+        // redraw at all — without it the isStaticGraphic / time-delta
+        // short-circuits in update() would drop the wake on the floor
+        // and the map would stay stuck on the loading placeholder.
+        const unsub = live.addRenderListener(() => {
+          entry.pendingMapWake = true;
+          this.onFrameAvailable?.();
+        });
         entry.mapRenderUnsubs.push(unsub);
       }
       return live;

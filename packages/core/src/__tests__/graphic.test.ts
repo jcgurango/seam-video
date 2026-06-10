@@ -261,6 +261,33 @@ describe("interp engine", () => {
     expect(snap.b.left).toBe(0); // frozen at prev
   });
 
+  it("interpolates Map zoom in scale-space (linear in 2^-zoom)", () => {
+    const prev = makeFrame(
+      [{ id: "m", type: "Map", source: "x", latitude: 0, longitude: 0, zoom: 4 }],
+      0,
+    );
+    const next = makeFrame(
+      [{ id: "m", type: "Map", source: "x", latitude: 0, longitude: 0, zoom: 8 }],
+      1,
+    );
+    const snap = interpolateFrames(prev, next, 0.5);
+    // s0 = 2^-4 = 0.0625, s1 = 2^-8 = 0.00390625
+    // scale at t=0.5 = (0.0625 + 0.00390625) / 2 = 0.033203125
+    // zoom = -log2(0.033203125) ≈ 4.9124
+    expect(snap.m.zoom as number).toBeCloseTo(4.9124, 3);
+    // Sanity: NOT linear zoom (which would be 6.0).
+    expect(snap.m.zoom as number).toBeLessThan(6.0);
+  });
+
+  it("falls back to plain numeric lerp for non-Map zoom keys", () => {
+    // A Rect with an authored `zoom` prop (e.g. some unrelated custom
+    // attribute) shouldn't trigger the log-scale branch.
+    const prev = makeFrame([{ id: "r", type: "Rect", zoom: 0 }], 0);
+    const next = makeFrame([{ id: "r", type: "Rect", zoom: 10 }], 1);
+    const snap = interpolateFrames(prev, next, 0.5);
+    expect(snap.r.zoom as number).toBeCloseTo(5);
+  });
+
   it("interpolates Map paths color + progress + lineWidth per index", () => {
     const prev = makeFrame(
       [

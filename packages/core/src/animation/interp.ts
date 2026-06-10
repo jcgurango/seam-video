@@ -288,6 +288,24 @@ function interpolateObject(
       });
       continue;
     }
+    if (
+      k === "zoom" &&
+      prev.type === "Map" &&
+      typeof a === "number" &&
+      typeof b === "number"
+    ) {
+      // Map zoom is logarithmic — every +1 doubles world detail. Lerping
+      // the zoom value directly gives a curve that creeps near one end
+      // and snaps near the other (constant zoom delta == accelerating
+      // viewport change). Interpolate in scale-space (2^-zoom, i.e.
+      // world units per pixel) instead so the camera move looks steady.
+      // `t` is already eased upstream.
+      const sA = Math.pow(2, -a);
+      const sB = Math.pow(2, -b);
+      const scale = sA + (sB - sA) * t;
+      out[k] = -Math.log2(scale);
+      continue;
+    }
     if (typeof a === "number" && typeof b === "number") {
       out[k] = lerpNum(a, b, t);
       continue;
