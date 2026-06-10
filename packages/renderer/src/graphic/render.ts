@@ -8,7 +8,15 @@
 // Node 25 prebuilds (or building from source). Everything else routes
 // through fabric's native renderers.
 
-import { FabricImage, StaticCanvas, util as fabricUtil, type FabricObject } from "fabric/node";
+import {
+  FabricImage,
+  FixedLayout,
+  Group,
+  LayoutManager,
+  StaticCanvas,
+  util as fabricUtil,
+  type FabricObject,
+} from "fabric/node";
 import type { FlatFrame, FilledObject, FilledTree, FilledFrame } from "@seam/core";
 import {
   clipSnapAtLocalTime,
@@ -190,28 +198,40 @@ async function materializeClip(
     }
   }
 
-  // Outer transform comes from the Clip instance itself.
-  const groupSpec: Record<string, unknown> = {
-    type: "Group",
-    left: filled.left,
-    top: filled.top,
-    width: cw > 0 ? cw : filled.width,
-    height: ch > 0 ? ch : filled.height,
-    scaleX: filled.scaleX,
-    scaleY: filled.scaleY,
-    angle: filled.angle,
-    opacity: filled.opacity,
-    flipX: filled.flipX,
-    flipY: filled.flipY,
-    // Pass authored origin verbatim — including undefined — so fabric
-    // applies its own default. Hardcoding "left"/"top" here would
-    // diverge from the browser preview, which (correctly) honours
-    // fabric's center default.
-    originX: filled.originX,
-    originY: filled.originY,
-    objects: childSpecs,
-  };
-  return reviveSpec(groupSpec);
+  // Enliven children individually so the Group can be constructed
+  // directly with FixedLayout — fabric's default FitContent strategy
+  // recomputes the group bbox from children, which breaks our
+  // explicit content-size + (-cw/2, -ch/2) child shift. The browser
+  // GraphicStore does the same dance for the same reason.
+  const children: FabricObject[] = [];
+  for (const spec of childSpecs) {
+    const [obj] = (await fabricUtil.enlivenObjects([
+      spec as Record<string, unknown>,
+    ])) as FabricObject[];
+    if (obj) children.push(obj);
+  }
+  const groupW = cw > 0 ? cw : (filled.width as number | undefined);
+  const groupH = ch > 0 ? ch : (filled.height as number | undefined);
+  try {
+    return new Group(children, {
+      left: filled.left as number | undefined,
+      top: filled.top as number | undefined,
+      width: groupW,
+      height: groupH,
+      scaleX: filled.scaleX as number | undefined,
+      scaleY: filled.scaleY as number | undefined,
+      angle: filled.angle as number | undefined,
+      opacity: filled.opacity as number | undefined,
+      flipX: filled.flipX === true,
+      flipY: filled.flipY === true,
+      originX: filled.originX as "left" | "center" | "right" | undefined,
+      originY: filled.originY as "top" | "center" | "bottom" | undefined,
+      layoutManager: new LayoutManager(new FixedLayout()),
+    });
+  } catch (err) {
+    console.warn("[graphic] Clip group failed:", err);
+    return null;
+  }
 }
 
 /** Walk a clipDef's frame-0 tree paired with the clip snap, producing

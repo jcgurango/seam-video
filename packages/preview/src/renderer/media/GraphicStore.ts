@@ -13,7 +13,14 @@ import type {
   ResolvedTimeline,
 } from "@seam/core";
 import type { FlatFrame, FilledObject, FilledTree, FilledFrame } from "@seam/core";
-import { StaticCanvas, util as fabricUtil, type FabricObject } from "fabric";
+import {
+  FixedLayout,
+  Group,
+  LayoutManager,
+  StaticCanvas,
+  util as fabricUtil,
+  type FabricObject,
+} from "fabric";
 import {
   precomputeGraphicPlayback,
   snapshotAt,
@@ -342,26 +349,46 @@ export class GraphicStore {
           if (typeof s.top === "number") s.top = (s.top as number) + dy;
         }
       }
-      return reviveSpec({
-        type: "Group",
-        left: filled.left,
-        top: filled.top,
-        width: cw > 0 ? cw : filled.width,
-        height: ch > 0 ? ch : filled.height,
-        scaleX: filled.scaleX,
-        scaleY: filled.scaleY,
-        angle: filled.angle,
-        opacity: filled.opacity,
-        flipX: filled.flipX,
-        flipY: filled.flipY,
-        // Pass authored origin verbatim — fabric's default (center)
-        // applies when unset. Hardcoding "left"/"top" here would
-        // diverge from the renderer side and from fabric's documented
-        // semantics.
-        originX: filled.originX,
-        originY: filled.originY,
-        objects: childSpecs,
-      });
+      // Enliven children individually so we can hand them to the
+      // Group constructor directly — bypassing enliven-on-Group lets
+      // us pin FixedLayout up front. Without FixedLayout, fabric's
+      // default (FitContent) recomputes the group's bbox from the
+      // children and the explicit clip-content size + (-cw/2, -ch/2)
+      // shift no longer align: the Clip lands in the wrong place,
+      // typically off-canvas.
+      const children: FabricObject[] = [];
+      for (const spec of childSpecs) {
+        const [obj] = (await fabricUtil.enlivenObjects([
+          spec as Record<string, unknown>,
+        ])) as FabricObject[];
+        if (obj) children.push(obj);
+      }
+      const groupW = cw > 0 ? cw : (filled.width as number | undefined);
+      const groupH = ch > 0 ? ch : (filled.height as number | undefined);
+      try {
+        return new Group(children, {
+          left: filled.left as number | undefined,
+          top: filled.top as number | undefined,
+          width: groupW,
+          height: groupH,
+          scaleX: filled.scaleX as number | undefined,
+          scaleY: filled.scaleY as number | undefined,
+          angle: filled.angle as number | undefined,
+          opacity: filled.opacity as number | undefined,
+          flipX: filled.flipX === true,
+          flipY: filled.flipY === true,
+          // Pass origin verbatim — fabric's default (center) applies
+          // when unset, matching the renderer side and fabric's docs.
+          originX: filled.originX as "left" | "center" | "right" | undefined,
+          originY: filled.originY as "top" | "center" | "bottom" | undefined,
+          // FixedLayout: keep the group's bbox at the explicit content
+          // size; don't let fabric recompute from children.
+          layoutManager: new LayoutManager(new FixedLayout()),
+        });
+      } catch (err) {
+        console.warn("[graphic] Clip group failed:", err);
+        return null;
+      }
     }
     return reviveSpec(filled);
   }
