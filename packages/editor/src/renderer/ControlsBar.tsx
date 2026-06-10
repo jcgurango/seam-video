@@ -18,6 +18,8 @@ import {
   Captions,
   Group,
   Box,
+  Split,
+  Combine,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { View } from "./views.js";
@@ -31,6 +33,13 @@ import {
 import { applyBin, canBin } from "./binTool.js";
 import { sliceAtPlayhead } from "./splitTool.js";
 import { applyAttach } from "./attachTool.js";
+import {
+  separateByWord,
+  groupWords,
+  childAtBlockIndex,
+  isTranscriptionWords,
+  isWordItem,
+} from "./wordTool.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 
 interface ControlsBarProps {
@@ -323,6 +332,41 @@ export default function ControlsBar({
     onSelectionChange([selectedIndices[0]]);
   }, [canBinSelection, doc, selectedIndices, onDocumentChange, onSelectionChange]);
 
+  // ── Word tools ─────────────────────────────────────────────────
+  // Separate by word: one or more CC transcription items (with a words
+  // array) selected. Group words: 2+ per-word items selected.
+  const canSeparateWords =
+    view.type === "root" &&
+    selectedIndices.length > 0 &&
+    selectedIndices.every((i) =>
+      isTranscriptionWords(childAtBlockIndex(doc, i)),
+    );
+
+  const canGroupWords =
+    view.type === "root" &&
+    selectedIndices.length >= 2 &&
+    selectedIndices.every((i) => isWordItem(childAtBlockIndex(doc, i)));
+
+  const handleSeparateWords = useCallback(() => {
+    const result = separateByWord(doc, selectedIndices);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    onDocumentChange(result.doc);
+    onSelectionChange([]);
+  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
+
+  const handleGroupWords = useCallback(() => {
+    const result = groupWords(doc, selectedIndices);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    onDocumentChange(result.doc);
+    onSelectionChange([]);
+  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
+
   // ── Render ─────────────────────────────────────────────────────
 
   return (
@@ -469,6 +513,22 @@ export default function ControlsBar({
               title="Bin: promote the selected composition into a reusable bin entry"
             >
               <Box size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={handleSeparateWords}
+              style={{ ...BTN_STYLE, opacity: canSeparateWords ? 1 : 0.3 }}
+              disabled={!canSeparateWords}
+              title="Separate by word: split a CC transcription into one item per word"
+            >
+              <Split size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={handleGroupWords}
+              style={{ ...BTN_STYLE, opacity: canGroupWords ? 1 : 0.3 }}
+              disabled={!canGroupWords}
+              title="Group words: merge selected word items back into one phrase"
+            >
+              <Combine size={ICON_SIZE} />
             </button>
             <button
               onClick={() => {
