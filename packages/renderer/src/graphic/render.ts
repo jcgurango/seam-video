@@ -203,8 +203,12 @@ async function materializeClip(
     opacity: filled.opacity,
     flipX: filled.flipX,
     flipY: filled.flipY,
-    originX: filled.originX ?? "left",
-    originY: filled.originY ?? "top",
+    // Pass authored origin verbatim — including undefined — so fabric
+    // applies its own default. Hardcoding "left"/"top" here would
+    // diverge from the browser preview, which (correctly) honours
+    // fabric's center default.
+    originX: filled.originX,
+    originY: filled.originY,
     objects: childSpecs,
   };
   return reviveSpec(groupSpec);
@@ -320,6 +324,9 @@ async function renderMapToFabric(
     }
     const nodeCanvas = rgbaToCanvas(rendered);
     // fabric/node's FabricImage accepts a node-canvas as the element.
+    // Origin: pass through as-is; fabric's own default (center) applies
+    // when unset. The browser preview honours the same default, so a
+    // graphic JSON renders identically across both surfaces.
     const img = new FabricImage(
       nodeCanvas as unknown as HTMLImageElement,
       {
@@ -331,10 +338,16 @@ async function renderMapToFabric(
         opacity: typeof spec.opacity === "number" ? spec.opacity : 1,
         flipX: spec.flipX === true,
         flipY: spec.flipY === true,
-        originX:
-          (spec.originX as "left" | "center" | "right" | undefined) ?? "left",
-        originY:
-          (spec.originY as "top" | "center" | "bottom" | undefined) ?? "top",
+        originX: spec.originX as
+          | "left"
+          | "center"
+          | "right"
+          | undefined,
+        originY: spec.originY as
+          | "top"
+          | "center"
+          | "bottom"
+          | undefined,
       },
     );
     return img as unknown as FabricObject;
@@ -365,8 +378,8 @@ async function renderMapPlaceholder(
     angle: numberOr(spec.angle, 0),
     scaleX: numberOr(spec.scaleX, 1),
     scaleY: numberOr(spec.scaleY, 1),
-    originX: spec.originX ?? "left",
-    originY: spec.originY ?? "top",
+    originX: spec.originX,
+    originY: spec.originY,
     objects: [
       {
         type: "Rect",
@@ -409,8 +422,8 @@ async function renderClipPlaceholder(
     angle: numberOr(spec.angle, 0),
     scaleX: numberOr(spec.scaleX, 1),
     scaleY: numberOr(spec.scaleY, 1),
-    originX: spec.originX ?? "left",
-    originY: spec.originY ?? "top",
+    originX: spec.originX,
+    originY: spec.originY,
     objects: [
       {
         type: "Rect",

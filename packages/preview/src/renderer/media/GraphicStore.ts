@@ -324,8 +324,12 @@ export class GraphicStore {
         opacity: filled.opacity,
         flipX: filled.flipX,
         flipY: filled.flipY,
-        originX: filled.originX ?? "left",
-        originY: filled.originY ?? "top",
+        // Pass authored origin verbatim — fabric's default (center)
+        // applies when unset. Hardcoding "left"/"top" here would
+        // diverge from the renderer side and from fabric's documented
+        // semantics.
+        originX: filled.originX,
+        originY: filled.originY,
         objects: childSpecs,
       });
     }
@@ -362,8 +366,8 @@ function makePlaceholder(
     angle: numberOr(spec.angle, 0),
     scaleX: numberOr(spec.scaleX, 1),
     scaleY: numberOr(spec.scaleY, 1),
-    originX: spec.originX ?? "left",
-    originY: spec.originY ?? "top",
+    originX: spec.originX,
+    originY: spec.originY,
     objects: [
       {
         type: "Rect",

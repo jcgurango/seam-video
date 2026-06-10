@@ -148,13 +148,21 @@ export async function buildItemsFromFiles(
 
 /** A graphic with a single Map element filling the canvas, ready for
  *  the author to set lat/lng/zoom. Static (one keyframe) for now —
- *  refining the editing experience comes later. */
+ *  refining the editing experience comes later.
+ *
+ *  fabric defaults `originX`/`originY` to `"center"`, so `left`/`top`
+ *  specify the centre of the Map. To fill a 1080×1920 canvas we centre
+ *  the 1080×1920 Map at (540, 960). Authoring `left: 0, top: 0` would
+ *  put the centre at the canvas origin and clip three quarters of the
+ *  Map off-screen. */
 function makeMapGraphic(source: string, duration: number): Graphic {
+  const W = 1080;
+  const H = 1920;
   return {
     type: "graphic",
     duration,
-    contentWidth: 1080,
-    contentHeight: 1920,
+    contentWidth: W,
+    contentHeight: H,
     frames: [
       [
         0,
@@ -163,10 +171,10 @@ function makeMapGraphic(source: string, duration: number): Graphic {
             id: "map",
             type: "Map",
             source,
-            left: 0,
-            top: 0,
-            width: 1080,
-            height: 1920,
+            left: W / 2,
+            top: H / 2,
+            width: W,
+            height: H,
             latitude: PMTILES_DEFAULT_VIEW.latitude,
             longitude: PMTILES_DEFAULT_VIEW.longitude,
             zoom: PMTILES_DEFAULT_VIEW.zoom,
