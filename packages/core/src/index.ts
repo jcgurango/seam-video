@@ -2,6 +2,7 @@ export * from "./schema.js";
 export * from "./types.js";
 export * from "./resolved-types.js";
 export * from "./validate.js";
+export { formatZodError, type FormattedIssue } from "./format-error.js";
 export { compileSeamFile, runScript } from "./compile.js";
 export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { expandMacros, findUnresolvedMacros } from "./macros.js";

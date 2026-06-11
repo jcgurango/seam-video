@@ -456,6 +456,126 @@ describe("validate", () => {
   });
 });
 
+describe("validate — verbose error messages", () => {
+  // Helper: pull the error list off a result we expect to have failed.
+  const errs = (input: unknown): string[] => {
+    const result = validate(input);
+    expect(result.success).toBe(false);
+    return result.success ? [] : result.errors;
+  };
+
+  it("never collapses a malformed child to a bare 'Invalid input'", () => {
+    // Regression: ChildSchema is a z.union, so Zod's top-level union message
+    // ("Invalid input") used to be all the user saw.
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
+    });
+    expect(messages.join("\n")).not.toMatch(/Invalid input/);
+  });
+
+  it("reports the offending field and its location inside a child", () => {
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
+    });
+    // out must be positive — points at children[0].out, not the union root.
+    expect(messages.some((m) => /children\[0\]\.out/.test(m))).toBe(true);
+  });
+
+  it("does not spam sibling-branch type complaints for a known type", () => {
+    // A clip with a real problem should not also surface "expected literal
+    // 'audio'/'static'/…" noise from the other union branches.
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
+    });
+    expect(messages.some((m) => /audio|static|empty|graphic/.test(m))).toBe(
+      false
+    );
+  });
+
+  it("lists the valid node types when 'type' is unrecognized", () => {
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "klip", source: "v.mp4", in: 0, out: 5 }],
+    });
+    const joined = messages.join("\n");
+    expect(joined).toMatch(/children\[0\]\.type/);
+    expect(joined).toMatch(/clip/);
+    expect(joined).toMatch(/audio/);
+  });
+
+  it("names the missing field for a child with no source", () => {
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", in: 0, out: 5 }],
+    });
+    expect(messages.some((m) => /children\[0\]\.source/.test(m))).toBe(true);
+  });
+
+  it("surfaces the regex guidance for a bad length string", () => {
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: 5, size: "10em" }],
+    });
+    const joined = messages.join("\n");
+    expect(joined).toMatch(/children\[0\]\.size/);
+    expect(joined).toMatch(/%/); // the "Must be a number, '<n>%', …" guidance
+  });
+
+  it("surfaces a node's refine() message verbatim", () => {
+    const messages = errs({
+      type: "composition",
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5, speed: 2, duration: 10 },
+      ],
+    });
+    expect(
+      messages.some((m) => /both 'speed' and 'duration'/.test(m))
+    ).toBe(true);
+  });
+
+  it("reports unrecognized keys with the key name", () => {
+    const messages = errs({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: 5, flex: 1 }],
+    });
+    expect(messages.some((m) => /flex/.test(m))).toBe(true);
+  });
+
+  it("locates a problem nested inside a child composition", () => {
+    const messages = errs({
+      type: "composition",
+      children: [
+        {
+          type: "composition",
+          children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
+        },
+      ],
+    });
+    expect(
+      messages.some((m) => /children\[0\]\.children\[0\]\.out/.test(m))
+    ).toBe(true);
+  });
+
+  it("reports a real problem inside a graphic object union", () => {
+    const messages = errs({
+      type: "composition",
+      children: [
+        {
+          type: "graphic",
+          duration: 2,
+          frames: [[0, [{ type: "Circle", radius: -5 }]]],
+        },
+      ],
+    });
+    const joined = messages.join("\n");
+    expect(joined).not.toMatch(/Invalid input/);
+    expect(joined).toMatch(/radius/);
+  });
+});
+
 describe("parseSeamFile", () => {
   it("parses valid JSON", () => {
     const json = JSON.stringify({

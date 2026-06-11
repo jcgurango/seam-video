@@ -1,4 +1,5 @@
 import { SeamFileSchema } from "./schema.js";
+import { formatZodError } from "./format-error.js";
 import type { SeamFile } from "./types.js";
 
 export type ValidationResult =
@@ -16,9 +17,10 @@ export function validate(input: unknown): ValidationResult {
   }
   return {
     success: false,
-    errors: result.error.issues.map(
-      (issue) => `${issue.path.join(".")}: ${issue.message}`
-    ),
+    // Descends into `z.union` errors (Child, graphic objects, Length, …)
+    // so failures report the offending node's real problem instead of
+    // collapsing to Zod's top-level union message, `"Invalid input"`.
+    errors: formatZodError(result.error),
   };
 }
 
