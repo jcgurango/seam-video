@@ -1,4 +1,8 @@
-export { loadLiberationSans } from "./fonts.js";
+export {
+  loadLiberationSans,
+  loadFallbackFonts,
+  loadMapLabelFonts,
+} from "./fonts.js";
 export { default as Player } from "./components/Player.js";
 export { default as Timeline } from "./components/Timeline.js";
 export { default as VideoCanvas } from "./components/VideoCanvas.js";

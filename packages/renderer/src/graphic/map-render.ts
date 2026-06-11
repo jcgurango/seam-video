@@ -16,16 +16,39 @@
 
 import { createRequire } from "node:module";
 import { readFile, open, type FileHandle } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, join } from "node:path";
 import { PMTiles, TileType, type Source } from "pmtiles";
 import { createCanvas, type Canvas as NodeCanvas } from "canvas";
+import { generateGlyphRangePBF } from "./glyphs.js";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mbgl: any = require("@maplibre/maplibre-gl-native");
 
-const GLYPHS_URL =
-  "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf";
+// The OSM Bright style + sprite atlas are bundled in this package (copied
+// from the openmaptiles osm-bright-gl-style), so the renderer doesn't
+// depend on a sibling package's files or any external CDN. From either
+// src/graphic or dist/graphic, the dir sits two levels up at the package
+// root, alongside fonts/.
+const OSM_BRIGHT_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "osm-bright",
+);
+
+// Glyphs are synthesized locally from the bundled Liberation Sans (see
+// glyphs.ts) instead of fetched from an external server — the custom
+// `seamglyphs://` scheme is intercepted in handleRequest. No production
+// CDN dependency, and metrically consistent with the browser preview's
+// own local-font rendering.
+const GLYPHS_URL = "seamglyphs://{fontstack}/{range}.pbf";
+
+// Sprite atlas served from the bundled osm-bright dir via the custom
+// `seamsprite://` scheme (intercepted in handleRequest). maplibre appends
+// `@2x`/`.json`/`.png` to this base, which `new URL()` parsing handles.
+const SPRITE_URL = "seamsprite://osm-bright/sprite";
 
 const RASTER_TYPES = new Set<TileType>([
   TileType.Png,
@@ -298,6 +321,22 @@ async function handleRequest(
   callback: (err?: Error, response?: { data: Uint8Array }) => void,
 ): Promise<void> {
   const url = req.url;
+  const glyphMatch = url.match(/^seamglyphs:\/\/(.+)\/(\d+)-(\d+)\.pbf$/);
+  if (glyphMatch) {
+    const fontstack = decodeURIComponent(glyphMatch[1]);
+    const start = parseInt(glyphMatch[2], 10);
+    const end = parseInt(glyphMatch[3], 10);
+    callback(undefined, { data: generateGlyphRangePBF(fontstack, start, end) });
+    return;
+  }
+  const spriteMatch = url.match(/^seamsprite:\/\/.*\/(sprite(?:@2x)?\.(?:json|png))$/);
+  if (spriteMatch) {
+    // maplibre uses `@2x` in the URL; the bundled file is named `-2x`.
+    const file = spriteMatch[1].replace("@2x", "-2x");
+    const data = await readFile(join(OSM_BRIGHT_DIR, file));
+    callback(undefined, { data: new Uint8Array(data) });
+    return;
+  }
   const tileMatch = url.match(/^pmtiles:\/\/(.+?)\/(\d+)\/(\d+)\/(\d+)$/);
   if (tileMatch) {
     const z = parseInt(tileMatch[2], 10);
@@ -401,6 +440,7 @@ async function buildMapStyle(
         },
       };
       style.glyphs = GLYPHS_URL;
+      style.sprite = SPRITE_URL;
       return style;
     }
     return buildAutoVectorStyle(pmtilesPath, header, metadata);
@@ -409,25 +449,12 @@ async function buildMapStyle(
 }
 
 async function tryLoadOsmBrightStyle(): Promise<Record<string, unknown> | null> {
-  const candidates = [
-    join(
-      process.cwd(),
-      "packages/motion-editor-test/public/osm-bright-gl-style/style.json",
-    ),
-    join(
-      process.cwd(),
-      "../motion-editor-test/public/osm-bright-gl-style/style.json",
-    ),
-  ];
-  for (const p of candidates) {
-    try {
-      const data = await readFile(p, "utf8");
-      return JSON.parse(data) as Record<string, unknown>;
-    } catch {
-      // try next
-    }
+  try {
+    const data = await readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8");
+    return JSON.parse(data) as Record<string, unknown>;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function buildAutoVectorStyle(

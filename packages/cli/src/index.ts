@@ -23,6 +23,15 @@ program
     "--dry-run",
     "Print the ffmpeg command and leave the .seam-rendered/ assets dir in place"
   )
+  .option(
+    "--proxy <ORIGINAL:REPLACEMENT>",
+    "Swap a source path before rendering: any node whose `source` exactly equals ORIGINAL renders REPLACEMENT instead. Matched verbatim (no path resolution); split on the first ':'. Repeatable.",
+    (val: string, acc: string[]) => {
+      acc.push(val);
+      return acc;
+    },
+    [] as string[],
+  )
   .action(renderCommand);
 
 program

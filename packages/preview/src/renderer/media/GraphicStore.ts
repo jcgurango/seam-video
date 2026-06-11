@@ -39,6 +39,11 @@ import {
 // so enlivenObjects(spec.type === "Map") produces a live maplibre-backed
 // FabricObject instead of falling back to the default rect.
 import { MapLibreMap } from "./graphic/MapLibreMap.js";
+import { installGraphicFontFallback } from "./graphic/fontFallback.js";
+
+// Patch fabric's font declaration so graphic text falls back to CJK/emoji
+// (same as the renderer). Side-effect at module load, before any render.
+installGraphicFontFallback();
 
 interface GraphicEntry {
   node: ResolvedGraphic;

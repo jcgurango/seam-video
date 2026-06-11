@@ -9,17 +9,34 @@ import {
   resolveComposition,
   resolveSpatial,
 } from "@seam/core";
+import type { ResolvedChild } from "@seam/core";
 import {
   buildFfmpegAudioCommand,
   buildMeltArgs,
   buildMltDocument,
   checkFfmpeg,
+  checkFfprobe,
   checkMelt,
+  prerenderCompositionMlts,
+  probeIntrinsicSizes,
   rasterizeAllGraphics,
   rasterizeAllText,
   renderWithMelt,
   runFfmpegAudio,
 } from "@seam/renderer";
+
+/** Collect every clip/static `source` in the resolved tree (recursing
+ *  into compositions). Used to probe media dimensions up front so the MLT
+ *  builder can honor objectFit cover/center. */
+function collectMediaSources(children: ResolvedChild[], out: Set<string>): void {
+  for (const child of children) {
+    if (child.type === "clip" || child.type === "static") {
+      out.add(child.source);
+    } else if (child.type === "composition") {
+      collectMediaSources(child.children, out);
+    }
+  }
+}
 
 interface RenderOptions {
   output?: string;
@@ -27,6 +44,38 @@ interface RenderOptions {
   width?: string;
   height?: string;
   dryRun?: boolean;
+  proxy?: string[];
+}
+
+/** Parse `--proxy ORIGINAL:REPLACEMENT` strings (split on the first ':')
+ *  into an exact-match source→replacement map. */
+function parseProxies(specs: string[] | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const spec of specs ?? []) {
+    const sep = spec.indexOf(":");
+    if (sep <= 0 || sep === spec.length - 1) {
+      throw new Error(
+        `Invalid --proxy "${spec}": expected ORIGINAL:REPLACEMENT (split on the first ':').`,
+      );
+    }
+    map.set(spec.slice(0, sep), spec.slice(sep + 1));
+  }
+  return map;
+}
+
+/** Rewrite clip/static/audio `source` fields that exactly equal a proxy
+ *  key, recursing into compositions. Verbatim match — no path resolution.
+ *  Mutates the resolved tree in place (our local copy). */
+function applyProxies(children: ResolvedChild[], proxies: Map<string, string>): void {
+  if (proxies.size === 0) return;
+  for (const child of children) {
+    if (child.type === "clip" || child.type === "static" || child.type === "audio") {
+      const replacement = proxies.get(child.source);
+      if (replacement != null) child.source = replacement;
+    } else if (child.type === "composition") {
+      applyProxies(child.children, proxies);
+    }
+  }
 }
 
 /** Quote an argv element for safe display as a shell command. */
@@ -41,8 +90,17 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const fps = options.fps ? parseInt(options.fps, 10) : 30;
   const dryRun = !!options.dryRun;
 
+  let proxies: Map<string, string>;
+  try {
+    proxies = parseProxies(options.proxy);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
   if (!dryRun) {
     checkFfmpeg();
+    checkFfprobe();
     checkMelt();
   }
 
@@ -77,6 +135,9 @@ export async function renderCommand(file: string, options: RenderOptions) {
     ? parseInt(options.height, 10)
     : ((temporal.contentHeight as number | undefined) ?? DEFAULT_CANVAS_HEIGHT);
   const timeline = resolveSpatial(temporal, width, height);
+  // Swap source paths before anything reads them (probe, audio, raster,
+  // MLT build all consume `timeline`'s sources).
+  applyProxies(timeline.children, proxies);
   const outputPath = options.output ?? filePath.replace(/\.seam$/, ".mp4");
   const basePath = dirname(filePath);
 
@@ -115,7 +176,31 @@ export async function renderCommand(file: string, options: RenderOptions) {
       fps,
     });
 
-    const { xml, limitations } = buildMltDocument(timeline, {
+    // Probe each clip/static's display dimensions so the builder can emit
+    // the correct natural rect for objectFit cover/center (it otherwise
+    // falls back to the parent box and qtblend stretches the source).
+    const sources = new Set<string>();
+    collectMediaSources(timeline.children, sources);
+    const intrinsicSizes = dryRun
+      ? undefined
+      : await probeIntrinsicSizes(sources, basePath);
+
+    // Pre-render complex nested compositions (own spatial / non-fit
+    // objectFit / filters) to sidecar sub-`.mlt` files. The builder then
+    // composites each as a single layer instead of flattening its children
+    // and dropping the wrapper. Reuses the text/graphic rasters + probed
+    // dims for the nested content.
+    const compDir = join(assetsDir, "comp");
+    await mkdir(compDir, { recursive: true });
+    const { compositionMlts, limitations: compLimits } =
+      await prerenderCompositionMlts(timeline, compDir, fps, {
+        basePath,
+        textRasters,
+        graphicRasters,
+        intrinsicSizes,
+      });
+
+    const { xml, limitations: buildLimits } = buildMltDocument(timeline, {
       fps,
       width,
       height,
@@ -123,7 +208,10 @@ export async function renderCommand(file: string, options: RenderOptions) {
       textRasters,
       graphicRasters,
       audioFile: audioPath,
+      intrinsicSizes,
+      compositionMlts,
     });
+    const limitations = [...compLimits, ...buildLimits];
 
     // Always surface translation limitations. They're not fatal —
     // most just mean a feature was silently dropped — but the user

@@ -21,10 +21,36 @@ import {
 // it into the bundle so the editor doesn't depend on the host serving
 // /osm-bright-gl-style/style.json.
 import osmBrightStyle from "./osm-bright/style.json";
+import { mapLabelFontStack, loadMapLabelFonts } from "../../fonts.js";
+// Bundled sprite atlas (same osm-bright sprite the renderer serves from
+// disk). JSON is inlined by vite; the PNGs are emitted as assets and
+// fetched at runtime. Served to maplibre via the `seamsprite://` protocol
+// so there's no external CDN dependency for POI icons.
+import spriteJson1x from "./osm-bright/sprite.json";
+import spriteJson2x from "./osm-bright/sprite-2x.json";
+import spritePng1xUrl from "./osm-bright/sprite.png?url";
+import spritePng2xUrl from "./osm-bright/sprite-2x.png?url";
 
 // One protocol per page — maplibre's `addProtocol` is global state.
 const protocol = new Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
+
+// Local sprite base URL maplibre normalizes into `…/sprite[@2x].{json,png}`.
+const SPRITE_URL = "seamsprite://osm-bright/sprite";
+
+// Serve the bundled sprite atlas. maplibre uses `response.data` verbatim for
+// custom protocols: a parsed object for the sprite JSON, an ArrayBuffer (which
+// maplibre decodes) for the PNG.
+maplibregl.addProtocol("seamsprite", async (params) => {
+  const url = params.url;
+  const is2x = url.includes("@2x");
+  if (url.endsWith(".json")) {
+    return { data: is2x ? spriteJson2x : spriteJson1x };
+  }
+  const pngUrl = is2x ? spritePng2xUrl : spritePng1xUrl;
+  const res = await fetch(pngUrl);
+  return { data: await res.arrayBuffer() };
+});
 
 /** Async resolver from a host-provided pmtiles filename (the value of
  *  `Map.source` in the seam graphic) to a byte-range-capable `Source`.
@@ -48,9 +74,6 @@ const RASTER_TYPES = new Set<TileType>([
   TileType.Webp,
   TileType.Avif,
 ]);
-
-const GLYPHS_URL =
-  "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf";
 
 const DEFAULT_LINE_WIDTH = 4;
 
@@ -113,13 +136,29 @@ async function buildStyleForPMTiles(
         url: `pmtiles://${pmKey}`,
       },
     };
-    // Override the upstream maptiler glyphs URL (which requires an
-    // API key) with maplibre's public demo endpoint. Same swap the
-    // renderer does server-side.
-    template.glyphs = GLYPHS_URL;
+    localizeStyleAssets(template);
     return template;
   }
   return null;
+}
+
+/** Repoint the style's external asset references at bundled equivalents so
+ *  the map has no third-party CDN dependency:
+ *   - drop `glyphs` entirely (maplibre then rasterizes labels locally via
+ *     TinySDF — see fonts.ts) and rewrite each `text-font` to a Liberation
+ *     Sans family;
+ *   - swap `sprite` for the bundled atlas served over `seamsprite://`. */
+function localizeStyleAssets(style: maplibregl.StyleSpecification): void {
+  delete style.glyphs;
+  style.sprite = SPRITE_URL;
+  for (const layer of style.layers) {
+    if (layer.type !== "symbol") continue;
+    const layout = layer.layout;
+    const textFont = layout?.["text-font"];
+    if (Array.isArray(textFont)) {
+      layout!["text-font"] = mapLabelFontStack(textFont as string[]);
+    }
+  }
 }
 
 function buildAutoVectorStyle(
@@ -297,6 +336,11 @@ function acquireShared(
       );
       return;
     }
+
+    // Labels render locally via TinySDF from these fonts (no glyphs URL),
+    // so they must be in document.fonts before the map rasterizes glyphs.
+    await loadMapLabelFonts();
+    if (!pool.has(key)) return;
 
     const map = new maplibregl.Map({
       container,

@@ -24,6 +24,7 @@ import {
   sampleColor,
   samplePadding,
 } from "../animation/keyframes.js";
+import { withFallbackFamilies } from "./fallbackFonts.js";
 
 // Liberation Sans is bundled with the renderer (and should be loaded
 // in the browser preview too) so the same layout decisions land on
@@ -78,7 +79,12 @@ function cssFontShorthand(
     ?? DEFAULT_FONT_SIZE;
   const weight = run.fontWeight ?? defaults.fontWeight;
   // Family with spaces gets quoted to keep the shorthand parser happy.
-  const familyToken = /\s/.test(family) ? `"${family}"` : family;
+  // Append the CJK/emoji fallbacks so Pretext *measures* against the same
+  // fonts the draw pass renders — otherwise CJK/emoji measure as tofu and
+  // line-breaking / fragment widths drift from the drawn glyphs.
+  const familyToken = withFallbackFamilies(
+    /\s/.test(family) ? `"${family}"` : family,
+  );
   return `${weight ? `${weight} ` : ""}${size}px ${familyToken}`;
 }
 
@@ -332,9 +338,11 @@ export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult 
       // padding so the text isn't drawn flush against the rect edge.
       const textX = tx + padLeft;
       const fontWeight = style.fontWeight;
-      const familyToken = /\s/.test(style.fontFamily)
-        ? `"${style.fontFamily}"`
-        : style.fontFamily;
+      const familyToken = withFallbackFamilies(
+        /\s/.test(style.fontFamily)
+          ? `"${style.fontFamily}"`
+          : style.fontFamily,
+      );
       const font = `${fontWeight ? `${fontWeight} ` : ""}${style.fontSize}px ${familyToken}`;
       glyphs.push({
         x: textX,

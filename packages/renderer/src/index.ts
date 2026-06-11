@@ -1,9 +1,14 @@
-export { buildMltDocument } from "./mlt-builder.js";
+export { buildMltDocument, isComplexComposition } from "./mlt-builder.js";
 export type {
   MltOptions,
   MltLimitation,
   MltBuildResult,
 } from "./mlt-builder.js";
+export { prerenderCompositionMlts } from "./composition-prerender.js";
+export type {
+  CompositionPrerenderOptions,
+  CompositionPrerenderResult,
+} from "./composition-prerender.js";
 export {
   renderWithMelt,
   checkMelt,
@@ -37,3 +42,9 @@ export {
   renderFilledFrameToPng,
 } from "./graphic/render.js";
 export { fillObject, fillFrame, CUSTOM_PROPS } from "./graphic/fill.js";
+export {
+  probeIntrinsicSize,
+  probeIntrinsicSizes,
+  checkFfprobe,
+} from "./media-probe.js";
+export type { IntrinsicSize, IntrinsicSizeMap } from "./media-probe.js";

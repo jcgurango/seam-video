@@ -207,6 +207,9 @@ importers:
       '@chenglou/pretext':
         specifier: ^0.0.6
         version: 0.0.6
+      '@mapbox/tiny-sdf':
+        specifier: ^2.2.0
+        version: 2.2.0
       '@maplibre/maplibre-gl-native':
         specifier: ^6.4.1
         version: 6.4.1

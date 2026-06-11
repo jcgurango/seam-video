@@ -26,6 +26,7 @@ import {
   type ClipPlayback,
 } from "./clip.js";
 import { rgbaToCanvas, type MapPool } from "./map-render.js";
+import { installGraphicFontFallback } from "./fontFallback.js";
 
 /** Outer-graphic context threaded through materialize so Clip instances
  *  can compute their local time + render their content. When omitted,
@@ -61,6 +62,7 @@ export async function renderSnapshotToPng(
   tree: FilledTree,
   opts: RenderOptions,
 ): Promise<Buffer> {
+  installGraphicFontFallback();
   const canvas = new StaticCanvas(undefined, {
     width: opts.contentWidth,
     height: opts.contentHeight,

@@ -2,6 +2,8 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   loadLiberationSans,
+  loadFallbackFonts,
+  loadMapLabelFonts,
   setSourceResolver,
   setPmtilesResolver,
 } from "@seam/preview";
@@ -15,6 +17,11 @@ const platform = detectPlatform();
 // render agree on glyph metrics. Fire-and-forget — text drawn before
 // the font resolves will reflow when it does, same as web fonts.
 loadLiberationSans();
+// CJK + emoji fallbacks for text/graphic nodes and map labels.
+loadFallbackFonts();
+// Warm the map-label alias families so the first map's local glyph
+// rasterization finds Liberation Sans already registered.
+loadMapLabelFonts();
 
 // Let the media layer resolve clip sources via the selected platform
 setSourceResolver((source, basePath) =>

@@ -33,11 +33,13 @@
 
 import { resolve } from "node:path";
 import {
+  computeNaturalSize,
   hasAnimatedSpatialInput,
   isKeyframed,
   resolveBoxProps,
   sampleNumber,
 } from "@seam/core";
+import type { IntrinsicSizeMap } from "./media-probe.js";
 import type {
   AdjustFilter,
   ColorBalanceFilter,
@@ -46,6 +48,7 @@ import type {
   Keyframed,
   ResolvedChild,
   ResolvedClip,
+  ResolvedComposition,
   ResolvedStatic,
   ResolvedGraphic,
   ResolvedText,
@@ -72,6 +75,25 @@ export interface MltOptions {
    *  spans the timeline; the audio in clip and audio nodes is
    *  intentionally not re-emitted by this builder. */
   audioFile?: string;
+  /** Probed display dimensions per source, keyed by *absolute* path
+   *  (see `probeIntrinsicSizes`). The core resolver can't know media
+   *  dims, so without this every clip/static gets a parent-size rect and
+   *  qtblend stretches it — `objectFit: "cover" | "center"` collapse to
+   *  "fit". With it, the builder computes the correct (possibly
+   *  oversized) natural rect; qtblend reads the native source frame and
+   *  clips the overflow at the frame boundary, which is exactly
+   *  cover/center. Sources absent from the map fall back to the old
+   *  parent-size behavior. */
+  intrinsicSizes?: IntrinsicSizeMap;
+  /** Pre-rendered sub-`.mlt` file paths for *complex* nested compositions
+   *  (those with their own spatial / non-fit objectFit / filters /
+   *  contentSize), keyed by the ResolvedComposition identity. Built by
+   *  `prerenderCompositionMlts`. A composition in this map is composited
+   *  as a single layer — referenced as an external `.mlt` producer placed
+   *  at its display rect with its wrapper filters — instead of having its
+   *  children flattened into the parent (which dropped the wrapper). Comps
+   *  absent from the map (trivial ones) still flatten. */
+  compositionMlts?: Map<ResolvedComposition, string>;
 }
 
 /** Field that this builder doesn't yet translate. Surfaced so the
@@ -101,9 +123,40 @@ export function buildMltDocument(
   const basePath = options.basePath;
   const textRasters = options.textRasters ?? new Map();
   const graphicRasters = options.graphicRasters ?? new Map();
+  const intrinsicSizes = options.intrinsicSizes;
+  const compositionMlts = options.compositionMlts;
   const limitations: MltLimitation[] = [];
 
   const fr = (t: number) => Math.max(0, Math.round(t * fps));
+
+  /** Probed display size for a clip/static `source` (relative path
+   *  resolved the same way `addMediaProducer` does), or undefined when
+   *  the source wasn't probed. */
+  function lookupIntrinsic(source: string): { width: number; height: number } | undefined {
+    if (!intrinsicSizes) return undefined;
+    const abs = basePath ? resolve(basePath, source) : source;
+    return intrinsicSizes.get(abs);
+  }
+
+  /** The corrected post-objectFit natural size for a clip/static node,
+   *  computed from probed intrinsic dims. Returns undefined when dims are
+   *  unknown — callers then keep the resolver's parent-size fallback. */
+  function correctedNatural(
+    node: ResolvedClip | ResolvedStatic,
+    parentW: number,
+    parentH: number,
+  ): { w: number; h: number } | undefined {
+    const intr = lookupIntrinsic(node.source);
+    if (!intr) return undefined;
+    const { naturalWidth, naturalHeight } = computeNaturalSize(
+      node.objectFit ?? "fit",
+      intr.width,
+      intr.height,
+      parentW,
+      parentH,
+    );
+    return { w: naturalWidth, h: naturalHeight };
+  }
 
   // ── Producers (deduped) ────────────────────────────────────────
   // Same media file referenced by many entries collapses to a single
@@ -193,19 +246,22 @@ export function buildMltDocument(
       lines.push(`    <property name="ttl">${Math.max(1, durationFrames)}</property>`);
       lines.push(`  </producer>`);
     } else {
-      // Video freeze-frame: open the source seeked to the freeze
-      // timestamp, then the `freeze` filter on the playlist entry
-      // holds that single decoded frame for the whole entry length.
-      const seekFrame = Math.max(0, Math.round(node.sourceTime * fps));
+      // Video freeze-frame: a plain avformat producer with a `freeze`
+      // filter *on the producer itself* (frame = source frame, no
+      // before/after flags → freeze everywhere). Attaching it to the
+      // producer makes `frame` producer-absolute and so independent of
+      // where the static sits on the timeline — a playlist-level freeze's
+      // `frame` shifts with the leading blank, so a static preceded by a
+      // clip froze on the wrong frame. (avformat has no `seek` property;
+      // the old one was a no-op, which is why it played from frame 0.)
+      const freezeFrame = Math.max(0, Math.round(node.sourceTime * fps));
       lines.push(`  <producer id="${id}" resource="${escAttr(fullPath)}">`);
       lines.push(`    <property name="audio_index">-1</property>`);
-      lines.push(`    <property name="seek">${seekFrame}</property>`);
+      lines.push(`    <filter>`);
+      lines.push(`      <property name="mlt_service">freeze</property>`);
+      lines.push(`      <property name="frame">${freezeFrame}</property>`);
+      lines.push(`    </filter>`);
       lines.push(`  </producer>`);
-      limitations.push({
-        node: "static",
-        field: "video-source",
-        detail: `${node.source}: video freeze-frame via avformat seek+freeze; exact frame may vary by ±1 if the source isn't keyframe-aligned`,
-      });
     }
     producers.set(id, lines.join("\n"));
     return id;
@@ -271,6 +327,28 @@ export function buildMltDocument(
     return id;
   }
 
+  /** A nested composition pre-rendered to its own `.mlt`. Referenced as
+   *  an external xml producer — melt loads it lazily and renders it at the
+   *  sub-document's own profile (= the comp's content box), then the
+   *  parent qtblend places that frame at the comp's display rect.
+   *  `audio_index=-1` keeps the sub-mlt silent (audio is mixed globally). */
+  function addCompositionProducer(path: string): string {
+    const cacheKey = `mlt:${path}`;
+    const cached = producerIdByResource.get(cacheKey);
+    if (cached) return cached;
+    const id = newProducerId("comp");
+    producerIdByResource.set(cacheKey, id);
+    producers.set(
+      id,
+      [
+        `  <producer id="${id}" resource="${escAttr(path)}">`,
+        `    <property name="audio_index">-1</property>`,
+        `  </producer>`,
+      ].join("\n"),
+    );
+    return id;
+  }
+
   // ── Segment collection ────────────────────────────────────────
 
   type ClipSeg = {
@@ -314,10 +392,19 @@ export function buildMltDocument(
     node: ResolvedStatic;
   };
 
+  type CompSeg = {
+    kind: "composition";
+    start: number;
+    end: number;
+    producer: string;
+    node: ResolvedComposition;
+  };
+
   const clipSegs: ClipSeg[] = [];
   const textSegs: TextSeg[] = [];
   const graphicSegs: GraphicSeg[] = [];
   const staticSegs: StaticSeg[] = [];
+  const compSegs: CompSeg[] = [];
 
   // Walk the resolved tree, recursing into nested compositions and
   // compounding their timeline offset and speed onto inner children.
@@ -342,17 +429,32 @@ export function buildMltDocument(
     if (child.type === "clip") {
       const compoundSpeed = child.speed * parentSpeed;
       const prod = addMediaProducer(child.source, compoundSpeed);
-      const positioned = isClipPositioned(child);
-      // qtblend always stretches the source to fit its rect, so non-fit
-      // objectFit values ("cover", "center") aren't honored unless we
-      // also know the source's intrinsic dims. Flag it so the user
-      // knows the rect is being stretched-to-fit instead of cropped/
-      // centered.
-      if (child.objectFit && child.objectFit !== "fit") {
+      let positioned = isClipPositioned(child);
+      // Even a plain "fit" clip needs its own track + rect when its
+      // probed aspect doesn't match the canvas — otherwise it rides the
+      // shared video playlist at `0 0 W H` and qtblend stretches it
+      // (distorted) instead of letterboxing. Matching-aspect clips keep
+      // the shared-playlist fast path (natural rect == canvas).
+      if (!positioned) {
+        const nat = correctedNatural(child, W, H);
+        if (nat && (Math.round(nat.w) !== W || Math.round(nat.h) !== H)) {
+          positioned = true;
+        }
+      }
+      // objectFit cover/center are honored by emitting the correct
+      // (possibly oversized) natural rect and letting qtblend clip the
+      // overflow at the frame boundary — but only when we know the
+      // source's intrinsic dims. If a non-fit clip wasn't probed, the
+      // rect falls back to parent-size (stretch); warn so the user knows.
+      if (
+        child.objectFit &&
+        child.objectFit !== "fit" &&
+        !lookupIntrinsic(child.source)
+      ) {
         limitations.push({
           node: "clip",
           field: "objectFit",
-          detail: `${child.source}: objectFit="${child.objectFit}" stretches to rect (qtblend has no native cover/center mode)`,
+          detail: `${child.source}: objectFit="${child.objectFit}" needs probed media dimensions — unprobed source falls back to stretch-to-fit`,
         });
       }
       clipSegs.push({
@@ -450,23 +552,34 @@ export function buildMltDocument(
       return;
     }
     if (child.type === "composition") {
-      // Wrapper props (spatial/objectFit/filters/contentWidth/Height)
-      // aren't applied to the flattened inner content — flag if any
-      // are non-default so the user knows the wrapping is being
-      // discarded. `objectFit: "fit"` is the resolver's default and
-      // doesn't count.
-      const hasSpatial =
-        child.spatial != null || child.spatialInput != null;
-      const hasFit = child.objectFit != null && child.objectFit !== "fit";
-      const hasFilters = child.filters && child.filters.length > 0;
-      const hasContent =
-        child.contentWidth != null || child.contentHeight != null;
-      if (hasSpatial || hasFit || hasFilters || hasContent) {
+      // A *complex* composition (its own spatial / non-fit objectFit /
+      // filters / contentSize) is composited as a single layer when it was
+      // pre-rendered to a sub-`.mlt`: reference that file as a producer and
+      // place it at its display rect, so the wrapper transform + filters
+      // apply (and overlapping children get correct group-opacity
+      // isolation). Trivial comps — and complex ones with no pre-render —
+      // flatten their children into the parent as before.
+      const isComplex = isComplexComposition(child);
+      const mltPath = compositionMlts?.get(child);
+      if (isComplex && mltPath) {
+        const prod = addCompositionProducer(mltPath);
+        compSegs.push({ kind: "composition", start, end, producer: prod, node: child });
+        if (child.speed !== 1 || parentSpeed !== 1) {
+          limitations.push({
+            node: "composition",
+            field: "speed",
+            detail:
+              "nested composition with speed != 1 is composited at 1× (sub-mlt timewarp not yet wired)",
+          });
+        }
+        return;
+      }
+      if (isComplex && !mltPath) {
         limitations.push({
           node: "composition",
           field: "wrapper",
           detail:
-            "nested composition with spatial/objectFit/filters/contentSize: inner children render but the wrapper transform isn't applied",
+            "nested composition with spatial/objectFit/filters/contentSize: inner children render but the wrapper transform isn't applied (no pre-rendered sub-mlt — run prerenderCompositionMlts)",
         });
       }
       const compSpeed = child.speed * parentSpeed;
@@ -500,7 +613,9 @@ export function buildMltDocument(
    *  entirely between two frame centers owns 0 frames and is silently
    *  not displayed (audio is rendered separately by ffmpeg, so the
    *  content isn't lost). */
-  function clipFrameOwnership(seg: ClipSeg | TextSeg | StaticSeg | GraphicSeg): { startK: number; endK: number } {
+  function clipFrameOwnership(
+    seg: ClipSeg | TextSeg | StaticSeg | GraphicSeg | CompSeg,
+  ): { startK: number; endK: number } {
     return {
       startK: Math.ceil(seg.start * fps),
       endK: Math.ceil(seg.end * fps),
@@ -592,23 +707,15 @@ export function buildMltDocument(
     const { startK, endK } = clipFrameOwnership(seg);
     const segLen = endK - startK;
     if (segLen < 1) return "";
+    // Both image (qimage) and video (avformat + producer-level freeze
+    // filter) producers yield their single held frame for any in/out, so
+    // the entry just spans `[0, segLen-1]`. The video freeze is on the
+    // producer (see addStaticProducer), so it's position-independent.
     const lines = [`  <playlist id="${id}">`];
     if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
     lines.push(`    <entry producer="${seg.producer}" in="0" out="${segLen - 1}"/>`);
     const trailing = totalFrames - endK;
     if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
-    if (!seg.isImage) {
-      // Hold the seeked frame across the entry's full length.
-      lines.push(
-        [
-          `    <filter in="${startK}" out="${endK - 1}">`,
-          `      <property name="mlt_service">freeze</property>`,
-          `      <property name="frame">${Math.max(0, Math.round(seg.node.sourceTime * fps))}</property>`,
-          `      <property name="freeze_after">1</property>`,
-          `    </filter>`,
-        ].join("\n"),
-      );
-    }
     const filterIn = startK;
     const filterOut = endK - 1;
     const dur = seg.end - seg.start;
@@ -874,6 +981,36 @@ export function buildMltDocument(
     graphicPlaylistsXml.push(lines.join("\n"));
   }
 
+  // Composition layers: each complex nested comp is an external `.mlt`
+  // producer on its own track. The entry holds the sub-mlt's frames for
+  // the comp's window; wrapper filters (adjust / colorbalance /
+  // colortemperature) attach to the playlist, opacity folds into the
+  // qtblend rect alpha (handled by buildOverlayGeometry).
+  const compSegsSorted = [...compSegs].sort((a, b) => a.start - b.start);
+  const compTrackInfo: { id: string; seg: CompSeg }[] = [];
+  const compPlaylistsXml: string[] = [];
+  for (const seg of compSegsSorted) {
+    const { startK, endK } = clipFrameOwnership(seg);
+    const len = endK - startK;
+    if (len < 1) continue;
+    const id = `comp_v${compTrackInfo.length + 1}`;
+    const lines = [`  <playlist id="${id}">`];
+    if (startK > 0) lines.push(`    <blank length="${startK}"/>`);
+    lines.push(`    <entry producer="${seg.producer}" in="0" out="${len - 1}"/>`);
+    const trailing = totalFrames - endK;
+    if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
+    const filtersXml = compileNonOpacityFilters(
+      seg.node.filters,
+      startK,
+      endK - 1,
+      seg.end - seg.start,
+    );
+    if (filtersXml) lines.push(filtersXml);
+    lines.push(`  </playlist>`);
+    compTrackInfo.push({ id, seg });
+    compPlaylistsXml.push(lines.join("\n"));
+  }
+
   // Pre-mixed audio file as a single producer + playlist + track.
   // Renders alongside the video without participating in the
   // composite chain (mix transition just sums it into the master).
@@ -890,18 +1027,14 @@ export function buildMltDocument(
     ].join("\n");
   }
 
-  // ── qtblend rect per text ────────────────────────────────────
-  // Static texts emit a single non-keyframed rect. Animated texts
-  // emit `frame=spec` keyframes relative to the transition's `in`
-  // (frame 0 in the geometry = `in` in the tractor), one per output
-  // frame the value changes; RLE-collapsed.
-  //
-  // The two forms are *not* interchangeable to qtblend: the moment
-  // the rect string contains a keyframe (`=`), qtblend appears to
-  // re-interpret bare numbers as percentages instead of pixels, which
-  // sends y=-800 to y=0 (clamped) and explains the (0,0) drift we
-  // saw when ¥400 coexisted with another animated overlay.
-  function buildOverlayGeometry(seg: TextSeg | ClipSeg | StaticSeg | GraphicSeg): string {
+  // ── affine rect per overlay ──────────────────────────────────
+  // Static nodes emit a single constant rect. Animated nodes emit
+  // `frame=spec` keyframes relative to the transition's `in` (frame 0 in
+  // the geometry = `in` in the tractor), collapsed to the run-boundary
+  // keyframes a linear interpolant needs (see the animated branch below).
+  function buildOverlayGeometry(
+    seg: TextSeg | ClipSeg | StaticSeg | GraphicSeg | CompSeg,
+  ): string {
     const node = seg.node;
     const len = fr(seg.end) - fr(seg.start);
     const dur = seg.end - seg.start;
@@ -909,6 +1042,14 @@ export function buildMltDocument(
       node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
     const opacityAnimated = nodeHasAnimatedOpacity(node);
     const animated = spatialAnimated || opacityAnimated;
+
+    // For clip/static, override the resolver's stale parent-size natural
+    // rect with one computed from probed media dims (objectFit-aware).
+    // Constant across frames (intrinsic + objectFit + parent are fixed).
+    const naturalOverride =
+      seg.kind === "clip" || seg.kind === "static"
+        ? correctedNatural(seg.node, W, H)
+        : undefined;
 
     const sampleAt = (frameOffset: number) => {
       const t = animated ? frameOffset / fps : 0;
@@ -918,7 +1059,7 @@ export function buildMltDocument(
       // math here. Text PNGs are stretched to fill it like clip
       // segments are; if the rect matches the text's natural aspect
       // (default `size: "100%"`), there's no visible distortion.
-      const rect = sampleContainerRect(node, W, H, t, dur);
+      const rect = sampleContainerRect(node, W, H, t, dur, naturalOverride);
       const alpha = sampleNodeOpacity(node, t, dur);
       return { rect, alpha };
     };
@@ -931,20 +1072,31 @@ export function buildMltDocument(
       return formatGeometry(rect, alpha);
     }
 
-    // Animated: one keyframe per output frame the value changes,
-    // RLE-collapsed. We don't emit an alpha-drop keyframe past the
-    // last visible frame because the transition's in/out already
-    // makes everything outside [0, len-1] inactive.
-    const parts: string[] = [];
-    let prev: string | null = null;
+    // Animated: sample every output frame, then keep only the keyframes a
+    // *linear* interpolant (what affine does between keyframes) needs to
+    // reproduce the sampled curve exactly — both endpoints of every
+    // constant run, plus the first/last frame.
+    //
+    // Keeping the END of a run is essential. A plateau (equal-valued
+    // keyframes — authored "hold" between moves) samples to a run of
+    // identical specs; if we emit only its first frame, affine draws a
+    // straight line from there to the next changed keyframe, turning an
+    // authored stop-and-go into a continuous drift across the hold. Emit
+    // the run's last frame too and affine holds flat across it, then moves.
+    // Frames inside a moving segment each differ from their neighbours, so
+    // every one is a run boundary and is kept (the motion stays exact).
     const last = len - 1;
+    const specs: string[] = [];
     for (let local = 0; local <= last; local++) {
       const { rect, alpha } = sampleAt(local);
-      const spec = formatGeometry(rect, alpha);
-      if (spec !== prev || local === 0 || local === last) {
-        parts.push(`${local}=${spec}`);
-        prev = spec;
-      }
+      specs.push(formatGeometry(rect, alpha));
+    }
+    const parts: string[] = [];
+    for (let local = 0; local <= last; local++) {
+      const spec = specs[local];
+      const startsRun = local === 0 || specs[local - 1] !== spec;
+      const endsRun = local === last || specs[local + 1] !== spec;
+      if (startsRun || endsRun) parts.push(`${local}=${spec}`);
     }
     return parts.join(";");
   }
@@ -982,9 +1134,13 @@ export function buildMltDocument(
   for (const g of graphicTrackInfo) {
     trackEntries.push(`    <track producer="${g.id}"/>`);
   }
+  const compTrackBase = graphicTrackBase + graphicTrackInfo.length;
+  for (const c of compTrackInfo) {
+    trackEntries.push(`    <track producer="${c.id}"/>`);
+  }
   let audioTrackIdx: number | null = null;
   if (audioTrackId) {
-    audioTrackIdx = graphicTrackBase + graphicTrackInfo.length;
+    audioTrackIdx = compTrackBase + compTrackInfo.length;
     trackEntries.push(`    <track producer="${audioTrackId}" hide="video"/>`);
   }
 
@@ -999,7 +1155,16 @@ export function buildMltDocument(
       `    <transition>`,
       `      <property name="a_track">0</property>`,
       `      <property name="b_track">${videoTrackIdx}</property>`,
-      `      <property name="mlt_service">qtblend</property>`,
+      // `affine`, not `qtblend`: both take the same `rect`
+      // (`X Y W H OPACITY`) keyframe format and both honor static +
+      // animated opacity, but qtblend mis-scales an *overflowing* rect
+      // (cover/center, where W or H exceeds the profile) in non-portrait
+      // profiles — it silently falls back to fit. That breaks cover for
+      // square/landscape projects and for nested-composition sub-renders
+      // (whose profile is the comp's content box). affine scales overflow
+      // rects correctly in every profile. See mlt-qtblend-rect-behavior.
+      `      <property name="mlt_service">affine</property>`,
+      `      <property name="distort">1</property>`,
       `      <property name="compositing">over</property>`,
       `      <property name="rect">0 0 ${W} ${H} 1</property>`,
       `    </transition>`,
@@ -1016,7 +1181,8 @@ export function buildMltDocument(
         `    <transition>`,
         `      <property name="a_track">0</property>`,
         `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="mlt_service">affine</property>`,
+        `      <property name="distort">1</property>`,
         `      <property name="compositing">over</property>`,
         `      <property name="in">${startK}</property>`,
         `      <property name="out">${endK - 1}</property>`,
@@ -1036,7 +1202,8 @@ export function buildMltDocument(
         `    <transition>`,
         `      <property name="a_track">0</property>`,
         `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="mlt_service">affine</property>`,
+        `      <property name="distort">1</property>`,
         `      <property name="compositing">over</property>`,
         `      <property name="in">${startK}</property>`,
         `      <property name="out">${endK - 1}</property>`,
@@ -1056,7 +1223,8 @@ export function buildMltDocument(
         `    <transition>`,
         `      <property name="a_track">0</property>`,
         `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="mlt_service">affine</property>`,
+        `      <property name="distort">1</property>`,
         `      <property name="compositing">over</property>`,
         `      <property name="in">${startK}</property>`,
         `      <property name="out">${endK - 1}</property>`,
@@ -1075,7 +1243,28 @@ export function buildMltDocument(
         `    <transition>`,
         `      <property name="a_track">0</property>`,
         `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">qtblend</property>`,
+        `      <property name="mlt_service">affine</property>`,
+        `      <property name="distort">1</property>`,
+        `      <property name="compositing">over</property>`,
+        `      <property name="in">${startK}</property>`,
+        `      <property name="out">${endK - 1}</property>`,
+        `      <property name="rect">${escAttr(geometry)}</property>`,
+        `    </transition>`,
+      ].join("\n"),
+    );
+  }
+  for (let i = 0; i < compTrackInfo.length; i++) {
+    const trackIdx = compTrackBase + i;
+    const { seg } = compTrackInfo[i];
+    const { startK, endK } = clipFrameOwnership(seg);
+    const geometry = buildOverlayGeometry(seg);
+    transitionsXml.push(
+      [
+        `    <transition>`,
+        `      <property name="a_track">0</property>`,
+        `      <property name="b_track">${trackIdx}</property>`,
+        `      <property name="mlt_service">affine</property>`,
+        `      <property name="distort">1</property>`,
         `      <property name="compositing">over</property>`,
         `      <property name="in">${startK}</property>`,
         `      <property name="out">${endK - 1}</property>`,
@@ -1110,6 +1299,7 @@ ${bgPlaylistXmlStr}
 ${videoPlaylistXml}
 
 ${clipPlaylistsXml.join("\n\n")}${clipPlaylistsXml.length > 0 ? "\n\n" : ""}${staticPlaylistsXml.join("\n\n")}${staticPlaylistsXml.length > 0 ? "\n\n" : ""}${textPlaylistsXml.join("\n\n")}${textPlaylistsXml.length > 0 && graphicPlaylistsXml.length > 0 ? "\n\n" : ""}${graphicPlaylistsXml.join("\n\n")}
+${compPlaylistsXml.length > 0 ? `\n${compPlaylistsXml.join("\n\n")}\n` : ""}
 ${audioPlaylistXml ? `\n${audioPlaylistXml}\n` : ""}
   <tractor id="main_tractor" in="0" out="${Math.max(0, totalFrames - 1)}">
 ${trackEntries.join("\n")}
@@ -1137,6 +1327,25 @@ function isClipPositioned(clip: ResolvedClip): boolean {
   return false;
 }
 
+/** A composition is "complex" — and so must be composited as its own layer
+ *  (pre-rendered to a sub-`.mlt`) rather than flattened — when it carries a
+ *  wrapper that flattening can't reproduce:
+ *    - `filters` — group filters / group opacity need the children
+ *      composited *first*, then filtered as a unit (the preview's FBO).
+ *    - `spatial`/`spatialInput` — the whole group is positioned/scaled.
+ *    - non-fit `objectFit` — the group is cover/center-fit into its parent.
+ *  Note: `contentWidth`/`contentHeight` are NOT a trigger — the resolver
+ *  always fills them on a resolved comp (so they can't signal intent), and
+ *  a comp that *only* sets a content box to clip its children (no spatial /
+ *  filters / objectFit) still flattens, as it did before. Shared by the
+ *  builder and `prerenderCompositionMlts`. */
+export function isComplexComposition(comp: ResolvedComposition): boolean {
+  if (comp.spatial != null || comp.spatialInput != null) return true;
+  if (comp.objectFit != null && comp.objectFit !== "fit") return true;
+  if (comp.filters && comp.filters.length > 0) return true;
+  return false;
+}
+
 function escAttr(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -1159,11 +1368,16 @@ function formatGeometry(rect: SpatialRect, alpha: number): string {
   return `${Math.round(rect.x)} ${Math.round(rect.y)} ${Math.round(rect.width)} ${Math.round(rect.height)} ${fnum(alpha)}`;
 }
 
-/** Sample a node's spatial rect at output time `t`. For animated input
- *  the resolver's baked rect is stale, so we re-run resolveBoxProps
- *  against the node's recorded natural size. For static spatial we
- *  trust the resolver's `spatial`; fallback is "fill the parent" so
- *  nodes with no spatial state at all still render. */
+/** Sample a node's spatial rect at output time `t`.
+ *
+ *  `naturalOverride` carries the renderer-corrected post-objectFit natural
+ *  size for clip/static (from probed media dims). When present we recompute
+ *  the rect from `spatialInput` against it — *even for static spatial* —
+ *  because the resolver's baked `spatial`/`naturalWidth` for these nodes was
+ *  computed against the parent box (a stand-in), so it's stale and would
+ *  collapse cover/center to fit. When absent (text/graphic/comp, whose
+ *  resolver natural size is correct, or an unprobed source) we keep the old
+ *  behavior: animated → re-resolve, static → trust the baked `spatial`. */
 function sampleContainerRect(
   node: {
     spatialInput?: SpatialInput;
@@ -1175,10 +1389,15 @@ function sampleContainerRect(
   parentH: number,
   t: number,
   duration: number,
+  naturalOverride?: { w: number; h: number },
 ): SpatialRect {
-  if (node.spatialInput && hasAnimatedSpatialInput(node.spatialInput)) {
-    const naturalW = node.naturalWidth ?? parentW;
-    const naturalH = node.naturalHeight ?? parentH;
+  const animated =
+    node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
+  // Recompute from spatialInput whenever it's animated, or whenever we have
+  // a corrected natural size to apply (static cover/center clips land here).
+  if (node.spatialInput && (animated || naturalOverride)) {
+    const naturalW = naturalOverride?.w ?? node.naturalWidth ?? parentW;
+    const naturalH = naturalOverride?.h ?? node.naturalHeight ?? parentH;
     return resolveBoxProps(
       node.spatialInput,
       parentW,
@@ -1189,11 +1408,12 @@ function sampleContainerRect(
       duration,
     );
   }
-  if (node.spatial) return node.spatial;
-  // No spatial at all → center the natural rect in parent (matches the
-  // preview's fallback when both spatial and spatialInput are missing).
-  const naturalW = node.naturalWidth ?? parentW;
-  const naturalH = node.naturalHeight ?? parentH;
+  // With a corrected natural size but no spatialInput at all, center the
+  // corrected natural rect (defaults: translation center, size 100%).
+  // Otherwise trust the resolver's baked rect.
+  if (!naturalOverride && node.spatial) return node.spatial;
+  const naturalW = naturalOverride?.w ?? node.naturalWidth ?? parentW;
+  const naturalH = naturalOverride?.h ?? node.naturalHeight ?? parentH;
   return {
     x: (parentW - naturalW) / 2,
     y: (parentH - naturalH) / 2,

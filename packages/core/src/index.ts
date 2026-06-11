@@ -10,6 +10,7 @@ export { resolveComposition } from "./layout/resolve.js";
 export {
   resolveSpatial,
   resolveBoxProps,
+  computeNaturalSize,
   hasAnimatedSpatialInput,
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
@@ -31,3 +32,9 @@ export {
   type TextGlyph,
 } from "./text/textLayout.js";
 export { drawTextLayout } from "./text/textCanvas.js";
+export {
+  CJK_FALLBACK_FAMILY,
+  EMOJI_FALLBACK_FAMILY,
+  FALLBACK_FONT_FAMILIES,
+  withFallbackFamilies,
+} from "./text/fallbackFonts.js";

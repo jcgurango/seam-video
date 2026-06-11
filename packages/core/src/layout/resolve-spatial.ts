@@ -228,7 +228,12 @@ function resolveContentDim(
   return resolveLength(value, parentDim, SIZE_DEFAULT_PCT);
 }
 
-function computeNaturalSize(
+/** Post-objectFit "100% size" reference: scale the intrinsic content to
+ *  fit / cover / center within the parent box. Exported so renderers can
+ *  reproduce the resolver's math once they've probed the real intrinsic
+ *  dims (the core resolver itself does no I/O, so it falls back to the
+ *  parent box when intrinsics are unknown). */
+export function computeNaturalSize(
   objectFit: ObjectFit,
   intrinsicW: number | undefined,
   intrinsicH: number | undefined,

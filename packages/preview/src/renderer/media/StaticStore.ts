@@ -105,7 +105,15 @@ async function decodeStaticFrame(
   if (isImage) {
     const response = await fetch(url);
     const blob = await response.blob();
-    const bitmap = await createImageBitmap(blob);
+    // `imageOrientation: "from-image"` applies EXIF Orientation so camera
+    // JPEGs (stored landscape + rotate flag) decode to their displayed
+    // portrait dims. This must be explicit: the default varies by engine,
+    // and the CLI render path (melt qimage + ffprobe) always honors EXIF —
+    // so without this, preview and render disagree on a rotated photo's
+    // dimensions, throwing off objectFit/translation.
+    const bitmap = await createImageBitmap(blob, {
+      imageOrientation: "from-image",
+    });
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) {

@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",
+    "@mapbox/tiny-sdf": "^2.2.0",
     "@maplibre/maplibre-gl-native": "^6.4.1",
     "@napi-rs/canvas": "^0.1.100",
     "@seam/core": "workspace:*",
