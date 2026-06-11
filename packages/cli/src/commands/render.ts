@@ -13,6 +13,7 @@ import type { ResolvedChild } from "@seam/core";
 import {
   buildFfmpegAudioCommand,
   buildMeltArgs,
+  writeMeltProfile,
   buildMltDocument,
   checkFfmpeg,
   checkFfprobe,
@@ -236,6 +237,7 @@ export async function renderCommand(file: string, options: RenderOptions) {
 
     if (dryRun) {
       await writeFile(scriptPath, xml, "utf-8");
+      await writeMeltProfile(meltOpts);
       const meltArgs = buildMeltArgs(scriptPath, outputPath, meltOpts);
       console.log("# dry run — would invoke:");
       console.log("# 1) ffmpeg (audio):");

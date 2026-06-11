@@ -48,14 +48,133 @@ function timelineWith(comp: ResolvedComposition): ResolvedTimeline {
 }
 
 describe("isComplexComposition", () => {
-  it("is true for filters / spatial / non-fit objectFit", () => {
+  it("is true for filters / spatial / non-fit objectFit / backgroundColor", () => {
     expect(isComplexComposition(nestedComp({ filters: [{ type: "adjust", brightness: 0.2 }] }))).toBe(true);
     expect(isComplexComposition(nestedComp({ spatial: { x: 270, y: 480, width: 540, height: 960 } }))).toBe(true);
     expect(isComplexComposition(nestedComp({ objectFit: "cover" }))).toBe(true);
+    // A bg fill is visible content flattening would drop → must layer.
+    expect(isComplexComposition(nestedComp({ backgroundColor: "black" }))).toBe(true);
   });
 
   it("is false for a plain pass-through composition", () => {
     expect(isComplexComposition(nestedComp({}))).toBe(false);
+  });
+});
+
+describe("overlay z-order (document order, not type)", () => {
+  it("composites overlays in authored order regardless of node type", () => {
+    // Authored: comp (made complex via backgroundColor) BELOW text. The
+    // comp lands on a higher *track index* than text (comp tracks come
+    // after text tracks), so if emit order followed track type the comp
+    // would wrongly composite on top. z-order must emit the comp first.
+    const comp = nestedComp({ backgroundColor: "black" });
+    const text = {
+      type: "text",
+      text: "hi",
+      timelineStart: 0,
+      timelineEnd: 1,
+      duration: 1,
+    } as unknown as ResolvedComposition;
+    const timeline: ResolvedTimeline = {
+      duration: 1,
+      width: 1080,
+      height: 1920,
+      contentWidth: 1080,
+      contentHeight: 1920,
+      children: [comp, text as never],
+    };
+    const { xml } = buildMltDocument(timeline, {
+      width: 1080,
+      height: 1920,
+      fps: 30,
+      compositionMlts: new Map([[comp, "/tmp/comp-0.mlt"]]),
+      textRasters: new Map([
+        [
+          text as never,
+          { path: "/tmp/t.png", isAnimated: false, frameCount: 1, width: 1080, height: 1920, timelineStart: 0, timelineEnd: 1 },
+        ],
+      ]),
+    });
+    // Overlay transitions in emit order (skip the video base, b_track=1).
+    const bTracks = [...xml.matchAll(/<property name="b_track">(\d+)<\/property>/g)]
+      .map((m) => Number(m[1]))
+      .filter((t) => t !== 1);
+    expect(bTracks.length).toBe(2);
+    // comp lives on the higher track but is authored first → emitted first.
+    expect(bTracks[0]).toBeGreaterThan(bTracks[1]);
+  });
+});
+
+describe("rootSpeed (composition stretch)", () => {
+  // A static at content-time [0,0.4]; a comp speed of 0.4 stretches it to
+  // fill output [0,1] (= 30 frames @30fps), so the entry spans out="29",
+  // not out="11" (the un-stretched 0.4s = 12 frames).
+  const stretched: ResolvedTimeline = {
+    duration: 1,
+    width: 1080,
+    height: 1920,
+    contentWidth: 1080,
+    contentHeight: 1920,
+    children: [
+      {
+        type: "static",
+        source: "still.png",
+        sourceTime: 0,
+        timelineStart: 0,
+        timelineEnd: 0.4,
+        duration: 0.4,
+      } as unknown as ResolvedTimeline["children"][number],
+    ],
+  };
+
+  it("stretches child timing by 1/rootSpeed", () => {
+    const slow = buildMltDocument(stretched, { width: 1080, height: 1920, fps: 30, rootSpeed: 0.4 });
+    expect(slow.xml).toMatch(/<entry producer="[^"]+" in="0" out="29"\/>/);
+    const normal = buildMltDocument(stretched, { width: 1080, height: 1920, fps: 30 });
+    expect(normal.xml).toMatch(/<entry producer="[^"]+" in="0" out="11"\/>/);
+  });
+});
+
+describe("background base color", () => {
+  function bgResource(xml: string): string | undefined {
+    return xml.match(
+      /<producer id="bg"[^>]*>\s*<property name="mlt_service">color<\/property>\s*<property name="resource">([^<]*)<\/property>/,
+    )?.[1];
+  }
+  const base: ResolvedTimeline = {
+    duration: 1,
+    width: 1080,
+    height: 1920,
+    contentWidth: 1080,
+    contentHeight: 1920,
+    children: [],
+  };
+
+  it("defaults the root base to opaque black", () => {
+    expect(bgResource(buildMltDocument(base, { width: 1080, height: 1920 }).xml)).toBe("black");
+  });
+
+  it("uses the timeline backgroundColor when set", () => {
+    expect(
+      bgResource(buildMltDocument({ ...base, backgroundColor: "#202020" }, { width: 1080, height: 1920 }).xml),
+    ).toBe("#202020");
+  });
+
+  it("falls back to defaultBackgroundColor (transparent for sub-mlts)", () => {
+    expect(
+      bgResource(
+        buildMltDocument(base, { width: 1080, height: 1920, defaultBackgroundColor: "#00000000" }).xml,
+      ),
+    ).toBe("#00000000");
+    // an explicit backgroundColor still wins over the default
+    expect(
+      bgResource(
+        buildMltDocument(
+          { ...base, backgroundColor: "black" },
+          { width: 1080, height: 1920, defaultBackgroundColor: "#00000000" },
+        ).xml,
+      ),
+    ).toBe("black");
   });
 });
 

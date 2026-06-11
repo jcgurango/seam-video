@@ -94,6 +94,18 @@ export interface MltOptions {
    *  children flattened into the parent (which dropped the wrapper). Comps
    *  absent from the map (trivial ones) still flatten. */
   compositionMlts?: Map<ResolvedComposition, string>;
+  /** Base (track 0) color when the timeline itself has no
+   *  `backgroundColor`. The root render leaves this unset → opaque black
+   *  (the output is an opaque video). Sub-`.mlt` renders for nested
+   *  compositions pass `"#00000000"` (transparent) so the composition
+   *  composites as a transparent layer — anything it doesn't cover shows
+   *  the parent through, instead of an opaque black box. */
+  defaultBackgroundColor?: string;
+  /** Initial parent speed applied to the timeline's children (default 1).
+   *  `prerenderCompositionMlts` passes a complex composition's own `speed`
+   *  so the sub-`.mlt` stretches/slows its content to fill the comp's
+   *  duration (a comp's content time maps to output time via this speed). */
+  rootSpeed?: number;
 }
 
 /** Field that this builder doesn't yet translate. Surfaced so the
@@ -351,6 +363,11 @@ export function buildMltDocument(
 
   // ── Segment collection ────────────────────────────────────────
 
+  // `z` is the collection order (document/timeline order, depth-first) —
+  // the painter's z-index. Overlay transitions are emitted in ascending
+  // `z` so compositing order matches the authored order (and the preview's
+  // RenderList walk), *not* grouped by node type. Without this, e.g. a comp
+  // overlay always landed above a text overlay regardless of authoring.
   type ClipSeg = {
     kind: "clip";
     start: number;
@@ -361,6 +378,7 @@ export function buildMltDocument(
     speed: number;
     volume?: Keyframed<number>;
     node: ResolvedClip;
+    z: number;
     /** Plain clips (full canvas, fit/undefined objectFit) ride on the
      *  shared video playlist; positioned ones get their own track so
      *  qtblend can give them a per-clip rect. */
@@ -372,6 +390,7 @@ export function buildMltDocument(
     end: number;
     producer: string;
     node: ResolvedText;
+    z: number;
   };
   type GraphicSeg = {
     kind: "graphic";
@@ -379,6 +398,7 @@ export function buildMltDocument(
     end: number;
     producer: string;
     node: ResolvedGraphic;
+    z: number;
   };
   type StaticSeg = {
     kind: "static";
@@ -390,6 +410,7 @@ export function buildMltDocument(
      *  playlist time so the same decoded frame holds. */
     isImage: boolean;
     node: ResolvedStatic;
+    z: number;
   };
 
   type CompSeg = {
@@ -398,6 +419,7 @@ export function buildMltDocument(
     end: number;
     producer: string;
     node: ResolvedComposition;
+    z: number;
   };
 
   const clipSegs: ClipSeg[] = [];
@@ -405,14 +427,18 @@ export function buildMltDocument(
   const graphicSegs: GraphicSeg[] = [];
   const staticSegs: StaticSeg[] = [];
   const compSegs: CompSeg[] = [];
+  // Monotonic painter's z-index, bumped in document order as segs are
+  // collected (see the `z` note on the seg types).
+  let nextZ = 0;
 
   // Walk the resolved tree, recursing into nested compositions and
   // compounding their timeline offset and speed onto inner children.
-  // Composition wrapper props (spatial/filters/contentSize) are not
-  // honored — see the warning below — but the inner content renders
-  // with correct absolute timing.
+  // `rootSpeed` (1 for the top-level render) is the initial parent speed:
+  // a complex comp's sub-`.mlt` passes the comp's own `speed` so its
+  // content gets stretched/slowed to fill the comp's (output) duration —
+  // a comp with `speed` 0.4 holds 0.4s of content across a 1s window.
   for (const child of timeline.children) {
-    collectChild(child, 0, 1);
+    collectChild(child, 0, options.rootSpeed ?? 1);
   }
 
   function collectChild(
@@ -468,6 +494,7 @@ export function buildMltDocument(
         volume: child.volume,
         node: child,
         positioned,
+        z: nextZ++,
       });
       return;
     }
@@ -490,6 +517,7 @@ export function buildMltDocument(
         producer: prod,
         isImage,
         node: child,
+        z: nextZ++,
       });
       // Flag non-opacity filters — they'd need MLT filter chains.
       const unsupportedFilters = (child.filters ?? []).filter(
@@ -514,6 +542,7 @@ export function buildMltDocument(
         end,
         producer: prod,
         node: child,
+        z: nextZ++,
       });
       // Flag any non-opacity filters; they'll need MLT filter chains.
       const unsupportedFilters = (child.filters ?? []).filter(
@@ -538,6 +567,7 @@ export function buildMltDocument(
         end,
         producer: prod,
         node: child,
+        z: nextZ++,
       });
       const unsupportedFilters = (child.filters ?? []).filter(
         (f) => f.type !== "opacity",
@@ -562,16 +592,11 @@ export function buildMltDocument(
       const isComplex = isComplexComposition(child);
       const mltPath = compositionMlts?.get(child);
       if (isComplex && mltPath) {
+        // The comp's own `speed` is baked into its sub-`.mlt` content (via
+        // `rootSpeed` when prerendering), so here it's just placed across
+        // its window [start, end] like any positioned layer.
         const prod = addCompositionProducer(mltPath);
-        compSegs.push({ kind: "composition", start, end, producer: prod, node: child });
-        if (child.speed !== 1 || parentSpeed !== 1) {
-          limitations.push({
-            node: "composition",
-            field: "speed",
-            detail:
-              "nested composition with speed != 1 is composited at 1× (sub-mlt timewarp not yet wired)",
-          });
-        }
+        compSegs.push({ kind: "composition", start, end, producer: prod, node: child, z: nextZ++ });
         return;
       }
       if (isComplex && !mltPath) {
@@ -881,20 +906,23 @@ export function buildMltDocument(
   // `duration` doesn't get its last frame chopped.
   const totalFrames = Math.ceil(timeline.duration * fps);
 
-  // Track 0 is a uniform black base spanning the whole timeline.
-  // Every other content track (video clips, text overlays, audio)
-  // composites *onto this black background* via its own qtblend
-  // transition with a_track=0. That keeps qtblend's "rect"
-  // interpretation consistent across siblings — without the black
-  // base, the actual video clips' source properties (Dolby Vision
-  // HDR colorspace, non-square SAR, rotation metadata) seem to bleed
-  // into how qtblend parses other transitions' rect values, sending
-  // pixel coordinates into a percent-of-source frame.
+  // Track 0 is a uniform base spanning the whole timeline. Every other
+  // content track composites *onto this base* via its own affine
+  // transition with a_track=0. The base color is the timeline's
+  // `backgroundColor` if set, else `defaultBackgroundColor` (root → black,
+  // a nested comp's sub-`.mlt` → transparent so the comp layers cleanly).
+  // A non-transparent base also keeps affine/qtblend's rect interpretation
+  // consistent across siblings (video source props — HDR colorspace,
+  // non-square SAR, rotation — otherwise bleed into how rects are parsed).
+  const bgColor =
+    (timeline.backgroundColor as string | undefined) ??
+    options.defaultBackgroundColor ??
+    "black";
   const bgPlaylistId = "bg_track";
   const bgProducerXml = [
     `  <producer id="bg" in="0" out="${Math.max(0, totalFrames - 1)}">`,
     `    <property name="mlt_service">color</property>`,
-    `    <property name="resource">black</property>`,
+    `    <property name="resource">${escAttr(bgColor)}</property>`,
     `  </producer>`,
   ].join("\n");
   const bgPlaylistXmlStr = [
@@ -1102,16 +1130,12 @@ export function buildMltDocument(
   }
 
   // ── Tractor ──────────────────────────────────────────────────
-  // Track layout:
-  //   0 = bg (uniform black, full duration)
-  //   1 = shared video clips (plain clips only)
-  //   2..C+1 = positioned clips (one per track)
-  //   C+2..C+T+1 = text overlays (one per track)
-  //   last = audio (when present)
-  //
-  // Compositing order matches transition emit order: bg < shared
-  // video < positioned clips < text < audio. So a positioned clip
-  // appears as a PIP over the canvas and text still lands on top.
+  // Track *indices* are grouped by type for readability:
+  //   0 = bg base, 1 = shared video (plain clips), then positioned clips,
+  //   statics, text, graphics, comps, then audio (when present).
+  // But z-order is NOT this grouping — overlay transitions are emitted in
+  // painter's `z` order (authored/document order) further below, so a
+  // later-authored overlay composites on top regardless of its node type.
 
   const trackEntries: string[] = [
     `    <track producer="${bgPlaylistId}"/>`,
@@ -1171,91 +1195,33 @@ export function buildMltDocument(
     ].join("\n"),
   );
 
-  for (let i = 0; i < clipTrackInfo.length; i++) {
-    const trackIdx = clipTrackBase + i;
-    const { seg } = clipTrackInfo[i];
-    const { startK, endK } = clipFrameOwnership(seg);
-    const geometry = buildOverlayGeometry(seg);
-    transitionsXml.push(
-      [
-        `    <transition>`,
-        `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">affine</property>`,
-        `      <property name="distort">1</property>`,
-        `      <property name="compositing">over</property>`,
-        `      <property name="in">${startK}</property>`,
-        `      <property name="out">${endK - 1}</property>`,
-        `      <property name="rect">${escAttr(geometry)}</property>`,
-        `    </transition>`,
-      ].join("\n"),
-    );
-  }
-
-  for (let i = 0; i < staticTrackInfo.length; i++) {
-    const trackIdx = staticTrackBase + i;
-    const { seg } = staticTrackInfo[i];
-    const { startK, endK } = clipFrameOwnership(seg);
-    const geometry = buildOverlayGeometry(seg);
-    transitionsXml.push(
-      [
-        `    <transition>`,
-        `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">affine</property>`,
-        `      <property name="distort">1</property>`,
-        `      <property name="compositing">over</property>`,
-        `      <property name="in">${startK}</property>`,
-        `      <property name="out">${endK - 1}</property>`,
-        `      <property name="rect">${escAttr(geometry)}</property>`,
-        `    </transition>`,
-      ].join("\n"),
-    );
-  }
-
-  for (let i = 0; i < textTrackInfo.length; i++) {
-    const trackIdx = textTrackBase + i;
-    const { seg } = textTrackInfo[i];
-    const { startK, endK } = clipFrameOwnership(seg);
-    const geometry = buildOverlayGeometry(seg);
-    transitionsXml.push(
-      [
-        `    <transition>`,
-        `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">affine</property>`,
-        `      <property name="distort">1</property>`,
-        `      <property name="compositing">over</property>`,
-        `      <property name="in">${startK}</property>`,
-        `      <property name="out">${endK - 1}</property>`,
-        `      <property name="rect">${escAttr(geometry)}</property>`,
-        `    </transition>`,
-      ].join("\n"),
-    );
-  }
-  for (let i = 0; i < graphicTrackInfo.length; i++) {
-    const trackIdx = graphicTrackBase + i;
-    const { seg } = graphicTrackInfo[i];
-    const { startK, endK } = clipFrameOwnership(seg);
-    const geometry = buildOverlayGeometry(seg);
-    transitionsXml.push(
-      [
-        `    <transition>`,
-        `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">affine</property>`,
-        `      <property name="distort">1</property>`,
-        `      <property name="compositing">over</property>`,
-        `      <property name="in">${startK}</property>`,
-        `      <property name="out">${endK - 1}</property>`,
-        `      <property name="rect">${escAttr(geometry)}</property>`,
-        `    </transition>`,
-      ].join("\n"),
-    );
-  }
-  for (let i = 0; i < compTrackInfo.length; i++) {
-    const trackIdx = compTrackBase + i;
-    const { seg } = compTrackInfo[i];
+  // Overlay transitions, emitted in painter's z-order (ascending `z` =
+  // document order), NOT grouped by node type. In MLT, z-order is the
+  // transition emit order (each composites onto the running track-0
+  // result), so this is what makes compositing match the authored order
+  // and the preview. Track *indices* stay grouped by type (assigned above);
+  // only the emit order follows `z`. (Without this, a comp overlay — e.g. a
+  // composition that became "complex" via `backgroundColor` — always landed
+  // above a text/graphic overlay regardless of which was authored on top.)
+  type OverlaySeg = ClipSeg | StaticSeg | TextSeg | GraphicSeg | CompSeg;
+  const overlays: { z: number; trackIdx: number; seg: OverlaySeg }[] = [];
+  clipTrackInfo.forEach((c, i) =>
+    overlays.push({ z: c.seg.z, trackIdx: clipTrackBase + i, seg: c.seg }),
+  );
+  staticTrackInfo.forEach((s, i) =>
+    overlays.push({ z: s.seg.z, trackIdx: staticTrackBase + i, seg: s.seg }),
+  );
+  textTrackInfo.forEach((t, i) =>
+    overlays.push({ z: t.seg.z, trackIdx: textTrackBase + i, seg: t.seg }),
+  );
+  graphicTrackInfo.forEach((g, i) =>
+    overlays.push({ z: g.seg.z, trackIdx: graphicTrackBase + i, seg: g.seg }),
+  );
+  compTrackInfo.forEach((c, i) =>
+    overlays.push({ z: c.seg.z, trackIdx: compTrackBase + i, seg: c.seg }),
+  );
+  overlays.sort((a, b) => a.z - b.z);
+  for (const { trackIdx, seg } of overlays) {
     const { startK, endK } = clipFrameOwnership(seg);
     const geometry = buildOverlayGeometry(seg);
     transitionsXml.push(
@@ -1334,6 +1300,8 @@ function isClipPositioned(clip: ResolvedClip): boolean {
  *      composited *first*, then filtered as a unit (the preview's FBO).
  *    - `spatial`/`spatialInput` — the whole group is positioned/scaled.
  *    - non-fit `objectFit` — the group is cover/center-fit into its parent.
+ *    - `backgroundColor` — a fill behind the children is visible content
+ *      that flattening drops; it must render as part of the comp's layer.
  *  Note: `contentWidth`/`contentHeight` are NOT a trigger — the resolver
  *  always fills them on a resolved comp (so they can't signal intent), and
  *  a comp that *only* sets a content box to clip its children (no spatial /
@@ -1343,6 +1311,7 @@ export function isComplexComposition(comp: ResolvedComposition): boolean {
   if (comp.spatial != null || comp.spatialInput != null) return true;
   if (comp.objectFit != null && comp.objectFit !== "fit") return true;
   if (comp.filters && comp.filters.length > 0) return true;
+  if (comp.backgroundColor != null) return true;
   return false;
 }
 

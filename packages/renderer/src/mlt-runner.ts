@@ -44,18 +44,58 @@ export function checkMelt(): void {
   }
 }
 
+/** Path of the sidecar melt profile file written next to the script. */
+export function meltProfilePath(scriptPath: string): string {
+  return scriptPath.replace(/\.mlt$/, "") + ".profile";
+}
+
+/** Content of a melt profile file (the canonical `key=value` format melt
+ *  ships its named profiles in — square pixels, BT.709). melt does NOT
+ *  parse ad-hoc `-profile WxH/fps` strings (it silently falls back to its
+ *  default dv_pal profile, whose 16:15 SAR then stretches the output, e.g.
+ *  1080×1920 displaying as 1152×1920); only a real profile *file* or a
+ *  named profile is honored. */
+export function buildMeltProfile(width: number, height: number, fps: number): string {
+  return [
+    `description=seam ${width}x${height} ${fps}fps`,
+    `frame_rate_num=${fps}`,
+    `frame_rate_den=1`,
+    `width=${width}`,
+    `height=${height}`,
+    `progressive=1`,
+    `sample_aspect_num=1`,
+    `sample_aspect_den=1`,
+    `display_aspect_num=${width}`,
+    `display_aspect_den=${height}`,
+    `colorspace=709`,
+    "",
+  ].join("\n");
+}
+
+/** Write the sidecar profile file for a render (when dims are known).
+ *  Both `renderWithMelt` and the CLI's `--dry-run` call this so the
+ *  printed/executed `melt` invocation has its `-profile` file on disk. */
+export async function writeMeltProfile(options: MeltRenderOptions): Promise<void> {
+  if (options.width == null || options.height == null) return;
+  await writeFile(
+    meltProfilePath(options.scriptPath),
+    buildMeltProfile(options.width, options.height, options.fps ?? 30),
+    "utf-8",
+  );
+}
+
 /** Build the argv list passed to `melt`. Exposed so the CLI's
  *  `--dry-run` mode can print the exact invocation it would have run.
  *
- *  When `width`/`height`/`fps` are set, both `-profile` (a one-shot
- *  inline profile string) and the consumer's own `width`/`height`
- *  args are emitted. The inline `<profile>` element in the XML is
- *  advisory only — without these flags melt happily picks the first
- *  producer's intrinsic size, which silently flips a landscape
- *  project to portrait if the first clip is a phone video. The
- *  caller should pass the seam doc's resolved canvas size (typically
- *  `contentWidth`/`contentHeight`) so output orientation matches the
- *  project rather than the first asset. */
+ *  When `width`/`height` are set, melt is pointed at a sidecar `-profile`
+ *  *file* (written by `writeMeltProfile`) and the consumer's `width`/
+ *  `height` args are also emitted. melt's profile must be forced this way:
+ *  the inline `<profile>` in the XML isn't adopted as the active profile
+ *  (so the default dv_pal SAR/colorspace leak), and ad-hoc `-profile WxH`
+ *  strings silently fall back to dv_pal too. The caller should pass the
+ *  seam doc's resolved canvas size (typically `contentWidth`/`Height`) so
+ *  output orientation + pixel aspect match the project, not the first
+ *  asset. */
 export function buildMeltArgs(
   scriptPath: string,
   outputPath: string,
@@ -63,10 +103,7 @@ export function buildMeltArgs(
 ): string[] {
   const args: string[] = ["-progress"];
   if (options.width != null && options.height != null) {
-    const fps = options.fps ?? 30;
-    // melt's -profile accepts a colon-separated `WxH/numDen` form for
-    // ad-hoc profiles, no need to ship a profile file.
-    args.push("-profile", `${options.width}x${options.height}/${fps}:1`);
+    args.push("-profile", meltProfilePath(scriptPath));
   }
   args.push(
     scriptPath,
@@ -90,6 +127,7 @@ export async function renderWithMelt(
   options: MeltRenderOptions,
 ): Promise<RenderResult> {
   await writeFile(options.scriptPath, xml, "utf-8");
+  await writeMeltProfile(options);
   const args = buildMeltArgs(options.scriptPath, outputPath, options);
   const start = Date.now();
 

@@ -13,6 +13,9 @@ export {
   renderWithMelt,
   checkMelt,
   buildMeltArgs,
+  buildMeltProfile,
+  meltProfilePath,
+  writeMeltProfile,
 } from "./mlt-runner.js";
 export type { RenderResult, MeltRenderOptions } from "./mlt-runner.js";
 export {

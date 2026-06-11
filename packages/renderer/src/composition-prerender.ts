@@ -94,6 +94,15 @@ export async function prerenderCompositionMlts(
         textRasters: options.textRasters,
         graphicRasters: options.graphicRasters,
         intrinsicSizes: options.intrinsicSizes,
+        // A nested comp with no backgroundColor must render on a
+        // transparent base so it composites as a layer (not an opaque
+        // black box). With one, `subTimeline.backgroundColor` wins.
+        defaultBackgroundColor: "#00000000",
+        // Bake the comp's own speed into its content: its children's
+        // (content-time) timeline maps to the sub-`.mlt`'s (output-time)
+        // duration via this speed, so a stretched comp holds/slows its
+        // content across the full window instead of ending early.
+        rootSpeed: child.speed,
         // Descendants already written → resolvable from here.
         compositionMlts,
       });
