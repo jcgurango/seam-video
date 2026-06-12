@@ -119,9 +119,7 @@ export default function App({ platform }: AppProps) {
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
-  const [isMobile, setIsMobile] = useState(false);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
-  const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [view, setView] = useState<View>(ROOT_VIEW);
   const [initialTime, setInitialTime] = useState(0);
   // In-flight selections for the CC Cut view. Cleared on entry and on
@@ -307,7 +305,6 @@ export default function App({ platform }: AppProps) {
     setFilePath(fp);
     setErrors([]);
     setSelectedIndices([]);
-    setMultiSelectMode(false);
     setView(ROOT_VIEW);
     setInitialTime(0);
     updateTitle(fp);
@@ -329,7 +326,6 @@ export default function App({ platform }: AppProps) {
       // lazily in rootTimeline. Any compile errors get reported there.
       history.push(newDoc);
       setSelectedIndices([]);
-      setMultiSelectMode(false);
     },
     [history]
   );
@@ -408,7 +404,6 @@ export default function App({ platform }: AppProps) {
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
       history.push(newDoc);
       setSelectedIndices([]);
-      setMultiSelectMode(false);
       return null;
     },
     [document, view, history]
@@ -462,7 +457,6 @@ export default function App({ platform }: AppProps) {
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
       history.push(validated.data);
       setSelectedIndices([]);
-      setMultiSelectMode(false);
       return null;
     },
     [document, view, history]
@@ -470,14 +464,6 @@ export default function App({ platform }: AppProps) {
 
   const onSelectionChange = useCallback((next: number[]) => {
     setSelectedIndices(next);
-    if (next.length === 0) setMultiSelectMode(false);
-  }, []);
-
-  const onMultiSelectStart = useCallback((index: number) => {
-    setMultiSelectMode(true);
-    setSelectedIndices((prev) =>
-      prev.includes(index) ? prev : [...prev, index]
-    );
   }, []);
 
   // ── View navigation ────────────────────────────────────────────
@@ -550,7 +536,6 @@ export default function App({ platform }: AppProps) {
       setView({ type: "cc-cut", binId });
       setInitialTime(0);
       setSelectedIndices([]);
-      setMultiSelectMode(false);
     },
     [],
   );
@@ -615,7 +600,6 @@ export default function App({ platform }: AppProps) {
     const prev = history.undo();
     if (prev != null) {
       setSelectedIndices([]);
-      setMultiSelectMode(false);
     }
   }, [history]);
 
@@ -623,7 +607,6 @@ export default function App({ platform }: AppProps) {
     const next = history.redo();
     if (next != null) {
       setSelectedIndices([]);
-      setMultiSelectMode(false);
     }
   }, [history]);
 
@@ -752,10 +735,6 @@ export default function App({ platform }: AppProps) {
   // ── Init + menu / action wiring ────────────────────────────────
 
   useEffect(() => {
-    if (platform.isMobileLayout) {
-      platform.isMobileLayout().then(setIsMobile);
-    }
-
     platform.getInitial().then((data) => {
       if (data) {
         void openFromJson(data.json, data.filePath);
@@ -824,11 +803,8 @@ export default function App({ platform }: AppProps) {
         ? `cc-cut-${view.binId}`
         : `${view.type}-${view.rootIndex}`;
 
-  // Selection bar: desktop shows when 2+ selected; mobile shows throughout
-  // the explicit multi-select mode (started by a long-press).
-  const showSelectionBar = isMobile
-    ? multiSelectMode
-    : selectedIndices.length >= 2;
+  // Selection bar appears once 2+ blocks are selected (Ctrl/Cmd+click).
+  const showSelectionBar = selectedIndices.length >= 2;
 
   // ProjectBrowser uses (fp, json) order; WebTopBar's open flow goes
   // through platform.openProject(). Same destination, different entry
@@ -974,11 +950,8 @@ export default function App({ platform }: AppProps) {
               document={document}
               viewDocument={viewDocument}
               filePath={filePath}
-              isMobile={isMobile}
               selectedIndices={selectedIndices}
               onSelectionChange={onSelectionChange}
-              multiSelectMode={multiSelectMode}
-              onMultiSelectStart={onMultiSelectStart}
               onDocumentChange={updateDocument}
               view={view}
               onEnterClip={handleEnterChild}

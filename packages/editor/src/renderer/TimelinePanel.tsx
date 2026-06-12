@@ -35,13 +35,8 @@ export interface TimelinePanelProps {
    */
   viewDocument?: SeamFile;
   filePath?: string | null;
-  isMobile: boolean;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  /** Mobile long-press triggers this to enter multi-select mode with index added. */
-  onMultiSelectStart: (index: number) => void;
-  /** True while mobile multi-select mode is active; taps toggle membership. */
-  multiSelectMode: boolean;
   onDocumentChange?: (doc: SeamFile) => void;
   view: View;
   onEnterClip: (rootIndex: number, currentParentTime: number) => void;
@@ -53,8 +48,6 @@ const MIN_PX_PER_SEC = 10;
 const MAX_PX_PER_SEC = 1000;
 const DEFAULT_PX_PER_SEC = 100;
 const HANDLE_WIDTH = 10;
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_SLOP_PX = 6;
 /** Pixels of movement before a mouse press on a child block is treated
  *  as drag-to-reorder rather than a click. */
 const REORDER_THRESHOLD_PX = 6;
@@ -251,8 +244,6 @@ interface InnerProps {
   attachmentStartIndex?: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onMultiSelectStart: (index: number) => void;
-  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   trim?: TrimOverlay;
   /** Provided only in root view, where attachment edits are writable. */
@@ -276,12 +267,11 @@ interface InnerProps {
   ) => Promise<void>;
 }
 
-// ── Shared timeline surface (hook + body) ────────────────────────────
+// ── Timeline surface (hook + body) ───────────────────────────────────
 //
-// Both DesktopTimeline and MobileTimeline boil down to: scroll
-// container + playhead + this body. The body is identical between
-// them; the shells differ in scroll behaviour, playhead positioning,
-// and (Desktop only) the reorder-drag overlay.
+// The timeline shell boils down to: scroll container + playhead + this
+// body. The hook and body are split out so a future mobile shell can
+// reuse them with its own scroll/playhead layout.
 
 interface TimelineSurfaceState {
   pxPerSec: number;
@@ -293,9 +283,9 @@ interface TimelineSurfaceState {
   rulerTicks: number[];
 }
 
-/** State + effects shared by Desktop and Mobile shells: zoom level,
- *  block layout, content height, ruler ticks, and the Ctrl/Cmd+wheel
- *  zoom listener attached to the scroll container. */
+/** State + effects for the timeline shell: zoom level, block layout,
+ *  content height, ruler ticks, and the Ctrl/Cmd+wheel zoom listener
+ *  attached to the scroll container. */
 function useTimelineSurfaceState(
   timeline: ResolvedTimeline,
   attachmentStartIndex: number | undefined,
@@ -357,8 +347,6 @@ interface TimelineSurfaceProps {
   };
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onMultiSelectStart: (index: number) => void;
-  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   trim?: TrimOverlay;
   editHistory?: History<SeamFile>;
@@ -388,8 +376,6 @@ function TimelineSurface({
   docRoot,
   selectedIndices,
   onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
   onEnter,
   trim,
   editHistory,
@@ -480,8 +466,6 @@ function TimelineSurface({
         pxPerSec={pxPerSec}
         selectedIndices={selectedIndices}
         onSelectionChange={onSelectionChange}
-        onMultiSelectStart={onMultiSelectStart}
-        multiSelectMode={multiSelectMode}
         onEnter={onEnter}
         docRoot={docRoot}
         attachmentStartIndex={splitIndex}
@@ -628,8 +612,6 @@ function DesktopTimeline({
   attachmentStartIndex,
   selectedIndices,
   onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
   onEnter,
   trim,
   editHistory,
@@ -932,8 +914,6 @@ function DesktopTimeline({
           docRoot={docRoot}
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
-          onMultiSelectStart={onMultiSelectStart}
-          multiSelectMode={multiSelectMode}
           onEnter={onEnter}
           trim={trim}
           editHistory={editHistory}
@@ -994,204 +974,6 @@ function DesktopTimeline({
   );
 }
 
-function MobileTimeline({
-  timeline,
-  docRoot,
-  attachmentStartIndex,
-  selectedIndices,
-  onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
-  onEnter,
-  trim,
-  editHistory,
-  attachIndex,
-  onAttachDrop,
-  importFiles,
-}: InnerProps) {
-  const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const surface = useTimelineSurfaceState(
-    timeline,
-    attachmentStartIndex,
-    scrollRef,
-  );
-  const { pxPerSec, blocks, contentHeight } = surface;
-  const [padding, setPadding] = useState(0);
-  const programmaticScroll = useRef(false);
-
-  // File-drag state. Same shape and dispatch logic as DesktopTimeline;
-  // mobile shell has no reorder, but the snap math is identical.
-  const [fileDrag, setFileDrag] = useState<{
-    cursorContentX: number;
-    cursorContentY: number;
-  } | null>(null);
-  const showAttachZone = fileDrag != null && attachIndex != null && !!onAttachDrop;
-  const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
-
-  const reorderableBlocks = useMemo(
-    () =>
-      blocks
-        .filter((b) => !b.isAttachment)
-        .sort((a, b) => a.index - b.index),
-    [blocks],
-  );
-
-  // Mobile shell pads each side with half the container's width so the
-  // playhead can sit at the center even at the timeline's start/end.
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const measure = () => setPadding(container.clientWidth / 2);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-
-  const contentWidth = padding + totalDuration * pxPerSec + padding;
-
-  // Auto-scroll the timeline so the (sticky) playhead stays at the
-  // container's left edge during playback. `programmaticScroll` flags
-  // the next scroll event so `handleScroll` doesn't echo back into seek.
-  useEffect(() => {
-    if (!isPlaying) return;
-    const container = scrollRef.current;
-    if (!container) return;
-    programmaticScroll.current = true;
-    container.scrollLeft = currentTime * pxPerSec;
-  }, [currentTime, pxPerSec, isPlaying]);
-
-  const handleScroll = useCallback(() => {
-    if (programmaticScroll.current) {
-      programmaticScroll.current = false;
-      return;
-    }
-    if (isPlaying) return;
-    const container = scrollRef.current;
-    if (!container) return;
-    const time = Math.max(0, Math.min(container.scrollLeft / pxPerSec, totalDuration));
-    seek(time);
-  }, [isPlaying, pxPerSec, totalDuration, seek]);
-
-  // Re-snap scroll to the current playhead on zoom so the timeline
-  // doesn't drift sideways when the user resizes via Ctrl/Cmd+wheel.
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    programmaticScroll.current = true;
-    container.scrollLeft = currentTime * pxPerSec;
-  }, [pxPerSec]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── File drag-and-drop ────────────────────────────────────────
-  // The inner content div is inset by `padding` on both sides; the
-  // shell's cursor → content X needs to subtract that offset so the
-  // ghost lines up with the timeline at X=0.
-  const cursorToContent = (e: React.DragEvent) => {
-    const container = scrollRef.current;
-    if (!container) return null;
-    const rect = container.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left + container.scrollLeft - padding,
-      y: e.clientY - rect.top + container.scrollTop,
-    };
-  };
-
-  const handleFileDragOver = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    const pos = cursorToContent(e);
-    if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y });
-  };
-
-  const handleFileDragLeave = (e: React.DragEvent) => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    if (
-      e.clientX < rect.left ||
-      e.clientX >= rect.right ||
-      e.clientY < rect.top ||
-      e.clientY >= rect.bottom
-    ) {
-      setFileDrag(null);
-    }
-  };
-
-  const handleFileDrop = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    const pos = cursorToContent(e);
-    setFileDrag(null);
-    if (!pos) return;
-    if (e.dataTransfer.files.length === 0) return;
-
-    const inAttachZone =
-      showAttachZone && pos.y >= contentHeight && onAttachDrop != null;
-    if (inAttachZone) {
-      const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
-      onAttachDrop!(side, e.dataTransfer.files);
-      return;
-    }
-    if (importFiles) {
-      const idx = computeInsertionIndex(pos.x, reorderableBlocks, pxPerSec);
-      void importFiles(e.dataTransfer.files, idx);
-    }
-  };
-
-  const playheadXContent = currentTime * pxPerSec;
-  const insertionGhostX =
-    fileDrag != null && (fileDrag.cursorContentY < contentHeight || !showAttachZone)
-      ? insertionIndexToX(
-          computeInsertionIndex(fileDrag.cursorContentX, reorderableBlocks, pxPerSec),
-          reorderableBlocks,
-          pxPerSec,
-        )
-      : null;
-  const attachHoverSide: "start" | "end" | null =
-    fileDrag != null && showAttachZone && fileDrag.cursorContentY >= contentHeight
-      ? fileDrag.cursorContentX >= playheadXContent
-        ? "start"
-        : "end"
-      : null;
-
-  return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      onDragOver={handleFileDragOver}
-      onDragLeave={handleFileDragLeave}
-      onDrop={handleFileDrop}
-      style={{ flex: 1, overflow: "auto", position: "relative" }}
-    >
-      <div style={{ position: "sticky", left: 0, width: "100%", height: 0, zIndex: 4, pointerEvents: "none" }}>
-        <Playhead x={padding} height={totalContentHeight} />
-      </div>
-      <div style={{ width: contentWidth, height: totalContentHeight, position: "relative" }}>
-        <div style={{ position: "absolute", left: padding, top: 0, right: padding }}>
-          <TimelineSurface
-            surface={surface}
-            timeline={timeline}
-            docRoot={docRoot}
-            selectedIndices={selectedIndices}
-            onSelectionChange={onSelectionChange}
-            onMultiSelectStart={onMultiSelectStart}
-            multiSelectMode={multiSelectMode}
-            onEnter={onEnter}
-            trim={trim}
-            editHistory={editHistory}
-            reorderDragIndex={null}
-            onReorderDragStart={null}
-            insertionGhostX={insertionGhostX}
-            showAttachZone={showAttachZone}
-            attachHoverSide={attachHoverSide}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Shared sub-components ────────────────────────────────────────────
 
 function RulerLayer({ pxPerSec, ticks }: { pxPerSec: number; ticks: number[] }) {
@@ -1234,8 +1016,6 @@ function ChildrenLayer({
   pxPerSec,
   selectedIndices,
   onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
   onEnter,
   docRoot,
   attachmentStartIndex,
@@ -1247,8 +1027,6 @@ function ChildrenLayer({
   pxPerSec: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onMultiSelectStart: (index: number) => void;
-  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   docRoot?: {
     children: import("@seam/core").Child[];
@@ -1308,8 +1086,6 @@ function ChildrenLayer({
             isPrimary={isPrimary}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
-            onMultiSelectStart={onMultiSelectStart}
-            multiSelectMode={multiSelectMode}
             onEnter={onEnter}
             isDraggingOut={reorderDragIndex === index}
             onReorderDragStart={blockReorderStart}
@@ -1332,8 +1108,6 @@ function ChildBlockView({
   isPrimary,
   selectedIndices,
   onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
   onEnter,
   isDraggingOut,
   onReorderDragStart,
@@ -1349,8 +1123,6 @@ function ChildBlockView({
   isPrimary: boolean;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onMultiSelectStart: (index: number) => void;
-  multiSelectMode: boolean;
   onEnter?: (index: number) => void;
   /** True while this block is the source of an active reorder drag —
    *  fade it so the user sees the ghost is the live thing. */
@@ -1377,25 +1149,11 @@ function ChildBlockView({
   const displayType = displayChild?.type ?? child.type;
   const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
 
-  // Long-press (touch/pen) now starts mobile multi-select mode and adds this
-  // block to the selection. Desktop uses Ctrl/Cmd+click (handled on pointer-up).
-  const longPressTimer = useRef<number | null>(null);
-  const pointerStart = useRef<{ x: number; y: number } | null>(null);
-  const longPressFired = useRef(false);
-  // Mouse-only: drag-to-reorder. `mouseDownPos` records the press
-  // origin; `reorderHandedOff` flips true once we transition past the
-  // movement threshold so the pointerup that follows doesn't fire a
-  // click-to-select.
+  // Drag-to-reorder. `mouseDownPos` records the press origin;
+  // `reorderHandedOff` flips true once we move past the threshold so the
+  // pointerup that follows doesn't fire a click-to-select.
   const mouseDownPos = useRef<{ x: number; y: number } | null>(null);
   const reorderHandedOff = useRef(false);
-
-  const clearLongPress = () => {
-    if (longPressTimer.current != null) {
-      window.clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-    pointerStart.current = null;
-  };
 
   const toggleMembership = () => {
     if (selectedIndices.includes(index)) {
@@ -1407,31 +1165,16 @@ function ChildBlockView({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
-    longPressFired.current = false;
     reorderHandedOff.current = false;
-    if (e.pointerType === "mouse") {
-      // Capture so pointermove keeps firing on this block even if the
-      // cursor leaves it — that's the only way drag detection can win
-      // when the user yanks the pointer fast.
-      e.currentTarget.setPointerCapture(e.pointerId);
-      mouseDownPos.current = { x: e.clientX, y: e.clientY };
-    } else {
-      pointerStart.current = { x: e.clientX, y: e.clientY };
-      longPressTimer.current = window.setTimeout(() => {
-        longPressFired.current = true;
-        onMultiSelectStart(index);
-      }, LONG_PRESS_MS);
-    }
+    // Capture so pointermove keeps firing on this block even if the
+    // cursor leaves it — that's the only way drag detection can win
+    // when the user yanks the pointer fast.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    mouseDownPos.current = { x: e.clientX, y: e.clientY };
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (pointerStart.current) {
-      const dx = e.clientX - pointerStart.current.x;
-      const dy = e.clientY - pointerStart.current.y;
-      if (Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX) clearLongPress();
-    }
     if (
-      e.pointerType === "mouse" &&
       mouseDownPos.current &&
       !reorderHandedOff.current &&
       onReorderDragStart
@@ -1455,7 +1198,6 @@ function ChildBlockView({
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    clearLongPress();
     mouseDownPos.current = null;
     if (reorderHandedOff.current) {
       // Drag took over — DesktopTimeline owns the rest. Don't toggle
@@ -1463,13 +1205,10 @@ function ChildBlockView({
       reorderHandedOff.current = false;
       return;
     }
-    if (longPressFired.current) return; // long-press handled selection already
     e.stopPropagation();
-    const isTouch = e.pointerType !== "mouse";
     const modifier = e.ctrlKey || e.metaKey;
-    if (isTouch && multiSelectMode) {
-      toggleMembership();
-    } else if (!isTouch && modifier) {
+    if (modifier) {
+      // Ctrl/Cmd+click toggles this block's membership in the selection.
       toggleMembership();
     } else {
       // Single select: replace selection, or deselect if this was the only one.
@@ -1481,6 +1220,10 @@ function ChildBlockView({
     }
   };
 
+  const handlePointerCancel = () => {
+    mouseDownPos.current = null;
+  };
+
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (onEnter) onEnter(index);
@@ -1490,7 +1233,7 @@ function ChildBlockView({
     onPointerDown: handlePointerDown,
     onPointerMove: handlePointerMove,
     onPointerUp: handlePointerUp,
-    onPointerCancel: clearLongPress,
+    onPointerCancel: handlePointerCancel,
     onDoubleClick: handleDoubleClick,
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   };
@@ -1753,11 +1496,8 @@ export default function TimelinePanel({
   document: doc,
   viewDocument,
   filePath,
-  isMobile,
   selectedIndices,
   onSelectionChange,
-  onMultiSelectStart,
-  multiSelectMode,
   onDocumentChange,
   view,
   onEnterClip,
@@ -1858,7 +1598,7 @@ export default function TimelinePanel({
     };
   }, [view, doc, history]);
 
-  // Enter handler: double-click / long-press
+  // Enter handler: double-click a block to step into it.
   const handleEnter = useCallback(
     (index: number) => {
       onEnterClip(index, currentTime);
@@ -1923,31 +1663,13 @@ export default function TimelinePanel({
                 onSelectionChange([newIndex]);
               }
             : undefined;
-        return isMobile ? (
-          <MobileTimeline
-            timeline={timeline}
-            docRoot={panelDoc}
-            attachmentStartIndex={splitIndex}
-            selectedIndices={selectedIndices}
-            onSelectionChange={onSelectionChange}
-            onMultiSelectStart={onMultiSelectStart}
-            multiSelectMode={multiSelectMode}
-            onEnter={onEnterProp}
-            trim={trim}
-            editHistory={editHistory}
-            attachIndex={shellAttachIndex}
-            onAttachDrop={shellOnAttachDrop}
-            importFiles={shellImportFiles}
-          />
-        ) : (
+        return (
           <DesktopTimeline
             timeline={timeline}
             docRoot={panelDoc}
             attachmentStartIndex={splitIndex}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
-            onMultiSelectStart={onMultiSelectStart}
-            multiSelectMode={multiSelectMode}
             onEnter={onEnterProp}
             trim={trim}
             editHistory={editHistory}

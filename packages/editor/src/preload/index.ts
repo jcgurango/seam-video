@@ -35,8 +35,6 @@ contextBridge.exposeInMainWorld("seamApi", {
   setTitle: (title: string) => ipcRenderer.invoke("set-title", title),
 
   // Utilities
-  getMobileEmulation: () =>
-    ipcRenderer.invoke("get-mobile-emulation") as Promise<boolean>,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
   // Export

@@ -1,6 +1,6 @@
 import type { SeamFile } from "@seam/core";
 
-export type PlatformKind = "electron" | "web" | "mobile";
+export type PlatformKind = "electron" | "web";
 export type ActionName =
   | "new"
   | "open"
@@ -117,14 +117,4 @@ export interface Platform {
   importProject?: (
     file: File
   ) => Promise<{ filePath: string; json: string } | null>;
-
-  // ── Layout hints ─────────────────────────────────────────────────
-
-  /**
-   * Whether the editor should render its mobile-optimized layout. Determined
-   * at platform construction — on Web it's the device's actual touch
-   * capability (pointer: coarse); on Electron it reflects the user-toggled
-   * mobile emulation. Not expected to change within a session.
-   */
-  isMobileLayout?(): Promise<boolean>;
 }

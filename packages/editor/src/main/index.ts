@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import JSZip from "jszip";
 
 let mainWindow: BrowserWindow | null = null;
-let mobileEmulation = false;
 
 function buildMenu() {
   const isMac = process.platform === "darwin";
@@ -53,46 +52,6 @@ function buildMenu() {
       ],
     },
     { role: "editMenu" },
-    {
-      label: "View",
-      submenu: [
-        {
-          label: "Mobile Emulation",
-          type: "checkbox",
-          checked: mobileEmulation,
-          click: (menuItem) => {
-            mobileEmulation = menuItem.checked;
-            if (!mainWindow) return;
-            if (mobileEmulation) {
-              mainWindow.webContents.enableDeviceEmulation({
-                screenPosition: "mobile",
-                screenSize: { width: 390, height: 844 },
-                viewSize: { width: 390, height: 844 },
-                viewPosition: { x: 0, y: 0 },
-                deviceScaleFactor: 3,
-                scale: 1,
-              });
-              mainWindow.webContents.debugger.attach("1.3");
-              mainWindow.webContents.debugger.sendCommand(
-                "Emulation.setEmitTouchEventsForMouse",
-                { enabled: true, configuration: "mobile" }
-              );
-              mainWindow.webContents.reload();
-            } else {
-              mainWindow.webContents.disableDeviceEmulation();
-              try {
-                mainWindow.webContents.debugger.sendCommand(
-                  "Emulation.setEmitTouchEventsForMouse",
-                  { enabled: false }
-                );
-                mainWindow.webContents.debugger.detach();
-              } catch {}
-              mainWindow.webContents.reload();
-            }
-          },
-        },
-      ],
-    },
     { role: "windowMenu" },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -195,8 +154,6 @@ app.whenReady().then(() => {
   createWindow();
 
   // ── IPC: file I/O ────────────────────────────────────────────────
-
-  ipcMain.handle("get-mobile-emulation", () => mobileEmulation);
 
   ipcMain.handle("set-title", (_event, title: string) => {
     mainWindow?.setTitle(title);

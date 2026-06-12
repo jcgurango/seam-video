@@ -1,9 +1,9 @@
 // Shared layout primitives for the timeline panel: pixel constants,
 // the resolved-child-to-row spec, and the y-coordinate helper. Used
-// by both the main TimelinePanel (DesktopTimeline / MobileTimeline /
-// ChildrenLayer / ChildBlockView) and the AnchorLinesLayer overlay.
-// Extracted here so AnchorLinesLayer can sit in its own file without
-// importing back into TimelinePanel.
+// by both the main TimelinePanel (DesktopTimeline / ChildrenLayer /
+// ChildBlockView) and the AnchorLinesLayer overlay. Extracted here so
+// AnchorLinesLayer can sit in its own file without importing back into
+// TimelinePanel.
 
 import type { ResolvedChild } from "@seam/core";
 

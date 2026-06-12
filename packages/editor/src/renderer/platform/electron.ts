@@ -24,7 +24,6 @@ interface ElectronSeamApi {
   showOpenDialog: () => Promise<OpenResult | null>;
   showSaveDialog: () => Promise<string | null>;
   setTitle: (title: string) => void;
-  getMobileEmulation: () => Promise<boolean>;
   getPathForFile: (file: File) => string;
   exportProject: (payload: {
     seamFileName: string;
@@ -158,10 +157,5 @@ export class ElectronPlatform implements Platform {
     } finally {
       unsubscribe?.();
     }
-  }
-
-  isMobileLayout() {
-    // On Electron the "mobile" layout follows the debug emulation toggle.
-    return window.seamApi.getMobileEmulation();
   }
 }

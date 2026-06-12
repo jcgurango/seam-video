@@ -10,7 +10,7 @@ pnpm monorepo:
 - **`@seam/renderer`** — Builds MLT projects from resolved timelines and executes them; uses FFmpeg for sample-accurate audio.
 - **`@seam/cli`** — `render`, `preview`, `resolve` commands (Commander).
 - **`@seam/preview`** — Electron + React live preview with file watching. Exports `Player`, `Timeline`, `VideoCanvas`, `TransportControls` for reuse.
-- **`@seam/editor`** — Electron + React editing app. Owns React UI, platform abstraction (Electron / Web / Mobile), exports `App` + platform for host shells.
+- **`@seam/editor`** — Electron + React editing app. Owns React UI, platform abstraction (Electron / Web), exports `App` + platform for host shells. (Desktop-only for now — mobile layout was removed pending a dedicated UI pass.)
 - **`@seam/web`** — Web (browser) shell for the editor. OPFS-backed storage with `projects/` and `clips/` directories.
 - **`@seam/html-renderer`** — Static HTML host for the editor.
 - **`generator-server`** — Python/FastAPI sidecar for transcription (faster-whisper) and audio enhancement (Resemble Enhance). Not wired through the JS monorepo.
@@ -102,7 +102,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | File | Role |
 |------|------|
 | `src/renderer/App.tsx` | Root: state, history, timeline derivations, `onAction` wiring, render shell |
-| `src/renderer/TimelinePanel.tsx` | Scroll shells (`DesktopTimeline`, `MobileTimeline`) sharing `useTimelineSurfaceState` + `<TimelineSurface>` |
+| `src/renderer/TimelinePanel.tsx` | `DesktopTimeline` scroll shell built on `useTimelineSurfaceState` + `<TimelineSurface>` (split out so a future mobile shell can reuse them) |
 | `src/renderer/AnchorLinesLayer.tsx` | SVG overlay; pointer-drag state machine driving `anchorEdit.ts` |
 | `src/renderer/timelineLayout.ts` | `ROW_HEIGHT`/`ROW_GAP`/`RULER_HEIGHT`, `ChildBlock` type, `rowYTop` |
 | `src/renderer/ControlsBar.tsx` | Toolbar — wires `applyBin`/`applyAttach`/`sliceAtPlayhead`/`applyCompose` and transport |
