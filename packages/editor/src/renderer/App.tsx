@@ -11,7 +11,7 @@ import {
 import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
-import InspectorTabs from "./InspectorTabs.js";
+import InspectorAccordion from "./InspectorAccordion.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
@@ -885,7 +885,7 @@ export default function App({ platform }: AppProps) {
         <div
           style={{
             display: "flex",
-            flexDirection: "column",
+            flexDirection: "row",
             height: "100%",
             background: "#1a1a1a",
             color: "#fff",
@@ -893,38 +893,59 @@ export default function App({ platform }: AppProps) {
             minHeight: 0,
           }}
         >
-          <div style={{ height: '65vh', display: 'flex', flexDirection: 'row' }}>
-            <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
-              {view.type === "cc-cut" ? (
-                <CCCutView
-                  words={ccWords}
-                  selections={ccSelections}
-                  onSelectionsChange={setCcSelections}
-                  focusedSelectionIndices={selectedIndices.filter(
-                    (i) => i < ccSelections.length,
-                  )}
-                />
-              ) : (
-                <InspectorTabs
-                  timeline={editorTimeline}
-                  viewDocument={viewDocument}
-                  jsonNode={jsonNode}
-                  onJsonNodeSave={handleJsonNodeSave}
-                  jsonJumpPath={jsonJumpPath}
-                  scriptComposition={scriptComposition}
-                  scriptError={scriptError}
-                  onScriptApply={handleScriptApply}
-                  rootDocument={document}
-                  onRootDocumentChange={updateDocument}
-                  onEnterCCCut={handleEnterCCCut}
-                />
-              )}
-            </div>
-            <div style={{ flex: 1, display: 'flex' }}>
-              <VideoCanvas width={playerTimeline.contentWidth} height={playerTimeline.contentHeight} />
-            </div>
+          {/* Left pane (~1/3): the inspector accordion, or the CC Cut editor
+              while that view is active. */}
+          <div
+            style={{
+              flex: "1 1 0",
+              minWidth: 0,
+              display: "flex",
+              borderRight: "1px solid #333",
+            }}
+          >
+            {view.type === "cc-cut" ? (
+              <CCCutView
+                words={ccWords}
+                selections={ccSelections}
+                onSelectionsChange={setCcSelections}
+                focusedSelectionIndices={selectedIndices.filter(
+                  (i) => i < ccSelections.length,
+                )}
+              />
+            ) : (
+              <InspectorAccordion
+                timeline={editorTimeline}
+                viewDocument={viewDocument}
+                jsonNode={jsonNode}
+                onJsonNodeSave={handleJsonNodeSave}
+                jsonJumpPath={jsonJumpPath}
+                scriptComposition={scriptComposition}
+                scriptError={scriptError}
+                onScriptApply={handleScriptApply}
+                rootDocument={document}
+                onRootDocumentChange={updateDocument}
+                onEnterCCCut={handleEnterCCCut}
+              />
+            )}
           </div>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {/* Right pane (~2/3): viewport on top, tools, then the timeline. */}
+          <div
+            style={{
+              flex: "2 1 0",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+            }}
+          >
+            {/* VideoCanvas supplies its own flex:1 centering stage — don't
+                wrap it in another flex box or the canvas loses a definite
+                height to fit against and overflows vertically. */}
+            <VideoCanvas
+              width={playerTimeline.contentWidth}
+              height={playerTimeline.contentHeight}
+              style={{ background: "#111" }}
+            />
             <ControlsBar
               document={document}
               filePath={filePath}

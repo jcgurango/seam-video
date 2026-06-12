@@ -11,9 +11,15 @@ import JsonNodePanel from "./JsonNodePanel.js";
 import ScriptPanel from "./ScriptPanel.js";
 import BinPanel from "./BinPanel.js";
 
-type TabId = "properties" | "filters" | "json" | "script" | "inspector" | "bin";
+type SectionId =
+  | "properties"
+  | "filters"
+  | "json"
+  | "script"
+  | "inspector"
+  | "bin";
 
-const TABS: { id: TabId; label: string }[] = [
+const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "properties", label: "Properties" },
   { id: "filters", label: "Filters" },
   { id: "json", label: "JSON" },
@@ -22,7 +28,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "bin", label: "Bin" },
 ];
 
-interface InspectorTabsProps {
+interface InspectorAccordionProps {
   timeline: ResolvedTimeline | null;
   viewDocument: SeamFile;
   /** The JSON node currently in focus (whole doc at root, or a child for nested views). */
@@ -31,13 +37,13 @@ interface InspectorTabsProps {
   onJsonNodeSave: (next: unknown) => string[] | null;
   /** Path key inside `jsonNode` to reveal in the JSON editor (e.g. "children.3"). */
   jsonJumpPath: string | null;
-  /** The composition the Script tab targets — null in clip view. */
+  /** The composition the Script section targets — null in clip view. */
   scriptComposition: Composition | null;
   /** Last script-execution error from the active composition (or null). */
   scriptError: string | null;
-  /** Apply a transformed composition produced by the Script tab. */
+  /** Apply a transformed composition produced by the Script section. */
   onScriptApply: (next: Composition) => string[] | null;
-  /** Editor-surface root, used by the Bin tab to read + rewrite entries. */
+  /** Editor-surface root, used by the Bin section to read + rewrite entries. */
   rootDocument: SeamFile;
   /** Push a new editor-surface root back to history (typically the same
    *  callback used by ControlsBar/TimelinePanel). */
@@ -46,7 +52,13 @@ interface InspectorTabsProps {
   onEnterCCCut: (binId: string) => void;
 }
 
-export default function InspectorTabs({
+/**
+ * Left-pane accordion. Unlike the old tab strip, any number of sections
+ * can be expanded at once; each expanded section gets an equal share of
+ * the available height (the panels that need room — Inspector, Bin, JSON
+ * — manage their own internal overflow).
+ */
+export default function InspectorAccordion({
   timeline,
   viewDocument,
   jsonNode,
@@ -58,8 +70,57 @@ export default function InspectorTabs({
   rootDocument,
   onRootDocumentChange,
   onEnterCCCut,
-}: InspectorTabsProps) {
-  const [active, setActive] = useState<TabId>("properties");
+}: InspectorAccordionProps) {
+  const [open, setOpen] = useState<Set<SectionId>>(
+    () => new Set<SectionId>(["inspector"]),
+  );
+
+  const toggle = (id: SectionId) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const renderContent = (id: SectionId): React.ReactNode => {
+    switch (id) {
+      case "properties":
+        return <PaddedTab>Properties panel (placeholder)</PaddedTab>;
+      case "filters":
+        return <PaddedTab>Filters panel (placeholder)</PaddedTab>;
+      case "json":
+        return (
+          <JsonNodePanel
+            node={jsonNode}
+            onSave={onJsonNodeSave}
+            jumpPath={jsonJumpPath}
+          />
+        );
+      case "script":
+        return (
+          <ScriptPanel
+            currentComposition={scriptComposition}
+            scriptError={scriptError}
+            onApply={onScriptApply}
+          />
+        );
+      case "inspector":
+        return (
+          <PaddedTab>
+            <InspectorPanel timeline={timeline} viewDocument={viewDocument} />
+          </PaddedTab>
+        );
+      case "bin":
+        return (
+          <BinPanel
+            rootDocument={rootDocument}
+            onRootDocumentChange={onRootDocumentChange}
+            onEnterCCCut={onEnterCCCut}
+          />
+        );
+    }
+  };
 
   return (
     <div
@@ -70,85 +131,66 @@ export default function InspectorTabs({
         minHeight: 0,
         minWidth: 0,
         background: "#222",
-        borderRight: "1px solid #333",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "row",
-          borderBottom: "1px solid #333",
-          background: "#1f1f1f",
-        }}
-      >
-        {TABS.map((tab) => {
-          const isActive = tab.id === active;
-          return (
+      {SECTIONS.map((section) => {
+        const isOpen = open.has(section.id);
+        return (
+          <div
+            key={section.id}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              // Open sections share the leftover height equally; collapsed
+              // ones shrink to just their header.
+              flex: isOpen ? "1 1 0" : "0 0 auto",
+              borderBottom: "1px solid #333",
+            }}
+          >
             <button
-              key={tab.id}
-              onClick={() => setActive(tab.id)}
+              onClick={() => toggle(section.id)}
               style={{
-                background: isActive ? "#2a2a2a" : "transparent",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: isOpen ? "#2a2a2a" : "#1f1f1f",
                 border: "none",
-                borderRight: "1px solid #333",
-                borderBottom: isActive
+                borderLeft: isOpen
                   ? "2px solid #4a7eb8"
                   : "2px solid transparent",
-                color: isActive ? "#fff" : "#aaa",
-                padding: "8px 14px",
+                color: isOpen ? "#fff" : "#aaa",
+                padding: "8px 12px",
                 fontSize: 12,
+                fontWeight: 600,
                 cursor: "pointer",
                 fontFamily: "inherit",
+                textAlign: "left",
+                flexShrink: 0,
               }}
             >
-              {tab.label}
+              <span style={{ width: 10, color: "#888", fontSize: 10 }}>
+                {isOpen ? "▾" : "▸"}
+              </span>
+              {section.label}
             </button>
-          );
-        })}
-      </div>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          fontSize: 12,
-          color: "#ccc",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {active === "properties" && (
-          <PaddedTab>Properties panel (placeholder)</PaddedTab>
-        )}
-        {active === "filters" && (
-          <PaddedTab>Filters panel (placeholder)</PaddedTab>
-        )}
-        {active === "json" && (
-          <JsonNodePanel
-            node={jsonNode}
-            onSave={onJsonNodeSave}
-            jumpPath={jsonJumpPath}
-          />
-        )}
-        {active === "script" && (
-          <ScriptPanel
-            currentComposition={scriptComposition}
-            scriptError={scriptError}
-            onApply={onScriptApply}
-          />
-        )}
-        {active === "inspector" && (
-          <PaddedTab>
-            <InspectorPanel timeline={timeline} viewDocument={viewDocument} />
-          </PaddedTab>
-        )}
-        {active === "bin" && (
-          <BinPanel
-            rootDocument={rootDocument}
-            onRootDocumentChange={onRootDocumentChange}
-            onEnterCCCut={onEnterCCCut}
-          />
-        )}
-      </div>
+            {isOpen && (
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  fontSize: 12,
+                  color: "#ccc",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {renderContent(section.id)}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
