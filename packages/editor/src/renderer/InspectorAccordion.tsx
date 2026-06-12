@@ -174,20 +174,21 @@ export default function InspectorAccordion({
               </span>
               {section.label}
             </button>
-            {isOpen && (
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  fontSize: 12,
-                  color: "#ccc",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                {renderContent(section.id)}
-              </div>
-            )}
+            {/* Kept mounted when collapsed (display: none) so panel state —
+                Monaco editors' buffers/undo, scroll position, map instances —
+                survives toggling open/closed. */}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                fontSize: 12,
+                color: "#ccc",
+                display: isOpen ? "flex" : "none",
+                flexDirection: "column",
+              }}
+            >
+              {renderContent(section.id)}
+            </div>
           </div>
         );
       })}
