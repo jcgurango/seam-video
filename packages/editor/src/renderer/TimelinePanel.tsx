@@ -1,6 +1,9 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect } from "react";
 import { useTimeline } from "@seam/preview";
+import { ChevronRight, ChevronDown, Boxes } from "lucide-react";
 import type {
+  BinEntry,
+  Child,
   ResolvedTimeline,
   ResolvedChild,
   SeamFile,
@@ -15,8 +18,10 @@ import {
   ROW_HEIGHT,
   ROW_GAP,
   RULER_HEIGHT,
-  type ChildBlock,
+  DEPTH_INSET,
+  rowTop,
 } from "./timelineLayout.js";
+import { layoutTree, type TreeBlock, type TreeGroup } from "./timelineTree.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
 import { resizeChild } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
@@ -47,6 +52,10 @@ const HANDLE_WIDTH = 10;
 const REORDER_THRESHOLD_PX = 6;
 const REORDER_LINE_COLOR = "#ff4444";
 
+/** Stable empty bin so `layoutTree`'s memo doesn't bust each render when a
+ *  document has no `bin`. */
+const EMPTY_BIN: BinEntry[] = [];
+
 /**
  * Greedy row-packer. Items past `attachmentStartIndex` are laid out into a
  * separate band below the children band, each band packed independently —
@@ -60,7 +69,7 @@ const REORDER_LINE_COLOR = "#ff4444";
  *  inserts after — which feels natural for symmetric drag targets. */
 function computeInsertionIndex(
   cursorX: number,
-  sortedChildBlocks: ChildBlock[],
+  sortedChildBlocks: TreeBlock[],
   pxPerSec: number,
 ): number {
   for (let k = 0; k < sortedChildBlocks.length; k++) {
@@ -89,7 +98,7 @@ function reorderChildren<T>(arr: T[], from: number, to: number): T[] {
  *  is the end of the final child. */
 function insertionIndexToX(
   insertIdx: number,
-  sortedChildBlocks: ChildBlock[],
+  sortedChildBlocks: TreeBlock[],
   pxPerSec: number,
 ): number {
   if (sortedChildBlocks.length === 0) return 0;
@@ -98,49 +107,6 @@ function insertionIndexToX(
     return last.child.timelineEnd * pxPerSec;
   }
   return sortedChildBlocks[insertIdx].child.timelineStart * pxPerSec;
-}
-
-function layoutBlocks(
-  children: ResolvedChild[],
-  attachmentStartIndex: number
-): ChildBlock[] {
-  const pack = (
-    items: { child: ResolvedChild; index: number }[],
-    baseRow: number,
-    isAttachment: boolean
-  ): { blocks: ChildBlock[]; rows: number } => {
-    const sorted = [...items].sort(
-      (a, b) => a.child.timelineStart - b.child.timelineStart
-    );
-    const rowEnds: number[] = [];
-    const blocks: ChildBlock[] = [];
-    for (const { child, index } of sorted) {
-      let row = rowEnds.findIndex((end) => end <= child.timelineStart);
-      if (row === -1) {
-        row = rowEnds.length;
-        rowEnds.push(child.timelineEnd);
-      } else {
-        rowEnds[row] = child.timelineEnd;
-      }
-      blocks.push({ child, index, row: baseRow + row, isAttachment });
-    }
-    return { blocks, rows: rowEnds.length };
-  };
-
-  const childItems = children
-    .slice(0, attachmentStartIndex)
-    .map((child, i) => ({ child, index: i }));
-  const attachmentItems = children
-    .slice(attachmentStartIndex)
-    .map((child, i) => ({ child, index: attachmentStartIndex + i }));
-
-  const { blocks: childBlocks, rows: childRows } = pack(childItems, 0, false);
-  const { blocks: attachmentBlocks } = pack(
-    attachmentItems,
-    childRows,
-    true
-  );
-  return [...childBlocks, ...attachmentBlocks];
 }
 
 function formatTime(s: number): string {
@@ -197,6 +163,22 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   graphic: { bg: "#b03a8f", border: "#d957b8" },
 };
 
+// Window-boundary markers drawn at the left/right edges of an expanded
+// composition (its `in`/`out` window), in the composition accent. Overlaid
+// (pointer-events: none) so they sit above the clipped content.
+const EXP_BOUNDARY_BASE: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  bottom: 0,
+  width: 2,
+  background: BLOCK_COLORS.composition.border,
+  opacity: 0.7,
+  pointerEvents: "none",
+  zIndex: 1,
+};
+const EXP_BOUNDARY_LEFT: React.CSSProperties = { ...EXP_BOUNDARY_BASE, left: 0 };
+const EXP_BOUNDARY_RIGHT: React.CSSProperties = { ...EXP_BOUNDARY_BASE, right: 0 };
+
 const PRIMARY_BORDER = "#ffcc00";
 // Secondary selection: dashed yellow conveys "linked to the primary" — we
 // reuse the same hue so it reads as still-selected, but the dashes signal
@@ -228,6 +210,12 @@ interface InnerProps {
   attachmentStartIndex?: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
+  /** Set of expanded composition addresses (see `timelineTree`). */
+  expanded: Set<string>;
+  /** Toggle a composition's expanded state by its address. */
+  onToggleExpand: (addr: string) => void;
+  /** Root document's bin entries — for pairing `binItem` expansions. */
+  rootBin: BinEntry[];
   /** Provided only when the panel is editable, where attachment edits are
    *  writable. */
   editHistory?: History<SeamFile>;
@@ -260,7 +248,9 @@ interface TimelineSurfaceState {
   pxPerSec: number;
   setPxPerSec: React.Dispatch<React.SetStateAction<number>>;
   splitIndex: number;
-  blocks: ChildBlock[];
+  /** The root composition body's layout group (nested expansions hang
+   *  off its blocks). */
+  rootGroup: TreeGroup;
   rowCount: number;
   contentHeight: number;
   rulerTicks: number[];
@@ -272,18 +262,20 @@ interface TimelineSurfaceState {
 function useTimelineSurfaceState(
   timeline: ResolvedTimeline,
   attachmentStartIndex: number | undefined,
+  authored: { children: Child[]; attachments?: Child[] } | undefined,
+  expanded: Set<string>,
+  rootBin: BinEntry[],
   scrollRef: React.RefObject<HTMLDivElement | null>,
 ): TimelineSurfaceState {
   const { totalDuration } = useTimeline();
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
 
   const splitIndex = attachmentStartIndex ?? timeline.children.length;
-  const blocks = useMemo(
-    () => layoutBlocks(timeline.children, splitIndex),
-    [timeline, splitIndex],
+  const rootGroup = useMemo(
+    () => layoutTree(timeline.children, authored, splitIndex, expanded, rootBin),
+    [timeline, authored, splitIndex, expanded, rootBin],
   );
-  const rowCount =
-    blocks.length > 0 ? Math.max(...blocks.map((b) => b.row)) + 1 : 1;
+  const rowCount = rootGroup.rowCount;
   const contentHeight =
     RULER_HEIGHT + rowCount * (ROW_HEIGHT + ROW_GAP) + ROW_GAP;
 
@@ -314,7 +306,7 @@ function useTimelineSurfaceState(
     pxPerSec,
     setPxPerSec,
     splitIndex,
-    blocks,
+    rootGroup,
     rowCount,
     contentHeight,
     rulerTicks,
@@ -330,6 +322,8 @@ interface TimelineSurfaceProps {
   };
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
+  expanded: Set<string>;
+  onToggleExpand: (addr: string) => void;
   editHistory?: History<SeamFile>;
   /** Index of the child currently being reorder-dragged (fades its
    *  block view). Pass `null` when the shell doesn't support reorder. */
@@ -357,6 +351,8 @@ function TimelineSurface({
   docRoot,
   selectedIndices,
   onSelectionChange,
+  expanded,
+  onToggleExpand,
   editHistory,
   reorderDragIndex,
   onReorderDragStart,
@@ -364,7 +360,7 @@ function TimelineSurface({
   showAttachZone,
   attachHoverSide,
 }: TimelineSurfaceProps) {
-  const { pxPerSec, splitIndex, blocks, contentHeight, rulerTicks } = surface;
+  const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
   const { currentTime, seek } = useTimeline();
 
   // Per-block drag-resize. Stable identity via useEvent so re-renders
@@ -440,13 +436,15 @@ function TimelineSurface({
   return (
     <>
       <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
-      <ChildrenLayer
-        blocks={blocks}
+      <TimelineGroup
+        group={rootGroup}
+        yBase={RULER_HEIGHT + ROW_GAP}
+        depth={0}
         pxPerSec={pxPerSec}
         selectedIndices={selectedIndices}
         onSelectionChange={onSelectionChange}
-        docRoot={docRoot}
-        attachmentStartIndex={splitIndex}
+        expanded={expanded}
+        onToggleExpand={onToggleExpand}
         reorderDragIndex={reorderDragIndex}
         onReorderDragStart={onReorderDragStart}
         onResizeDragStart={onResizeDragStart}
@@ -455,7 +453,7 @@ function TimelineSurface({
         selectedIndices={selectedIndices}
         docRoot={docRoot}
         timeline={timeline}
-        blocks={blocks}
+        blocks={rootGroup.blocks}
         pxPerSec={pxPerSec}
         history={editHistory}
       />
@@ -583,6 +581,9 @@ function DesktopTimeline({
   attachmentStartIndex,
   selectedIndices,
   onSelectionChange,
+  expanded,
+  onToggleExpand,
+  rootBin,
   editHistory,
   onReorder,
   attachIndex,
@@ -594,9 +595,14 @@ function DesktopTimeline({
   const surface = useTimelineSurfaceState(
     timeline,
     attachmentStartIndex,
+    docRoot,
+    expanded,
+    rootBin,
     scrollRef,
   );
-  const { pxPerSec, blocks, contentHeight } = surface;
+  const { pxPerSec, rootGroup, contentHeight } = surface;
+  // Root-level blocks drive reorder / file-insertion snap math.
+  const blocks = rootGroup.blocks;
 
   // Reorder drag state. `cursorX` is in content (scroll-relative) px;
   // `grabOffsetX` is how far inside the source block the user grabbed,
@@ -883,6 +889,8 @@ function DesktopTimeline({
           docRoot={docRoot}
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
+          expanded={expanded}
+          onToggleExpand={onToggleExpand}
           editHistory={editHistory}
           reorderDragIndex={reorderDrag?.fromIndex ?? null}
           onReorderDragStart={onReorder ? startReorderDrag : null}
@@ -978,34 +986,44 @@ function RulerLayer({ pxPerSec, ticks }: { pxPerSec: number; ticks: number[] }) 
   );
 }
 
-function ChildrenLayer({
-  blocks,
+/**
+ * Renders one composition body's blocks, then — for each expanded
+ * composition — an `overflow:hidden` container holding a nested
+ * `<TimelineGroup>`. The container is positioned at the composition's
+ * window (left/width from the block) so its inner, full (un-windowed)
+ * timeline is clipped to that window: things outside simply don't show,
+ * and (once interactions land) moving a child past the edge clips rather
+ * than vanishes. Coordinates are local to each group — the container is a
+ * fresh positioning context, so a nested block's x is just
+ * `child.timelineStart * pxPerSec` again.
+ *
+ * Only the root group (`depth === 0`) is interactive this phase; nested
+ * groups render and expand/collapse but don't select/reorder/resize.
+ */
+function TimelineGroup({
+  group,
+  yBase,
+  depth,
   pxPerSec,
   selectedIndices,
   onSelectionChange,
-  docRoot,
-  attachmentStartIndex,
+  expanded,
+  onToggleExpand,
   reorderDragIndex,
   onReorderDragStart,
   onResizeDragStart,
 }: {
-  blocks: ChildBlock[];
+  group: TreeGroup;
+  /** Y offset (px) for row 0 within this group's container. */
+  yBase: number;
+  depth: number;
   pxPerSec: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  docRoot?: {
-    children: import("@seam/core").Child[];
-    attachments?: import("@seam/core").Child[];
-  };
-  attachmentStartIndex: number;
-  /** Index of the child currently being reorder-dragged (fades in the
-   *  block view). `null` when no drag is in progress. */
+  expanded: Set<string>;
+  onToggleExpand: (addr: string) => void;
   reorderDragIndex: number | null;
-  /** Hand-off callback when a child block's mouse-press passes the
-   *  drag threshold. `null` disables reorder entirely. */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
-  /** Hand-off when a selected block's resize-handle is pressed. `null`
-   *  disables resize entirely (e.g. read-only preview without history). */
   onResizeDragStart:
     | ((
         index: number,
@@ -1015,46 +1033,88 @@ function ChildrenLayer({
       ) => void)
     | null;
 }) {
+  const isRoot = depth === 0;
+  // Window transform: inner time → this group's container px. A child of a
+  // windowed composition is shifted by the window `in` and compressed by
+  // the window speed; the container clips what lands outside.
+  const toX = (sec: number) => ((sec - group.originSec) / group.scale) * pxPerSec;
   return (
     <>
-      {blocks.map(({ child, index, row, isAttachment }) => {
-        const docChild = isAttachment
-          ? docRoot?.attachments?.[index - attachmentStartIndex]
-          : docRoot?.children[index];
-        const displayChild = docChild;
-        const isSelected = selectedIndices.includes(index);
-        // Only distinguish primary vs secondary when 2+ are selected — a
-        // single selection has no "primary" relationship to highlight.
+      {group.blocks.map((block) => {
+        const { child, index, row, isAttachment, docChild, addr } = block;
+        const isSelected = isRoot && selectedIndices.includes(index);
         const isPrimary =
           isSelected &&
           !isAttachment &&
           selectedIndices.length >= 2 &&
           selectedIndices[0] === index;
-        // Reorder only applies to sequential children (attachments
-        // would lose their anchor semantics on move).
         const blockReorderStart =
-          !isAttachment && onReorderDragStart ? onReorderDragStart : null;
-        // Resize is gated to non-attachment children for now; the pure
-        // tool handles attachments too if we ever turn this on.
+          isRoot && !isAttachment && onReorderDragStart ? onReorderDragStart : null;
         const blockResizeStart =
-          !isAttachment && onResizeDragStart ? onResizeDragStart : null;
+          isRoot && !isAttachment && onResizeDragStart ? onResizeDragStart : null;
+        const left = toX(child.timelineStart);
+        const width = Math.max(toX(child.timelineEnd) - left, 2);
         return (
           <ChildBlockView
-            key={index}
+            key={addr}
             child={child}
-            displayChild={displayChild}
+            displayChild={docChild}
             index={index}
-            row={row}
-            pxPerSec={pxPerSec}
+            left={left}
+            top={yBase + rowTop(row)}
+            width={width}
+            depth={depth}
             isAttachment={isAttachment}
             isSelected={isSelected}
             isPrimary={isPrimary}
+            isRoot={isRoot}
+            isComposition={block.isComposition}
+            isBinItem={block.isBinItem}
+            isExpanded={block.isExpanded}
+            onToggleExpand={() => onToggleExpand(addr)}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
-            isDraggingOut={reorderDragIndex === index}
+            isDraggingOut={reorderDragIndex === index && isRoot}
             onReorderDragStart={blockReorderStart}
             onResizeDragStart={blockResizeStart}
           />
+        );
+      })}
+      {group.blocks.map((block) => {
+        if (!block.expansion) return null;
+        const { group: sub, topRow } = block.expansion;
+        const left = toX(block.child.timelineStart);
+        const width = Math.max(toX(block.child.timelineEnd) - left, 2);
+        return (
+          <div
+            key={`${block.addr}-exp`}
+            style={{
+              position: "absolute",
+              left,
+              top: yBase + rowTop(topRow),
+              width,
+              height: sub.rowCount * (ROW_HEIGHT + ROW_GAP),
+              overflow: "hidden",
+            }}
+          >
+            <TimelineGroup
+              group={sub}
+              yBase={0}
+              depth={depth + 1}
+              pxPerSec={pxPerSec}
+              selectedIndices={selectedIndices}
+              onSelectionChange={onSelectionChange}
+              expanded={expanded}
+              onToggleExpand={onToggleExpand}
+              reorderDragIndex={null}
+              onReorderDragStart={null}
+              onResizeDragStart={null}
+            />
+            {/* Window boundary lines (left = in, right = out), drawn over
+                the clipped content so the composition's extent is clear. */}
+            <div style={EXP_BOUNDARY_LEFT} />
+            <div style={EXP_BOUNDARY_RIGHT} />
+          </div>
         );
       })}
     </>
@@ -1065,11 +1125,18 @@ function ChildBlockView({
   child,
   displayChild,
   index,
-  row,
-  pxPerSec,
+  left,
+  top,
+  width,
+  depth,
   isAttachment,
   isSelected,
   isPrimary,
+  isRoot,
+  isComposition,
+  isBinItem,
+  isExpanded,
+  onToggleExpand,
   selectedIndices,
   onSelectionChange,
   isDraggingOut,
@@ -1079,11 +1146,20 @@ function ChildBlockView({
   child: ResolvedChild;
   displayChild?: import("@seam/core").Child;
   index: number;
-  row: number;
-  pxPerSec: number;
+  /** Absolute position within the block's group container (px). */
+  left: number;
+  top: number;
+  width: number;
+  depth: number;
   isAttachment: boolean;
   isSelected: boolean;
   isPrimary: boolean;
+  /** depth === 0: the only interactive level this phase. */
+  isRoot: boolean;
+  isComposition: boolean;
+  isBinItem: boolean;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
   /** True while this block is the source of an active reorder drag —
@@ -1091,7 +1167,7 @@ function ChildBlockView({
   isDraggingOut: boolean;
   /** When set, mouse-press + drag past the threshold hands off to the
    *  parent's reorder tracker. `null` disables reorder for this block
-   *  (e.g. attachments, or read-only previews). */
+   *  (e.g. attachments, nested blocks, or read-only previews). */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
   /** When set, pointer-down on a side handle hands off to the parent's
    *  resize tracker. `null` hides the handles. */
@@ -1104,9 +1180,6 @@ function ChildBlockView({
       ) => void)
     | null;
 }) {
-  const left = child.timelineStart * pxPerSec;
-  const width = Math.max((child.timelineEnd - child.timelineStart) * pxPerSec, 2);
-  const top = RULER_HEIGHT + ROW_GAP + row * (ROW_HEIGHT + ROW_GAP);
   const label = childLabel(displayChild, child);
   const displayType = displayChild?.type ?? child.type;
   const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
@@ -1186,13 +1259,31 @@ function ChildBlockView({
     mouseDownPos.current = null;
   };
 
-  const interactiveHandlers = {
-    onPointerDown: handlePointerDown,
-    onPointerMove: handlePointerMove,
-    onPointerUp: handlePointerUp,
-    onPointerCancel: handlePointerCancel,
-    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
-  };
+  // Only the root level is interactive this phase; nested blocks render
+  // but don't select/reorder/resize (the chevron is the one exception and
+  // carries its own handler).
+  const interactiveHandlers = isRoot
+    ? {
+        onPointerDown: handlePointerDown,
+        onPointerMove: handlePointerMove,
+        onPointerUp: handlePointerUp,
+        onPointerCancel: handlePointerCancel,
+        onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+      }
+    : {};
+
+  // Nested blocks sit slightly inset within their row so the nesting reads
+  // visually without breaking time alignment on the x-axis.
+  const vInset = isRoot ? 0 : Math.min(depth, 3) * DEPTH_INSET;
+  const border = isBinItem
+    ? `2px dashed ${colors.border}` // shared bin entry — dashed to signal it
+    : isSelected
+      ? isPrimary
+        ? `2px solid ${PRIMARY_BORDER}`
+        : selectedIndices.length >= 2
+          ? `2px dashed ${SECONDARY_BORDER}`
+          : `2px solid ${PRIMARY_BORDER}`
+      : `2px solid ${colors.border}`;
 
   return (
     <div
@@ -1200,31 +1291,53 @@ function ChildBlockView({
       style={{
         position: "absolute",
         left,
-        top,
+        top: top + vInset,
         width,
-        height: ROW_HEIGHT,
+        height: ROW_HEIGHT - 2 * vInset,
         background: isSelected ? "#4a7eb8" : colors.bg,
         borderRadius: 3,
         overflow: "hidden",
         display: "flex",
         alignItems: "center",
+        gap: 4,
         paddingLeft: 6,
         paddingRight: 6,
         fontSize: 11,
         color: "#fff",
         whiteSpace: "nowrap",
         boxSizing: "border-box",
-        border: isSelected
-          ? isPrimary
-            ? `2px solid ${PRIMARY_BORDER}`
-            : selectedIndices.length >= 2
-              ? `2px dashed ${SECONDARY_BORDER}`
-              : `2px solid ${PRIMARY_BORDER}`
-          : `2px solid ${colors.border}`,
-        cursor: onReorderDragStart ? "grab" : "pointer",
-        opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : 1,
+        border,
+        cursor: onReorderDragStart ? "grab" : isRoot ? "pointer" : "default",
+        opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : depth > 0 ? 0.92 : 1,
       }}
     >
+      {isComposition && (
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
+          title={isExpanded ? "Collapse" : "Expand"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.25)",
+            border: "none",
+            borderRadius: 3,
+            color: "#fff",
+            cursor: "pointer",
+            padding: 0,
+            width: 14,
+            height: 14,
+            flexShrink: 0,
+          }}
+        >
+          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+      )}
+      {isBinItem && <Boxes size={11} style={{ flexShrink: 0, opacity: 0.9 }} />}
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
         {label}
       </span>
@@ -1329,6 +1442,18 @@ export default function TimelinePanel({
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
   const editable = doc != null;
+  // Expanded compositions, keyed by node address (see `timelineTree`).
+  // Local to the panel: expansion is a view concern, not part of the doc.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const onToggleExpand = useCallback((addr: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(addr)) next.delete(addr);
+      else next.add(addr);
+      return next;
+    });
+  }, []);
+  const rootBin = doc?.bin ?? EMPTY_BIN;
   const emptyDoc: SeamFile = { type: "composition", children: [] };
   const importFiles = useImport(
     doc ?? emptyDoc,
@@ -1440,6 +1565,9 @@ export default function TimelinePanel({
             attachmentStartIndex={splitIndex}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
+            expanded={expanded}
+            onToggleExpand={onToggleExpand}
+            rootBin={rootBin}
             editHistory={editHistory}
             onReorder={onReorder}
             attachIndex={shellAttachIndex}

@@ -20,6 +20,18 @@ function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration
   return clip.speed ?? 1;
 }
 
+/** A composition's playback rate from its `speed`/`duration`, where the
+ *  "source" is the inner window of length `span` (`out − in`). Mirrors
+ *  `clipBaseSpeed`: `duration` sets the output length (rate = span/duration),
+ *  else `speed` (default 1). */
+function compositionBaseSpeed(
+  comp: { speed?: number; duration?: number },
+  span: number,
+): number {
+  if (comp.duration != null) return span / comp.duration;
+  return comp.speed ?? 1;
+}
+
 function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
@@ -46,10 +58,10 @@ function naturalDuration(child: Child): number {
       const lastStamp = lastFrame?.[0];
       return typeof lastStamp === "number" ? lastStamp : 0;
     case "composition": {
-      if (child.in != null && child.out != null) {
-        return child.out - child.in;
-      }
-      return resolveCompositionInner(child).duration;
+      const compIn = child.in ?? 0;
+      const compOut = child.out ?? resolveCompositionInner(child).duration;
+      const span = compOut - compIn;
+      return span / compositionBaseSpeed(child, span);
     }
   }
 }
@@ -203,32 +215,37 @@ function resolveChild(
     const inner = resolveCompositionInner(child);
     const compIn = child.in ?? 0;
     const compOut = child.out ?? inner.duration;
-    const compNatural = compOut - compIn;
+    const span = compOut - compIn;
+    // `speed`/`duration` set the base playback rate of the window (mirror
+    // of clips). overflow/underflow then layer on top only when an anchor
+    // forces a `target` different from this natural output.
+    const baseSpeed = compositionBaseSpeed(child, span);
+    const natural = span / baseSpeed;
 
     let windowIn = compIn;
     let windowOut = compOut;
-    let speed = 1;
+    let speed = baseSpeed;
 
-    if (target < compNatural) {
+    if (target < natural) {
       const overflow = child.overflow ?? defaultOverflow;
-      const result = applyOverflow(overflow, compIn, compOut, target);
+      const sourceTarget = target * baseSpeed;
+      const result = applyOverflow(overflow, compIn, compOut, sourceTarget);
       windowIn = result.sourceIn;
       windowOut = result.sourceOut;
-      speed = result.speed;
-    } else if (target > compNatural) {
+      speed = result.speed * baseSpeed;
+    } else if (target > natural) {
       const underflow = child.underflow ?? defaultUnderflow;
       if (underflow) {
-        const result = applyUnderflow(underflow, compIn, compOut, target);
+        const sourceTarget = target * baseSpeed;
+        const result = applyUnderflow(underflow, compIn, compOut, sourceTarget);
         windowIn = result.sourceIn;
         windowOut = result.sourceOut;
-        speed = result.speed;
+        speed = result.speed * baseSpeed;
       }
     }
 
     const croppedChildren = cropChildrenToWindow(inner.children, windowIn, windowOut);
-    const windowDur = speed !== 1
-      ? (windowOut - windowIn) / speed
-      : windowOut - windowIn;
+    const windowDur = (windowOut - windowIn) / speed;
 
     return {
       resolved: {

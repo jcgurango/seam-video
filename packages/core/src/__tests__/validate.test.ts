@@ -263,6 +263,42 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts composition with speed", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "composition", speed: 2, children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5 },
+        ] },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts composition with explicit duration", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "composition", duration: 10, children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5 },
+        ] },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects composition with both speed and duration", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "composition", speed: 2, duration: 10, children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5 },
+        ] },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts filters on clips", () => {
     const result = validate({
       type: "composition",

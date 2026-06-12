@@ -535,6 +535,11 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     macros: z.record(z.unknown()).optional(),
     in: z.number().nonnegative().optional(),
     out: z.number().positive().optional(),
+    /** Playback rate of the inner window; mirrors clip `speed`. */
+    speed: z.number().positive().optional(),
+    /** Explicit output duration of the inner window; mirrors clip
+     *  `duration`. Mutually exclusive with `speed`. */
+    duration: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
     filters: FiltersArraySchema,
@@ -546,7 +551,10 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     ...SpatialFieldsSchema,
     ...AnchorFieldsSchema,
     ...MetadataFieldsSchema,
-  }).strict()
+  }).strict().refine(
+    (data) => !(data.speed != null && data.duration != null),
+    { message: "Cannot specify both 'speed' and 'duration' on a composition" }
+  )
 );
 
 export const SeamFileSchema = CompositionSchema;

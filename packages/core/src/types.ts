@@ -288,6 +288,18 @@ export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
   /**
+   * Playback rate of the inner window (the `[in, out]` slice of the inner
+   * timeline, defaulting to the whole thing). >1 plays faster, shortening
+   * the output. Mutually exclusive with `duration`. Mirrors clip `speed`.
+   */
+  speed?: number;
+  /**
+   * Explicit output duration of the inner window, in output seconds. The
+   * window plays at the derived rate `windowSpan / duration`. Mutually
+   * exclusive with `speed`. Mirrors clip `duration`.
+   */
+  duration?: number;
+  /**
    * Anchored children rendered on top of `children`. Each attachment's
    * `start`/`end` may reference child IDs. Attachments render in array
    * order, last on top.

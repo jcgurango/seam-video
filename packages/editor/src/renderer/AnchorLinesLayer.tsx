@@ -30,11 +30,8 @@ import {
   toggleOffset,
   type AnchorEditCtx,
 } from "./anchorEdit.js";
-import {
-  ROW_HEIGHT,
-  rowYTop,
-  type ChildBlock,
-} from "./timelineLayout.js";
+import { ROW_HEIGHT, rowYTop } from "./timelineLayout.js";
+import type { TreeBlock } from "./timelineTree.js";
 
 interface AnchorLineSpec {
   key: string;
@@ -54,7 +51,8 @@ export interface AnchorLinesLayerProps {
     attachments?: Child[];
   };
   timeline: ResolvedTimeline;
-  blocks: ChildBlock[];
+  /** Root-level blocks (the root group); anchor lines are root-only. */
+  blocks: TreeBlock[];
   pxPerSec: number;
   /** Provided only when editing is allowed (root view). */
   history?: History<SeamFile>;
@@ -71,6 +69,7 @@ export default function AnchorLinesLayer({
   if (!docRoot) return null;
   const childCount = docRoot.children.length;
 
+  // `blocks` are the root group's blocks; anchor lines are root-only.
   const rowByIndex = new Map<number, number>();
   for (const b of blocks) rowByIndex.set(b.index, b.row);
 

@@ -122,6 +122,95 @@ describe("resolveComposition", () => {
     });
   });
 
+  describe("composition speed and duration", () => {
+    // Inner timeline is 6s (two 3s clips); the window defaults to [0, 6].
+    const inner = () => [
+      { type: "clip" as const, source: "a.mp4", in: 0, out: 3 },
+      { type: "clip" as const, source: "b.mp4", in: 0, out: 3 },
+    ];
+
+    it("speed shortens the composition's output and is carried through", () => {
+      const result = resolveComposition(
+        comp({
+          children: [{ type: "composition", children: inner(), speed: 2 }],
+        })
+      );
+      const nested = result.children[0];
+      expect(nested.type).toBe("composition");
+      if (nested.type === "composition") {
+        expect(nested.speed).toBe(2);
+        expect(nested.duration).toBe(3); // 6s window / 2
+        expect(nested.timelineStart).toBe(0);
+        expect(nested.timelineEnd).toBe(3);
+        // Window covers the whole inner timeline — both children survive.
+        expect(nested.children).toHaveLength(2);
+      }
+      expect(result.duration).toBe(3);
+    });
+
+    it("explicit duration sets output and derives the speed (no trim)", () => {
+      const result = resolveComposition(
+        comp({
+          children: [{ type: "composition", children: inner(), duration: 12 }],
+        })
+      );
+      const nested = result.children[0];
+      if (nested.type === "composition") {
+        expect(nested.duration).toBe(12);
+        expect(nested.speed).toBe(0.5); // 6s window / 12s output
+        // Time-scaled, not trimmed: both inner children remain.
+        expect(nested.children).toHaveLength(2);
+      }
+    });
+
+    it("speed composes with an in/out window", () => {
+      // Window [1, 5] is 4s of inner timeline; speed 2 → 2s output.
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "composition", children: inner(), in: 1, out: 5, speed: 2 },
+          ],
+        })
+      );
+      const nested = result.children[0];
+      if (nested.type === "composition") {
+        expect(nested.speed).toBe(2);
+        expect(nested.duration).toBe(2);
+      }
+    });
+
+    it("a both-ends-pinned anchor with stretch composes on top of base speed", () => {
+      // Composition speed 2 → natural output 3s; an attachment anchored
+      // start→0 / end→6 forces a 6s target, so underflow=stretch slows it
+      // back down. Net speed = stretchSpeed * baseSpeed.
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "bg.mp4", in: 0, out: 6, id: "bg" },
+          ],
+          attachments: [
+            {
+              type: "composition",
+              children: inner(),
+              speed: 2,
+              underflow: "stretch",
+              start: { anchor: "bg", anchorPoint: "0%", timeSource: "output" },
+              end: { anchor: "bg", anchorPoint: "100%", timeSource: "output" },
+            },
+          ],
+        })
+      );
+      const att = result.children[1];
+      if (att.type === "composition") {
+        expect(att.timelineStart).toBe(0);
+        expect(att.timelineEnd).toBe(6);
+        expect(att.duration).toBe(6);
+        // 6s window stretched to 6s output → net speed 1.
+        expect(att.speed).toBeCloseTo(1, 5);
+      }
+    });
+  });
+
   describe("filters", () => {
     it("passes filters through to resolved clips", () => {
       const filters = [
