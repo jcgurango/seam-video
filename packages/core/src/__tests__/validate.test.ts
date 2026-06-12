@@ -576,6 +576,82 @@ describe("validate — verbose error messages", () => {
   });
 });
 
+describe("validate — macro expansion runs before schema checks", () => {
+  it("accepts an array-valued macro spliced into a typed array", () => {
+    // Regression: validation used to run on the raw source, so the
+    // "$$POINTS" placeholder failed MapPath.points (needs >=2 [num,num]
+    // tuples) even though the expanded document is valid.
+    const result = validate({
+      type: "composition",
+      macros: {
+        POINTS: [
+          [133.19, 34.4],
+          [133.2, 34.41],
+        ],
+      },
+      children: [
+        {
+          type: "graphic",
+          duration: 5,
+          frames: [
+            [
+              0,
+              [
+                {
+                  type: "Map",
+                  source: "area.pmtiles",
+                  paths: [{ color: "red", points: ["$$POINTS"] }],
+                },
+              ],
+            ],
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("preserves the authored source (macros + $$ refs) on success", () => {
+    const doc = {
+      type: "composition",
+      macros: { FG: "white" },
+      children: [{ type: "text", text: "$$FG", duration: 2, color: "$$FG" }],
+    };
+    const result = validate(doc);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // The editor keeps this as canonical state — it must still contain the
+      // macro block and unexpanded references, not the expanded form.
+      expect(result.data).toEqual(doc);
+    }
+  });
+
+  it("still reports schema errors against the expanded document", () => {
+    const result = validate({
+      type: "composition",
+      macros: { BAD: -5 },
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: "$$BAD" }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errors.some((e) => /children\[0\]\.out/.test(e))).toBe(true);
+    }
+  });
+
+  it("surfaces macro errors (e.g. undefined refs) as validation failures", () => {
+    const result = validate({
+      type: "composition",
+      children: [{ type: "clip", source: "v.mp4", in: 0, out: "$$NOPE" }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errors.some((e) => /undefined macro \$\$NOPE/.test(e))).toBe(
+        true
+      );
+    }
+  });
+});
+
 describe("parseSeamFile", () => {
   it("parses valid JSON", () => {
     const json = JSON.stringify({
