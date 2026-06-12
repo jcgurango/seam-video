@@ -4,17 +4,13 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   SeamFile,
-  Child,
-  Clip,
 } from "@seam/core";
 import { buildItemsFromFiles, useImport } from "./useImport.js";
 import { attachNewItems } from "./attachTool.js";
 import { dirname } from "./pathUtils.js";
-import type { View } from "./views.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
-import type { Composition } from "@seam/core";
 import {
   ROW_HEIGHT,
   ROW_GAP,
@@ -27,19 +23,17 @@ import { useEvent } from "./useEvent.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
-  document?: SeamFile;
   /**
-   * The document corresponding to `timeline` (i.e. after any view-level
-   * unwrapping, like entering a composition). Used to resolve block labels
-   * and to separate `children` vs `attachments` on the timeline.
+   * The authored document whose `children`/`attachments` correspond to the
+   * timeline. When undefined the panel is read-only (e.g. the CC-cut
+   * preview) — editing, reorder, attach, delete, and import are all
+   * disabled and block labels fall back to the resolved nodes.
    */
-  viewDocument?: SeamFile;
+  document?: SeamFile;
   filePath?: string | null;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
   onDocumentChange?: (doc: SeamFile) => void;
-  view: View;
-  onEnterClip: (rootIndex: number, currentParentTime: number) => void;
   history: History<SeamFile>;
   platform: Platform;
 }
@@ -210,16 +204,6 @@ const PRIMARY_BORDER = "#ffcc00";
 const SECONDARY_BORDER = "#b8a040";
 const SELECTED_BORDER = PRIMARY_BORDER;
 
-// ── Trim overlay spec (used in clip view) ────────────────────────────
-
-interface TrimOverlay {
-  inTime: number;
-  outTime: number;
-  sourceDuration: number;
-  onDragStart: () => void;
-  onDrag: (newIn: number, newOut: number) => void;
-}
-
 // ── Inner timelines ──────────────────────────────────────────────────
 
 interface InnerProps {
@@ -244,13 +228,12 @@ interface InnerProps {
   attachmentStartIndex?: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onEnter?: (index: number) => void;
-  trim?: TrimOverlay;
-  /** Provided only in root view, where attachment edits are writable. */
+  /** Provided only when the panel is editable, where attachment edits are
+   *  writable. */
   editHistory?: History<SeamFile>;
   /** Commit a reorder of sequential children: move `from` to be at
    *  insertion index `to` (in the post-removal array). Undefined when
-   *  reorder isn't supported in this view. */
+   *  reorder isn't supported. */
   onReorder?: (from: number, to: number) => void;
   /** Index of the single child that's selected AND a valid anchor
    *  target — null otherwise. When non-null and a file is being
@@ -347,8 +330,6 @@ interface TimelineSurfaceProps {
   };
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onEnter?: (index: number) => void;
-  trim?: TrimOverlay;
   editHistory?: History<SeamFile>;
   /** Index of the child currently being reorder-dragged (fades its
    *  block view). Pass `null` when the shell doesn't support reorder. */
@@ -367,17 +348,15 @@ interface TimelineSurfaceProps {
   attachHoverSide?: "start" | "end" | null;
 }
 
-/** Body of the timeline: ruler + child blocks + anchor lines + optional
- *  trim overlay. Positioned absolutely within the parent's content box,
- *  so each shell wraps it in its own scroll/padding/playhead layout. */
+/** Body of the timeline: ruler + child blocks + anchor lines. Positioned
+ *  absolutely within the parent's content box, so each shell wraps it in
+ *  its own scroll/padding/playhead layout. */
 function TimelineSurface({
   surface,
   timeline,
   docRoot,
   selectedIndices,
   onSelectionChange,
-  onEnter,
-  trim,
   editHistory,
   reorderDragIndex,
   onReorderDragStart,
@@ -466,7 +445,6 @@ function TimelineSurface({
         pxPerSec={pxPerSec}
         selectedIndices={selectedIndices}
         onSelectionChange={onSelectionChange}
-        onEnter={onEnter}
         docRoot={docRoot}
         attachmentStartIndex={splitIndex}
         reorderDragIndex={reorderDragIndex}
@@ -481,13 +459,6 @@ function TimelineSurface({
         pxPerSec={pxPerSec}
         history={editHistory}
       />
-      {trim && (
-        <TrimOverlayLayer
-          trim={trim}
-          pxPerSec={pxPerSec}
-          height={contentHeight}
-        />
-      )}
       {insertionGhostX != null && (
         <InsertionGhost x={insertionGhostX} height={contentHeight} />
       )}
@@ -612,8 +583,6 @@ function DesktopTimeline({
   attachmentStartIndex,
   selectedIndices,
   onSelectionChange,
-  onEnter,
-  trim,
   editHistory,
   onReorder,
   attachIndex,
@@ -914,8 +883,6 @@ function DesktopTimeline({
           docRoot={docRoot}
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
-          onEnter={onEnter}
-          trim={trim}
           editHistory={editHistory}
           reorderDragIndex={reorderDrag?.fromIndex ?? null}
           onReorderDragStart={onReorder ? startReorderDrag : null}
@@ -1016,7 +983,6 @@ function ChildrenLayer({
   pxPerSec,
   selectedIndices,
   onSelectionChange,
-  onEnter,
   docRoot,
   attachmentStartIndex,
   reorderDragIndex,
@@ -1027,7 +993,6 @@ function ChildrenLayer({
   pxPerSec: number;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onEnter?: (index: number) => void;
   docRoot?: {
     children: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
@@ -1040,7 +1005,7 @@ function ChildrenLayer({
    *  drag threshold. `null` disables reorder entirely. */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
   /** Hand-off when a selected block's resize-handle is pressed. `null`
-   *  disables resize entirely (e.g. non-root views without history). */
+   *  disables resize entirely (e.g. read-only preview without history). */
   onResizeDragStart:
     | ((
         index: number,
@@ -1086,7 +1051,6 @@ function ChildrenLayer({
             isPrimary={isPrimary}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
-            onEnter={onEnter}
             isDraggingOut={reorderDragIndex === index}
             onReorderDragStart={blockReorderStart}
             onResizeDragStart={blockResizeStart}
@@ -1108,7 +1072,6 @@ function ChildBlockView({
   isPrimary,
   selectedIndices,
   onSelectionChange,
-  onEnter,
   isDraggingOut,
   onReorderDragStart,
   onResizeDragStart,
@@ -1123,13 +1086,12 @@ function ChildBlockView({
   isPrimary: boolean;
   selectedIndices: number[];
   onSelectionChange: (indices: number[]) => void;
-  onEnter?: (index: number) => void;
   /** True while this block is the source of an active reorder drag —
    *  fade it so the user sees the ghost is the live thing. */
   isDraggingOut: boolean;
   /** When set, mouse-press + drag past the threshold hands off to the
    *  parent's reorder tracker. `null` disables reorder for this block
-   *  (e.g. attachments, or views where reordering isn't writable). */
+   *  (e.g. attachments, or read-only previews). */
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
   /** When set, pointer-down on a side handle hands off to the parent's
    *  resize tracker. `null` hides the handles. */
@@ -1224,17 +1186,11 @@ function ChildBlockView({
     mouseDownPos.current = null;
   };
 
-  const handleDoubleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (onEnter) onEnter(index);
-  };
-
   const interactiveHandlers = {
     onPointerDown: handlePointerDown,
     onPointerMove: handlePointerMove,
     onPointerUp: handlePointerUp,
     onPointerCancel: handlePointerCancel,
-    onDoubleClick: handleDoubleClick,
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   };
 
@@ -1357,154 +1313,22 @@ function Playhead({ x, height }: { x: number; height: number }) {
   );
 }
 
-// ── Trim overlay (clip view) ─────────────────────────────────────────
-
-function TrimOverlayLayer({
-  trim,
-  pxPerSec,
-  height,
-}: {
-  trim: TrimOverlay;
-  pxPerSec: number;
-  height: number;
-}) {
-  const inX = trim.inTime * pxPerSec;
-  const outX = trim.outTime * pxPerSec;
-  const widthSec = trim.sourceDuration;
-  const totalWidth = widthSec * pxPerSec;
-
-  const startDrag = (which: "in" | "out") => (e: React.PointerEvent) => {
-    e.stopPropagation();
-    trim.onDragStart();
-    const startX = e.clientX;
-    const startIn = trim.inTime;
-    const startOut = trim.outTime;
-
-    const onMove = (me: PointerEvent) => {
-      const dx = me.clientX - startX;
-      const dt = dx / pxPerSec;
-      if (which === "in") {
-        const newIn = Math.max(0, Math.min(startOut - 0.05, startIn + dt));
-        trim.onDrag(newIn, startOut);
-      } else {
-        const newOut = Math.max(startIn + 0.05, Math.min(widthSec, startOut + dt));
-        trim.onDrag(startIn, newOut);
-      }
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
-
-  return (
-    <>
-      {/* Dim regions outside the trim window */}
-      <div
-        style={{
-          position: "absolute",
-          left: 0,
-          top: RULER_HEIGHT,
-          width: inX,
-          height: height - RULER_HEIGHT,
-          background: "rgba(0,0,0,0.55)",
-          zIndex: 2,
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: outX,
-          top: RULER_HEIGHT,
-          width: Math.max(0, totalWidth - outX),
-          height: height - RULER_HEIGHT,
-          background: "rgba(0,0,0,0.55)",
-          zIndex: 2,
-          pointerEvents: "none",
-        }}
-      />
-
-      {/* In handle */}
-      <div
-        onPointerDown={startDrag("in")}
-        style={{
-          position: "absolute",
-          left: inX - HANDLE_WIDTH / 2,
-          top: RULER_HEIGHT,
-          width: HANDLE_WIDTH,
-          height: height - RULER_HEIGHT,
-          background: "#ffcc00",
-          borderRadius: 2,
-          cursor: "ew-resize",
-          zIndex: 5,
-          touchAction: "none",
-        }}
-        title={`In: ${trim.inTime.toFixed(2)}s`}
-      />
-
-      {/* Out handle */}
-      <div
-        onPointerDown={startDrag("out")}
-        style={{
-          position: "absolute",
-          left: outX - HANDLE_WIDTH / 2,
-          top: RULER_HEIGHT,
-          width: HANDLE_WIDTH,
-          height: height - RULER_HEIGHT,
-          background: "#ffcc00",
-          borderRadius: 2,
-          cursor: "ew-resize",
-          zIndex: 5,
-          touchAction: "none",
-        }}
-        title={`Out: ${trim.outTime.toFixed(2)}s`}
-      />
-    </>
-  );
-}
-
-// ── Clip-view playback constraint ────────────────────────────────────
-// Keeps the playhead between in..out: on reaching out, loops to in (if loop)
-// or pauses (otherwise). Also snaps the playhead forward if it's before `in`.
-function ClipPlaybackConstraint({
-  inTime,
-  outTime,
-}: {
-  inTime: number;
-  outTime: number;
-}) {
-  const { currentTime, isPlaying, loop, seek, pause } = useTimeline();
-  useEffect(() => {
-    if (!isPlaying) return;
-    if (currentTime >= outTime) {
-      if (loop) seek(inTime);
-      else pause();
-    } else if (currentTime < inTime) {
-      seek(inTime);
-    }
-  }, [currentTime, isPlaying, loop, inTime, outTime, seek, pause]);
-  return null;
-}
-
 // ── Root component ───────────────────────────────────────────────────
 
 export default function TimelinePanel({
   timeline,
   document: doc,
-  viewDocument,
   filePath,
   selectedIndices,
   onSelectionChange,
   onDocumentChange,
-  view,
-  onEnterClip,
   history,
   platform,
 }: TimelinePanelProps) {
   const { currentTime } = useTimeline();
+  // The panel is editable only when given a document; the CC-cut preview
+  // passes none, leaving the timeline read-only (selection-only).
+  const editable = doc != null;
   const emptyDoc: SeamFile = { type: "composition", children: [] };
   const importFiles = useImport(
     doc ?? emptyDoc,
@@ -1516,7 +1340,6 @@ export default function TimelinePanel({
   // Single sequential-child selection that's a valid anchor target —
   // drives the attach zone's existence during drag.
   const attachIndex = useMemo<number | null>(() => {
-    if (view.type !== "root") return null;
     if (!doc) return null;
     if (selectedIndices.length !== 1) return null;
     const idx = selectedIndices[0];
@@ -1530,11 +1353,10 @@ export default function TimelinePanel({
       return null;
     }
     return idx;
-  }, [view, doc, selectedIndices]);
+  }, [doc, selectedIndices]);
 
   const handleAttachDrop = useCallback(
     async (side: "start" | "end", files: FileList) => {
-      if (view.type !== "root") return;
       if (!doc || !onDocumentChange) return;
       if (attachIndex == null) return;
       const baseDir = filePath ? dirname(filePath) : null;
@@ -1549,18 +1371,18 @@ export default function TimelinePanel({
       );
       if (next) onDocumentChange(next);
     },
-    [view, doc, onDocumentChange, attachIndex, filePath, platform, currentTime],
+    [doc, onDocumentChange, attachIndex, filePath, platform, currentTime],
   );
 
-  // Delete/Backspace to remove selected blocks — handles both `children` and
-  // `attachments` indices. Root view only (nested views have their own UX).
+  // Delete/Backspace to remove selected blocks — handles both `children`
+  // and `attachments` indices. Editable panels only (the CC-cut preview
+  // routes Delete through its own handler in App).
   useEffect(() => {
-    if (view.type !== "root") return;
+    if (!doc) return;
     const handler = (e: KeyboardEvent) => {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
         selectedIndices.length > 0 &&
-        doc &&
         onDocumentChange
       ) {
         e.preventDefault();
@@ -1570,50 +1392,13 @@ export default function TimelinePanel({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIndices, doc, onDocumentChange, onSelectionChange, view]);
+  }, [selectedIndices, doc, onDocumentChange, onSelectionChange]);
 
-  // Build trim overlay if we're in clip view
-  const trim: TrimOverlay | undefined = useMemo(() => {
-    if (view.type !== "clip" || !doc) return undefined;
-    const target = doc.children[view.rootIndex];
-    if (!target || target.type !== "clip") return undefined;
-    const origClip = target as Clip;
-
-    return {
-      inTime: origClip.in,
-      outTime: origClip.out,
-      sourceDuration: view.sourceDuration,
-      onDragStart: () => {
-        // Snapshot the current doc as a single undo entry for this drag
-        history.pushPast(history.current);
-      },
-      onDrag: (newIn, newOut) => {
-        const updated: Clip = { ...origClip, in: newIn, out: newOut };
-        // Strip duration so in/out define the natural length
-        const { duration: _d, ...clean } = updated as Clip & { duration?: number };
-        const newChildren = [...doc.children];
-        newChildren[view.rootIndex] = clean as Clip;
-        history.replace({ ...doc, children: newChildren });
-      },
-    };
-  }, [view, doc, history]);
-
-  // Enter handler: double-click a block to step into it.
-  const handleEnter = useCallback(
-    (index: number) => {
-      onEnterClip(index, currentTime);
-    },
-    [onEnterClip, currentTime]
-  );
-
-  // Clip view: the `onEnter` doesn't apply (already inside)
-  const onEnterProp = view.type === "root" ? handleEnter : undefined;
-
-  // Only forward file drop callbacks to the shells in root view; nested
-  // views aren't writable so dropping there should no-op.
-  const shellImportFiles = view.type === "root" ? importFiles : undefined;
-  const shellAttachIndex = view.type === "root" ? attachIndex : null;
-  const shellOnAttachDrop = view.type === "root" ? handleAttachDrop : undefined;
+  // Only forward file drop / attach callbacks when editable; a read-only
+  // preview should no-op on drop.
+  const shellImportFiles = editable ? importFiles : undefined;
+  const shellAttachIndex = editable ? attachIndex : null;
+  const shellOnAttachDrop = editable ? handleAttachDrop : undefined;
 
   return (
     <div
@@ -1629,30 +1414,15 @@ export default function TimelinePanel({
         position: "relative",
       }}
     >
-      {/* Playback constraint (clip view only) */}
-      {trim && <ClipPlaybackConstraint inTime={trim.inTime} outTime={trim.outTime} />}
-
       {(() => {
-        // For root and composition views the panel renders the view-doc's
-        // children (+ attachments) as blocks; clip view is driven by the
-        // trim overlay instead, so we skip the docRoot split there.
-        const panelDoc =
-          view.type === "root"
-            ? doc
-            : view.type === "composition"
-              ? viewDocument
-              : undefined;
+        // The panel renders the document's children (+ attachments) as
+        // blocks. A read-only preview has no doc, so labels fall back to
+        // the resolved nodes and editing is disabled.
+        const panelDoc = doc;
         const splitIndex = panelDoc ? panelDoc.children.length : undefined;
-        // Editing attachments writes to the root doc, so only enable it
-        // when we're actually rendering the root view (composition view's
-        // doc is a derivation that doesn't propagate back).
-        const editHistory = view.type === "root" ? history : undefined;
-        // Reorder is only writable in root view (same gating as the
-        // delete shortcut) — composition-view edits would need to
-        // splice into the nested children inside `doc`, which the
-        // current onDocumentChange flow doesn't model.
+        const editHistory = editable ? history : undefined;
         const onReorder =
-          view.type === "root" && doc && onDocumentChange
+          doc && onDocumentChange
             ? (from: number, to: number) => {
                 if (from === to || from === to - 1) return;
                 const next = reorderChildren(doc.children, from, to);
@@ -1670,8 +1440,6 @@ export default function TimelinePanel({
             attachmentStartIndex={splitIndex}
             selectedIndices={selectedIndices}
             onSelectionChange={onSelectionChange}
-            onEnter={onEnterProp}
-            trim={trim}
             editHistory={editHistory}
             onReorder={onReorder}
             attachIndex={shellAttachIndex}

@@ -11,9 +11,8 @@ import {
 } from "./nodeScript.js";
 
 export interface ScriptPanelProps {
-  /** The composition the user is currently viewing (root or a nested
-   *  composition). May be null when the active view is a clip — in which
-   *  case the panel just nudges the user to switch views. */
+  /** The composition the Script tab targets — the root composition. The
+   *  null case is kept as a defensive fallback (renders an empty state). */
   currentComposition: Composition | null;
   /** Last script-execution error from this composition, surfaced via the
    *  parent so successful saves clear it. */

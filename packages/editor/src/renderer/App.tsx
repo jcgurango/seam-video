@@ -8,7 +8,7 @@ import {
   resolveSpatial,
   validate as validateSeamFile,
 } from "@seam/core";
-import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
+import type { ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import InspectorAccordion from "./InspectorAccordion.js";
@@ -39,13 +39,6 @@ import {
 } from "./exportHelpers.js";
 import { useHistory } from "./useHistory.js";
 import { useEvent } from "./useEvent.js";
-import {
-  getViewDocument,
-  timeOnEnter,
-  translateTimeOnExit,
-  type View,
-} from "./views.js";
-import { probeSourceDuration } from "./probeSource.js";
 import type { Platform } from "./platform/index.js";
 import { WebPlatform } from "./platform/index.js";
 
@@ -54,7 +47,11 @@ interface AppProps {
 }
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
-const ROOT_VIEW: View = { type: "root" };
+
+/** CC-Cut mode: when non-null the editor is cutting the named bin entry
+ *  into clips. Null means normal editing of the root document. This is the
+ *  only "mode" the editor has now that drill-down navigation is gone. */
+type CCCutMode = { binId: string } | null;
 
 function resolveDoc(doc: SeamFile): ResolvedTimeline {
   const temporal = resolveComposition(doc);
@@ -120,8 +117,7 @@ export default function App({ platform }: AppProps) {
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
-  const [view, setView] = useState<View>(ROOT_VIEW);
-  const [initialTime, setInitialTime] = useState(0);
+  const [ccCut, setCcCut] = useState<CCCutMode>(null);
   // In-flight selections for the CC Cut view. Cleared on entry and on
   // OK/Cancel — lives on App because both the CC view (renders + edits)
   // and the toolbar (OK button) need to read them.
@@ -168,31 +164,31 @@ export default function App({ platform }: AppProps) {
   // failures still produce a usable preview.
   const [scriptError, setScriptError] = useState<string | null>(null);
 
-  // Bin entry currently being CC-cut (null outside cc-cut view). The
+  // Bin entry currently being CC-cut (null outside CC-cut mode). The
   // resolved word ribbon + preview doc derive from this.
   const ccBinEntry = useMemo(() => {
-    if (view.type !== "cc-cut") return null;
+    if (!ccCut) return null;
     const bin = findBin(document as Composition);
-    return bin.find((e) => e.id === view.binId) ?? null;
-  }, [view, document]);
+    return bin.find((e) => e.id === ccCut.binId) ?? null;
+  }, [ccCut, document]);
 
   const ccWords = useMemo(() => {
     if (!ccBinEntry) return [];
     return resolveCCWords(ccBinEntry, document);
   }, [ccBinEntry, document]);
 
-  // The view's effective document. Root view shows the whole doc;
-  // composition/clip views drill into a sub-tree; CC-cut synthesises a
-  // preview doc from the user's in-progress selections.
-  const viewDocument = useMemo<SeamFile>(() => {
-    if (view.type === "cc-cut") {
+  // The document currently being shown. Normal editing operates on the
+  // root document directly; CC-cut synthesises a preview doc from the
+  // user's in-progress word selections.
+  const activeDoc = useMemo<SeamFile>(() => {
+    if (ccCut) {
       if (!ccBinEntry) return document;
       return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
     }
-    return view.type === "root" ? document : getViewDocument(document, view);
-  }, [view, ccBinEntry, document, ccSelections]);
+    return document;
+  }, [ccCut, ccBinEntry, document, ccSelections]);
 
-  // Two resolved timelines per view:
+  // Two resolved timelines:
   //   - playerTimeline: bins spliced + scripts run; what the canvas plays.
   //   - editorTimeline: bins spliced, scripts NOT run; what the
   //     timeline panel renders. Skipping scripts means the panel shows
@@ -201,9 +197,8 @@ export default function App({ platform }: AppProps) {
   //     replace those authored children with the script's output and
   //     edits would map onto compiled nodes that don't exist in the
   //     authored doc.
-  // `rootTimeline` is the playerTimeline of root view, hoisted because
-  // view-navigation math (timeOnEnter / translateTimeOnExit) needs it
-  // and because we use it to publish compile/resolve errors.
+  // `rootTimeline` is the resolved root document; it drives the canvas in
+  // normal editing and is where compile/resolve errors are published.
   const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
       const { doc: compiled, errors: compileErrors } = compileDocument(document);
@@ -223,58 +218,38 @@ export default function App({ platform }: AppProps) {
   }, [document]);
 
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
-    if (view.type === "root") return rootTimeline;
+    if (!ccCut) return rootTimeline;
     try {
-      const { doc: compiled } = compileDocument(viewDocument);
+      const { doc: compiled } = compileDocument(activeDoc);
       return resolveDoc(compiled);
     } catch (err) {
-      console.error("[App] playerTimeline resolve failed:", err, {
-        viewDocument,
-      });
+      console.error("[App] playerTimeline resolve failed:", err, { activeDoc });
       return null;
     }
-  }, [view.type, viewDocument, rootTimeline]);
+  }, [ccCut, activeDoc, rootTimeline]);
 
   const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
-      const { doc: panelCompiled } = compileDocument(viewDocument, {
+      const { doc: panelCompiled } = compileDocument(activeDoc, {
         runScripts: false,
       });
       return resolveDoc(panelCompiled);
     } catch (err) {
-      console.error("[App] editorTimeline resolve failed:", err, {
-        viewDocument,
-      });
+      console.error("[App] editorTimeline resolve failed:", err, { activeDoc });
       return null;
     }
-  }, [viewDocument]);
+  }, [activeDoc]);
 
-  // Guard: if the child we're viewing no longer exists (or changed type),
-  // bounce to root.
+  // Guard: bounce out of CC-cut if the targeted bin entry has been
+  // deleted / renamed out from under us.
   useEffect(() => {
-    if (view.type === "clip") {
-      const target = document.children[view.rootIndex];
-      if (!target || target.type !== "clip") {
-        setView(ROOT_VIEW);
-        setInitialTime(0);
-      }
-    } else if (view.type === "composition") {
-      const target = document.children[view.rootIndex];
-      if (!target || target.type !== "composition") {
-        setView(ROOT_VIEW);
-        setInitialTime(0);
-      }
-    } else if (view.type === "cc-cut") {
-      // Bounce out if the targeted bin entry has been deleted /
-      // renamed out from under us.
-      const bin = findBin(document as Composition);
-      if (!bin.some((e) => e.id === view.binId)) {
-        setView(ROOT_VIEW);
-        setInitialTime(0);
-        setCcSelections([]);
-      }
+    if (!ccCut) return;
+    const bin = findBin(document as Composition);
+    if (!bin.some((e) => e.id === ccCut.binId)) {
+      setCcCut(null);
+      setCcSelections([]);
     }
-  }, [document, view]);
+  }, [document, ccCut]);
 
   const updateTitle = useCallback(
     (fp: string | null) => {
@@ -305,8 +280,8 @@ export default function App({ platform }: AppProps) {
     setFilePath(fp);
     setErrors([]);
     setSelectedIndices([]);
-    setView(ROOT_VIEW);
-    setInitialTime(0);
+    setCcCut(null);
+    setCcSelections([]);
     updateTitle(fp);
   });
 
@@ -330,69 +305,32 @@ export default function App({ platform }: AppProps) {
     [history]
   );
 
-  // The JSON tab shows the authored doc directly — there's no rendered
-  // shadow to hide. Bin references appear as compositions with a
-  // `binItem` field (and whatever children/attachments the user has
-  // authored, typically none). Scripts appear as a `script` string.
-  const jsonNode = useMemo<unknown>(() => {
-    if (view.type === "clip" || view.type === "composition") {
-      return document.children[view.rootIndex];
-    }
-    return document;
-  }, [document, view]);
+  // The JSON tab edits the authored root document directly. Bin
+  // references appear as compositions with a `binItem` field; scripts
+  // appear as a `script` string.
+  const jsonNode = document;
 
-  // Translate the current selection into a JSON path inside `jsonNode`.
-  // Selection indices are encoded as: [0, children.length) → child,
-  // [children.length, total) → attachment. In clip view the JSON node is the
-  // clip itself (no children/attachments), so jumping doesn't apply.
-  //
-  // When the displayed node has a script attached, the timeline renders
-  // the script's `original.children` (via the editor-surface unwrap),
-  // so the visible JSON puts those at
-  // Translate the current selection into a JSON path inside the JSON
-  // tab's view. Selection indices encode [0, children.length) → child,
-  // [children.length, total) → attachment. With no rendered-shadow
-  // wrap, the path maps directly onto the authored doc's fields.
+  // Translate the current selection into a JSON path inside the document.
+  // Selection indices encode [0, children.length) → child,
+  // [children.length, total) → attachment.
   const jsonJumpPath = useMemo<string | null>(() => {
     if (selectedIndices.length !== 1) return null;
-    if (view.type === "clip") return null;
     const idx = selectedIndices[0];
-    const childCount = viewDocument.children.length;
+    const childCount = document.children.length;
     return idx < childCount
       ? `children.${idx}`
       : `attachments.${idx - childCount}`;
-  }, [selectedIndices, view, viewDocument]);
+  }, [selectedIndices, document]);
 
-  // The composition the Script tab targets. Root view → on-disk root
-  // composition (so the Script tab sees the existing wrapper, if any).
-  // Composition view → the targeted child. Clip view → null (panel is
-  // disabled).
-  const scriptComposition = useMemo<Composition | null>(() => {
-    if (view.type === "root") return document as Composition;
-    if (view.type === "composition") {
-      const target = document.children[view.rootIndex];
-      return target?.type === "composition" ? (target as Composition) : null;
-    }
-    return null;
-  }, [document, view]);
+  // The Script tab targets the root composition.
+  const scriptComposition = document as Composition;
 
   const handleScriptApply = useCallback(
     (next: Composition): string[] | null => {
-      // Splice the (script-bearing or script-removed) composition back
-      // into the document at the current view's position. The compile
-      // pass runs lazily on render — we just validate up-front that the
-      // resulting doc can be compiled + resolved cleanly.
-      let newDoc: SeamFile;
-      if (view.type === "root") {
-        newDoc = next as SeamFile;
-      } else if (view.type === "composition") {
-        const idx = view.rootIndex;
-        const newChildren = document.children.slice();
-        newChildren[idx] = next;
-        newDoc = { ...document, children: newChildren };
-      } else {
-        return ["Scripts can only be attached to compositions."];
-      }
+      // The Script tab targets the root composition, so its output is the
+      // new root document. The compile pass runs lazily on render — we
+      // just validate up-front that it compiles + resolves cleanly.
+      const newDoc = next as SeamFile;
       let compileErrors: string[] = [];
       try {
         const result = compileDocument(newDoc);
@@ -406,31 +344,16 @@ export default function App({ platform }: AppProps) {
       setSelectedIndices([]);
       return null;
     },
-    [document, view, history]
+    [history]
   );
 
   const handleJsonNodeSave = useCallback(
     (next: unknown): string[] | null => {
-      // Splice the user's edited node back into the on-disk document.
-      // The edited form may have stripped children/attachments on any
-      // script/bin composition — `compileDocument` below regenerates
-      // them, so we deliberately skip schema validation until after the
-      // compile pass.
-      let proposed: unknown;
-      if (view.type === "root") {
-        proposed = next;
-      } else if (view.type === "clip" || view.type === "composition") {
-        const idx = view.rootIndex;
-        if (!document.children[idx]) {
-          return ["View target no longer exists in the document."];
-        }
-        const newChildren = document.children.slice();
-        newChildren[idx] = next as Child;
-        proposed = { ...document, children: newChildren };
-      } else {
-        // cc-cut view doesn't expose a JSON tab — defensive no-op.
-        return ["Cannot save JSON in this view."];
-      }
+      // The JSON tab edits the whole root document. The edited form may
+      // have stripped children/attachments on any script/bin composition —
+      // `compileDocument` below regenerates them, so validation runs
+      // against the authored shape and the compile pass runs after.
+      const proposed = next;
 
       // Validate the authored shape directly — bin/binItem/script are
       // first-party schema fields now, so a bin reference with no
@@ -459,95 +382,31 @@ export default function App({ platform }: AppProps) {
       setSelectedIndices([]);
       return null;
     },
-    [document, view, history]
+    [history]
   );
 
   const onSelectionChange = useCallback((next: number[]) => {
     setSelectedIndices(next);
   }, []);
 
-  // ── View navigation ────────────────────────────────────────────
-
-  const handleEnterChild = useCallback(
-    async (rootIndex: number, currentParentTime: number) => {
-      if (!rootTimeline) return;
-      const target = document.children[rootIndex];
-      if (!target) return;
-
-      if (target.type === "clip") {
-        const basePath = filePath ? dirname(filePath) : "";
-        try {
-          const sourceDuration = await probeSourceDuration(
-            target.source,
-            basePath
-          );
-          const initT = timeOnEnter(
-            document,
-            rootTimeline,
-            rootIndex,
-            currentParentTime
-          );
-          setInitialTime(initT);
-          setView({ type: "clip", rootIndex, sourceDuration });
-        } catch (err) {
-          setErrors([String(err)]);
-        }
-        return;
-      }
-
-      if (target.type === "composition") {
-        const initT = timeOnEnter(
-          document,
-          rootTimeline,
-          rootIndex,
-          currentParentTime
-        );
-        setInitialTime(initT);
-        setView({ type: "composition", rootIndex });
-      }
-      // Other types (empty, ref) aren't enterable yet.
-    },
-    [document, rootTimeline, filePath]
-  );
-
-  const handleExit = useCallback(
-    (viewTime: number) => {
-      if (view.type === "cc-cut") {
-        // CC view doesn't translate time (synthesised preview); exit is
-        // wired through Cancel instead. Treat handleExit as Cancel.
-        setView(ROOT_VIEW);
-        setCcSelections([]);
-        setInitialTime(0);
-        return;
-      }
-      if (!rootTimeline) return;
-      const t = translateTimeOnExit(document, rootTimeline, view, viewTime);
-      setInitialTime(t);
-      setView(ROOT_VIEW);
-    },
-    [document, rootTimeline, view]
-  );
-
   // ── CC Cut entry / exit ────────────────────────────────────────
 
   const handleEnterCCCut = useCallback(
     (binId: string) => {
       setCcSelections([]);
-      setView({ type: "cc-cut", binId });
-      setInitialTime(0);
+      setCcCut({ binId });
       setSelectedIndices([]);
     },
     [],
   );
 
   const handleCCCutCancel = useCallback(() => {
-    setView(ROOT_VIEW);
+    setCcCut(null);
     setCcSelections([]);
-    setInitialTime(0);
   }, []);
 
   const handleCCCutOk = useCallback(() => {
-    if (view.type !== "cc-cut") return;
+    if (!ccCut) return;
     if (!ccBinEntry) return;
     if (ccSelections.length === 0) {
       // Nothing to splice — behave like cancel.
@@ -556,7 +415,7 @@ export default function App({ platform }: AppProps) {
     }
     const spliced = buildCCSpliceChildren(
       ccBinEntry,
-      view.binId,
+      ccCut.binId,
       ccSelections,
     );
     // Append the bin-reference children directly to the authored
@@ -567,17 +426,14 @@ export default function App({ platform }: AppProps) {
       children: [...document.children, ...spliced],
     };
     history.push(newDoc);
-    setView(ROOT_VIEW);
+    setCcCut(null);
     setCcSelections([]);
-    setInitialTime(0);
-  }, [view, ccBinEntry, ccSelections, document, history, handleCCCutCancel]);
+  }, [ccCut, ccBinEntry, ccSelections, document, history, handleCCCutCancel]);
 
-  // Delete in CC-cut view: drop the timeline-selected entries from
+  // Delete in CC-cut mode: drop the timeline-selected entries from
   // `ccSelections` (which the timeline + word ribbon both drive off of).
-  // TimelinePanel's own delete handler is root-only, so this runs at
-  // the App level for the cc-cut case.
   useEffect(() => {
-    if (view.type !== "cc-cut") return;
+    if (!ccCut) return;
     const handler = (e: KeyboardEvent) => {
       if (isTypingInEditableSurface(e)) return;
       if (e.key !== "Delete" && e.key !== "Backspace") return;
@@ -592,7 +448,7 @@ export default function App({ platform }: AppProps) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, selectedIndices, ccSelections]);
+  }, [ccCut, selectedIndices, ccSelections]);
 
   // ── Undo / Redo ────────────────────────────────────────────────
 
@@ -777,8 +633,7 @@ export default function App({ platform }: AppProps) {
   const basePath = filePath ? dirname(filePath) : "";
 
   // Transcription job: feeds the generator server one clip at a time and
-  // appends a `data` attachment per response. Disabled in clip view (the
-  // hook reports an error if you try anyway).
+  // appends a `data` attachment per response onto the root document.
   const transcriber = useTranscribe({
     serverUrl: settings.generatorServerUrl,
     platform,
@@ -793,15 +648,11 @@ export default function App({ platform }: AppProps) {
   }, [transcriber.errors]);
 
   const handleTranscribe = useCallback(() => {
-    void transcriber.run(document, view, selectedIndices);
-  }, [transcriber, document, view, selectedIndices]);
+    void transcriber.run(document, selectedIndices);
+  }, [transcriber, document, selectedIndices]);
 
-  const viewKey =
-    view.type === "root"
-      ? "root"
-      : view.type === "cc-cut"
-        ? `cc-cut-${view.binId}`
-        : `${view.type}-${view.rootIndex}`;
+  // Remounts the <Timeline> (resetting playhead) when toggling CC-cut mode.
+  const viewKey = ccCut ? `cc-cut-${ccCut.binId}` : "root";
 
   // Selection bar appears once 2+ blocks are selected (Ctrl/Cmd+click).
   const showSelectionBar = selectedIndices.length >= 2;
@@ -880,7 +731,7 @@ export default function App({ platform }: AppProps) {
         timeline={playerTimeline}
         basePath={basePath}
         preserveTime
-        initialTime={initialTime}
+        initialTime={0}
       >
         <div
           style={{
@@ -894,7 +745,7 @@ export default function App({ platform }: AppProps) {
           }}
         >
           {/* Left pane (~1/3): the inspector accordion, or the CC Cut editor
-              while that view is active. */}
+              while CC-cut mode is active. */}
           <div
             style={{
               flex: "1 1 0",
@@ -903,7 +754,7 @@ export default function App({ platform }: AppProps) {
               borderRight: "1px solid #333",
             }}
           >
-            {view.type === "cc-cut" ? (
+            {ccCut ? (
               <CCCutView
                 words={ccWords}
                 selections={ccSelections}
@@ -915,7 +766,7 @@ export default function App({ platform }: AppProps) {
             ) : (
               <InspectorAccordion
                 timeline={editorTimeline}
-                viewDocument={viewDocument}
+                document={activeDoc}
                 jsonNode={jsonNode}
                 onJsonNodeSave={handleJsonNodeSave}
                 jsonJumpPath={jsonJumpPath}
@@ -956,9 +807,7 @@ export default function App({ platform }: AppProps) {
               onRedo={handleRedo}
               canUndo={history.canUndo}
               canRedo={history.canRedo}
-              view={view}
-              onExit={handleExit}
-              onEnterClip={handleEnterChild}
+              ccCutMode={ccCut != null}
               platform={platform}
               onTranscribe={handleTranscribe}
               transcribing={transcriber.progress != null}
@@ -968,14 +817,11 @@ export default function App({ platform }: AppProps) {
             />
             <TimelinePanel
               timeline={editorTimeline}
-              document={document}
-              viewDocument={viewDocument}
+              document={ccCut ? undefined : document}
               filePath={filePath}
               selectedIndices={selectedIndices}
               onSelectionChange={onSelectionChange}
               onDocumentChange={updateDocument}
-              view={view}
-              onEnterClip={handleEnterChild}
               history={history}
               platform={platform}
             />

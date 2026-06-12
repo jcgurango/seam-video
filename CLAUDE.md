@@ -91,7 +91,6 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/mediaSource.ts` | `isMediaSource(child): child is Clip | Audio | Static` — single canonical predicate |
 | `src/renderer/useImport.ts` | File-drop importer. `.pmtiles` → graphic node with a Map element (no blob URL, OPFS-direct byte-range reads). Standard media kinds route to `clip`/`audio`/`static` |
 | `src/renderer/pathUtils.ts` | `dirname`, `basename`, `basenameWithoutExt`, `isAbsolute`, `relative` |
-| `src/renderer/views.ts` | `getViewDocument`, `timeOnEnter`, `translateTimeOnExit` for view navigation |
 | `src/renderer/selection.ts` | `removeSelected` + selection-set helpers |
 | `src/renderer/useHistory.ts` | Undo/redo with `isEqual` dedupe |
 | `src/renderer/useEvent.ts` | Stable identity / latest closure hook (drop-in for React's `useEffectEvent`) |
@@ -127,9 +126,10 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
   - `binItem: "<id>"` adopts the named bin entry's body; lookup is lexically scoped (nearest-enclosing wins).
   - `script` runs at compile time, receives the bin-resolved composition as `currentNode`, returns the replacement composition.
   - `compileSeamFile(doc, { runScripts: false })` skips scripts (used by the editor's timeline panel so blocks map 1:1 to authored children).
-- **Two resolved timelines per view** in the editor:
+- **Two resolved timelines** in the editor (both off the active document — the root doc, or the CC-cut preview while that mode is active):
   - `playerTimeline` — full compile (bins + scripts). Drives the canvas.
   - `editorTimeline` — `runScripts: false`. Drives the timeline panel so drag/trim/delete writes back to positions the user can see.
+- **No drill-down navigation**: the editor always operates on the root document; there is no "enter into a clip/composition" view. CC Cut is the one editor mode, a modal flag (`ccCut` in `App.tsx`), not a view variant. Edit nested compositions via the root JSON panel; trim clips via timeline block resize handles.
 - **Schema is the single source of truth**; types mirror it. Defaults flow through Zod (`children` defaults to `[]`).
 - **Default canvas**: `DEFAULT_CANVAS_WIDTH = 1080`, `DEFAULT_CANVAS_HEIGHT = 1920` (portrait). Used by App.tsx, preview main, VideoCanvas, CLI render/resolve.
 - **Spatial model**: every node lays out via `origin` + `translation` + `size` (no more `top/left/right/bottom/width/height/position`):

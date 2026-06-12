@@ -30,7 +30,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
 
 interface InspectorAccordionProps {
   timeline: ResolvedTimeline | null;
-  viewDocument: SeamFile;
+  document: SeamFile;
   /** The JSON node currently in focus (whole doc at root, or a child for nested views). */
   jsonNode: unknown;
   /** Validate + commit a new value for the JSON node. Returns errors or null. */
@@ -60,7 +60,7 @@ interface InspectorAccordionProps {
  */
 export default function InspectorAccordion({
   timeline,
-  viewDocument,
+  document,
   jsonNode,
   onJsonNodeSave,
   jsonJumpPath,
@@ -108,7 +108,7 @@ export default function InspectorAccordion({
       case "inspector":
         return (
           <PaddedTab>
-            <InspectorPanel timeline={timeline} viewDocument={viewDocument} />
+            <InspectorPanel timeline={timeline} viewDocument={document} />
           </PaddedTab>
         );
       case "bin":

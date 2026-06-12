@@ -22,7 +22,6 @@ import type {
 } from "@seam/core";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
-import type { View } from "./views.js";
 import { extractAudioWav } from "./audioExtract.js";
 
 export interface TranscribeProgress {
@@ -44,36 +43,14 @@ export interface UseTranscribeOptions {
 export interface UseTranscribe {
   progress: TranscribeProgress | null;
   errors: string[];
-  run: (
-    document: SeamFile,
-    view: View,
-    selectedIndices: number[]
-  ) => Promise<void>;
+  run: (document: SeamFile, selectedIndices: number[]) => Promise<void>;
   cancel: () => void;
 }
 
 interface Target {
-  /** Index into `targetCompositionDoc.children` of the clip/audio node. */
+  /** Index into the document's `children` of the clip/audio node. */
   index: number;
   child: Clip | Audio;
-}
-
-/**
- * Where the new data attachments are written. For root view this is the
- * document itself; for a composition view it's `doc.children[rootIndex]`.
- * Clip view isn't supported — the CC button is disabled there.
- */
-function pickHostComposition(
-  document: SeamFile,
-  view: View
-): { host: SeamFile | (Child & { type: "composition" }); supported: boolean } {
-  if (view.type === "root") return { host: document, supported: true };
-  if (view.type === "composition") {
-    const child = document.children[view.rootIndex];
-    if (child?.type === "composition") return { host: child, supported: true };
-  }
-  // clip view or stale view
-  return { host: document, supported: false };
 }
 
 function defaultTargets(host: { children: Child[] }): Target[] {
@@ -149,20 +126,6 @@ function withAppendedAttachment(
   return { ...host, attachments: [...(host.attachments ?? []), attachment] };
 }
 
-function withReplacedHost(
-  document: SeamFile,
-  view: View,
-  newHost: SeamFile | (Child & { type: "composition" })
-): SeamFile {
-  if (view.type === "root") return newHost as SeamFile;
-  if (view.type === "composition") {
-    const newChildren = document.children.slice();
-    newChildren[view.rootIndex] = newHost as Child;
-    return { ...document, children: newChildren };
-  }
-  return document;
-}
-
 export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
   const { serverUrl, history } = opts;
   const [progress, setProgress] = useState<TranscribeProgress | null>(null);
@@ -174,15 +137,12 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
   }, []);
 
   const run = useCallback(
-    async (document: SeamFile, view: View, selectedIndices: number[]) => {
+    async (document: SeamFile, selectedIndices: number[]) => {
       cancelRef.current = false;
       setErrors([]);
 
-      const { host, supported } = pickHostComposition(document, view);
-      if (!supported) {
-        setErrors(["Transcription isn't supported in clip view; exit to root or a composition first."]);
-        return;
-      }
+      // Transcription always targets the root document's clip/audio nodes.
+      const host = document;
 
       const targets =
         selectedIndices.length > 0
@@ -227,7 +187,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
             target.index,
             updatedTarget
           ) as typeof workingHost;
-          workingDoc = withReplacedHost(workingDoc, view, workingHost);
+          workingDoc = workingHost as SeamFile;
           history.replace(workingDoc);
         }
 
@@ -313,7 +273,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
               dataNode
             ) as typeof workingHost;
           }
-          workingDoc = withReplacedHost(workingDoc, view, workingHost);
+          workingDoc = workingHost as SeamFile;
           history.replace(workingDoc);
         } catch (err) {
           accumulatedErrors.push(

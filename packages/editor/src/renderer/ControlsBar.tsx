@@ -11,8 +11,6 @@ import {
   Trash2,
   Undo2,
   Redo2,
-  ArrowLeft,
-  LogIn,
   AlignStartVertical,
   AlignEndVertical,
   Captions,
@@ -22,7 +20,6 @@ import {
   Combine,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
-import type { View } from "./views.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import {
@@ -52,17 +49,17 @@ interface ControlsBarProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
-  view: View;
+  /** True while CC-cut mode is active — swaps the edit toolbar for the
+   *  Cancel/OK pair. */
+  ccCutMode: boolean;
   platform: Platform;
-  onExit: (viewTime: number) => void;
-  onEnterClip: (rootIndex: number, currentParentTime: number) => void;
   /** Trigger CC/transcript generation for the current selection (or all). */
   onTranscribe: () => void;
   /** True while a transcription job is running — disables the CC button. */
   transcribing: boolean;
-  /** CC-cut view: commit selections and splice into the root doc. */
+  /** CC-cut mode: commit selections and splice into the root doc. */
   onCCCutOk: () => void;
-  /** CC-cut view: discard selections and exit. */
+  /** CC-cut mode: discard selections and exit. */
   onCCCutCancel: () => void;
   /** True when the CC-cut user has at least one selection (gates OK). */
   ccCutHasSelections: boolean;
@@ -168,9 +165,7 @@ export default function ControlsBar({
   onRedo,
   canUndo,
   canRedo,
-  view,
-  onExit,
-  onEnterClip,
+  ccCutMode,
   platform,
   onTranscribe,
   transcribing,
@@ -200,12 +195,12 @@ export default function ControlsBar({
     if (nextDoc) onDocumentChange(nextDoc);
   }, [doc, currentTime, onDocumentChange]);
 
-  // S key shortcut (disabled in non-root views and while typing in any
+  // S key shortcut (disabled in CC-cut mode and while typing in any
   // editable surface — otherwise typing "s" into the JSON / Script
   // editor or a rename input would slice the playhead clip).
   useEffect(() => {
+    if (ccCutMode) return;
     const handler = (e: KeyboardEvent) => {
-      if (view.type !== "root") return;
       if (isTypingInEditableSurface(e)) return;
       if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         handleSlice();
@@ -213,20 +208,7 @@ export default function ControlsBar({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSlice, view]);
-
-  // Escape to exit a nested view — skipped when typing in an editable
-  // surface so Monaco's own Esc handlers (close suggest widget, exit
-  // find, etc.) and rename inputs work normally.
-  useEffect(() => {
-    if (view.type === "root") return;
-    const handler = (e: KeyboardEvent) => {
-      if (isTypingInEditableSurface(e)) return;
-      if (e.key === "Escape") onExit(currentTime);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [view, currentTime, onExit]);
+  }, [handleSlice, ccCutMode]);
 
   // ── Import ─────────────────────────────────────────────────────
 
@@ -292,7 +274,6 @@ export default function ControlsBar({
   // children (no attachments mixed in). The dependency walk + extend +
   // confirm flow lives inside handleCompose so the gate stays cheap.
   const canCompose =
-    view.type === "root" &&
     selectedIndices.length > 0 &&
     selectedIndices.every((i) => i < doc.children.length) &&
     isComposableSelection(selectedIndices, doc.children.length);
@@ -318,9 +299,7 @@ export default function ControlsBar({
 
   // ── Bin ────────────────────────────────────────────────────────
   const canBinSelection =
-    view.type === "root" &&
-    selectedIndices.length === 1 &&
-    canBin(doc, selectedIndices[0]);
+    selectedIndices.length === 1 && canBin(doc, selectedIndices[0]);
 
   const handleBin = useCallback(() => {
     if (!canBinSelection) return;
@@ -336,14 +315,12 @@ export default function ControlsBar({
   // Separate by word: one or more CC transcription items (with a words
   // array) selected. Group words: 2+ per-word items selected.
   const canSeparateWords =
-    view.type === "root" &&
     selectedIndices.length > 0 &&
     selectedIndices.every((i) =>
       isTranscriptionWords(childAtBlockIndex(doc, i)),
     );
 
   const canGroupWords =
-    view.type === "root" &&
     selectedIndices.length >= 2 &&
     selectedIndices.every((i) => isWordItem(childAtBlockIndex(doc, i)));
 
@@ -440,7 +417,7 @@ export default function ControlsBar({
         <div style={SEPARATOR} />
 
         {/* Edit tools */}
-        {view.type === "root" ? (
+        {!ccCutMode ? (
           <>
             <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
               <FolderOpen size={ICON_SIZE} />
@@ -452,35 +429,6 @@ export default function ControlsBar({
               title="Slice (S) — clip, audio, or composition"
             >
               <Scissors size={ICON_SIZE} />
-            </button>
-            <button
-              onClick={() => {
-                const enterableIdx = [...selectedIndices]
-                  .sort((a, b) => a - b)
-                  .find((i) => {
-                    const t = doc.children[i]?.type;
-                    return t === "clip" || t === "composition";
-                  });
-                if (enterableIdx != null) onEnterClip(enterableIdx, currentTime);
-              }}
-              style={{
-                ...BTN_STYLE,
-                opacity: selectedIndices.some((i) => {
-                  const t = doc.children[i]?.type;
-                  return t === "clip" || t === "composition";
-                })
-                  ? 1
-                  : 0.3,
-              }}
-              disabled={
-                !selectedIndices.some((i) => {
-                  const t = doc.children[i]?.type;
-                  return t === "clip" || t === "composition";
-                })
-              }
-              title="Enter (double-click)"
-            >
-              <LogIn size={ICON_SIZE} />
             </button>
             <button
               onClick={() => handleAttach("start")}
@@ -562,7 +510,7 @@ export default function ControlsBar({
               <Captions size={ICON_SIZE} />
             </button>
           </>
-        ) : view.type === "cc-cut" ? (
+        ) : (
           <>
             <button
               onClick={onCCCutCancel}
@@ -586,14 +534,6 @@ export default function ControlsBar({
               OK
             </button>
           </>
-        ) : (
-          <button
-            onClick={() => onExit(currentTime)}
-            style={BTN_STYLE}
-            title="Back (Esc)"
-          >
-            <ArrowLeft size={ICON_SIZE} />
-          </button>
         )}
         <input
           ref={fileInputRef}
