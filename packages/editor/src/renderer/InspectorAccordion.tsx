@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useTimeline } from "@seam/preview";
 import type {
+  BinEntry,
   Child,
   Composition,
   ResolvedChild,
@@ -10,6 +11,7 @@ import type {
 import JsonNodePanel from "./JsonNodePanel.js";
 import ScriptPanel from "./ScriptPanel.js";
 import BinPanel from "./BinPanel.js";
+import { findBinItem } from "./nodeBin.js";
 
 type SectionId =
   | "properties"
@@ -233,6 +235,8 @@ function InspectorPanel({
     docComp: viewDocument,
     currentTime,
     depth: 0,
+    keyPath: "",
+    rootBin: (viewDocument as Composition).bin ?? [],
   });
 
   return (
@@ -260,11 +264,20 @@ function renderCoveringBlocks({
   docComp,
   currentTime,
   depth,
+  keyPath,
+  rootBin,
 }: {
   resolved: { children: ResolvedChild[] };
   docComp: { children: Child[]; attachments?: Child[] };
   currentTime: number;
   depth: number;
+  /** Path of indices from the root, so keys stay unique across sibling
+   *  composition subtrees (two refs to the same bin entry would otherwise
+   *  both produce e.g. `1-1`). */
+  keyPath: string;
+  /** Root bin entries, for descending into `binItem` references (whose own
+   *  `children` are empty — the body lives in the shared bin entry). */
+  rootBin: BinEntry[];
 }): React.ReactNode[] {
   const attachmentStartIndex = docComp.children.length;
   const docChildren = docComp.children;
@@ -282,9 +295,10 @@ function renderCoveringBlocks({
     const docChild: Child | undefined = isAttachment
       ? docAttachments[index - attachmentStartIndex]
       : docChildren[index];
+    const key = `${keyPath}${index}`;
     out.push(
       <NodeBlock
-        key={`${depth}-${index}`}
+        key={key}
         child={child}
         docChild={docChild}
         currentTime={currentTime}
@@ -293,12 +307,22 @@ function renderCoveringBlocks({
       />,
     );
     if (child.type === "composition" && docChild?.type === "composition") {
+      // A `binItem` reference's own children are empty — the resolved
+      // children come from the shared bin entry, so descend into that
+      // entry's body (mirrors the timeline's `layoutTree`). Regular
+      // compositions descend into their own body.
+      const binId = docChild.binItem;
+      const subComp: { children: Child[]; attachments?: Child[] } = binId
+        ? findBinItem(rootBin, binId) ?? { children: [] }
+        : docChild;
       out.push(
         ...renderCoveringBlocks({
           resolved: child,
-          docComp: docChild,
+          docComp: subComp,
           currentTime: currentTime - child.timelineStart,
           depth: depth + 1,
+          keyPath: `${key}/`,
+          rootBin,
         }),
       );
     }
