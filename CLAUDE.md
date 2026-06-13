@@ -83,7 +83,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/nodeScript.ts` | Reads/writes `comp.script`; enable/disable/bake helpers |
 | `src/renderer/splitTool.ts` | `sliceAtPlayhead(doc, t)` + anchor-rewrite when a node is split |
 | `src/renderer/attachTool.ts` | `applyAttach(doc, t, sel, side)` — moves selection into `attachments` with source-mode anchor |
-| `src/renderer/composeTool.ts` | `applyCompose` — wrap selection in a composition |
+| `src/renderer/composeTool.ts` | Two compose modes: **children** — `walkComposeDependencies` (contiguous run + dependent attachments) → `applyCompose` clubs them into one composition; **attachments** — `composeAttachments` wraps *each* selected attachment in a composition that takes over its slot, lifting the slot-level fields (`LIFTED_FIELDS` = `start`/`end`/`id`/`overflow`/`underflow`) to the wrapper and dropping everything else (`source`, `in`/`out`, …) into the single inner child; nothing else inferred. `ControlsBar` gates the two on all-children vs all-attachments selections |
 | `src/renderer/binTool.ts` | `applyBin` — promote a composition to `doc.bin`, leave a `binItem` reference behind |
 | `src/renderer/ccCutTool.ts` | CC-cut math (transcription → composition-time, splice as bin references) |
 | `src/renderer/anchorEdit.ts` | Anchor-line math (computePointTime, dragAnchorPoint, dragOffset, toggle{AnchorPoint,Offset}, setAttachmentSpec) |

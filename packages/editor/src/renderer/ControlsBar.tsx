@@ -24,6 +24,7 @@ import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import {
   applyCompose,
+  composeAttachments,
   isComposableSelection,
   walkComposeDependencies,
 } from "./composeTool.js";
@@ -270,16 +271,48 @@ export default function ControlsBar({
   );
 
   // ── Compose ────────────────────────────────────────────────────
-  // Active when the user has selected a non-empty, contiguous run of
-  // children (no attachments mixed in). The dependency walk + extend +
-  // confirm flow lives inside handleCompose so the gate stays cheap.
-  const canCompose =
+  // Two distinct selections enable Compose:
+  //   • a non-empty, contiguous run of *children* (the original tool —
+  //     clubs them, plus their dependent attachments, into one comp);
+  //   • one or more *attachments* (wrap each in a composition that takes
+  //     over its slot — see `composeAttachments`).
+  // Mixed child/attachment selections are not composable.
+  const childCount = doc.children.length;
+  const composeChildrenOk =
     selectedIndices.length > 0 &&
-    selectedIndices.every((i) => i < doc.children.length) &&
-    isComposableSelection(selectedIndices, doc.children.length);
+    selectedIndices.every((i) => i < childCount) &&
+    isComposableSelection(selectedIndices, childCount);
+  const composeAttachmentsOk =
+    selectedIndices.length > 0 &&
+    selectedIndices.every((i) => i >= childCount);
+  const canCompose = composeChildrenOk || composeAttachmentsOk;
 
   const handleCompose = useCallback(() => {
-    if (!canCompose) return;
+    const cc = doc.children.length;
+    // Attachment compose: wrap each selected attachment in its own
+    // composition (lifting start/end/id). No dependency walk / confirm.
+    if (
+      selectedIndices.length > 0 &&
+      selectedIndices.every((i) => i >= cc)
+    ) {
+      const next = composeAttachments(
+        doc,
+        selectedIndices.map((i) => i - cc),
+      );
+      onDocumentChange(next);
+      // The new comps occupy the same attachment slots — keep them selected.
+      onSelectionChange(selectedIndices);
+      return;
+    }
+    if (
+      !(
+        selectedIndices.length > 0 &&
+        selectedIndices.every((i) => i < cc) &&
+        isComposableSelection(selectedIndices, cc)
+      )
+    ) {
+      return;
+    }
     const walk = walkComposeDependencies(doc, selectedIndices);
     if (walk.extraChildren > 0) {
       const word = walk.extraChildren === 1 ? "clip" : "clips";
@@ -295,7 +328,7 @@ export default function ControlsBar({
     // Select the newly-created composition so the user can immediately
     // act on it (e.g. promote to bin).
     onSelectionChange([walk.childIndices[0]]);
-  }, [canCompose, doc, selectedIndices, onDocumentChange, onSelectionChange]);
+  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
 
   // ── Bin ────────────────────────────────────────────────────────
   const canBinSelection =
@@ -450,7 +483,7 @@ export default function ControlsBar({
               onClick={handleCompose}
               style={{ ...BTN_STYLE, opacity: canCompose ? 1 : 0.3 }}
               disabled={!canCompose}
-              title="Compose selected children (and their dependent attachments) into a new composition"
+              title="Compose: club selected children (+ dependent attachments) into one composition, or wrap each selected attachment in a composition"
             >
               <Group size={ICON_SIZE} />
             </button>

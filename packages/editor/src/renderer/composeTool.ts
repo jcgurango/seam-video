@@ -195,3 +195,57 @@ export function applyCompose(
   const { attachments: _drop, ...rest } = doc;
   return { ...rest, children: newChildren };
 }
+
+// ── Attachment compose ───────────────────────────────────────────────
+//
+// Composing an *attachment* is a different, deliberately narrow operation
+// from composing children: it wraps a single attachment in a composition
+// that takes over the node's slot in the parent. The wrapper inherits the
+// fields that describe the node *as a slot in its parent* — its positioning
+// anchors (`start`/`end`), its flex strategy (`overflow`/`underflow`, which
+// only mean anything on the pinned-both-ends node, now the composition), and
+// its identity (`id`, so inbound anchors — which resolve per-composition-
+// scope — keep pointing at the same slot). Everything else (`source`,
+// `in`/`out`, …) drops into the single inner child unchanged. No "magic":
+// nothing else is lifted or inferred.
+
+/** Fields that describe the node's slot in its parent — lifted to the
+ *  wrapper. Everything else stays on the inner child. */
+const LIFTED_FIELDS = ["start", "end", "id", "overflow", "underflow"] as const;
+
+/** Wrap one attachment node in a composition, lifting its slot-level fields
+ *  to the wrapper and leaving the rest as the inner child. */
+function wrapAttachment(att: Child): Composition {
+  const rest = { ...(att as unknown as Record<string, unknown>) };
+  const lifted: Record<string, unknown> = {};
+  for (const f of LIFTED_FIELDS) {
+    if (rest[f] !== undefined) {
+      lifted[f] = rest[f];
+      delete rest[f];
+    }
+  }
+  return {
+    type: "composition",
+    children: [rest as unknown as Child],
+    ...lifted,
+  } as Composition;
+}
+
+/** Replace each attachment at the given indices with its composition
+ *  wrapper, in place (slots and ordering are unchanged). */
+export function composeAttachments(
+  doc: SeamFile,
+  attachmentIndices: number[],
+): SeamFile {
+  if (attachmentIndices.length === 0) return doc;
+  const atts = [...(doc.attachments ?? [])];
+  let changed = false;
+  for (const idx of attachmentIndices) {
+    const att = atts[idx];
+    if (!att) continue;
+    atts[idx] = wrapAttachment(att);
+    changed = true;
+  }
+  if (!changed) return doc;
+  return { ...doc, attachments: atts };
+}
