@@ -1,9 +1,13 @@
-// Flattens the timeline layout tree into content-space "drop regions" — one
-// per editable container — so a single drag pass can target any composition,
-// not just the root. Each region knows its rectangle (for hit-testing the
-// cursor), its window transform (originSec/scale/containerLeft, to convert
-// pixels ↔ that container's local output seconds), and its sequential
-// children's content-space extents (for the insertion-slot midpoint test).
+// Flattens the timeline layout tree into content-space geometry so passes
+// that span the whole tree (drag-drop, anchor lines) can address any
+// container, not just the root.
+//
+// Two views over the same walk:
+//   • drop regions — one rectangle per editable container, with its window
+//     transform and its sequential children's content-space extents (drag);
+//   • group placements — each editable group's content-space origin (the
+//     anchor-line overlay draws every selected attachment's plumb line in
+//     content coords).
 //
 // Geometry invariant: a block's content-x is
 //   containerLeft + ((localSec - originSec) / scale) * pxPerSec
@@ -11,8 +15,13 @@
 // aligns under its composition block). So `contentX / pxPerSec` is global
 // output time at every level, and a container's local output time at a
 // cursor is `originSec + (contentX - containerLeft) / pxPerSec * scale`.
+//
+// `containerTop` is the true content-y of a group's row 0: the root's rows
+// start below the ruler (`RULER_HEIGHT + ROW_GAP`), and each nested group's
+// rows start at its clip-box top. (The root drop *region*'s rect still
+// starts at y=0 so it's the always-containing hit-test floor.)
 
-import { ROW_HEIGHT, ROW_GAP, rowTop } from "./timelineLayout.js";
+import { ROW_HEIGHT, ROW_GAP, RULER_HEIGHT, rowTop } from "./timelineLayout.js";
 import type { TreeGroup } from "./timelineTree.js";
 import type { NodePath } from "./nodePath.js";
 
@@ -41,29 +50,74 @@ export interface DropRegion {
   children: DropChild[];
 }
 
+/** An editable group placed in content space: its row-0 top and left edge. */
+export interface GroupPlacement {
+  group: TreeGroup;
+  containerLeft: number;
+  containerTop: number;
+}
+
+interface Placement {
+  group: TreeGroup;
+  left: number;
+  /** True content-y of this group's row 0. */
+  trueTop: number;
+  /** y of this group's drop-region rect (root = 0; nested = clip-box top). */
+  regionTop: number;
+  width: number;
+  height: number;
+}
+
 function lastIndex(path: NodePath): number {
   return path.length > 0 ? path[path.length - 1].index : 0;
 }
 
-/** Flatten editable containers into drop regions. `rootRect` bounds the root
- *  region (the whole content area below the ruler). Regions are emitted
- *  outermost-first, so a later (deeper) match wins the hit-test. */
+/** Depth-first walk producing one placement per group, outermost-first. */
+function walkPlacements(
+  root: TreeGroup,
+  pxPerSec: number,
+  content: { width: number; height: number },
+): Placement[] {
+  const out: Placement[] = [];
+  const visit = (
+    group: TreeGroup,
+    left: number,
+    trueTop: number,
+    regionTop: number,
+    width: number,
+    height: number,
+  ) => {
+    out.push({ group, left, trueTop, regionTop, width, height });
+    const toX = (sec: number) =>
+      left + ((sec - group.originSec) / group.scale) * pxPerSec;
+    for (const b of group.blocks) {
+      if (!b.expansion) continue;
+      const cl = toX(b.child.timelineStart);
+      const cw = Math.max(toX(b.child.timelineEnd) - cl, 2);
+      const ct = trueTop + rowTop(b.expansion.topRow);
+      const ch = b.expansion.group.rowCount * (ROW_HEIGHT + ROW_GAP);
+      visit(b.expansion.group, cl, ct, ct, cw, ch);
+    }
+  };
+  // Root rows start below the ruler, but its region rect covers the whole
+  // content (top 0) so it's the hit-test floor.
+  visit(root, 0, RULER_HEIGHT + ROW_GAP, 0, content.width, content.height);
+  return out;
+}
+
+/** Flatten editable containers into drop regions, outermost-first (a deeper
+ *  match wins the hit-test). */
 export function flattenDropRegions(
   root: TreeGroup,
   pxPerSec: number,
-  rootRect: { left: number; top: number; width: number; height: number },
+  content: { width: number; height: number },
 ): DropRegion[] {
-  const out: DropRegion[] = [];
-  const walk = (
-    group: TreeGroup,
-    containerLeft: number,
-    containerTop: number,
-    rect: { left: number; top: number; width: number; height: number },
-  ) => {
-    const toX = (sec: number) =>
-      containerLeft + ((sec - group.originSec) / group.scale) * pxPerSec;
-    if (group.editable) {
-      const children: DropChild[] = group.blocks
+  return walkPlacements(root, pxPerSec, content)
+    .filter((p) => p.group.editable)
+    .map((p) => {
+      const toX = (sec: number) =>
+        p.left + ((sec - p.group.originSec) / p.group.scale) * pxPerSec;
+      const children: DropChild[] = p.group.blocks
         .filter((b) => !b.isAttachment)
         .sort((a, b) => a.index - b.index)
         .map((b) => ({
@@ -72,26 +126,34 @@ export function flattenDropRegions(
           startX: toX(b.child.timelineStart),
           endX: toX(b.child.timelineEnd),
         }));
-      out.push({
-        path: group.path,
-        ...rect,
-        originSec: group.originSec,
-        scale: group.scale,
-        containerLeft,
+      return {
+        path: p.group.path,
+        left: p.left,
+        top: p.regionTop,
+        width: p.width,
+        height: p.height,
+        originSec: p.group.originSec,
+        scale: p.group.scale,
+        containerLeft: p.left,
         children,
-      });
-    }
-    for (const b of group.blocks) {
-      if (!b.expansion) continue;
-      const left = toX(b.child.timelineStart);
-      const width = Math.max(toX(b.child.timelineEnd) - left, 2);
-      const top = containerTop + rowTop(b.expansion.topRow);
-      const height = b.expansion.group.rowCount * (ROW_HEIGHT + ROW_GAP);
-      walk(b.expansion.group, left, top, { left, top, width, height });
-    }
-  };
-  walk(root, 0, rootRect.top, rootRect);
-  return out;
+      };
+    });
+}
+
+/** Flatten editable groups into content-space placements (for the anchor
+ *  overlay, which needs each group's true row-0 top). The root rect dims
+ *  don't affect placements, so no content box is needed. */
+export function flattenGroups(
+  root: TreeGroup,
+  pxPerSec: number,
+): GroupPlacement[] {
+  return walkPlacements(root, pxPerSec, { width: 0, height: 0 })
+    .filter((p) => p.group.editable)
+    .map((p) => ({
+      group: p.group,
+      containerLeft: p.left,
+      containerTop: p.trueTop,
+    }));
 }
 
 function contains(r: DropRegion, x: number, y: number): boolean {

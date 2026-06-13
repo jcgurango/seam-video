@@ -168,7 +168,16 @@ export function attachNewItems(
 
   let resolved;
   try {
-    resolved = resolveComposition(doc);
+    // Resolve the container *un-windowed* so its child indices stay 1:1 with
+    // the authored body (a narrowing `in`/`out` would crop children and
+    // shift `primaryIndex`). The caller's `currentTime` is already an
+    // un-windowed local-output time (the timeline expansion is laid out
+    // un-windowed), so the two line up. The window stays on the returned doc.
+    const probeDoc =
+      doc.in != null || doc.out != null
+        ? { ...doc, in: undefined, out: undefined }
+        : doc;
+    resolved = resolveComposition(probeDoc);
   } catch {
     return null;
   }

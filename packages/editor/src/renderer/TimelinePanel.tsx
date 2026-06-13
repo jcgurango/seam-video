@@ -17,7 +17,6 @@ import {
   parsePath,
   pathKey,
   samePath,
-  rootIndicesFromKeys,
   removeNodesAtPaths,
   removeNodeAtPath,
   insertNode,
@@ -31,6 +30,7 @@ import {
 } from "./nodePath.js";
 import {
   flattenDropRegions,
+  flattenGroups,
   regionAt,
   insertionIndexIn,
   insertionXIn,
@@ -374,11 +374,11 @@ function TimelineSurface({
 }: TimelineSurfaceProps) {
   const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
   const { currentTime, totalDuration, seek } = useTimeline();
-  // Anchor lines are a root-only overlay; translate the path-key selection
-  // back to the flat root indices it expects.
-  const rootSelIndices = rootIndicesFromKeys(
-    selection,
-    docRoot?.children.length ?? 0,
+  // Editable group placements drive the anchor-line overlay (it draws every
+  // selected attachment's line in content coords, at any nesting level).
+  const groups = useMemo(
+    () => flattenGroups(rootGroup, pxPerSec),
+    [rootGroup, pxPerSec],
   );
 
   // Per-block drag-resize. Stable identity via useEvent so re-renders
@@ -477,10 +477,10 @@ function TimelineSurface({
         onResizeDragStart={onResizeDragStart}
       />
       <AnchorLinesLayer
-        selectedIndices={rootSelIndices}
-        docRoot={docRoot}
-        timeline={timeline}
-        blocks={rootGroup.blocks}
+        selection={selection}
+        docRoot={docRoot as SeamFile | undefined}
+        rootBin={rootBin}
+        groups={groups}
         pxPerSec={pxPerSec}
         history={editHistory}
       />
@@ -664,8 +664,6 @@ function DesktopTimeline({
   const regions = useMemo(
     () =>
       flattenDropRegions(rootGroup, pxPerSec, {
-        left: 0,
-        top: 0,
         width: contentWidth,
         height: contentHeight,
       }),
@@ -673,16 +671,15 @@ function DesktopTimeline({
   );
 
   // The single selected node that's a valid anchor primary — a sequential
-  // child of a *clean* (non-windowed, so 1:1) container, with a source
-  // axis. Drives the attach zone during a drag.
+  // child with a source axis, at any editable level. (`attachNewItems`
+  // resolves its container un-windowed, so windowed containers are fine.)
   const attachTarget = useMemo(() => {
     if (!docRoot || selection.length !== 1) return null;
     const key = selection[0];
     const path = parsePath(key);
     const last = path[path.length - 1];
     if (!last || last.field !== "children") return null;
-    const root = docRoot as SeamFile;
-    const node = getNodeAtPath(root, path);
+    const node = getNodeAtPath(docRoot as SeamFile, path);
     if (
       !node ||
       (node.type !== "clip" &&
@@ -691,12 +688,7 @@ function DesktopTimeline({
     ) {
       return null;
     }
-    const containerPath = path.slice(0, -1);
-    if (containerPath.length > 0) {
-      const cont = getCompAtPath(root, containerPath);
-      if (!cont || cont.in != null || cont.out != null) return null;
-    }
-    return { key, path, containerPath, fieldIndex: last.index };
+    return { key, path, containerPath: path.slice(0, -1), fieldIndex: last.index };
   }, [docRoot, selection]);
 
   // The attach zone is available during a file drag (drop files as
