@@ -1,9 +1,14 @@
 // Centralized, position-path-keyed addressing for timeline nodes.
 //
-// A node is identified by a `NodePath`: a list of `{field, index}` segments
-// from the root composition. `children.0`, `children.3.attachments.1`, etc.
-// Serialized to a dotted string (`pathKey`) it doubles as a React key, a
-// selection-set member, an expand-state key, and a "jump to JSON" path.
+// A node is identified by a `NodePath`: a list of segments. Most paths root
+// at the document (`children.0`, `children.3.attachments.1`). A path may
+// instead root at a **bin entry** — a leading `bin.<id>` segment — so a
+// `binItem` expansion's children address the shared entry rather than the
+// reference site (`bin.<id>.children.0`). Editing such a path rewrites the
+// bin entry, so the change propagates to every reference (by design — Phase
+// 3). Serialized to a dotted string (`pathKey`) the path doubles as a React
+// key, a selection-set member, an expand-state key, and a "jump to JSON"
+// path. (Bin ids are assumed dot-free, like all identifiers.)
 //
 // The selection state in `App` is a flat `string[]` of these keys; the UI
 // layer resolves each back to a node (or, for the root-only tools that
@@ -13,22 +18,33 @@
 // `editContainer` lens is the reuse hinge: it runs any existing
 // `(Composition) → Composition` tool against the composition at a path,
 // injecting the root bin so nested `binItem`s still resolve, then splices
-// the result back. Regular vs nested vs (later) bin differ only in which
-// path/lens is bound — the same wiring.
+// the result back. Regular, nested, and bin-entry edits differ only in
+// which path is bound — the same wiring.
 
 import type { BinEntry, Child, Composition, SeamFile } from "@seam/core";
+import { findBinItem } from "./nodeBin.js";
 
 export interface PathSeg {
-  field: "children" | "attachments";
+  /** `bin` only ever appears as the first segment (a bin-entry root); its
+   *  `id` names the entry and `index` is unused. */
+  field: "children" | "attachments" | "bin";
   index: number;
+  id?: string;
 }
 
-/** Path from the root composition to a node. Empty = the root itself. */
+/** Path to a node. Empty = the document root. A leading `bin` segment roots
+ *  the path at a shared bin entry. */
 export type NodePath = PathSeg[];
 
-/** Serialize to a dotted key: `children.3.attachments.1`. Root → "". */
+/** A structural view of anything carrying child arrays (Composition or
+ *  BinEntry). */
+type Body = { children?: Child[]; attachments?: Child[] };
+
+/** Serialize to a dotted key: `children.3.attachments.1`, `bin.intro.children.0`. */
 export function pathKey(path: NodePath): string {
-  return path.map((s) => `${s.field}.${s.index}`).join(".");
+  return path
+    .map((s) => (s.field === "bin" ? `bin.${s.id}` : `${s.field}.${s.index}`))
+    .join(".");
 }
 
 /** Inverse of `pathKey`. */
@@ -36,7 +52,12 @@ export function parsePath(key: string): NodePath {
   if (key === "") return [];
   const parts = key.split(".");
   const segs: NodePath = [];
-  for (let i = 0; i + 1 < parts.length; i += 2) {
+  let i = 0;
+  if (parts[0] === "bin") {
+    segs.push({ field: "bin", index: 0, id: parts[1] });
+    i = 2;
+  }
+  for (; i + 1 < parts.length; i += 2) {
     const field = parts[i] === "attachments" ? "attachments" : "children";
     segs.push({ field, index: Number(parts[i + 1]) });
   }
@@ -47,50 +68,72 @@ export function samePath(a: NodePath, b: NodePath): boolean {
   return pathKey(a) === pathKey(b);
 }
 
+/** Segment equality — bin segments compare by id, others by field + index. */
+function segEq(a: PathSeg, b: PathSeg): boolean {
+  if (a.field !== b.field) return false;
+  return a.field === "bin" ? a.id === b.id : a.index === b.index;
+}
+
 /** True when `prefix` is an ancestor-or-equal of `path`. */
 export function isPrefix(prefix: NodePath, path: NodePath): boolean {
   if (prefix.length > path.length) return false;
   for (let i = 0; i < prefix.length; i++) {
-    if (prefix[i].field !== path[i].field || prefix[i].index !== path[i].index)
-      return false;
+    if (!segEq(prefix[i], path[i])) return false;
   }
   return true;
 }
 
-function childArray(node: Composition, field: PathSeg["field"]): Child[] {
+function childArray(node: Body, field: "children" | "attachments"): Child[] {
   return (field === "children" ? node.children : node.attachments) ?? [];
 }
 
 /** The node at `path`, or undefined if any segment is missing. Root path
- *  ([]) returns undefined — the root isn't an addressable child. */
+ *  ([]) returns undefined — the root isn't an addressable child. A leading
+ *  `bin` segment of length 1 returns the bin entry itself. */
 export function getNodeAtPath(
   root: SeamFile,
   path: NodePath,
 ): Child | undefined {
-  let node: Child = root;
-  for (const seg of path) {
-    if (node.type !== "composition") return undefined;
-    const arr = childArray(node, seg.field);
-    const next = arr[seg.index];
-    if (!next) return undefined;
-    node = next;
+  if (path.length === 0) return undefined;
+  let node: Body;
+  let start = 0;
+  if (path[0].field === "bin") {
+    const entry = findBinItem(root.bin ?? [], path[0].id ?? "");
+    if (!entry) return undefined;
+    if (path.length === 1) return entry as unknown as Child;
+    node = entry;
+    start = 1;
+  } else {
+    node = root;
   }
-  return path.length === 0 ? undefined : node;
+  for (let i = start; i < path.length; i++) {
+    const seg = path[i];
+    if (seg.field === "bin") return undefined; // bin only valid as the root
+    const next = childArray(node, seg.field)[seg.index];
+    if (!next) return undefined;
+    node = next as Body;
+  }
+  return node as Child;
 }
 
-/** The composition at `containerPath` ([] = root), or undefined if the path
- *  doesn't land on a composition. */
+/** The composition at `containerPath` ([] = root, a `bin` root = the bin
+ *  entry), or undefined if the path doesn't land on one. */
 export function getCompAtPath(
   root: SeamFile,
   containerPath: NodePath,
 ): Composition | undefined {
   if (containerPath.length === 0) return root;
+  if (containerPath.length === 1 && containerPath[0].field === "bin") {
+    const entry = findBinItem(root.bin ?? [], containerPath[0].id ?? "");
+    return entry as unknown as Composition | undefined;
+  }
   const node = getNodeAtPath(root, containerPath);
   return node && node.type === "composition" ? node : undefined;
 }
 
 /** Immutably replace the composition at `containerPath` ([] = root) with
- *  `fn`'s result. No-ops if the path doesn't resolve to a composition. */
+ *  `fn`'s result. A leading `bin` segment rewrites the named bin entry (so
+ *  the edit reaches every reference). No-ops if the path doesn't resolve. */
 export function updateCompAtPath(
   root: SeamFile,
   containerPath: NodePath,
@@ -98,6 +141,20 @@ export function updateCompAtPath(
 ): SeamFile {
   if (containerPath.length === 0) return fn(root);
   const [seg, ...rest] = containerPath;
+  if (seg.field === "bin") {
+    const bin = root.bin ?? [];
+    const idx = bin.findIndex((e) => e.id === seg.id);
+    if (idx < 0) return root;
+    // Present the entry as a composition for the tool; strip the synthetic
+    // `type` (and any injected `bin`) back off on write-back.
+    const asComp = { type: "composition", ...bin[idx] } as Composition;
+    const newComp = updateCompAtPath(asComp as unknown as SeamFile, rest, fn);
+    if (newComp === (asComp as unknown)) return root;
+    const { type: _t, bin: _b, ...entryFields } = newComp as Composition;
+    const newBin = [...bin];
+    newBin[idx] = entryFields as unknown as BinEntry;
+    return { ...root, bin: newBin };
+  }
   const arr = childArray(root, seg.field);
   const child = arr[seg.index];
   if (!child || child.type !== "composition") return root;
@@ -252,8 +309,7 @@ export function adjustPathAfterRemoval(path: NodePath, removed: NodePath): NodeP
   const { parent, last } = split;
   if (path.length <= parent.length) return path;
   for (let k = 0; k < parent.length; k++) {
-    if (path[k].field !== parent[k].field || path[k].index !== parent[k].index)
-      return path;
+    if (!segEq(path[k], parent[k])) return path;
   }
   const seg = path[parent.length];
   if (seg.field === last.field && seg.index > last.index) {

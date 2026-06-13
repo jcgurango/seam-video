@@ -73,10 +73,10 @@ export interface TreeGroup {
   /** The container path these blocks live under ([] = root). Their own
    *  paths are this + a `{field, index}` segment. */
   path: NodePath;
-  /** Whether the authored body backing this group can be edited in place
-   *  (1:1 with the doc). False for `binItem` expansions (their body lives
-   *  in the shared bin entry, a Phase-3 concern), so those render but
-   *  don't select/resize/reorder. */
+  /** Whether the authored body backing this group can be edited in place.
+   *  True for the root, regular-composition expansions, and `binItem`
+   *  expansions alike (the latter address a `bin.<id>` root, so edits
+   *  rewrite the shared entry). Reserved for any future read-only case. */
   editable: boolean;
 }
 
@@ -130,11 +130,13 @@ function buildExpansion(
 ): TreeGroup | null {
   const docComp = block.docChild as Composition | undefined;
   let body: AuthoredBody | undefined;
-  // A `binItem` expansion's body lives in the shared bin entry, not under
-  // this node — editing it is a Phase-3 concern, so its subtree is laid out
-  // read-only (editable=false) and keeps the position-path only for
-  // expand-state keying.
-  const childEditable = editable && !docComp?.binItem;
+  // A `binItem` expansion's body lives in the shared bin entry, so its
+  // subtree is addressed at a `bin.<id>` root — editing it rewrites the
+  // entry and propagates to every reference (Phase 3). A regular
+  // composition's children are addressed under the reference's own path.
+  const expansionPath: NodePath = docComp?.binItem
+    ? [{ field: "bin", index: 0, id: docComp.binItem }]
+    : block.path;
   if (docComp?.binItem) {
     const entry = findBinItem(rootBin, docComp.binItem);
     body = entry
@@ -158,8 +160,8 @@ function buildExpansion(
     body,
     expanded,
     rootBin,
-    block.path,
-    childEditable,
+    expansionPath,
+    editable,
     originSec,
     scale,
   );
