@@ -13,7 +13,15 @@ import { attachNewItems } from "./attachTool.js";
 import { dirname } from "./pathUtils.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
-import { removeSelected } from "./selection.js";
+import {
+  parsePath,
+  rootIndicesFromKeys,
+  rootKeyFromIndex,
+  removeNodesAtPaths,
+  editContainer,
+  splitLast,
+  type NodePath,
+} from "./nodePath.js";
 import {
   ROW_HEIGHT,
   ROW_GAP,
@@ -36,8 +44,10 @@ export interface TimelinePanelProps {
    */
   document?: SeamFile;
   filePath?: string | null;
-  selectedIndices: number[];
-  onSelectionChange: (indices: number[]) => void;
+  /** Canonical selection: path keys (`children.0`,
+   *  `children.3.attachments.1`). See `nodePath.ts`. */
+  selection: string[];
+  onSelectionChange: (keys: string[]) => void;
   onDocumentChange?: (doc: SeamFile) => void;
   history: History<SeamFile>;
   platform: Platform;
@@ -207,8 +217,8 @@ interface InnerProps {
    * treated as children.
    */
   attachmentStartIndex?: number;
-  selectedIndices: number[];
-  onSelectionChange: (indices: number[]) => void;
+  selection: string[];
+  onSelectionChange: (keys: string[]) => void;
   /** Set of expanded composition addresses (see `timelineTree`). */
   expanded: Set<string>;
   /** Toggle a composition's expanded state by its address. */
@@ -325,10 +335,13 @@ interface TimelineSurfaceProps {
     children: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
   };
-  selectedIndices: number[];
-  onSelectionChange: (indices: number[]) => void;
+  selection: string[];
+  onSelectionChange: (keys: string[]) => void;
   expanded: Set<string>;
   onToggleExpand: (addr: string) => void;
+  /** Root bin — injected into nested containers so `binItem`s resolve when
+   *  an edit (resize/reorder) runs against a sub-composition. */
+  rootBin: BinEntry[];
   editHistory?: History<SeamFile>;
   /** Index of the child currently being reorder-dragged (fades its
    *  block view). Pass `null` when the shell doesn't support reorder. */
@@ -355,10 +368,11 @@ function TimelineSurface({
   timeline,
   scrollRef,
   docRoot,
-  selectedIndices,
+  selection,
   onSelectionChange,
   expanded,
   onToggleExpand,
+  rootBin,
   editHistory,
   reorderDragIndex,
   onReorderDragStart,
@@ -368,6 +382,12 @@ function TimelineSurface({
 }: TimelineSurfaceProps) {
   const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
   const { currentTime, totalDuration, seek } = useTimeline();
+  // Anchor lines are a root-only overlay; translate the path-key selection
+  // back to the flat root indices it expects.
+  const rootSelIndices = rootIndicesFromKeys(
+    selection,
+    docRoot?.children.length ?? 0,
+  );
 
   // Per-block drag-resize. Stable identity via useEvent so re-renders
   // (and rAF ticks of currentTime) don't churn the prop on every block.
@@ -375,9 +395,9 @@ function TimelineSurface({
   // inside the closure when a handle is pressed.
   const startResize = useEvent(
     (
-      index: number,
-      isAttachment: boolean,
+      path: NodePath,
       side: "left" | "right",
+      scale: number,
       e: React.PointerEvent,
     ) => {
       if (!editHistory) return;
@@ -387,6 +407,10 @@ function TimelineSurface({
       const pointerId = e.pointerId;
       const startX = e.clientX;
       const initialDoc = editHistory.current;
+      const split = splitLast(path);
+      if (!split) return;
+      const { parent, last } = split;
+      const isAttachment = last.field === "attachments";
 
       try {
         target.setPointerCapture(pointerId);
@@ -402,19 +426,23 @@ function TimelineSurface({
         const me = ev as PointerEvent;
         if (me.pointerId !== pointerId) return;
         const deltaPx = me.clientX - startX;
-        const deltaSec = deltaPx / pxPerSec;
+        // A nested group compresses time by `scale`, so a pixel of cursor
+        // travel is `scale` seconds of source there (identity at root).
+        const deltaSec = (deltaPx / pxPerSec) * scale;
         if (!pushed) {
           editHistory.pushPast(initialDoc);
           pushed = true;
         }
         editHistory.replace(
-          resizeChild(initialDoc, index, isAttachment, side, deltaSec),
+          editContainer(initialDoc, parent, rootBin, (sub) =>
+            resizeChild(sub, last.index, isAttachment, side, deltaSec),
+          ),
         );
         // Scrub the playhead to the cursor (same audio feedback as
-        // dragging on the timeline) rather than trying to "correct" the
-        // playhead to keep content fixed — that fought the user's drag.
+        // dragging on the timeline) — root blocks only; a nested block's
+        // local px don't map to a global playhead time.
         const container = scrollRef.current;
-        if (container) {
+        if (container && parent.length === 0) {
           const rect = container.getBoundingClientRect();
           const contentX = me.clientX - rect.left + container.scrollLeft;
           seek(Math.max(0, Math.min(contentX / pxPerSec, totalDuration)));
@@ -448,7 +476,7 @@ function TimelineSurface({
         yBase={RULER_HEIGHT + ROW_GAP}
         depth={0}
         pxPerSec={pxPerSec}
-        selectedIndices={selectedIndices}
+        selection={selection}
         onSelectionChange={onSelectionChange}
         expanded={expanded}
         onToggleExpand={onToggleExpand}
@@ -457,7 +485,7 @@ function TimelineSurface({
         onResizeDragStart={onResizeDragStart}
       />
       <AnchorLinesLayer
-        selectedIndices={selectedIndices}
+        selectedIndices={rootSelIndices}
         docRoot={docRoot}
         timeline={timeline}
         blocks={rootGroup.blocks}
@@ -586,7 +614,7 @@ function DesktopTimeline({
   timeline,
   docRoot,
   attachmentStartIndex,
-  selectedIndices,
+  selection,
   onSelectionChange,
   expanded,
   onToggleExpand,
@@ -887,10 +915,11 @@ function DesktopTimeline({
           timeline={timeline}
           scrollRef={scrollRef}
           docRoot={docRoot}
-          selectedIndices={selectedIndices}
+          selection={selection}
           onSelectionChange={onSelectionChange}
           expanded={expanded}
           onToggleExpand={onToggleExpand}
+          rootBin={rootBin}
           editHistory={editHistory}
           reorderDragIndex={reorderDrag?.fromIndex ?? null}
           onReorderDragStart={onReorder ? startReorderDrag : null}
@@ -960,7 +989,7 @@ function TimelineGroup({
   yBase,
   depth,
   pxPerSec,
-  selectedIndices,
+  selection,
   onSelectionChange,
   expanded,
   onToggleExpand,
@@ -973,17 +1002,17 @@ function TimelineGroup({
   yBase: number;
   depth: number;
   pxPerSec: number;
-  selectedIndices: number[];
-  onSelectionChange: (indices: number[]) => void;
+  selection: string[];
+  onSelectionChange: (keys: string[]) => void;
   expanded: Set<string>;
   onToggleExpand: (addr: string) => void;
   reorderDragIndex: number | null;
   onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
   onResizeDragStart:
     | ((
-        index: number,
-        isAttachment: boolean,
+        path: NodePath,
         side: "left" | "right",
+        scale: number,
         e: React.PointerEvent,
       ) => void)
     | null;
@@ -997,19 +1026,20 @@ function TimelineGroup({
     <>
       {group.blocks.map((block) => {
         const { child, index, row, isAttachment, docChild, addr } = block;
-        const isSelected = isRoot && selectedIndices.includes(index);
+        const isSelected = selection.includes(addr);
         const isPrimary =
           isSelected &&
           !isAttachment &&
-          selectedIndices.length >= 2 &&
-          selectedIndices[0] === index;
+          selection.length >= 2 &&
+          selection[0] === addr;
         // Reorder is sequential-children only (attachments are
-        // anchor-positioned). Resize handles apply to attachments too —
-        // their length has little bearing, and it's easy to fix after.
+        // anchor-positioned) and, this phase, root-only (cross-container
+        // drag lands in the unified drag pass). Resize works at any
+        // editable level — nested deltas are scaled by the group window.
         const blockReorderStart =
           isRoot && !isAttachment && onReorderDragStart ? onReorderDragStart : null;
         const blockResizeStart =
-          isRoot && onResizeDragStart ? onResizeDragStart : null;
+          group.editable && onResizeDragStart ? onResizeDragStart : null;
         const left = toX(child.timelineStart);
         const width = Math.max(toX(child.timelineEnd) - left, 2);
         return (
@@ -1018,10 +1048,14 @@ function TimelineGroup({
             child={child}
             displayChild={docChild}
             index={index}
+            addr={addr}
+            path={block.path}
             left={left}
             top={yBase + rowTop(row)}
             width={width}
             depth={depth}
+            scale={group.scale}
+            editable={group.editable}
             isAttachment={isAttachment}
             isSelected={isSelected}
             isPrimary={isPrimary}
@@ -1030,7 +1064,7 @@ function TimelineGroup({
             isBinItem={block.isBinItem}
             isExpanded={block.isExpanded}
             onToggleExpand={() => onToggleExpand(addr)}
-            selectedIndices={selectedIndices}
+            selection={selection}
             onSelectionChange={onSelectionChange}
             isDraggingOut={reorderDragIndex === index && isRoot}
             onReorderDragStart={blockReorderStart}
@@ -1060,13 +1094,13 @@ function TimelineGroup({
               yBase={0}
               depth={depth + 1}
               pxPerSec={pxPerSec}
-              selectedIndices={selectedIndices}
+              selection={selection}
               onSelectionChange={onSelectionChange}
               expanded={expanded}
               onToggleExpand={onToggleExpand}
               reorderDragIndex={null}
               onReorderDragStart={null}
-              onResizeDragStart={null}
+              onResizeDragStart={onResizeDragStart}
             />
             {/* Window boundary lines (left = in, right = out), drawn over
                 the clipped content so the composition's extent is clear. */}
@@ -1083,10 +1117,14 @@ function ChildBlockView({
   child,
   displayChild,
   index,
+  addr,
+  path,
   left,
   top,
   width,
   depth,
+  scale,
+  editable,
   isAttachment,
   isSelected,
   isPrimary,
@@ -1095,7 +1133,7 @@ function ChildBlockView({
   isBinItem,
   isExpanded,
   onToggleExpand,
-  selectedIndices,
+  selection,
   onSelectionChange,
   isDraggingOut,
   onReorderDragStart,
@@ -1104,22 +1142,30 @@ function ChildBlockView({
   child: ResolvedChild;
   displayChild?: import("@seam/core").Child;
   index: number;
+  /** This block's selection / path key (`children.0`). */
+  addr: string;
+  /** This block's structured path from the root composition. */
+  path: NodePath;
   /** Absolute position within the block's group container (px). */
   left: number;
   top: number;
   width: number;
   depth: number;
+  /** The enclosing group's window scale (px↔sec for resize deltas). */
+  scale: number;
+  /** Whether this block's container is editable (1:1 with the doc). */
+  editable: boolean;
   isAttachment: boolean;
   isSelected: boolean;
   isPrimary: boolean;
-  /** depth === 0: the only interactive level this phase. */
+  /** depth === 0: the root level (drives reorder / scrub specifics). */
   isRoot: boolean;
   isComposition: boolean;
   isBinItem: boolean;
   isExpanded: boolean;
   onToggleExpand: () => void;
-  selectedIndices: number[];
-  onSelectionChange: (indices: number[]) => void;
+  selection: string[];
+  onSelectionChange: (keys: string[]) => void;
   /** True while this block is the source of an active reorder drag —
    *  fade it so the user sees the ghost is the live thing. */
   isDraggingOut: boolean;
@@ -1131,9 +1177,9 @@ function ChildBlockView({
    *  resize tracker. `null` hides the handles. */
   onResizeDragStart:
     | ((
-        index: number,
-        isAttachment: boolean,
+        path: NodePath,
         side: "left" | "right",
+        scale: number,
         e: React.PointerEvent,
       ) => void)
     | null;
@@ -1149,10 +1195,10 @@ function ChildBlockView({
   const reorderHandedOff = useRef(false);
 
   const toggleMembership = () => {
-    if (selectedIndices.includes(index)) {
-      onSelectionChange(selectedIndices.filter((i) => i !== index));
+    if (selection.includes(addr)) {
+      onSelectionChange(selection.filter((k) => k !== addr));
     } else {
-      onSelectionChange([...selectedIndices, index]);
+      onSelectionChange([...selection, addr]);
     }
   };
 
@@ -1205,10 +1251,10 @@ function ChildBlockView({
       toggleMembership();
     } else {
       // Single select: replace selection, or deselect if this was the only one.
-      if (selectedIndices.length === 1 && selectedIndices[0] === index) {
+      if (selection.length === 1 && selection[0] === addr) {
         onSelectionChange([]);
       } else {
-        onSelectionChange([index]);
+        onSelectionChange([addr]);
       }
     }
   };
@@ -1217,10 +1263,10 @@ function ChildBlockView({
     mouseDownPos.current = null;
   };
 
-  // Only the root level is interactive this phase; nested blocks render
-  // but don't select/reorder/resize (the chevron is the one exception and
-  // carries its own handler).
-  const interactiveHandlers = isRoot
+  // Every editable block is interactive (select; root also reorders).
+  // Non-editable blocks (binItem expansions) render but don't respond —
+  // the chevron is the one exception and carries its own handler.
+  const interactiveHandlers = editable
     ? {
         onPointerDown: handlePointerDown,
         onPointerMove: handlePointerMove,
@@ -1238,7 +1284,7 @@ function ChildBlockView({
     : isSelected
       ? isPrimary
         ? `2px solid ${PRIMARY_BORDER}`
-        : selectedIndices.length >= 2
+        : selection.length >= 2
           ? `2px dashed ${SECONDARY_BORDER}`
           : `2px solid ${PRIMARY_BORDER}`
       : `2px solid ${colors.border}`;
@@ -1265,7 +1311,7 @@ function ChildBlockView({
         whiteSpace: "nowrap",
         boxSizing: "border-box",
         border,
-        cursor: onReorderDragStart ? "grab" : isRoot ? "pointer" : "default",
+        cursor: onReorderDragStart ? "grab" : editable ? "pointer" : "default",
         opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : depth > 0 ? 0.92 : 1,
       }}
     >
@@ -1303,15 +1349,11 @@ function ChildBlockView({
         <>
           <ResizeHandle
             side="left"
-            onPointerDown={(e) =>
-              onResizeDragStart(index, isAttachment, "left", e)
-            }
+            onPointerDown={(e) => onResizeDragStart(path, "left", scale, e)}
           />
           <ResizeHandle
             side="right"
-            onPointerDown={(e) =>
-              onResizeDragStart(index, isAttachment, "right", e)
-            }
+            onPointerDown={(e) => onResizeDragStart(path, "right", scale, e)}
           />
         </>
       )}
@@ -1390,7 +1432,7 @@ export default function TimelinePanel({
   timeline,
   document: doc,
   filePath,
-  selectedIndices,
+  selection,
   onSelectionChange,
   onDocumentChange,
   history,
@@ -1421,11 +1463,14 @@ export default function TimelinePanel({
   );
 
   // Single sequential-child selection that's a valid anchor target —
-  // drives the attach zone's existence during drag.
+  // drives the attach zone's existence during drag. Root-level only: a
+  // single `children.N` key with a source-axis type.
   const attachIndex = useMemo<number | null>(() => {
     if (!doc) return null;
-    if (selectedIndices.length !== 1) return null;
-    const idx = selectedIndices[0];
+    if (selection.length !== 1) return null;
+    const path = parsePath(selection[0]);
+    if (path.length !== 1 || path[0].field !== "children") return null;
+    const idx = path[0].index;
     if (idx < 0 || idx >= doc.children.length) return null;
     const child = doc.children[idx];
     if (
@@ -1436,7 +1481,7 @@ export default function TimelinePanel({
       return null;
     }
     return idx;
-  }, [doc, selectedIndices]);
+  }, [doc, selection]);
 
   const handleAttachDrop = useCallback(
     async (side: "start" | "end", files: FileList) => {
@@ -1498,17 +1543,17 @@ export default function TimelinePanel({
     const handler = (e: KeyboardEvent) => {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
-        selectedIndices.length > 0 &&
+        selection.length > 0 &&
         onDocumentChange
       ) {
         e.preventDefault();
-        onDocumentChange(removeSelected(doc, selectedIndices));
+        onDocumentChange(removeNodesAtPaths(doc, selection.map(parsePath)));
         onSelectionChange([]);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIndices, doc, onDocumentChange, onSelectionChange]);
+  }, [selection, doc, onDocumentChange, onSelectionChange]);
 
   // Only forward file drop / attach callbacks when editable; a read-only
   // preview should no-op on drop.
@@ -1547,7 +1592,7 @@ export default function TimelinePanel({
                 // Keep the moved child selected so the user can chain
                 // edits without re-clicking it.
                 const newIndex = to > from ? to - 1 : to;
-                onSelectionChange([newIndex]);
+                onSelectionChange([rootKeyFromIndex(newIndex, next.length)]);
               }
             : undefined;
         return (
@@ -1555,7 +1600,7 @@ export default function TimelinePanel({
             timeline={timeline}
             docRoot={panelDoc}
             attachmentStartIndex={splitIndex}
-            selectedIndices={selectedIndices}
+            selection={selection}
             onSelectionChange={onSelectionChange}
             expanded={expanded}
             onToggleExpand={onToggleExpand}

@@ -28,6 +28,7 @@ import {
 } from "@seam/core";
 import { compileDocument } from "./compile.js";
 import { findBinItem } from "./nodeBin.js";
+import { pathKey, type NodePath } from "./nodePath.js";
 
 interface AuthoredBody {
   children: Child[];
@@ -38,9 +39,14 @@ interface AuthoredBody {
  *  seconds (`child.timelineStart` is the x origin; `row` is local). */
 export interface TreeBlock {
   child: ResolvedChild;
+  /** Flat index within the group's resolved children (children then
+   *  appended attachments) — used for reorder ordering + anchor-line rows. */
   index: number;
   row: number;
   isAttachment: boolean;
+  /** Position path from the root composition (`children.0`,
+   *  `children.3.attachments.1`). Also the selection / expand-state key. */
+  path: NodePath;
   addr: string;
   docChild?: Child;
   isComposition: boolean;
@@ -64,6 +70,14 @@ export interface TreeGroup {
   rowCount: number;
   originSec: number;
   scale: number;
+  /** The container path these blocks live under ([] = root). Their own
+   *  paths are this + a `{field, index}` segment. */
+  path: NodePath;
+  /** Whether the authored body backing this group can be edited in place
+   *  (1:1 with the doc). False for `binItem` expansions (their body lives
+   *  in the shared bin entry, a Phase-3 concern), so those render but
+   *  don't select/resize/reorder. */
+  editable: boolean;
 }
 
 function packBand(
@@ -112,9 +126,15 @@ function buildExpansion(
   block: TreeBlock,
   expanded: Set<string>,
   rootBin: BinEntry[],
+  editable: boolean,
 ): TreeGroup | null {
   const docComp = block.docChild as Composition | undefined;
   let body: AuthoredBody | undefined;
+  // A `binItem` expansion's body lives in the shared bin entry, not under
+  // this node — editing it is a Phase-3 concern, so its subtree is laid out
+  // read-only (editable=false) and keeps the position-path only for
+  // expand-state keying.
+  const childEditable = editable && !docComp?.binItem;
   if (docComp?.binItem) {
     const entry = findBinItem(rootBin, docComp.binItem);
     body = entry
@@ -138,7 +158,8 @@ function buildExpansion(
     body,
     expanded,
     rootBin,
-    `${block.addr}/`,
+    block.path,
+    childEditable,
     originSec,
     scale,
   );
@@ -150,7 +171,8 @@ function layoutGroup(
   authored: AuthoredBody | undefined,
   expanded: Set<string>,
   rootBin: BinEntry[],
-  addrPrefix: string,
+  parentPath: NodePath,
+  editable: boolean,
   originSec: number,
   scale: number,
 ): TreeGroup {
@@ -182,12 +204,20 @@ function layoutGroup(
         const isComposition = (docChild?.type ?? p.child.type) === "composition";
         const isBinItem =
           isComposition && !!(docChild as Composition | undefined)?.binItem;
-        const addr = `${addrPrefix}${p.index}`;
+        // Within-field (authored-array) index — attachments start at `split`
+        // in the resolved/flat `index`, but at 0 in their own array.
+        const fieldIndex = isAttachment ? p.index - split : p.index;
+        const path: NodePath = [
+          ...parentPath,
+          { field: isAttachment ? "attachments" : "children", index: fieldIndex },
+        ];
+        const addr = pathKey(path);
         const block: TreeBlock = {
           child: p.child,
           index: p.index,
           row: cursor,
           isAttachment,
+          path,
           addr,
           docChild,
           isComposition,
@@ -202,7 +232,7 @@ function layoutGroup(
         const expBaseRow = cursor;
         let maxRows = 0;
         for (const block of toExpand) {
-          const group = buildExpansion(block, expanded, rootBin);
+          const group = buildExpansion(block, expanded, rootBin, editable);
           if (group) {
             block.expansion = { group, topRow: expBaseRow };
             maxRows = Math.max(maxRows, group.rowCount);
@@ -222,11 +252,11 @@ function layoutGroup(
     true,
   );
 
-  return { blocks, rowCount: cursor, originSec, scale };
+  return { blocks, rowCount: cursor, originSec, scale, path: parentPath, editable };
 }
 
 /** Lay out the whole (possibly partially-expanded) timeline tree. The root
- *  body uses the identity transform (it isn't windowed). */
+ *  body uses the identity transform (it isn't windowed) and is editable. */
 export function layoutTree(
   resolved: ResolvedChild[],
   authored: AuthoredBody | undefined,
@@ -234,5 +264,15 @@ export function layoutTree(
   expanded: Set<string>,
   rootBin: BinEntry[],
 ): TreeGroup {
-  return layoutGroup(resolved, attachmentStartIndex, authored, expanded, rootBin, "", 0, 1);
+  return layoutGroup(
+    resolved,
+    attachmentStartIndex,
+    authored,
+    expanded,
+    rootBin,
+    [],
+    true,
+    0,
+    1,
+  );
 }

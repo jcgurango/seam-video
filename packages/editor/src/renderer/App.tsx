@@ -39,6 +39,7 @@ import {
 } from "./exportHelpers.js";
 import { useHistory } from "./useHistory.js";
 import { useEvent } from "./useEvent.js";
+import { rootIndicesFromKeys, rootKeyFromIndex } from "./nodePath.js";
 import type { Platform } from "./platform/index.js";
 import { WebPlatform } from "./platform/index.js";
 
@@ -116,7 +117,10 @@ export default function App({ platform }: AppProps) {
 
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
-  const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
+  // Canonical selection: path keys (`children.0`,
+  // `children.3.attachments.1`). Root-only tools derive flat indices from
+  // these via `rootIndicesFromKeys` at their boundary (see nodePath.ts).
+  const [selection, setSelection] = useState<string[]>([]);
   const [ccCut, setCcCut] = useState<CCCutMode>(null);
   // In-flight selections for the CC Cut view. Cleared on entry and on
   // OK/Cancel — lives on App because both the CC view (renders + edits)
@@ -279,7 +283,7 @@ export default function App({ platform }: AppProps) {
     history.reset(doc);
     setFilePath(fp);
     setErrors([]);
-    setSelectedIndices([]);
+    setSelection([]);
     setCcCut(null);
     setCcSelections([]);
     updateTitle(fp);
@@ -300,7 +304,7 @@ export default function App({ platform }: AppProps) {
       // authored doc is the canonical state and the compile pass runs
       // lazily in rootTimeline. Any compile errors get reported there.
       history.push(newDoc);
-      setSelectedIndices([]);
+      setSelection([]);
     },
     [history]
   );
@@ -310,17 +314,12 @@ export default function App({ platform }: AppProps) {
   // appear as a `script` string.
   const jsonNode = document;
 
-  // Translate the current selection into a JSON path inside the document.
-  // Selection indices encode [0, children.length) → child,
-  // [children.length, total) → attachment.
+  // The current selection's path key already *is* a dotted JSON path
+  // (`children.0`, `children.3.attachments.1`) — jump straight to it.
   const jsonJumpPath = useMemo<string | null>(() => {
-    if (selectedIndices.length !== 1) return null;
-    const idx = selectedIndices[0];
-    const childCount = document.children.length;
-    return idx < childCount
-      ? `children.${idx}`
-      : `attachments.${idx - childCount}`;
-  }, [selectedIndices, document]);
+    if (selection.length !== 1) return null;
+    return selection[0];
+  }, [selection]);
 
   // The Script tab targets the root composition.
   const scriptComposition = document as Composition;
@@ -341,7 +340,7 @@ export default function App({ platform }: AppProps) {
       }
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
       history.push(newDoc);
-      setSelectedIndices([]);
+      setSelection([]);
       return null;
     },
     [history]
@@ -379,15 +378,31 @@ export default function App({ platform }: AppProps) {
 
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
       history.push(validated.data);
-      setSelectedIndices([]);
+      setSelection([]);
       return null;
     },
     [history]
   );
 
-  const onSelectionChange = useCallback((next: number[]) => {
-    setSelectedIndices(next);
+  const onSelectionChange = useCallback((next: string[]) => {
+    setSelection(next);
   }, []);
+
+  // Flat root indices for the root-only edit tools (ControlsBar): the
+  // path-key selection projected down to `[0, childCount)` children and
+  // `[childCount, …)` attachments, nested keys dropped.
+  const rootSelectedIndices = useMemo(
+    () => rootIndicesFromKeys(selection, document.children.length),
+    [selection, document],
+  );
+  const onRootSelectionChange = useCallback(
+    (idxs: number[]) => {
+      setSelection(
+        idxs.map((i) => rootKeyFromIndex(i, document.children.length)),
+      );
+    },
+    [document],
+  );
 
   // ── CC Cut entry / exit ────────────────────────────────────────
 
@@ -395,7 +410,7 @@ export default function App({ platform }: AppProps) {
     (binId: string) => {
       setCcSelections([]);
       setCcCut({ binId });
-      setSelectedIndices([]);
+      setSelection([]);
     },
     [],
   );
@@ -437,32 +452,36 @@ export default function App({ platform }: AppProps) {
     const handler = (e: KeyboardEvent) => {
       if (isTypingInEditableSurface(e)) return;
       if (e.key !== "Delete" && e.key !== "Backspace") return;
-      if (selectedIndices.length === 0) return;
+      if (selection.length === 0) return;
       e.preventDefault();
+      // CC-cut renders the preview's root children; map the path-key
+      // selection back to those flat child indices.
       const drop = new Set(
-        selectedIndices.filter((i) => i < ccSelections.length),
+        rootIndicesFromKeys(selection, ccSelections.length).filter(
+          (i) => i < ccSelections.length,
+        ),
       );
       if (drop.size === 0) return;
       setCcSelections(ccSelections.filter((_, i) => !drop.has(i)));
-      setSelectedIndices([]);
+      setSelection([]);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [ccCut, selectedIndices, ccSelections]);
+  }, [ccCut, selection, ccSelections]);
 
   // ── Undo / Redo ────────────────────────────────────────────────
 
   const handleUndo = useCallback(() => {
     const prev = history.undo();
     if (prev != null) {
-      setSelectedIndices([]);
+      setSelection([]);
     }
   }, [history]);
 
   const handleRedo = useCallback(() => {
     const next = history.redo();
     if (next != null) {
-      setSelectedIndices([]);
+      setSelection([]);
     }
   }, [history]);
 
@@ -648,14 +667,17 @@ export default function App({ platform }: AppProps) {
   }, [transcriber.errors]);
 
   const handleTranscribe = useCallback(() => {
-    void transcriber.run(document, selectedIndices);
-  }, [transcriber, document, selectedIndices]);
+    void transcriber.run(
+      document,
+      rootIndicesFromKeys(selection, document.children.length),
+    );
+  }, [transcriber, document, selection]);
 
   // Remounts the <Timeline> (resetting playhead) when toggling CC-cut mode.
   const viewKey = ccCut ? `cc-cut-${ccCut.binId}` : "root";
 
   // Selection bar appears once 2+ blocks are selected (Ctrl/Cmd+click).
-  const showSelectionBar = selectedIndices.length >= 2;
+  const showSelectionBar = selection.length >= 2;
 
   // ProjectBrowser uses (fp, json) order; WebTopBar's open flow goes
   // through platform.openProject(). Same destination, different entry
@@ -759,9 +781,10 @@ export default function App({ platform }: AppProps) {
                 words={ccWords}
                 selections={ccSelections}
                 onSelectionsChange={setCcSelections}
-                focusedSelectionIndices={selectedIndices.filter(
-                  (i) => i < ccSelections.length,
-                )}
+                focusedSelectionIndices={rootIndicesFromKeys(
+                  selection,
+                  ccSelections.length,
+                ).filter((i) => i < ccSelections.length)}
               />
             ) : (
               <InspectorAccordion
@@ -800,8 +823,8 @@ export default function App({ platform }: AppProps) {
             <ControlsBar
               document={document}
               filePath={filePath}
-              selectedIndices={selectedIndices}
-              onSelectionChange={onSelectionChange}
+              selectedIndices={rootSelectedIndices}
+              onSelectionChange={onRootSelectionChange}
               onDocumentChange={updateDocument}
               onUndo={handleUndo}
               onRedo={handleRedo}
@@ -819,7 +842,7 @@ export default function App({ platform }: AppProps) {
               timeline={editorTimeline}
               document={ccCut ? undefined : document}
               filePath={filePath}
-              selectedIndices={selectedIndices}
+              selection={selection}
               onSelectionChange={onSelectionChange}
               onDocumentChange={updateDocument}
               history={history}
@@ -827,7 +850,7 @@ export default function App({ platform }: AppProps) {
             />
             {showSelectionBar && (
               <SelectionBar
-                count={selectedIndices.length}
+                count={selection.length}
                 onDeselect={() => onSelectionChange([])}
               />
             )}
