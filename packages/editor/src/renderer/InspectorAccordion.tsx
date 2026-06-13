@@ -176,21 +176,26 @@ export default function InspectorAccordion({
               </span>
               {section.label}
             </button>
-            {/* Kept mounted when collapsed (display: none) so panel state —
-                Monaco editors' buffers/undo, scroll position, map instances —
-                survives toggling open/closed. */}
-            <div
-              style={{
-                flex: 1,
-                minHeight: 0,
-                fontSize: 12,
-                color: "#ccc",
-                display: isOpen ? "flex" : "none",
-                flexDirection: "column",
-              }}
-            >
-              {renderContent(section.id)}
-            </div>
+            {/* Content is unmounted while collapsed — only the header renders.
+                Heavy panels (Monaco JSON/Script editors, Bin map previews)
+                otherwise keep doing per-mutation work (re-tokenize, re-feed)
+                while hidden, which stalls large documents. The tradeoff is
+                that panel state (editor buffer/undo, scroll, map instances)
+                resets when a section is reopened. */}
+            {isOpen && (
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  fontSize: 12,
+                  color: "#ccc",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {renderContent(section.id)}
+              </div>
+            )}
           </div>
         );
       })}

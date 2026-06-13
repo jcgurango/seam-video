@@ -27,11 +27,17 @@ export function formatJsonWithLocations(
   indent = 2
 ): FormatResult {
   const locations = new Map<string, number>();
-  let out = "";
+  // Collect chunks and track the running offset with an explicit counter
+  // rather than building one growing string and reading `out.length` at every
+  // recorded location — the latter can force V8 to repeatedly flatten the
+  // cons-string rope, which turns large documents superlinear.
+  const chunks: string[] = [];
+  let offset = 0;
   const pad = (depth: number) => " ".repeat(depth * indent);
 
   const append = (s: string) => {
-    out += s;
+    chunks.push(s);
+    offset += s.length;
   };
 
   const emitString = (s: string) => append(JSON.stringify(s));
@@ -95,7 +101,7 @@ export function formatJsonWithLocations(
             if (j > 0) append(",");
             append("\n" + pad(depth + 2));
             const elementPath = `${childPath}.${j}`;
-            locations.set(elementPath, out.length);
+            locations.set(elementPath, offset);
             emitValue(val[j], depth + 2, elementPath);
           }
           append("\n" + pad(depth + 1) + "]");
@@ -110,5 +116,5 @@ export function formatJsonWithLocations(
   }
 
   emitValue(value, 0, "");
-  return { text: out, locations };
+  return { text: chunks.join(""), locations };
 }

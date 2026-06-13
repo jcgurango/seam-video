@@ -26,9 +26,25 @@ export default function JsonNodePanel({
   onSave,
   jumpPath,
 }: JsonNodePanelProps) {
+  // Debounce the doc -> editor sync so a burst of timeline mutations
+  // coalesces into a single (re-format + Monaco re-feed) instead of thrashing
+  // Monaco — feeding a large document through it on every edit was the source
+  // of multi-second re-tokenize/GC stalls. (The panel is unmounted entirely
+  // while its accordion section is collapsed, so hidden edits cost nothing.)
+  const [syncedNode, setSyncedNode] = useState(node);
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
+  useEffect(() => {
+    const id = window.setTimeout(() => setSyncedNode(nodeRef.current), 120);
+    return () => window.clearTimeout(id);
+  }, [node]);
+
   // The "live" JSON the parent is showing — formatted with our own walker so
   // the location offsets line up with the rendered text.
-  const formatted = useMemo(() => formatJsonWithLocations(node), [node]);
+  const formatted = useMemo(
+    () => formatJsonWithLocations(syncedNode),
+    [syncedNode],
+  );
   const documentJson = formatted.text;
   const locations = formatted.locations;
 
