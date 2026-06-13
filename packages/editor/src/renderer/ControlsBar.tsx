@@ -21,7 +21,13 @@ import {
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { ResolvedTimeline } from "@seam/core";
-import { getNodeAtPath, parsePath } from "./nodePath.js";
+import {
+  editContainer,
+  getNodeAtPath,
+  parsePath,
+  type NodePath,
+} from "./nodePath.js";
+import { descendToContainer } from "./resolveLocal.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import {
@@ -74,6 +80,21 @@ interface ControlsBarProps {
 }
 
 // Slice + attach logic lives in splitTool.ts / attachTool.ts.
+
+/** The container to slice in for the current selection: the parent of the
+ *  deepest-nested selected node ([] = root). Null when the deepest selection
+ *  is bin-rooted (its per-reference playhead is ambiguous) — the caller falls
+ *  back to the root. */
+function sliceContainerPath(selection: string[]): NodePath | null {
+  if (selection.length === 0) return [];
+  let deepest = parsePath(selection[0]);
+  for (const key of selection) {
+    const p = parsePath(key);
+    if (p.length > deepest.length) deepest = p;
+  }
+  if (deepest.some((s) => s.field === "bin")) return null;
+  return deepest.slice(0, -1);
+}
 
 
 // ── Styles ───────────────────────────────────────────────────────────
@@ -201,9 +222,24 @@ export default function ControlsBar({
   // ── Slice ──────────────────────────────────────────────────────
 
   const handleSlice = useCallback(() => {
-    const nextDoc = sliceAtPlayhead(doc, currentTime);
-    if (nextDoc) onDocumentChange(nextDoc);
-  }, [doc, currentTime, onDocumentChange]);
+    // Deepest selected level wins: slice inside the container of the
+    // deepest-nested selection (don't bubble up). Empty / root selection
+    // slices the root. Bin-rooted selections fall back to the root (their
+    // per-reference playhead is ambiguous).
+    const containerPath = sliceContainerPath(selection);
+    if (containerPath == null || containerPath.length === 0) {
+      const nextDoc = sliceAtPlayhead(doc, currentTime);
+      if (nextDoc) onDocumentChange(nextDoc);
+      return;
+    }
+    const desc = descendToContainer(timeline, doc, containerPath, currentTime);
+    if (!desc) return;
+    const rootBin = doc.bin ?? [];
+    const next = editContainer(doc, containerPath, rootBin, (sub) =>
+      sliceAtPlayhead(sub, desc.localTime),
+    );
+    if (next !== doc) onDocumentChange(next);
+  }, [doc, timeline, currentTime, selection, onDocumentChange]);
 
   // S key shortcut (disabled in CC-cut mode and while typing in any
   // editable surface — otherwise typing "s" into the JSON / Script
@@ -246,13 +282,13 @@ export default function ControlsBar({
     seek(pct * totalDuration);
   };
 
-  // Slice is enabled when at least one selected (or playhead-targeted)
-  // child is a sliceable type: clip, audio, or composition.
+  // Slice is enabled when something is selected (it slices whatever the
+  // playhead crosses in that selection's container) or — with nothing
+  // selected — the root has a sliceable (clip/audio/composition) child.
   const isSliceableType = (t: string | undefined) =>
     t === "clip" || t === "audio" || t === "composition";
-  const canSlice = selectedIndices.length === 0
-    ? doc.children.some((c) => isSliceableType(c.type))
-    : selectedIndices.some((i) => isSliceableType(doc.children[i]?.type));
+  const canSlice =
+    selection.length > 0 || doc.children.some((c) => isSliceableType(c.type));
 
   // Attach: needs 2+ selected and a primary (first selection) with a source
   // axis. The primary and secondaries can each be a child OR an attachment,

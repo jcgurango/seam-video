@@ -22,6 +22,7 @@ import {
   updateCompAtPath,
   type NodePath,
 } from "./nodePath.js";
+import { descendToContainer } from "./resolveLocal.js";
 
 /** Collect every `id` appearing anywhere in the document tree. */
 function collectAllIds(doc: SeamFile): Set<string> {
@@ -113,19 +114,23 @@ export function applyAttach(
   if (primaryPath.length === 0 || primaryPath.some((s) => s.field === "bin")) {
     return null;
   }
-  const containerKey = pathKey(primaryPath.slice(0, -1));
+  const containerPath = primaryPath.slice(0, -1);
+  const containerKey = pathKey(containerPath);
 
   const primary = getNodeAtPath(doc, primaryPath);
   if (!primary) return null;
-  const glob = resolvePrimaryGlobal(resolvedRoot, doc, primaryPath);
-  if (!glob) return null;
-  const anchorPoint = globalAnchorPoint(
-    primary,
-    glob.resolved,
-    glob.gStart,
-    glob.gSpeed,
-    currentTime,
-  );
+  // Map the playhead into the primary's container-local time, then read the
+  // primary's resolved node there to compute its source anchor point.
+  const desc = descendToContainer(resolvedRoot, doc, containerPath, currentTime);
+  if (!desc) return null;
+  const last = primaryPath[primaryPath.length - 1];
+  const flat =
+    last.field === "children"
+      ? last.index
+      : desc.aContainer.children.length + last.index;
+  const resolvedPrimary = desc.rContainer.children[flat];
+  if (!resolvedPrimary) return null;
+  const anchorPoint = sourceAnchorPoint(primary, resolvedPrimary, desc.localTime);
   if (anchorPoint == null) return null;
 
   // Valid secondaries: non-bin, not the primary's container, not an
@@ -172,75 +177,6 @@ export function applyAttach(
   // One immutable pass: drop the secondaries from wherever they are and
   // append the rewritten copies to the primary's container's attachments.
   return attachRebuild(working, [], dropSet, containerKey, gathered);
-}
-
-/** Walk `path` in parallel through the resolved + authored trees,
- *  accumulating the primary's *global* output start and cumulative speed.
- *  Nested resolved children carry container-local `timelineStart`, so each
- *  level contributes `start += childLocalStart / cumSpeed` and
- *  `cumSpeed *= comp.speed`. Returns null if the path doesn't resolve 1:1
- *  (e.g. a narrowing-windowed ancestor crops it — the acknowledged edge). */
-function resolvePrimaryGlobal(
-  resolvedRoot: ResolvedTimeline,
-  doc: SeamFile,
-  path: NodePath,
-): { resolved: ResolvedChild; gStart: number; gSpeed: number } | null {
-  let gStart = 0;
-  let cum = 1;
-  let rNode: { children: ResolvedChild[] } = resolvedRoot;
-  let aNode: { children: Child[]; attachments?: Child[] } = doc;
-  for (let i = 0; i < path.length; i++) {
-    const seg = path[i];
-    if (seg.field === "bin") return null;
-    const childCount = aNode.children.length;
-    const flat = seg.field === "children" ? seg.index : childCount + seg.index;
-    const rChild = rNode.children?.[flat];
-    if (!rChild) return null;
-    const childGStart = gStart + rChild.timelineStart / cum;
-    const speed = (rChild as { speed?: number }).speed ?? 1;
-    if (i === path.length - 1) {
-      return { resolved: rChild, gStart: childGStart, gSpeed: cum * speed };
-    }
-    if (rChild.type !== "composition") return null;
-    gStart = childGStart;
-    cum = cum * speed;
-    rNode = rChild;
-    const aChild =
-      seg.field === "children"
-        ? aNode.children[seg.index]
-        : (aNode.attachments ?? [])[seg.index];
-    if (!aChild || aChild.type !== "composition") return null;
-    aNode = aChild;
-  }
-  return null;
-}
-
-/** Source-mode anchor point on the primary at global output time `t`, using
- *  the primary's global start + cumulative speed. Mirrors the resolver's
- *  source→output formula so the dot lands at the playhead. */
-function globalAnchorPoint(
-  primary: Child,
-  resolved: ResolvedChild,
-  gStart: number,
-  gSpeed: number,
-  t: number,
-): number | null {
-  if (
-    (primary.type === "clip" || primary.type === "audio") &&
-    (resolved.type === "clip" || resolved.type === "audio")
-  ) {
-    const sourceTime = resolved.sourceIn + (t - gStart) * gSpeed;
-    return Math.max(primary.in, Math.min(primary.out, sourceTime));
-  }
-  if (primary.type === "composition" && resolved.type === "composition") {
-    const compIn = primary.in ?? 0;
-    // duration*speed is the intrinsic source span (window length), invariant
-    // to ancestor scaling, so the local resolved values are correct here.
-    const compOut = compIn + resolved.duration * resolved.speed;
-    const sourceTime = compIn + (t - gStart) * gSpeed;
-    return Math.max(compIn, Math.min(compOut, sourceTime));
-  }
-  return null;
 }
 
 /** Set the `id` field on the node at `path` (used to give the primary an id). */
