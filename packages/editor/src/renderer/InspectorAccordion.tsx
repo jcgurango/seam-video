@@ -436,6 +436,19 @@ function NodeBlock({
           }
         />
       )}
+      {/* Effective (post-resolution) source trim — the resolver crops these
+          to whatever a composition window / overflow actually leaves, so they
+          can differ from the authored `in`/`out`. Graphics have no source
+          trim, so their "after resolution" value is the output duration. */}
+      {child.type === "clip" || child.type === "audio" ? (
+        <Row
+          label="Effective in/out"
+          value={`${formatTime(child.sourceIn)} – ${formatTime(child.sourceOut)}`}
+        />
+      ) : null}
+      {child.type === "graphic" ? (
+        <Row label="Effective duration" value={formatTime(outputDuration)} />
+      ) : null}
       {child.type === "graphic" ? <GraphicReadOnlySummary child={child} /> : null}
     </div>
   );
