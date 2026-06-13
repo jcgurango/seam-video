@@ -136,7 +136,17 @@ export function naturalDurOf(node: Child): number {
   return 0;
 }
 
-/** Drag the anchorPoint to shift the resolved point time by `deltaSec`. */
+const clamp = (v: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, v));
+
+/**
+ * Drag the anchorPoint to shift the resolved point time by `deltaSec`.
+ *
+ * The drag clamps to the anchor's real bounds — percentage to 0–100%,
+ * source-seconds to the anchor's [sourceStart, sourceEnd]. Clamping lives
+ * only here (the drag path); editing the property directly can still
+ * overshoot, since overshooting is the degenerate case.
+ */
 export function dragAnchorPoint(
   spec: TimeAnchor,
   deltaSec: number,
@@ -144,38 +154,42 @@ export function dragAnchorPoint(
 ): TimeAnchor {
   if (spec.timeSource === "source") {
     const oldVal = typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
-    return {
-      ...spec,
-      anchorPoint: fmtSec(oldVal + deltaSec * ctx.anchorSpeed),
-      timeSource: "source",
-    };
+    const sourceStart = ctx.anchorBase;
+    const sourceEnd =
+      ctx.anchorBase + (ctx.anchorEnd - ctx.anchorStart) * ctx.anchorSpeed;
+    const next = clamp(oldVal + deltaSec * ctx.anchorSpeed, sourceStart, sourceEnd);
+    return { ...spec, anchorPoint: fmtSec(next), timeSource: "source" };
   }
   // output / undefined → output mode (percentage of anchor's output range)
   const range = ctx.anchorEnd - ctx.anchorStart;
   const oldPct =
     typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
-  const newPct = oldPct + (range > 0 ? deltaSec / range : 0);
-  return {
-    ...spec,
-    anchorPoint: fmtPct(newPct),
-    timeSource: "output",
-  };
+  const newPct = clamp(oldPct + (range > 0 ? deltaSec / range : 0), 0, 1);
+  return { ...spec, anchorPoint: fmtPct(newPct), timeSource: "output" };
 }
 
-/** Drag offset by `deltaSec` (output seconds). */
+/**
+ * Drag offset by `deltaSec` (output seconds). Clamped by side: an `end`
+ * anchor's offset can't go negative and a `start` anchor's can't go
+ * positive (the offset would push the edge the wrong way). The opposite
+ * sign is the degenerate case — reachable by editing the property, not by
+ * dragging.
+ */
 export function dragOffset(
   spec: TimeAnchor,
   deltaSec: number,
   ctx: AnchorEditCtx,
 ): TimeAnchor {
+  const clampSide = (v: number) =>
+    ctx.side === "end" ? Math.max(0, v) : Math.min(0, v);
   if (typeof spec.offset === "string") {
     const oldPct = parsePct(spec.offset);
     const newPct =
       oldPct + (ctx.attNatDur > 0 ? deltaSec / ctx.attNatDur : 0);
-    return { ...spec, offset: fmtPct(newPct) };
+    return { ...spec, offset: fmtPct(clampSide(newPct)) };
   }
   const oldSec = typeof spec.offset === "number" ? spec.offset : 0;
-  return { ...spec, offset: fmtSec(oldSec + deltaSec) };
+  return { ...spec, offset: fmtSec(clampSide(oldSec + deltaSec)) };
 }
 
 /**

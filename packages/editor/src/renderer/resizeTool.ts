@@ -10,7 +10,8 @@
 // known during a timeline drag, so it's left to the schema validator
 // or to a later UX polish pass that probes media.
 
-import type { Child, SeamFile } from "@seam/core";
+import { resolveComposition } from "@seam/core";
+import type { Child, Composition, SeamFile } from "@seam/core";
 
 export function resizeChild(
   doc: SeamFile,
@@ -41,10 +42,13 @@ function mutateChild(
     return resizeInOut(child, side, deltaSec);
   }
   if (child.type === "composition") {
-    // Without an explicit window we have nothing to grab from the
-    // resolver — leave the composition alone rather than guess.
-    if (child.in == null || child.out == null) return child;
-    return resizeInOut(child as Required<Pick<typeof child, "in" | "out">> & typeof child, side, deltaSec);
+    // A composition without an explicit window resizes by *adding* one:
+    // default `in` to 0 and `out` to the inner timeline's natural
+    // duration, so the first drag materialises the window the handle then
+    // adjusts (instead of silently no-opping).
+    const inVal = child.in ?? 0;
+    const outVal = child.out ?? innerDuration(child);
+    return resizeInOut({ ...child, in: inVal, out: outVal }, side, deltaSec);
   }
   // Static / text / empty / data: no source axis. Both handles just
   // adjust `duration` — left handle shrinks (drag right ⇒ shorter),
@@ -53,6 +57,17 @@ function mutateChild(
   const delta = side === "left" ? -deltaSec : deltaSec;
   const newDur = Math.max(0, old + delta);
   return { ...child, duration: newDur } as Child;
+}
+
+/** Natural duration of a composition's inner timeline (the un-windowed
+ *  [0, innerDuration] the default `out` covers). Falls back to 0 if the
+ *  composition can't be resolved. */
+function innerDuration(comp: Composition): number {
+  try {
+    return resolveComposition(comp).duration;
+  } catch {
+    return 0;
+  }
 }
 
 function resizeInOut<T extends { in: number; out: number }>(

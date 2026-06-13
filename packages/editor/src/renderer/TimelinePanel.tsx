@@ -50,7 +50,6 @@ const HANDLE_WIDTH = 10;
 /** Pixels of movement before a mouse press on a child block is treated
  *  as drag-to-reorder rather than a click. */
 const REORDER_THRESHOLD_PX = 6;
-const REORDER_LINE_COLOR = "#ff4444";
 
 /** Stable empty bin so `layoutTree`'s memo doesn't bust each render when a
  *  document has no `bin`. */
@@ -227,9 +226,12 @@ interface InnerProps {
    *  target — null otherwise. When non-null and a file is being
    *  dragged, the attach zone appears beneath the blocks. */
   attachIndex?: number | null;
-  /** Receives a drop on the attach zone. The shell computes `side`
+  /** Receives a file drop on the attach zone. The shell computes `side`
    *  from cursor X relative to the playhead. */
   onAttachDrop?: (side: "start" | "end", files: FileList) => void;
+  /** Receives a grabbed-clip drop on the attach zone — moves the existing
+   *  child at `fromIndex` into the selected anchor's attachments. */
+  onAttachExisting?: (side: "start" | "end", fromIndex: number) => void;
   /** Cursor-based file import. `insertIndex` is the slot computed via
    *  the same reorder snap math; omit for the playhead-snap fallback. */
   importFiles?: (
@@ -316,6 +318,9 @@ function useTimelineSurfaceState(
 interface TimelineSurfaceProps {
   surface: TimelineSurfaceState;
   timeline: ResolvedTimeline;
+  /** The shell's scroll container — used to scrub the playhead (audio
+   *  feedback) to the cursor's content time during a resize drag. */
+  scrollRef: React.RefObject<HTMLDivElement | null>;
   docRoot?: {
     children: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
@@ -348,6 +353,7 @@ interface TimelineSurfaceProps {
 function TimelineSurface({
   surface,
   timeline,
+  scrollRef,
   docRoot,
   selectedIndices,
   onSelectionChange,
@@ -361,7 +367,7 @@ function TimelineSurface({
   attachHoverSide,
 }: TimelineSurfaceProps) {
   const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
-  const { currentTime, seek } = useTimeline();
+  const { currentTime, totalDuration, seek } = useTimeline();
 
   // Per-block drag-resize. Stable identity via useEvent so re-renders
   // (and rAF ticks of currentTime) don't churn the prop on every block.
@@ -381,7 +387,6 @@ function TimelineSurface({
       const pointerId = e.pointerId;
       const startX = e.clientX;
       const initialDoc = editHistory.current;
-      const initialTime = currentTime;
 
       try {
         target.setPointerCapture(pointerId);
@@ -405,12 +410,14 @@ function TimelineSurface({
         editHistory.replace(
           resizeChild(initialDoc, index, isAttachment, side, deltaSec),
         );
-        if (side === "left") {
-          // Best-effort playhead preservation: as the source content shifts
-          // (or the trailing siblings shift), keep the visible content under
-          // the playhead lined up by translating the playhead by the same
-          // delta. Naive, no speed math — same convention as the resize.
-          seek(Math.max(0, initialTime - deltaSec));
+        // Scrub the playhead to the cursor (same audio feedback as
+        // dragging on the timeline) rather than trying to "correct" the
+        // playhead to keep content fixed — that fought the user's drag.
+        const container = scrollRef.current;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          const contentX = me.clientX - rect.left + container.scrollLeft;
+          seek(Math.max(0, Math.min(contentX / pxPerSec, totalDuration)));
         }
       };
       const onUp = (ev: Event) => {
@@ -588,6 +595,7 @@ function DesktopTimeline({
   onReorder,
   attachIndex,
   onAttachDrop,
+  onAttachExisting,
   importFiles,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
@@ -604,13 +612,13 @@ function DesktopTimeline({
   // Root-level blocks drive reorder / file-insertion snap math.
   const blocks = rootGroup.blocks;
 
-  // Reorder drag state. `cursorX` is in content (scroll-relative) px;
-  // `grabOffsetX` is how far inside the source block the user grabbed,
-  // used to keep the ghost's left edge consistent with the cursor.
+  // Reorder drag state. Cursor is in content (scroll-relative) px and
+  // drives the shared insertion ghost (same as a file drag); `cursorY`
+  // lets a grabbed clip hit the attach zone too, like a dropped file.
   const [reorderDrag, setReorderDrag] = useState<{
     fromIndex: number;
     cursorX: number;
-    grabOffsetX: number;
+    cursorY: number;
   } | null>(null);
 
   // File-drag state. cursorContentX drives the insertion ghost +
@@ -622,7 +630,18 @@ function DesktopTimeline({
 
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
 
-  const showAttachZone = fileDrag != null && attachIndex != null && !!onAttachDrop;
+  // The attach zone is available during a file drag (drop files as
+  // attachments) and during a grabbed-clip drag (re-attach an existing
+  // child) — both anchored to the selected clip, as long as the grabbed
+  // clip isn't itself the anchor.
+  const fileAttachActive =
+    fileDrag != null && attachIndex != null && !!onAttachDrop;
+  const itemAttachActive =
+    reorderDrag != null &&
+    attachIndex != null &&
+    reorderDrag.fromIndex !== attachIndex &&
+    !!onAttachExisting;
+  const showAttachZone = fileAttachActive || itemAttachActive;
   const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
 
   const handlePointerDown = useCallback(
@@ -692,15 +711,10 @@ function DesktopTimeline({
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const cursorX = e.clientX - rect.left + container.scrollLeft;
-      const block = reorderableBlocks.find((b) => b.index === index);
-      const blockLeftX = block ? block.child.timelineStart * pxPerSec : cursorX;
-      setReorderDrag({
-        fromIndex: index,
-        cursorX,
-        grabOffsetX: cursorX - blockLeftX,
-      });
+      const cursorY = e.clientY - rect.top + container.scrollTop;
+      setReorderDrag({ fromIndex: index, cursorX, cursorY });
     },
-    [onReorder, reorderableBlocks, pxPerSec],
+    [onReorder],
   );
 
   // While a reorder is active, follow the cursor on window events
@@ -714,26 +728,43 @@ function DesktopTimeline({
     if (!container) return;
     const dragRef = reorderDrag;
 
-    const cursorXFromEvent = (e: PointerEvent): number => {
+    const cursorFromEvent = (e: PointerEvent): { x: number; y: number } => {
       const rect = container.getBoundingClientRect();
-      return e.clientX - rect.left + container.scrollLeft;
+      return {
+        x: e.clientX - rect.left + container.scrollLeft,
+        y: e.clientY - rect.top + container.scrollTop,
+      };
     };
 
     const onMove = (e: PointerEvent) => {
-      const cursorX = cursorXFromEvent(e);
-      setReorderDrag((prev) => (prev ? { ...prev, cursorX } : null));
+      const { x, y } = cursorFromEvent(e);
+      setReorderDrag((prev) =>
+        prev ? { ...prev, cursorX: x, cursorY: y } : null,
+      );
     };
 
     const onUp = (e: PointerEvent) => {
-      const cursorX = cursorXFromEvent(e);
-      const toIndex = computeInsertionIndex(
-        cursorX,
-        reorderableBlocks,
-        pxPerSec,
-      );
+      const { x: cursorX, y: cursorY } = cursorFromEvent(e);
       const from = dragRef.fromIndex;
-      const isNoop = toIndex === from || toIndex === from + 1;
-      if (!isNoop) onReorder(from, toIndex);
+      // Dropping a grabbed clip on the attach zone attaches it to the
+      // selected anchor — same handler intent as a dropped file.
+      const inAttachZone =
+        attachIndex != null &&
+        from !== attachIndex &&
+        onAttachExisting != null &&
+        cursorY >= contentHeight;
+      if (inAttachZone) {
+        const side = cursorX >= currentTime * pxPerSec ? "start" : "end";
+        onAttachExisting(side, from);
+      } else {
+        const toIndex = computeInsertionIndex(
+          cursorX,
+          reorderableBlocks,
+          pxPerSec,
+        );
+        const isNoop = toIndex === from || toIndex === from + 1;
+        if (!isNoop) onReorder(from, toIndex);
+      }
       setReorderDrag(null);
     };
 
@@ -811,62 +842,30 @@ function DesktopTimeline({
   };
 
   const playheadX = currentTime * pxPerSec;
+  // A grabbed clip and a dragged-in file share the same drag position →
+  // the same insertion ghost (reorder = "drop this existing child at the
+  // snapped slot") and the same attach-zone hover.
+  const dragPos: { x: number; y: number } | null =
+    fileDrag != null
+      ? { x: fileDrag.cursorContentX, y: fileDrag.cursorContentY }
+      : reorderDrag != null
+        ? { x: reorderDrag.cursorX, y: reorderDrag.cursorY }
+        : null;
+  const inAttachZone =
+    showAttachZone && dragPos != null && dragPos.y >= contentHeight;
   const insertionGhostX =
-    fileDrag != null && (fileDrag.cursorContentY < contentHeight || !showAttachZone)
+    dragPos != null && !inAttachZone
       ? insertionIndexToX(
-          computeInsertionIndex(fileDrag.cursorContentX, reorderableBlocks, pxPerSec),
+          computeInsertionIndex(dragPos.x, reorderableBlocks, pxPerSec),
           reorderableBlocks,
           pxPerSec,
         )
       : null;
-  const attachHoverSide: "start" | "end" | null =
-    fileDrag != null && showAttachZone && fileDrag.cursorContentY >= contentHeight
-      ? fileDrag.cursorContentX >= playheadX
-        ? "start"
-        : "end"
-      : null;
-
-  // Ghost + insertion-line layout. The ghost mirrors the source
-  // block's width and row, but its X follows the cursor offset so the
-  // grabbed point stays under the pointer.
-  const ghost = (() => {
-    if (!reorderDrag) return null;
-    const source = reorderableBlocks.find(
-      (b) => b.index === reorderDrag.fromIndex,
-    );
-    if (!source) return null;
-    const width = Math.max(
-      (source.child.timelineEnd - source.child.timelineStart) * pxPerSec,
-      2,
-    );
-    const top =
-      RULER_HEIGHT + ROW_GAP + source.row * (ROW_HEIGHT + ROW_GAP);
-    const docChild = docRoot?.children[source.index];
-    const label = childLabel(docChild, source.child);
-    const displayType = docChild?.type ?? source.child.type;
-    const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
-    return {
-      left: reorderDrag.cursorX - reorderDrag.grabOffsetX,
-      top,
-      width,
-      label,
-      bg: colors.bg,
-      border: colors.border,
-    };
-  })();
-
-  const insertionX = (() => {
-    if (!reorderDrag) return null;
-    const idx = computeInsertionIndex(
-      reorderDrag.cursorX,
-      reorderableBlocks,
-      pxPerSec,
-    );
-    const isNoop =
-      idx === reorderDrag.fromIndex || idx === reorderDrag.fromIndex + 1;
-    if (isNoop) return null;
-    return insertionIndexToX(idx, reorderableBlocks, pxPerSec);
-  })();
+  const attachHoverSide: "start" | "end" | null = inAttachZone
+    ? dragPos!.x >= playheadX
+      ? "start"
+      : "end"
+    : null;
 
   return (
     <div
@@ -886,6 +885,7 @@ function DesktopTimeline({
         <TimelineSurface
           surface={surface}
           timeline={timeline}
+          scrollRef={scrollRef}
           docRoot={docRoot}
           selectedIndices={selectedIndices}
           onSelectionChange={onSelectionChange}
@@ -898,51 +898,6 @@ function DesktopTimeline({
           showAttachZone={showAttachZone}
           attachHoverSide={attachHoverSide}
         />
-        {ghost && (
-          <div
-            style={{
-              position: "absolute",
-              left: ghost.left,
-              top: ghost.top,
-              width: ghost.width,
-              height: ROW_HEIGHT,
-              background: ghost.bg,
-              border: `2px solid ${ghost.border}`,
-              borderRadius: 3,
-              opacity: 0.85,
-              pointerEvents: "none",
-              display: "flex",
-              alignItems: "center",
-              paddingLeft: 6,
-              paddingRight: 6,
-              fontSize: 11,
-              color: "#fff",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              boxSizing: "border-box",
-              zIndex: 20,
-              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.5)",
-            }}
-          >
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-              {ghost.label}
-            </span>
-          </div>
-        )}
-        {insertionX != null && (
-          <div
-            style={{
-              position: "absolute",
-              left: insertionX - 1,
-              top: RULER_HEIGHT,
-              width: 2,
-              height: contentHeight - RULER_HEIGHT,
-              background: REORDER_LINE_COLOR,
-              pointerEvents: "none",
-              zIndex: 19,
-            }}
-          />
-        )}
         <Playhead x={playheadX} height={contentHeight} />
       </div>
     </div>
@@ -1048,10 +1003,13 @@ function TimelineGroup({
           !isAttachment &&
           selectedIndices.length >= 2 &&
           selectedIndices[0] === index;
+        // Reorder is sequential-children only (attachments are
+        // anchor-positioned). Resize handles apply to attachments too —
+        // their length has little bearing, and it's easy to fix after.
         const blockReorderStart =
           isRoot && !isAttachment && onReorderDragStart ? onReorderDragStart : null;
         const blockResizeStart =
-          isRoot && !isAttachment && onResizeDragStart ? onResizeDragStart : null;
+          isRoot && onResizeDragStart ? onResizeDragStart : null;
         const left = toX(child.timelineStart);
         const width = Math.max(toX(child.timelineEnd) - left, 2);
         return (
@@ -1499,6 +1457,39 @@ export default function TimelinePanel({
     [doc, onDocumentChange, attachIndex, filePath, platform, currentTime],
   );
 
+  // Drop a grabbed child on the attach zone → move it into the selected
+  // anchor's attachments. Routed through the SAME `attachNewItems` path as
+  // a file drop: the dragged clip is stripped of any existing anchors and
+  // removed from `children`, then re-added as a fresh single-(start|end)-
+  // anchored attachment — so it can't end up pinned on both ends. Clears
+  // selection because the child moved and indices shift.
+  const handleAttachExisting = useCallback(
+    (side: "start" | "end", fromIndex: number) => {
+      if (!doc || !onDocumentChange) return;
+      if (attachIndex == null || fromIndex === attachIndex) return;
+      const child = doc.children[fromIndex];
+      if (!child) return;
+      const item = { ...child } as Child;
+      delete (item as { start?: unknown }).start;
+      delete (item as { end?: unknown }).end;
+      const remaining = doc.children.filter((_, i) => i !== fromIndex);
+      // Removing an earlier child shifts the anchor's index down by one.
+      const anchorIdx = fromIndex < attachIndex ? attachIndex - 1 : attachIndex;
+      const next = attachNewItems(
+        { ...doc, children: remaining },
+        currentTime,
+        anchorIdx,
+        [item],
+        side,
+      );
+      if (next) {
+        onDocumentChange(next);
+        onSelectionChange([]);
+      }
+    },
+    [doc, onDocumentChange, attachIndex, currentTime, onSelectionChange],
+  );
+
   // Delete/Backspace to remove selected blocks — handles both `children`
   // and `attachments` indices. Editable panels only (the CC-cut preview
   // routes Delete through its own handler in App).
@@ -1524,6 +1515,7 @@ export default function TimelinePanel({
   const shellImportFiles = editable ? importFiles : undefined;
   const shellAttachIndex = editable ? attachIndex : null;
   const shellOnAttachDrop = editable ? handleAttachDrop : undefined;
+  const shellOnAttachExisting = editable ? handleAttachExisting : undefined;
 
   return (
     <div
@@ -1572,6 +1564,7 @@ export default function TimelinePanel({
             onReorder={onReorder}
             attachIndex={shellAttachIndex}
             onAttachDrop={shellOnAttachDrop}
+            onAttachExisting={shellOnAttachExisting}
             importFiles={shellImportFiles}
           />
         );
