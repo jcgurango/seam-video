@@ -28,7 +28,7 @@ import type {
 } from "../resolved-types.js";
 import type { Length, ObjectFit, Point2D, Keyframed } from "../types.js";
 import { resolveLength, hasPercent } from "./units.js";
-import { isKeyframed, sampleLength } from "../animation/keyframes.js";
+import { isKeyframed, sampleLength, sampleNumber } from "../animation/keyframes.js";
 
 /** Fallback canvas dimensions used when the root composition doesn't set
  *  `contentWidth` / `contentHeight`. Portrait 1080×1920 — picked once so
@@ -51,7 +51,8 @@ export function hasAnimatedSpatialInput(input: SpatialInput | undefined): boolea
   return (
     isKeyframedPoint(input.origin) ||
     isKeyframedPoint(input.translation) ||
-    isKeyframedPoint(input.size)
+    isKeyframedPoint(input.size) ||
+    (input.rotation != null && isKeyframed(input.rotation))
   );
 }
 
@@ -298,12 +299,23 @@ export function resolveBoxProps(
   const transX = transXY?.x ?? parentW / 2;
   const transY = transXY?.y ?? parentH / 2;
 
-  return {
+  const rect: SpatialRect = {
     x: transX - originX,
     y: transY - originY,
     width,
     height,
   };
+
+  // Rotation is about the `origin` point. Carry it (plus the origin point
+  // in item-local px, so renderers can recover the pivot) only when
+  // authored — non-rotated rects stay a plain `{x,y,width,height}`.
+  if (input.rotation != null) {
+    rect.rotation = sampleNumber(input.rotation, t, duration);
+    rect.originX = originX;
+    rect.originY = originY;
+  }
+
+  return rect;
 }
 
 interface XY {

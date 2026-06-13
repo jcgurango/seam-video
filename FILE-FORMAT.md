@@ -59,6 +59,7 @@ A clip references a segment of a source video file.
 | `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
+| `rotation` | number | no | Degrees clockwise about `origin` (see [Spatial Layout](#spatial-layout)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
@@ -89,7 +90,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-Visual props (`filters`, `objectFit`, `origin`, `translation`, `size`) are rejected by the schema — `audio` doesn't render to a quad.
+Visual props (`filters`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
 
 ### Static
 
@@ -110,7 +111,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `duration` | number | yes | How long the frame is shown for (> 0) |
 | `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
 | `filters` | array | no | See [Filters](#filters) |
-| `objectFit`, `origin`, `translation`, `size` | — | no | See [Spatial Layout](#spatial-layout) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | See [Spatial Layout](#spatial-layout) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
@@ -187,7 +188,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
 | `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
-| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -257,7 +258,7 @@ A motion-graphics layer with its own internal keyframe timeline. The inner conte
 | `clips` | array | no | Reusable sub-clips referenced from inside `frames` by `Clip` objects. See [Sub-clips](#sub-clips) |
 | `in`, `out`, `overflow`, `underflow` | — | no | Window into the internal timeline. Same shape as Composition. Defaults: full internal duration |
 | `filters` | array | no | Visual effects applied to the rasterized graphic (see [Filters](#filters)) |
-| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -343,7 +344,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
-| `objectFit`, `origin`, `translation`, `size` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -652,6 +653,8 @@ A node's on-screen rect is built from three things:
 
 The renderer places the node so its `origin` lines up with the `translation` point in the parent. Together with `size`, that gives the final rect: `x = translation.x − origin.x`, `y = translation.y − origin.y`. Renderers consume this rect directly — there's no further objectFit math at draw time, and there's no separate `position` / edge-anchoring concept.
 
+An optional **`rotation`** then spins that rect about its `origin` point (see [rotation](#rotation) below).
+
 ### Length values
 
 Origin / translation / size and the content-dimension fields all take **`Length`** values:
@@ -687,6 +690,24 @@ So bare `0` for `translation` reads as "center of parent + 0px = center of paren
 ```
 
 In object form, an omitted axis falls back to the absent default — e.g. `{ "size": { "x": "50%" } }` is "half-width, full-height-of-natural".
+
+### rotation
+
+`rotation` spins the node about its `origin` point. It's a single **number in degrees, clockwise**, default `0`:
+
+```json
+{ "type": "static", "source": "badge.png", "duration": 5, "rotation": -15 }
+```
+
+The pivot is whatever `origin` resolves to, so it composes with the placement model: with the default `origin: "50%"` a node spins about its own center, while `origin: "0%"` (top-left) or `origin: "100%"` (bottom-right) pins the rotation to a corner. Rotation is applied *after* `size` / `origin` / `translation` build the rect — it doesn't change the rect's dimensions, only its orientation.
+
+`rotation` is animatable (a single number per keyframe — not a `Point2D`):
+
+```json
+{ "type": "graphic", "rotation": [[0, 0], ["100%", 360, "ease-in-out"]], "frames": [] }
+```
+
+Rotating a composition spins the whole group (background + children) as one unit.
 
 ### objectFit
 
@@ -800,12 +821,12 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 
 | Node | Fields |
 |------|--------|
-| **Clip** | `volume`, `origin`, `translation`, `size` |
+| **Clip** | `volume`, `origin`, `translation`, `size`, `rotation` |
 | **Audio** | `volume` |
-| **Composition** | `origin`, `translation`, `size` |
-| **Static** | `origin`, `translation`, `size` |
-| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size` |
-| **Graphic** | Outer wrapper: `origin`, `translation`, `size`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
+| **Composition** | `origin`, `translation`, `size`, `rotation` |
+| **Static** | `origin`, `translation`, `size`, `rotation` |
+| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
+| **Graphic** | Outer wrapper: `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
 | **Filters** | every numeric value: `adjust.{brightness,contrast,saturation,gamma}`, `opacity.value`, `colorbalance.{rs,gs,bs,rm,gm,bm,rh,gh,bh}`, `colortemperature.temperature` |
 
 ### Renderer support
@@ -816,7 +837,8 @@ The CLI ffmpeg / melt path supports every animatable field:
 |---|---|
 | Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
 | Graphic frames (fabric objects + sub-clips + maps) | Pre-rasterized to a PNG sequence at output fps via `fabric/node` (and `@maplibre/maplibre-gl-native` for Map elements). One PNG per static graphic, numbered sequence per animated. Same MLT `qimage` + `ttl=1` pipeline as text. |
-| `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into qtblend's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect (qtblend has no native cover/center mode), so authoring with non-default `size` overrides means stretching is intentional. |
+| `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into the compositing transition's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect, so authoring with non-default `size` overrides means stretching is intentional. |
+| `rotation` | Rotated nodes composite via melt's `qtblend` (`rotation` degrees + `rotate_center`) instead of the default `affine` — melt 7.38's `affine` can't do in-plane 2D rotation. The rect is shifted so qtblend's center-pivot reproduces rotation about the authored `origin`. Static and keyframed rotation both supported; an overflowing (cover) rect that's also rotated may mis-scale in non-portrait profiles (surfaced as a build limitation). |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
 | Filter parameters | `eq` (adjust) uses `eval=frame` + per-parameter expressions. `colorchannelmixer` (opacity), `colorbalance`, and `colortemperature` use `sendcmd` to deliver one stepwise update per output frame to a labelled filter instance. |
 

@@ -18,6 +18,15 @@ export interface SpatialRect {
   y: number;
   width: number;
   height: number;
+  /** Rotation in degrees, clockwise, about the origin point. Present only
+   *  when the node authored a `rotation` (so non-rotated rects stay a plain
+   *  `{x,y,width,height}` — keeps existing equality checks intact). */
+  rotation?: number;
+  /** Origin point in item-local px (post-`size`), the pivot for `rotation`.
+   *  Pivot in parent space = `(x + originX, y + originY)`. Present only
+   *  alongside `rotation`. */
+  originX?: number;
+  originY?: number;
 }
 
 /** Authored spatial input retained on a resolved node when any of its
@@ -29,6 +38,7 @@ export interface SpatialInput {
   origin?: Keyframed<Point2D>;
   translation?: Keyframed<Point2D>;
   size?: Keyframed<Point2D>;
+  rotation?: Keyframed<number>;
 }
 
 export interface ResolvedClip {

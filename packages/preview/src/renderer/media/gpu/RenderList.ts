@@ -40,6 +40,12 @@ export interface DrawCommand {
   quadY: number;
   quadW: number;
   quadH: number;
+  /** In-plane rotation in radians (clockwise in screen space), about the
+   *  pivot below. 0 = no rotation. */
+  rotation: number;
+  /** Rotation pivot in target-pixel space (the node's origin point). */
+  pivotX: number;
+  pivotY: number;
   opacity: number;
   nodeTime: number;
   nodeDuration: number;
@@ -74,6 +80,11 @@ export interface GroupCommand {
   fboH: number;
   filters: Filter[];
   opacity: number;
+  /** In-plane rotation in radians of the composited FBO quad, about the
+   *  pivot below. 0 = no rotation. */
+  rotation: number;
+  pivotX: number;
+  pivotY: number;
   children: RenderCommand[];
   nodeTime: number;
   nodeDuration: number;
@@ -257,10 +268,16 @@ function walkChildren(
       localTime >= child.timelineStart && localTime < child.timelineEnd;
     if (!isActive) continue;
 
-    if (child.type === "clip" || child.type === "static") {
+    if (
+      child.type === "clip" ||
+      child.type === "static" ||
+      child.type === "text" ||
+      child.type === "graphic"
+    ) {
       const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
       const quad = absoluteRect(viewport, spatial);
-      const scissor = intersect(clipRect, quad);
+      const { rotation, pivotX, pivotY } = rotationFor(viewport, spatial, quad);
+      const scissor = scissorFor(clipRect, quad, rotation, pivotX, pivotY);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
 
       commands.push({
@@ -274,26 +291,9 @@ function walkChildren(
         quadY: quad.y,
         quadW: quad.w,
         quadH: quad.h,
-        opacity,
-        nodeTime: localTime - child.timelineStart,
-        nodeDuration: child.timelineEnd - child.timelineStart,
-      });
-    } else if (child.type === "text" || child.type === "graphic") {
-      const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
-      const quad = absoluteRect(viewport, spatial);
-      const scissor = intersect(clipRect, quad);
-      if (scissor.w <= 0 || scissor.h <= 0) continue;
-      commands.push({
-        type: "draw",
-        clip: child,
-        scissorX: scissor.x,
-        scissorY: scissor.y,
-        scissorW: scissor.w,
-        scissorH: scissor.h,
-        quadX: quad.x,
-        quadY: quad.y,
-        quadW: quad.w,
-        quadH: quad.h,
+        rotation,
+        pivotX,
+        pivotY,
         opacity,
         nodeTime: localTime - child.timelineStart,
         nodeDuration: child.timelineEnd - child.timelineStart,
@@ -307,10 +307,18 @@ function walkChildren(
 
       const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
       const container = absoluteRect(viewport, spatial);
-      const childClip = intersect(clipRect, container);
+      const { rotation, pivotX, pivotY } = rotationFor(viewport, spatial, container);
+      const childClip = scissorFor(clipRect, container, rotation, pivotX, pivotY);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
       const hasFilters = child.filters && child.filters.length > 0;
+      // A rotated composition can't be flattened into the parent pass (its
+      // children would need the rotation composed per-quad about the comp
+      // pivot). Render it to an FBO and rotate the composited quad — same
+      // path filters take. `spatial.rotation != null` covers static and
+      // animated rotation alike (resolver only sets it when authored).
+      const hasRotation = spatial.rotation != null;
+      const needsLayer = hasFilters || hasRotation;
 
       // Inner content dim: resolver collapsed contentWidth/Height to a
       // pixel number, falling back to the display rect when authored
@@ -318,7 +326,7 @@ function walkChildren(
       const innerContentW = (child.contentWidth as number | undefined) ?? container.w;
       const innerContentH = (child.contentHeight as number | undefined) ?? container.h;
 
-      if (hasFilters) {
+      if (needsLayer) {
         const fboW = Math.round(innerContentW);
         const fboH = Math.round(innerContentH);
 
@@ -371,8 +379,11 @@ function walkChildren(
           scissorH: childClip.h,
           fboW,
           fboH,
-          filters: child.filters!,
+          filters: child.filters ?? [],
           opacity,
+          rotation,
+          pivotX,
+          pivotY,
           children: groupChildren,
           nodeTime: childLocalTime,
           nodeDuration: child.duration,
@@ -432,6 +443,69 @@ function absoluteRect(
     w: spatial.width * sx,
     h: spatial.height * sy,
   };
+}
+
+/** Resolve a spatial rect's rotation into a target-pixel pivot + radians.
+ *  The pivot is the node's `origin` point (defaulting to the rect center),
+ *  carried through `absoluteRect`'s parent→target scaling. */
+function rotationFor(
+  parent: Viewport,
+  spatial: SpatialRect,
+  quad: ClipRect,
+): { rotation: number; pivotX: number; pivotY: number } {
+  const deg = spatial.rotation ?? 0;
+  const sx = parent.contentW > 0 ? parent.w / parent.contentW : 1;
+  const sy = parent.contentH > 0 ? parent.h / parent.contentH : 1;
+  const ox = spatial.originX ?? spatial.width / 2;
+  const oy = spatial.originY ?? spatial.height / 2;
+  return {
+    rotation: (deg * Math.PI) / 180,
+    pivotX: quad.x + ox * sx,
+    pivotY: quad.y + oy * sy,
+  };
+}
+
+/** Axis-aligned bounding box of a quad after rotating about a pivot. Used
+ *  to widen the (axis-aligned) scissor so a rotated draw isn't clipped to
+ *  its un-rotated bounds. */
+function rotatedAABB(
+  quad: ClipRect,
+  pivotX: number,
+  pivotY: number,
+  rotation: number,
+): ClipRect {
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const corners = [
+    [quad.x, quad.y],
+    [quad.x + quad.w, quad.y],
+    [quad.x, quad.y + quad.h],
+    [quad.x + quad.w, quad.y + quad.h],
+  ];
+  for (const [cx, cy] of corners) {
+    const dx = cx - pivotX;
+    const dy = cy - pivotY;
+    const rx = pivotX + dx * c - dy * s;
+    const ry = pivotY + dx * s + dy * c;
+    minX = Math.min(minX, rx);
+    minY = Math.min(minY, ry);
+    maxX = Math.max(maxX, rx);
+    maxY = Math.max(maxY, ry);
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Scissor for a (possibly rotated) quad, clipped to the parent region. */
+function scissorFor(
+  clipRect: ClipRect,
+  quad: ClipRect,
+  rotation: number,
+  pivotX: number,
+  pivotY: number,
+): ClipRect {
+  if (rotation === 0) return intersect(clipRect, quad);
+  return intersect(clipRect, rotatedAABB(quad, pivotX, pivotY, rotation));
 }
 
 function intersect(a: ClipRect, b: ClipRect): ClipRect {

@@ -135,6 +135,7 @@ const SpatialFieldsSchema = {
   origin: keyframed(Point2DSchema).optional(),
   translation: keyframed(Point2DSchema).optional(),
   size: keyframed(Point2DSchema).optional(),
+  rotation: keyframed(z.number()).optional(),
 };
 
 export const OverflowSchema = z.enum([

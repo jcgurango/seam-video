@@ -63,6 +63,9 @@ export interface SpatialFields {
    *  a fraction of the post-objectFit "natural" size, pixel offset
    *  adds to it. Default `"100%"` = natural (fit/cover/center) box. */
   size?: Keyframed<Point2D>;
+  /** Rotation in degrees, clockwise, about the item's `origin` point.
+   *  Default `0` (no rotation). Animatable. */
+  rotation?: Keyframed<number>;
 }
 
 /**

@@ -81,11 +81,17 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
   ) {
     return undefined;
   }
-  const { objectFit, origin, translation, size } = child;
-  if (objectFit == null && origin == null && translation == null && size == null) {
+  const { objectFit, origin, translation, size, rotation } = child;
+  if (
+    objectFit == null &&
+    origin == null &&
+    translation == null &&
+    size == null &&
+    rotation == null
+  ) {
     return undefined;
   }
-  return { objectFit, origin, translation, size };
+  return { objectFit, origin, translation, size, rotation };
 }
 
 /**

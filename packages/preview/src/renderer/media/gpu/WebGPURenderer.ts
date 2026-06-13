@@ -40,6 +40,7 @@ struct Uniforms {
   cb_midtones: vec4f,
   cb_highlights: vec4f,
   ct_scale: vec4f,
+  rot: vec4f, // rotation_radians, pivot_x, pivot_y, _
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -59,8 +60,19 @@ var<private> quad: array<vec2f, 6> = array(
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   let p = quad[vi];
-  let px = u.dest.x + p.x * u.dest.z;
-  let py = u.dest.y + p.y * u.dest.w;
+  var px = u.dest.x + p.x * u.dest.z;
+  var py = u.dest.y + p.y * u.dest.w;
+  // Rotate about the pivot (in target-pixel space). Screen y is down, so
+  // this matrix gives clockwise-positive rotation (matches the spec).
+  let rot = u.rot.x;
+  if (rot != 0.0) {
+    let c = cos(rot);
+    let s = sin(rot);
+    let dx = px - u.rot.y;
+    let dy = py - u.rot.z;
+    px = u.rot.y + dx * c - dy * s;
+    py = u.rot.z + dx * s + dy * c;
+  }
   let ndc_x = (px / u.canvas_opacity.x) * 2.0 - 1.0;
   let ndc_y = 1.0 - (py / u.canvas_opacity.y) * 2.0;
   return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), p);
@@ -118,7 +130,7 @@ fn fs(input: VSOut) -> @location(0) vec4f {
 }
 `;
 
-const UNIFORM_SIZE = 112; // 7 × vec4f
+const UNIFORM_SIZE = 128; // 8 × vec4f
 const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 128;
 const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
@@ -488,6 +500,7 @@ export class WebGPURenderer {
     f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
     f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
+    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
   }
 
   private writeFillUniforms(slot: number, cmd: FillCommand): void {
@@ -510,6 +523,8 @@ export class WebGPURenderer {
     f32[16] = 0; f32[17] = 0; f32[18] = 0; f32[19] = 0;
     f32[20] = 0; f32[21] = 0; f32[22] = 0; f32[23] = 0;
     f32[24] = 1; f32[25] = 1; f32[26] = 1; f32[27] = 0;
+    // Fills are never rotated (a rotated comp's bg fill rides inside its FBO).
+    f32[28] = 0; f32[29] = 0; f32[30] = 0; f32[31] = 0;
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
@@ -536,6 +551,7 @@ export class WebGPURenderer {
     f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
     f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
+    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
   }
 
   // ── Phase 3: Encode ──

@@ -277,6 +277,92 @@ describe("resolveSpatial — composition / contentWidth", () => {
   });
 });
 
+describe("resolveSpatial — rotation", () => {
+  it("bakes a static rotation onto spatial with the origin pivot", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [],
+          spatialInput: { size: 200, translation: 0, rotation: 30 },
+        } as ResolvedComposition,
+      ],
+    };
+    const result = resolveSpatial(timeline, 1000, 1000);
+    const comp = result.children[0] as ResolvedComposition;
+    // 200×200 box centered at (500,500); origin defaults to item center
+    // (100,100), which is also the rotation pivot.
+    expect(comp.spatial).toEqual({
+      x: 400,
+      y: 400,
+      width: 200,
+      height: 200,
+      rotation: 30,
+      originX: 100,
+      originY: 100,
+    });
+    // Static rotation → spatialInput stripped (rect carries everything).
+    expect(comp.spatialInput).toBeUndefined();
+  });
+
+  it("origin pivot follows a non-center origin", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [],
+          // origin at top-left of the item.
+          spatialInput: { size: 200, translation: 0, origin: "0%", rotation: 45 },
+        } as ResolvedComposition,
+      ],
+    };
+    const result = resolveSpatial(timeline, 1000, 1000);
+    const comp = result.children[0] as ResolvedComposition;
+    // origin = (0,0) lands on translation = parent center (500,500), so
+    // top-left = (500,500); pivot is the item's top-left corner.
+    expect(comp.spatial).toEqual({
+      x: 500,
+      y: 500,
+      width: 200,
+      height: 200,
+      rotation: 45,
+      originX: 0,
+      originY: 0,
+    });
+  });
+
+  it("leaves rotation/origin off the rect when rotation is absent", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [],
+          spatialInput: { size: 200, translation: 0 },
+        } as ResolvedComposition,
+      ],
+    };
+    const result = resolveSpatial(timeline, 1000, 1000);
+    const comp = result.children[0] as ResolvedComposition;
+    expect(comp.spatial).toEqual({ x: 400, y: 400, width: 200, height: 200 });
+    expect(comp.spatial!.rotation).toBeUndefined();
+  });
+});
+
 describe("resolveSpatial — animation passthrough", () => {
   it("keeps spatialInput on the resolved node when keyframed", () => {
     const timeline: ResolvedTimeline = {
@@ -314,6 +400,34 @@ describe("resolveSpatial — animation passthrough", () => {
     const clip = result.children[0] as ResolvedClip;
     expect(clip.spatialInput).toBeDefined();
     expect(clip.spatialInput!.size).toBe(100);
+  });
+
+  it("keeps spatialInput when only rotation is keyframed", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          children: [],
+          spatialInput: {
+            size: 200,
+            translation: 0,
+            rotation: [
+              [0, 0],
+              ["100%", 90],
+            ],
+          },
+        } as ResolvedComposition,
+      ],
+    };
+    const result = resolveSpatial(timeline, 1000, 1000);
+    const comp = result.children[0] as ResolvedComposition;
+    expect(comp.spatialInput).toBeDefined();
+    expect(comp.spatialInput!.rotation).toBeDefined();
   });
 
   it("strips spatialInput on composition/text when nothing is keyframed", () => {

@@ -1062,7 +1062,7 @@ export function buildMltDocument(
   // keyframes a linear interpolant needs (see the animated branch below).
   function buildOverlayGeometry(
     seg: TextSeg | ClipSeg | StaticSeg | GraphicSeg | CompSeg,
-  ): string {
+  ): { rect: string; rotation: string | null } {
     const node = seg.node;
     const len = fr(seg.end) - fr(seg.start);
     const dur = seg.end - seg.start;
@@ -1070,6 +1070,7 @@ export function buildMltDocument(
       node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
     const opacityAnimated = nodeHasAnimatedOpacity(node);
     const animated = spatialAnimated || opacityAnimated;
+    const rotated = nodeHasRotation(node);
 
     // For clip/static, override the resolver's stale parent-size natural
     // rect with one computed from probed media dims (objectFit-aware).
@@ -1092,41 +1093,72 @@ export function buildMltDocument(
       return { rect, alpha };
     };
 
+    if (rotated) {
+      // qtblend mis-scales an overflowing (cover) rect in non-portrait
+      // profiles — warn if a rotated node's rect exceeds the canvas.
+      const r0 = sampleAt(0).rect;
+      if (r0.width > W + 0.5 || r0.height > H + 0.5) {
+        limitations.push({
+          node: seg.kind,
+          field: "rotation",
+          detail:
+            "rotated overlay with an overflowing (cover) rect composites via qtblend, which may mis-scale it in non-portrait profiles",
+        });
+      }
+    }
+
     if (!animated) {
-      // Single static rect — no `=` anywhere. qtblend treats this as
-      // a constant pixel rect, and the transition's in/out handles
-      // the show/hide window for us.
+      // Single static rect — no `=` anywhere. The transition treats this as
+      // a constant pixel rect, and its in/out handles the show/hide window.
       const { rect, alpha } = sampleAt(0);
-      return formatGeometry(rect, alpha);
+      return {
+        rect: formatGeometry(rect, alpha),
+        rotation: rotated ? fnum(rect.rotation ?? 0) : null,
+      };
     }
 
     // Animated: sample every output frame, then keep only the keyframes a
-    // *linear* interpolant (what affine does between keyframes) needs to
-    // reproduce the sampled curve exactly — both endpoints of every
+    // *linear* interpolant (what the transition does between keyframes)
+    // needs to reproduce the sampled curve exactly — both endpoints of every
     // constant run, plus the first/last frame.
     //
     // Keeping the END of a run is essential. A plateau (equal-valued
     // keyframes — authored "hold" between moves) samples to a run of
-    // identical specs; if we emit only its first frame, affine draws a
-    // straight line from there to the next changed keyframe, turning an
+    // identical specs; if we emit only its first frame, the transition draws
+    // a straight line from there to the next changed keyframe, turning an
     // authored stop-and-go into a continuous drift across the hold. Emit
-    // the run's last frame too and affine holds flat across it, then moves.
+    // the run's last frame too and it holds flat across it, then moves.
     // Frames inside a moving segment each differ from their neighbours, so
     // every one is a run boundary and is kept (the motion stays exact).
+    //
+    // Rotation rides the same keyframe times as the rect (run boundaries are
+    // detected on the combined rect+rotation spec) so both stay aligned for
+    // qtblend's linear interpolation.
     const last = len - 1;
-    const specs: string[] = [];
+    const rectSpecs: string[] = [];
+    const rotSpecs: string[] = [];
     for (let local = 0; local <= last; local++) {
       const { rect, alpha } = sampleAt(local);
-      specs.push(formatGeometry(rect, alpha));
+      rectSpecs.push(formatGeometry(rect, alpha));
+      rotSpecs.push(fnum(rect.rotation ?? 0));
     }
-    const parts: string[] = [];
+    const rectParts: string[] = [];
+    const rotParts: string[] = [];
     for (let local = 0; local <= last; local++) {
-      const spec = specs[local];
-      const startsRun = local === 0 || specs[local - 1] !== spec;
-      const endsRun = local === last || specs[local + 1] !== spec;
-      if (startsRun || endsRun) parts.push(`${local}=${spec}`);
+      const combined = `${rectSpecs[local]}|${rotSpecs[local]}`;
+      const prev =
+        local === 0 ? null : `${rectSpecs[local - 1]}|${rotSpecs[local - 1]}`;
+      const next =
+        local === last ? null : `${rectSpecs[local + 1]}|${rotSpecs[local + 1]}`;
+      if (combined !== prev || combined !== next) {
+        rectParts.push(`${local}=${rectSpecs[local]}`);
+        rotParts.push(`${local}=${rotSpecs[local]}`);
+      }
     }
-    return parts.join(";");
+    return {
+      rect: rectParts.join(";"),
+      rotation: rotated ? rotParts.join(";") : null,
+    };
   }
 
   // ── Tractor ──────────────────────────────────────────────────
@@ -1223,21 +1255,34 @@ export function buildMltDocument(
   overlays.sort((a, b) => a.z - b.z);
   for (const { trackIdx, seg } of overlays) {
     const { startK, endK } = clipFrameOwnership(seg);
-    const geometry = buildOverlayGeometry(seg);
-    transitionsXml.push(
-      [
-        `    <transition>`,
-        `      <property name="a_track">0</property>`,
-        `      <property name="b_track">${trackIdx}</property>`,
-        `      <property name="mlt_service">affine</property>`,
-        `      <property name="distort">1</property>`,
-        `      <property name="compositing">over</property>`,
-        `      <property name="in">${startK}</property>`,
-        `      <property name="out">${endK - 1}</property>`,
-        `      <property name="rect">${escAttr(geometry)}</property>`,
-        `    </transition>`,
-      ].join("\n"),
-    );
+    const { rect: geometry, rotation } = buildOverlayGeometry(seg);
+    // Non-rotated overlays composite via `affine` (scales overflow rects
+    // correctly in every profile — see mlt-qtblend-rect-behavior). Rotated
+    // overlays must use `qtblend` instead: melt 7.38's `affine` `fix_rotate_z`
+    // doesn't produce in-plane 2D rotation (no tilt at 30/45°, vanishes at
+    // 90°), whereas `qtblend`'s `rotation` rotates correctly. Caveat: qtblend
+    // mis-scales an *overflowing* (cover) rect in non-portrait profiles, so a
+    // rotated cover-fit node in a square/landscape project may scale wrong —
+    // flagged below.
+    const lines = [
+      `    <transition>`,
+      `      <property name="a_track">0</property>`,
+      `      <property name="b_track">${trackIdx}</property>`,
+      `      <property name="mlt_service">${rotation != null ? "qtblend" : "affine"}</property>`,
+      `      <property name="distort">1</property>`,
+      `      <property name="compositing">over</property>`,
+      `      <property name="in">${startK}</property>`,
+      `      <property name="out">${endK - 1}</property>`,
+      `      <property name="rect">${escAttr(geometry)}</property>`,
+    ];
+    if (rotation != null) {
+      lines.push(
+        `      <property name="rotation">${escAttr(rotation)}</property>`,
+        `      <property name="rotate_center">1</property>`,
+      );
+    }
+    lines.push(`    </transition>`);
+    transitionsXml.push(lines.join("\n"));
   }
   if (audioTrackIdx != null) {
     transitionsXml.push(
@@ -1329,12 +1374,44 @@ function fnum(n: number): string {
 }
 
 function formatGeometry(rect: SpatialRect, alpha: number): string {
-  // qtblend's `rect` keyframe format: `X Y W H OPACITY` (space-separated,
-  // opacity 0..1). composite's geometry is similar but with `/` and `x`
-  // separators and 0..100 opacity — qtblend wins because it actually
-  // honors per-frame opacity changes (composite's alpha was being
-  // ignored on melt 7.38).
-  return `${Math.round(rect.x)} ${Math.round(rect.y)} ${Math.round(rect.width)} ${Math.round(rect.height)} ${fnum(alpha)}`;
+  // `rect` keyframe format: `X Y W H OPACITY` (space-separated, opacity
+  // 0..1). Shared by the affine (non-rotated) and qtblend (rotated) paths.
+  //
+  // Rotation pivot compensation (qtblend path): melt's qtblend rotates the
+  // rect about its *center* (`rotate_center=1`), but seam rotates about the
+  // node's `origin`. We can't change qtblend's pivot reliably (its
+  // `rotate_anchor` format is finicky), so instead we shift the rect so that
+  // rotating the shifted rect about *its* center reproduces rotating the
+  // original rect about the origin. With `d = origin − center` and `R` the
+  // (clockwise, screen-space) rotation, the shift is `d − R(d)`. See the
+  // empirical derivation in the rotation work — verified pixel-exact against
+  // qtblend's `rotate_anchor`.
+  let { x, y } = rect;
+  const { width, height } = rect;
+  if (rect.rotation != null && rect.rotation !== 0) {
+    const rad = (rect.rotation * Math.PI) / 180;
+    const ox = rect.originX ?? width / 2;
+    const oy = rect.originY ?? height / 2;
+    const dx = ox - width / 2;
+    const dy = oy - height / 2;
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    const rdx = dx * c - dy * s;
+    const rdy = dx * s + dy * c;
+    x += dx - rdx;
+    y += dy - rdy;
+  }
+  return `${Math.round(x)} ${Math.round(y)} ${Math.round(width)} ${Math.round(height)} ${fnum(alpha)}`;
+}
+
+/** True when a node authored a spatial `rotation` (baked onto `spatial`
+ *  for statics, or kept on `spatialInput` when animated). Rotated overlays
+ *  composite via `qtblend` (which can rotate) instead of `affine`. */
+function nodeHasRotation(node: {
+  spatial?: SpatialRect;
+  spatialInput?: SpatialInput;
+}): boolean {
+  return node.spatial?.rotation != null || node.spatialInput?.rotation != null;
 }
 
 /** Sample a node's spatial rect at output time `t`.
