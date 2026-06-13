@@ -8,20 +8,34 @@ import type {
   ResolvedChild,
   SeamFile,
 } from "@seam/core";
-import { buildItemsFromFiles, useImport } from "./useImport.js";
+import { buildItemsFromFiles } from "./useImport.js";
 import { attachNewItems } from "./attachTool.js";
 import { dirname } from "./pathUtils.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import {
   parsePath,
+  pathKey,
+  samePath,
   rootIndicesFromKeys,
-  rootKeyFromIndex,
   removeNodesAtPaths,
+  removeNodeAtPath,
+  insertNode,
+  moveNode,
+  getNodeAtPath,
+  getCompAtPath,
+  adjustPathAfterRemoval,
   editContainer,
   splitLast,
   type NodePath,
 } from "./nodePath.js";
+import {
+  flattenDropRegions,
+  regionAt,
+  insertionIndexIn,
+  insertionXIn,
+  localTime,
+} from "./dropRegions.js";
 import {
   ROW_HEIGHT,
   ROW_GAP,
@@ -29,7 +43,7 @@ import {
   DEPTH_INSET,
   rowTop,
 } from "./timelineLayout.js";
-import { layoutTree, type TreeBlock, type TreeGroup } from "./timelineTree.js";
+import { layoutTree, type TreeGroup } from "./timelineTree.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
 import { resizeChild } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
@@ -71,51 +85,14 @@ const EMPTY_BIN: BinEntry[] = [];
  * attachments only collide (and thus stack onto a new row) with other
  * attachments, never with the sequential children above them.
  */
-/** Translate a cursor X (in content-coords pixels) into the insertion
- *  index for a reorder. Slot `k` means "insert before child k" (and
- *  `N` means "append after the last child"). Splits each child at its
- *  midpoint — cursor left of the midpoint inserts before, right of it
- *  inserts after — which feels natural for symmetric drag targets. */
-function computeInsertionIndex(
-  cursorX: number,
-  sortedChildBlocks: TreeBlock[],
-  pxPerSec: number,
-): number {
-  for (let k = 0; k < sortedChildBlocks.length; k++) {
-    const b = sortedChildBlocks[k];
-    const midX = ((b.child.timelineStart + b.child.timelineEnd) / 2) * pxPerSec;
-    if (cursorX < midX) return k;
-  }
-  return sortedChildBlocks.length;
-}
-
-/** Move element at `from` to insertion index `to` (slots are between
- *  elements: `0` = before the first, `arr.length` = after the last).
- *  Returns the original array unchanged for no-op moves. */
-function reorderChildren<T>(arr: T[], from: number, to: number): T[] {
-  if (from === to || from === to - 1) return arr;
-  const out = arr.slice();
-  const [item] = out.splice(from, 1);
-  const insertAt = to > from ? to - 1 : to;
-  out.splice(insertAt, 0, item);
-  return out;
-}
-
-/** X position (content-coords px) of the red line for a given insertion
- *  index. Sequential children play back-to-back, so each boundary is
- *  the start of the child at that index — except the last slot, which
- *  is the end of the final child. */
-function insertionIndexToX(
-  insertIdx: number,
-  sortedChildBlocks: TreeBlock[],
-  pxPerSec: number,
-): number {
-  if (sortedChildBlocks.length === 0) return 0;
-  if (insertIdx >= sortedChildBlocks.length) {
-    const last = sortedChildBlocks[sortedChildBlocks.length - 1];
-    return last.child.timelineEnd * pxPerSec;
-  }
-  return sortedChildBlocks[insertIdx].child.timelineStart * pxPerSec;
+/** Strip any `start`/`end` anchors off a node — used when moving a node
+ *  into a sequential `children` band where anchors are meaningless. */
+function stripAnchors(child: Child): Child {
+  if (!("start" in child) && !("end" in child)) return child;
+  const next = { ...child } as Record<string, unknown>;
+  delete next.start;
+  delete next.end;
+  return next as unknown as Child;
 }
 
 function formatTime(s: number): string {
@@ -228,26 +205,41 @@ interface InnerProps {
   /** Provided only when the panel is editable, where attachment edits are
    *  writable. */
   editHistory?: History<SeamFile>;
-  /** Commit a reorder of sequential children: move `from` to be at
-   *  insertion index `to` (in the post-removal array). Undefined when
-   *  reorder isn't supported. */
-  onReorder?: (from: number, to: number) => void;
-  /** Index of the single child that's selected AND a valid anchor
-   *  target — null otherwise. When non-null and a file is being
-   *  dragged, the attach zone appears beneath the blocks. */
-  attachIndex?: number | null;
-  /** Receives a file drop on the attach zone. The shell computes `side`
-   *  from cursor X relative to the playhead. */
-  onAttachDrop?: (side: "start" | "end", files: FileList) => void;
-  /** Receives a grabbed-clip drop on the attach zone — moves the existing
-   *  child at `fromIndex` into the selected anchor's attachments. */
-  onAttachExisting?: (side: "start" | "end", fromIndex: number) => void;
-  /** Cursor-based file import. `insertIndex` is the slot computed via
-   *  the same reorder snap math; omit for the playhead-snap fallback. */
-  importFiles?: (
+  /** Move an existing node into a container's `children` band at insertion
+   *  index `to`. Handles both same-container reorder and cross-container
+   *  drag (in/out of a composition). Undefined when editing isn't
+   *  supported. */
+  onMoveNode?: (
+    fromPath: NodePath,
+    toContainer: NodePath,
+    toIndex: number,
+  ) => void;
+  /** Cursor-based file import into a specific container at a slot. */
+  onImportAt?: (
+    toContainer: NodePath,
+    toIndex: number,
     files: FileList | File[],
-    insertIndex?: number,
   ) => Promise<void>;
+  /** Receives a file drop on the attach zone — anchors new items to the
+   *  selected primary (at `containerPath`'s `fieldIndex`) at its
+   *  container-local `localTime` (the playhead). */
+  onAttachDropAt?: (
+    containerPath: NodePath,
+    fieldIndex: number,
+    side: "start" | "end",
+    localTime: number,
+    files: FileList,
+  ) => void;
+  /** Receives a grabbed-node drop on the attach zone — moves the node at
+   *  `fromPath` into the selected primary's container as an anchored
+   *  attachment. */
+  onAttachExistingAt?: (
+    containerPath: NodePath,
+    fieldIndex: number,
+    side: "start" | "end",
+    localTime: number,
+    fromPath: NodePath,
+  ) => void;
 }
 
 // ── Timeline surface (hook + body) ───────────────────────────────────
@@ -343,15 +335,15 @@ interface TimelineSurfaceProps {
    *  an edit (resize/reorder) runs against a sub-composition. */
   rootBin: BinEntry[];
   editHistory?: History<SeamFile>;
-  /** Index of the child currently being reorder-dragged (fades its
-   *  block view). Pass `null` when the shell doesn't support reorder. */
-  reorderDragIndex: number | null;
-  /** Hand-off callback when a child block's mouse-press passes the
-   *  drag threshold. Pass `null` to disable reorder for this shell. */
-  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
-  /** Content-X (px) of the cursor-snap insertion line during a file
-   *  drag. Null hides the insertion ghost. */
-  insertionGhostX?: number | null;
+  /** Path key of the node currently being drag-moved (fades its block
+   *  view). Pass `null` when the shell doesn't support drag. */
+  reorderDragKey: string | null;
+  /** Hand-off callback when a block's mouse-press passes the drag
+   *  threshold. Pass `null` to disable drag for this shell. */
+  onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
+  /** Insertion-line ghost: content-X plus the target container's vertical
+   *  extent. Null hides it. */
+  insertionGhost?: { x: number; top: number; height: number } | null;
   /** True when the attach zone should be rendered (shell-decided based
    *  on dragOver + a clip selection). */
   showAttachZone?: boolean;
@@ -374,9 +366,9 @@ function TimelineSurface({
   onToggleExpand,
   rootBin,
   editHistory,
-  reorderDragIndex,
+  reorderDragKey,
   onReorderDragStart,
-  insertionGhostX,
+  insertionGhost,
   showAttachZone,
   attachHoverSide,
 }: TimelineSurfaceProps) {
@@ -480,7 +472,7 @@ function TimelineSurface({
         onSelectionChange={onSelectionChange}
         expanded={expanded}
         onToggleExpand={onToggleExpand}
-        reorderDragIndex={reorderDragIndex}
+        reorderDragKey={reorderDragKey}
         onReorderDragStart={onReorderDragStart}
         onResizeDragStart={onResizeDragStart}
       />
@@ -492,8 +484,12 @@ function TimelineSurface({
         pxPerSec={pxPerSec}
         history={editHistory}
       />
-      {insertionGhostX != null && (
-        <InsertionGhost x={insertionGhostX} height={contentHeight} />
+      {insertionGhost != null && (
+        <InsertionGhost
+          x={insertionGhost.x}
+          top={insertionGhost.top}
+          height={insertionGhost.height}
+        />
       )}
       {showAttachZone && (
         <AttachZone
@@ -508,13 +504,21 @@ function TimelineSurface({
 
 const ATTACH_ZONE_HEIGHT = 40;
 
-function InsertionGhost({ x, height }: { x: number; height: number }) {
+function InsertionGhost({
+  x,
+  top,
+  height,
+}: {
+  x: number;
+  top: number;
+  height: number;
+}) {
   return (
     <div
       style={{
         position: "absolute",
         left: x - 1,
-        top: 0,
+        top,
         width: 2,
         height,
         background: "#4a9eff",
@@ -620,11 +624,10 @@ function DesktopTimeline({
   onToggleExpand,
   rootBin,
   editHistory,
-  onReorder,
-  attachIndex,
-  onAttachDrop,
-  onAttachExisting,
-  importFiles,
+  onMoveNode,
+  onImportAt,
+  onAttachDropAt,
+  onAttachExistingAt,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -637,14 +640,13 @@ function DesktopTimeline({
     scrollRef,
   );
   const { pxPerSec, rootGroup, contentHeight } = surface;
-  // Root-level blocks drive reorder / file-insertion snap math.
-  const blocks = rootGroup.blocks;
+  const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
 
-  // Reorder drag state. Cursor is in content (scroll-relative) px and
-  // drives the shared insertion ghost (same as a file drag); `cursorY`
-  // lets a grabbed clip hit the attach zone too, like a dropped file.
-  const [reorderDrag, setReorderDrag] = useState<{
-    fromIndex: number;
+  // Item-drag state: a grabbed node tracked in content (scroll-relative)
+  // px. The same position drives the insertion ghost and the attach-zone
+  // hover, just like a dropped file.
+  const [itemDrag, setItemDrag] = useState<{
+    fromPath: NodePath;
     cursorX: number;
     cursorY: number;
   } | null>(null);
@@ -656,21 +658,70 @@ function DesktopTimeline({
     cursorContentY: number;
   } | null>(null);
 
-  const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
+  // Every editable container, flattened to a content-space drop target.
+  // A drag hit-tests these to find which composition (root or nested) the
+  // cursor is over and the insertion slot within it.
+  const regions = useMemo(
+    () =>
+      flattenDropRegions(rootGroup, pxPerSec, {
+        left: 0,
+        top: 0,
+        width: contentWidth,
+        height: contentHeight,
+      }),
+    [rootGroup, pxPerSec, contentWidth, contentHeight],
+  );
+
+  // The single selected node that's a valid anchor primary — a sequential
+  // child of a *clean* (non-windowed, so 1:1) container, with a source
+  // axis. Drives the attach zone during a drag.
+  const attachTarget = useMemo(() => {
+    if (!docRoot || selection.length !== 1) return null;
+    const key = selection[0];
+    const path = parsePath(key);
+    const last = path[path.length - 1];
+    if (!last || last.field !== "children") return null;
+    const root = docRoot as SeamFile;
+    const node = getNodeAtPath(root, path);
+    if (
+      !node ||
+      (node.type !== "clip" &&
+        node.type !== "audio" &&
+        node.type !== "composition")
+    ) {
+      return null;
+    }
+    const containerPath = path.slice(0, -1);
+    if (containerPath.length > 0) {
+      const cont = getCompAtPath(root, containerPath);
+      if (!cont || cont.in != null || cont.out != null) return null;
+    }
+    return { key, path, containerPath, fieldIndex: last.index };
+  }, [docRoot, selection]);
 
   // The attach zone is available during a file drag (drop files as
-  // attachments) and during a grabbed-clip drag (re-attach an existing
-  // child) — both anchored to the selected clip, as long as the grabbed
-  // clip isn't itself the anchor.
+  // attachments) and during a grabbed-node drag (re-attach an existing
+  // node) — both anchored to the selected primary, as long as the grabbed
+  // node isn't itself the primary.
   const fileAttachActive =
-    fileDrag != null && attachIndex != null && !!onAttachDrop;
+    fileDrag != null && attachTarget != null && !!onAttachDropAt;
   const itemAttachActive =
-    reorderDrag != null &&
-    attachIndex != null &&
-    reorderDrag.fromIndex !== attachIndex &&
-    !!onAttachExisting;
+    itemDrag != null &&
+    attachTarget != null &&
+    pathKey(itemDrag.fromPath) !== attachTarget.key &&
+    !!onAttachExistingAt;
   const showAttachZone = fileAttachActive || itemAttachActive;
   const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
+
+  // Local-output time on the attach primary's container at the playhead —
+  // the anchor point for an attach drop.
+  const attachLocalTime = (): number => {
+    if (!attachTarget) return currentTime;
+    const region = regions.find((r) =>
+      samePath(r.path, attachTarget.containerPath),
+    );
+    return region ? localTime(region, currentTime * pxPerSec, pxPerSec) : currentTime;
+  };
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -719,42 +770,30 @@ function DesktopTimeline({
     container.scrollLeft = playheadX - container.clientWidth / 2;
   }, [currentTime, pxPerSec, isPlaying]);
 
-  // ── Drag-to-reorder ────────────────────────────────────────────
-  // Sequential child blocks sorted by index, used both to position the
-  // red insertion line and to translate cursor X into an insertion
-  // index. Attachments don't participate (their anchor semantics would
-  // be wrong if reordered).
-  const reorderableBlocks = useMemo(
-    () =>
-      blocks
-        .filter((b) => !b.isAttachment)
-        .sort((a, b) => a.index - b.index),
-    [blocks],
-  );
-
+  // ── Drag-to-move (reorder + in/out of compositions) ────────────
+  // A block press that crosses the threshold hands off here. The cursor
+  // is then tracked on window events (independent of the source block's
+  // capture) and the drop hit-tests the drop regions to find its target
+  // container + slot — so a node can move within its container or across
+  // composition boundaries.
   const startReorderDrag = useCallback(
-    (index: number, e: PointerEvent) => {
-      if (!onReorder) return;
+    (path: NodePath, e: PointerEvent) => {
+      if (!onMoveNode) return;
       const container = scrollRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const cursorX = e.clientX - rect.left + container.scrollLeft;
       const cursorY = e.clientY - rect.top + container.scrollTop;
-      setReorderDrag({ fromIndex: index, cursorX, cursorY });
+      setItemDrag({ fromPath: path, cursorX, cursorY });
     },
-    [onReorder],
+    [onMoveNode],
   );
 
-  // While a reorder is active, follow the cursor on window events
-  // (independent of the source block's capture) and commit on release.
-  // Cleanup of the window listeners is tied to the React effect's
-  // teardown — so a parent unmount or a fresh drag round always wipes
-  // the old subscriptions.
   useEffect(() => {
-    if (!reorderDrag || !onReorder) return;
+    if (!itemDrag || !onMoveNode) return;
     const container = scrollRef.current;
     if (!container) return;
-    const dragRef = reorderDrag;
+    const dragRef = itemDrag;
 
     const cursorFromEvent = (e: PointerEvent): { x: number; y: number } => {
       const rect = container.getBoundingClientRect();
@@ -766,37 +805,39 @@ function DesktopTimeline({
 
     const onMove = (e: PointerEvent) => {
       const { x, y } = cursorFromEvent(e);
-      setReorderDrag((prev) =>
+      setItemDrag((prev) =>
         prev ? { ...prev, cursorX: x, cursorY: y } : null,
       );
     };
 
     const onUp = (e: PointerEvent) => {
-      const { x: cursorX, y: cursorY } = cursorFromEvent(e);
-      const from = dragRef.fromIndex;
-      // Dropping a grabbed clip on the attach zone attaches it to the
-      // selected anchor — same handler intent as a dropped file.
+      const { x, y } = cursorFromEvent(e);
+      const fromPath = dragRef.fromPath;
+      // Dropping a grabbed node on the attach zone attaches it to the
+      // selected primary — same handler intent as a dropped file.
       const inAttachZone =
-        attachIndex != null &&
-        from !== attachIndex &&
-        onAttachExisting != null &&
-        cursorY >= contentHeight;
+        attachTarget != null &&
+        pathKey(fromPath) !== attachTarget.key &&
+        onAttachExistingAt != null &&
+        y >= contentHeight;
       if (inAttachZone) {
-        const side = cursorX >= currentTime * pxPerSec ? "start" : "end";
-        onAttachExisting(side, from);
-      } else {
-        const toIndex = computeInsertionIndex(
-          cursorX,
-          reorderableBlocks,
-          pxPerSec,
+        const side = x >= currentTime * pxPerSec ? "start" : "end";
+        onAttachExistingAt(
+          attachTarget.containerPath,
+          attachTarget.fieldIndex,
+          side,
+          attachLocalTime(),
+          fromPath,
         );
-        const isNoop = toIndex === from || toIndex === from + 1;
-        if (!isNoop) onReorder(from, toIndex);
+      } else {
+        const region = regionAt(regions, x, y);
+        const slot = insertionIndexIn(region, x);
+        onMoveNode(fromPath, region.path, slot);
       }
-      setReorderDrag(null);
+      setItemDrag(null);
     };
 
-    const onCancel = () => setReorderDrag(null);
+    const onCancel = () => setItemDrag(null);
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -806,11 +847,20 @@ function DesktopTimeline({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
     };
-    // We deliberately don't include `reorderDrag` here — only its
-    // *existence* matters for setting up listeners; the cursor updates
-    // come through setState. dragRef captures the start state once.
+    // Only the drag's *existence* drives subscribe/unsubscribe; cursor
+    // updates come through setState. The other values are read fresh at
+    // drop time via the closure (re-subscription on change is harmless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reorderDrag !== null, onReorder, reorderableBlocks, pxPerSec]);
+  }, [
+    itemDrag !== null,
+    onMoveNode,
+    onAttachExistingAt,
+    regions,
+    attachTarget,
+    pxPerSec,
+    currentTime,
+    contentHeight,
+  ]);
 
   // ── File drag-and-drop ────────────────────────────────────────
   const cursorToContent = (e: React.DragEvent) => {
@@ -857,37 +907,53 @@ function DesktopTimeline({
     if (e.dataTransfer.files.length === 0) return;
 
     const inAttachZone =
-      showAttachZone && pos.y >= contentHeight && onAttachDrop != null;
+      showAttachZone &&
+      pos.y >= contentHeight &&
+      attachTarget != null &&
+      onAttachDropAt != null;
     if (inAttachZone) {
       const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
-      onAttachDrop!(side, e.dataTransfer.files);
+      onAttachDropAt!(
+        attachTarget!.containerPath,
+        attachTarget!.fieldIndex,
+        side,
+        attachLocalTime(),
+        e.dataTransfer.files,
+      );
       return;
     }
-    if (importFiles) {
-      const idx = computeInsertionIndex(pos.x, reorderableBlocks, pxPerSec);
-      void importFiles(e.dataTransfer.files, idx);
+    if (onImportAt) {
+      const region = regionAt(regions, pos.x, pos.y);
+      const slot = insertionIndexIn(region, pos.x);
+      void onImportAt(region.path, slot, e.dataTransfer.files);
     }
   };
 
   const playheadX = currentTime * pxPerSec;
-  // A grabbed clip and a dragged-in file share the same drag position →
-  // the same insertion ghost (reorder = "drop this existing child at the
-  // snapped slot") and the same attach-zone hover.
+  // A grabbed node and a dragged-in file share the same drag position →
+  // the same insertion ghost (a move = "drop this node at the snapped
+  // slot in the targeted container") and the same attach-zone hover.
   const dragPos: { x: number; y: number } | null =
     fileDrag != null
       ? { x: fileDrag.cursorContentX, y: fileDrag.cursorContentY }
-      : reorderDrag != null
-        ? { x: reorderDrag.cursorX, y: reorderDrag.cursorY }
+      : itemDrag != null
+        ? { x: itemDrag.cursorX, y: itemDrag.cursorY }
         : null;
   const inAttachZone =
     showAttachZone && dragPos != null && dragPos.y >= contentHeight;
-  const insertionGhostX =
+  // Hit-test the targeted container and snap the ghost to its insertion
+  // slot, drawn over that container's vertical extent.
+  const insertionGhost =
     dragPos != null && !inAttachZone
-      ? insertionIndexToX(
-          computeInsertionIndex(dragPos.x, reorderableBlocks, pxPerSec),
-          reorderableBlocks,
-          pxPerSec,
-        )
+      ? (() => {
+          const region = regionAt(regions, dragPos.x, dragPos.y);
+          const slot = insertionIndexIn(region, dragPos.x);
+          return {
+            x: insertionXIn(region, slot),
+            top: region.top,
+            height: region.height,
+          };
+        })()
       : null;
   const attachHoverSide: "start" | "end" | null = inAttachZone
     ? dragPos!.x >= playheadX
@@ -906,7 +972,7 @@ function DesktopTimeline({
         flex: 1,
         overflow: "auto",
         position: "relative",
-        cursor: reorderDrag ? "grabbing" : "crosshair",
+        cursor: itemDrag ? "grabbing" : "crosshair",
       }}
     >
       <div style={{ width: contentWidth, height: totalContentHeight, position: "relative" }}>
@@ -921,9 +987,9 @@ function DesktopTimeline({
           onToggleExpand={onToggleExpand}
           rootBin={rootBin}
           editHistory={editHistory}
-          reorderDragIndex={reorderDrag?.fromIndex ?? null}
-          onReorderDragStart={onReorder ? startReorderDrag : null}
-          insertionGhostX={insertionGhostX}
+          reorderDragKey={itemDrag ? pathKey(itemDrag.fromPath) : null}
+          onReorderDragStart={onMoveNode ? startReorderDrag : null}
+          insertionGhost={insertionGhost}
           showAttachZone={showAttachZone}
           attachHoverSide={attachHoverSide}
         />
@@ -993,7 +1059,7 @@ function TimelineGroup({
   onSelectionChange,
   expanded,
   onToggleExpand,
-  reorderDragIndex,
+  reorderDragKey,
   onReorderDragStart,
   onResizeDragStart,
 }: {
@@ -1006,8 +1072,8 @@ function TimelineGroup({
   onSelectionChange: (keys: string[]) => void;
   expanded: Set<string>;
   onToggleExpand: (addr: string) => void;
-  reorderDragIndex: number | null;
-  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+  reorderDragKey: string | null;
+  onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
   onResizeDragStart:
     | ((
         path: NodePath,
@@ -1032,12 +1098,14 @@ function TimelineGroup({
           !isAttachment &&
           selection.length >= 2 &&
           selection[0] === addr;
-        // Reorder is sequential-children only (attachments are
-        // anchor-positioned) and, this phase, root-only (cross-container
-        // drag lands in the unified drag pass). Resize works at any
-        // editable level — nested deltas are scaled by the group window.
+        // Drag-to-move is for sequential children at any editable level
+        // (attachments are anchor-positioned, so they don't reorder); the
+        // drop pass routes it within or across containers. Resize also
+        // works at any editable level — nested deltas scale by the window.
         const blockReorderStart =
-          isRoot && !isAttachment && onReorderDragStart ? onReorderDragStart : null;
+          group.editable && !isAttachment && onReorderDragStart
+            ? onReorderDragStart
+            : null;
         const blockResizeStart =
           group.editable && onResizeDragStart ? onResizeDragStart : null;
         const left = toX(child.timelineStart);
@@ -1066,7 +1134,7 @@ function TimelineGroup({
             onToggleExpand={() => onToggleExpand(addr)}
             selection={selection}
             onSelectionChange={onSelectionChange}
-            isDraggingOut={reorderDragIndex === index && isRoot}
+            isDraggingOut={reorderDragKey === addr}
             onReorderDragStart={blockReorderStart}
             onResizeDragStart={blockResizeStart}
           />
@@ -1098,8 +1166,8 @@ function TimelineGroup({
               onSelectionChange={onSelectionChange}
               expanded={expanded}
               onToggleExpand={onToggleExpand}
-              reorderDragIndex={null}
-              onReorderDragStart={null}
+              reorderDragKey={reorderDragKey}
+              onReorderDragStart={onReorderDragStart}
               onResizeDragStart={onResizeDragStart}
             />
             {/* Window boundary lines (left = in, right = out), drawn over
@@ -1170,9 +1238,9 @@ function ChildBlockView({
    *  fade it so the user sees the ghost is the live thing. */
   isDraggingOut: boolean;
   /** When set, mouse-press + drag past the threshold hands off to the
-   *  parent's reorder tracker. `null` disables reorder for this block
-   *  (e.g. attachments, nested blocks, or read-only previews). */
-  onReorderDragStart: ((index: number, e: PointerEvent) => void) | null;
+   *  parent's drag tracker. `null` disables drag for this block (e.g.
+   *  attachments, non-editable blocks, or read-only previews). */
+  onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
   /** When set, pointer-down on a side handle hands off to the parent's
    *  resize tracker. `null` hides the handles. */
   onResizeDragStart:
@@ -1231,7 +1299,7 @@ function ChildBlockView({
           // Already released — fine.
         }
         mouseDownPos.current = null;
-        onReorderDragStart(index, e.nativeEvent);
+        onReorderDragStart(path, e.nativeEvent);
       }
     }
   };
@@ -1438,7 +1506,6 @@ export default function TimelinePanel({
   history,
   platform,
 }: TimelinePanelProps) {
-  const { currentTime } = useTimeline();
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
   const editable = doc != null;
@@ -1454,85 +1521,123 @@ export default function TimelinePanel({
     });
   }, []);
   const rootBin = doc?.bin ?? EMPTY_BIN;
-  const emptyDoc: SeamFile = { type: "composition", children: [] };
-  const importFiles = useImport(
-    doc ?? emptyDoc,
-    filePath ?? null,
-    onDocumentChange ?? (() => {}),
-    platform
-  );
 
-  // Single sequential-child selection that's a valid anchor target —
-  // drives the attach zone's existence during drag. Root-level only: a
-  // single `children.N` key with a source-axis type.
-  const attachIndex = useMemo<number | null>(() => {
-    if (!doc) return null;
-    if (selection.length !== 1) return null;
-    const path = parsePath(selection[0]);
-    if (path.length !== 1 || path[0].field !== "children") return null;
-    const idx = path[0].index;
-    if (idx < 0 || idx >= doc.children.length) return null;
-    const child = doc.children[idx];
-    if (
-      child.type !== "clip" &&
-      child.type !== "audio" &&
-      child.type !== "composition"
-    ) {
-      return null;
-    }
-    return idx;
-  }, [doc, selection]);
+  // ── Drag / drop / import handlers (path + edit-lens based) ───────
+  // All work at any editable level: the `path` identifies the node, and
+  // `editContainer` runs the existing pure tools against the target
+  // composition (root or nested), injecting the root bin for resolution.
 
-  const handleAttachDrop = useCallback(
-    async (side: "start" | "end", files: FileList) => {
+  // Move a node within its container or across composition boundaries,
+  // then re-select it at its new home.
+  const onMoveNode = useCallback(
+    (fromPath: NodePath, toContainer: NodePath, toIndex: number) => {
       if (!doc || !onDocumentChange) return;
-      if (attachIndex == null) return;
-      const baseDir = filePath ? dirname(filePath) : null;
-      const newItems = await buildItemsFromFiles(files, platform, baseDir);
-      if (newItems.length === 0) return;
-      const next = attachNewItems(
+      const next = moveNode(
         doc,
-        currentTime,
-        attachIndex,
-        newItems,
-        side,
+        fromPath,
+        toContainer,
+        "children",
+        toIndex,
+        stripAnchors,
       );
-      if (next) onDocumentChange(next);
+      if (next === doc) return;
+      // Destination index after the splice (for selection-follow).
+      const last = fromPath[fromPath.length - 1];
+      const sameContainer = samePath(fromPath.slice(0, -1), toContainer);
+      let dest = toIndex;
+      if (sameContainer && last?.field === "children" && last.index < toIndex) {
+        dest = toIndex - 1;
+      }
+      const len = getCompAtPath(next, toContainer)?.children.length ?? 0;
+      dest = Math.max(0, Math.min(dest, len - 1));
+      onDocumentChange(next);
+      onSelectionChange([
+        pathKey([...toContainer, { field: "children", index: dest }]),
+      ]);
     },
-    [doc, onDocumentChange, attachIndex, filePath, platform, currentTime],
+    [doc, onDocumentChange, onSelectionChange],
   );
 
-  // Drop a grabbed child on the attach zone → move it into the selected
-  // anchor's attachments. Routed through the SAME `attachNewItems` path as
-  // a file drop: the dragged clip is stripped of any existing anchors and
-  // removed from `children`, then re-added as a fresh single-(start|end)-
-  // anchored attachment — so it can't end up pinned on both ends. Clears
-  // selection because the child moved and indices shift.
-  const handleAttachExisting = useCallback(
-    (side: "start" | "end", fromIndex: number) => {
+  // Import dropped files into a specific container at a slot.
+  const onImportAt = useCallback(
+    async (
+      toContainer: NodePath,
+      toIndex: number,
+      files: FileList | File[],
+    ) => {
       if (!doc || !onDocumentChange) return;
-      if (attachIndex == null || fromIndex === attachIndex) return;
-      const child = doc.children[fromIndex];
-      if (!child) return;
-      const item = { ...child } as Child;
-      delete (item as { start?: unknown }).start;
-      delete (item as { end?: unknown }).end;
-      const remaining = doc.children.filter((_, i) => i !== fromIndex);
-      // Removing an earlier child shifts the anchor's index down by one.
-      const anchorIdx = fromIndex < attachIndex ? attachIndex - 1 : attachIndex;
-      const next = attachNewItems(
-        { ...doc, children: remaining },
-        currentTime,
-        anchorIdx,
-        [item],
-        side,
+      const baseDir = filePath ? dirname(filePath) : null;
+      const items = await buildItemsFromFiles(files, platform, baseDir);
+      if (items.length === 0) return;
+      let next = doc;
+      for (let k = 0; k < items.length; k++) {
+        next = insertNode(next, toContainer, "children", toIndex + k, items[k]);
+      }
+      onDocumentChange(next);
+    },
+    [doc, onDocumentChange, filePath, platform],
+  );
+
+  // Anchor dropped files to the selected primary at `anchorTime` (its
+  // container-local playhead), adding them as attachments in the primary's
+  // container via the edit lens.
+  const handleAttachDropAt = useCallback(
+    async (
+      containerPath: NodePath,
+      fieldIndex: number,
+      side: "start" | "end",
+      anchorTime: number,
+      files: FileList,
+    ) => {
+      if (!doc || !onDocumentChange) return;
+      const baseDir = filePath ? dirname(filePath) : null;
+      const items = await buildItemsFromFiles(files, platform, baseDir);
+      if (items.length === 0) return;
+      const next = editContainer(doc, containerPath, rootBin, (sub) =>
+        attachNewItems(sub, anchorTime, fieldIndex, items, side),
       );
-      if (next) {
+      if (next !== doc) onDocumentChange(next);
+    },
+    [doc, onDocumentChange, filePath, platform, rootBin],
+  );
+
+  // Move a grabbed node into the selected primary's container as a fresh
+  // single-(start|end)-anchored attachment. Strips any existing anchors so
+  // it can't end up pinned on both ends; clears selection since it moved.
+  const handleAttachExistingAt = useCallback(
+    (
+      containerPath: NodePath,
+      fieldIndex: number,
+      side: "start" | "end",
+      anchorTime: number,
+      fromPath: NodePath,
+    ) => {
+      if (!doc || !onDocumentChange) return;
+      const node = getNodeAtPath(doc, fromPath);
+      if (!node) return;
+      const item = stripAnchors({ ...node } as Child);
+      const removed = removeNodeAtPath(doc, fromPath);
+      const adjContainer = adjustPathAfterRemoval(containerPath, fromPath);
+      // Removing an earlier sibling in the same container shifts the
+      // primary's index down by one.
+      const last = fromPath[fromPath.length - 1];
+      let adjFieldIndex = fieldIndex;
+      if (
+        samePath(fromPath.slice(0, -1), containerPath) &&
+        last?.field === "children" &&
+        last.index < fieldIndex
+      ) {
+        adjFieldIndex -= 1;
+      }
+      const next = editContainer(removed, adjContainer, rootBin, (sub) =>
+        attachNewItems(sub, anchorTime, adjFieldIndex, [item], side),
+      );
+      if (next !== removed) {
         onDocumentChange(next);
         onSelectionChange([]);
       }
     },
-    [doc, onDocumentChange, attachIndex, currentTime, onSelectionChange],
+    [doc, onDocumentChange, rootBin, onSelectionChange],
   );
 
   // Delete/Backspace to remove selected blocks — handles both `children`
@@ -1555,12 +1660,12 @@ export default function TimelinePanel({
     return () => window.removeEventListener("keydown", handler);
   }, [selection, doc, onDocumentChange, onSelectionChange]);
 
-  // Only forward file drop / attach callbacks when editable; a read-only
+  // Only forward drag / drop / attach callbacks when editable; a read-only
   // preview should no-op on drop.
-  const shellImportFiles = editable ? importFiles : undefined;
-  const shellAttachIndex = editable ? attachIndex : null;
-  const shellOnAttachDrop = editable ? handleAttachDrop : undefined;
-  const shellOnAttachExisting = editable ? handleAttachExisting : undefined;
+  const shellOnMoveNode = editable ? onMoveNode : undefined;
+  const shellOnImportAt = editable ? onImportAt : undefined;
+  const shellOnAttachDropAt = editable ? handleAttachDropAt : undefined;
+  const shellOnAttachExistingAt = editable ? handleAttachExistingAt : undefined;
 
   return (
     <div
@@ -1583,18 +1688,6 @@ export default function TimelinePanel({
         const panelDoc = doc;
         const splitIndex = panelDoc ? panelDoc.children.length : undefined;
         const editHistory = editable ? history : undefined;
-        const onReorder =
-          doc && onDocumentChange
-            ? (from: number, to: number) => {
-                if (from === to || from === to - 1) return;
-                const next = reorderChildren(doc.children, from, to);
-                onDocumentChange({ ...doc, children: next });
-                // Keep the moved child selected so the user can chain
-                // edits without re-clicking it.
-                const newIndex = to > from ? to - 1 : to;
-                onSelectionChange([rootKeyFromIndex(newIndex, next.length)]);
-              }
-            : undefined;
         return (
           <DesktopTimeline
             timeline={timeline}
@@ -1606,11 +1699,10 @@ export default function TimelinePanel({
             onToggleExpand={onToggleExpand}
             rootBin={rootBin}
             editHistory={editHistory}
-            onReorder={onReorder}
-            attachIndex={shellAttachIndex}
-            onAttachDrop={shellOnAttachDrop}
-            onAttachExisting={shellOnAttachExisting}
-            importFiles={shellImportFiles}
+            onMoveNode={shellOnMoveNode}
+            onImportAt={shellOnImportAt}
+            onAttachDropAt={shellOnAttachDropAt}
+            onAttachExistingAt={shellOnAttachExistingAt}
           />
         );
       })()}

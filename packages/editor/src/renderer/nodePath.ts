@@ -246,7 +246,7 @@ export function moveNode(
 /** Adjust a path for the removal of the node at `removed`: if `path` passes
  *  through `removed`'s parent at a later index in the same field, decrement
  *  that segment. */
-function adjustPathAfterRemoval(path: NodePath, removed: NodePath): NodePath {
+export function adjustPathAfterRemoval(path: NodePath, removed: NodePath): NodePath {
   const split = splitLast(removed);
   if (!split) return path;
   const { parent, last } = split;
