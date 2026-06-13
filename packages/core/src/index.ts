@@ -24,6 +24,7 @@ export {
   type ParsedLength,
 } from "./layout/units.js";
 export { flattenResolved } from "./flatten.js";
+export type { FlatLeaf } from "./flatten.js";
 export * from "./animation/index.js";
 export {
   layoutText,

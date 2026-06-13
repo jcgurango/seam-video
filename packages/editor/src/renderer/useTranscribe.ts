@@ -17,12 +17,18 @@ import type {
   Audio,
   Child,
   Clip,
+  Composition,
   SeamFile,
   TimeAnchor,
 } from "@seam/core";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { extractAudioWav } from "./audioExtract.js";
+import { mixCompositionAudio } from "./compositionAudioMix.js";
+
+/** For a selected composition, which audio the mix covers (chosen via the
+ *  modal that pops before the job runs). */
+export type CompositionAudioMode = "children" | "children-and-attachments";
 
 export interface TranscribeProgress {
   total: number;
@@ -43,22 +49,27 @@ export interface UseTranscribeOptions {
 export interface UseTranscribe {
   progress: TranscribeProgress | null;
   errors: string[];
-  run: (document: SeamFile, selectedIndices: number[]) => Promise<void>;
+  run: (
+    document: SeamFile,
+    selectedIndices: number[],
+    compositionMode?: CompositionAudioMode
+  ) => Promise<void>;
   cancel: () => void;
 }
 
+/** Targets are the selected clip/audio nodes (transcribed from their own
+ *  [in,out] range) plus compositions (transcribed from a mixed-down WAV). */
+type TargetChild = Clip | Audio | Composition;
+
 interface Target {
-  /** Index into the document's `children` of the clip/audio node. */
+  /** Index into the host's selection-encoding (children first, then
+   *  attachments) of the target node. */
   index: number;
-  child: Clip | Audio;
+  child: TargetChild;
 }
 
-function defaultTargets(host: { children: Child[] }): Target[] {
-  const out: Target[] = [];
-  host.children.forEach((c, i) => {
-    if (c.type === "clip" || c.type === "audio") out.push({ index: i, child: c });
-  });
-  return out;
+function isTranscribableTarget(c: Child): c is TargetChild {
+  return c.type === "clip" || c.type === "audio" || c.type === "composition";
 }
 
 function selectionTargets(
@@ -68,19 +79,24 @@ function selectionTargets(
   const childCount = host.children.length;
   const out: Target[] = [];
   for (const idx of selectedIndices) {
-    if (idx < childCount) {
-      const c = host.children[idx];
-      if (c.type === "clip" || c.type === "audio") {
-        out.push({ index: idx, child: c });
-      }
-    } else {
-      const att = host.attachments?.[idx - childCount];
-      if (att && (att.type === "clip" || att.type === "audio")) {
-        out.push({ index: idx, child: att });
-      }
+    const c =
+      idx < childCount
+        ? host.children[idx]
+        : host.attachments?.[idx - childCount];
+    if (c && isTranscribableTarget(c)) {
+      out.push({ index: idx, child: c });
     }
   }
   return out;
+}
+
+/** Progress label for a target: clip/audio show their source basename;
+ *  compositions show their id (or a generic fallback). */
+function targetLabel(child: TargetChild, i: number): string {
+  if (child.type === "composition") {
+    return child.id ? `composition "${child.id}"` : `composition ${i + 1}`;
+  }
+  return child.source.split(/[\\/]/).pop() ?? `item ${i + 1}`;
 }
 
 /** Pick a fresh id that doesn't already collide with anything in the host. */
@@ -137,20 +153,21 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
   }, []);
 
   const run = useCallback(
-    async (document: SeamFile, selectedIndices: number[]) => {
+    async (
+      document: SeamFile,
+      selectedIndices: number[],
+      compositionMode: CompositionAudioMode = "children"
+    ) => {
       cancelRef.current = false;
       setErrors([]);
 
-      // Transcription always targets the root document's clip/audio nodes.
+      // Transcription targets the selected root-level nodes. There's no
+      // auto/all mode anymore — the caller gates the button on a selection.
       const host = document;
-
-      const targets =
-        selectedIndices.length > 0
-          ? selectionTargets(host, selectedIndices)
-          : defaultTargets(host);
+      const targets = selectionTargets(host, selectedIndices);
 
       if (targets.length === 0) {
-        setErrors(["No clip or audio targets to transcribe."]);
+        setErrors(["Select a clip, audio, or composition to transcribe."]);
         return;
       }
 
@@ -166,8 +183,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
         if (cancelRef.current) break;
 
         const target = targets[i];
-        const labelBase =
-          target.child.source.split(/[\\/]/).pop() ?? `item ${i + 1}`;
+        const labelBase = targetLabel(target.child, i);
 
         setProgress({
           total: targets.length,
@@ -176,31 +192,67 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           label: labelBase,
         });
 
-        // Make sure the clip has an id so the data node can anchor to it.
+        // Make sure the node has an id so the data node can anchor to it.
         let anchorId = target.child.id;
-        let updatedTarget = target.child;
         if (!anchorId) {
           anchorId = freshId(workingHost, "cc");
-          updatedTarget = { ...target.child, id: anchorId };
-          workingHost = replaceTarget(
-            workingHost,
-            target.index,
-            updatedTarget
-          ) as typeof workingHost;
+          workingHost = replaceTarget(workingHost, target.index, {
+            ...target.child,
+            id: anchorId,
+          }) as typeof workingHost;
           workingDoc = workingHost as SeamFile;
           history.replace(workingDoc);
         }
 
         try {
-          const sourceUrl = opts.platform.resolveSource(
-            target.child.source,
-            opts.basePath
-          );
-          const wav = await extractAudioWav(
-            sourceUrl,
-            target.child.in,
-            target.child.out
-          );
+          // Produce the WAV to transcribe, and the source-time offset to add
+          // to whisper's (mix-relative) segment times so the data anchors land
+          // in the target's source space:
+          //  - clip/audio: extract the [in,out] range; whisper t is relative
+          //    to `in`, so anchorBase = in.
+          //  - composition: mix the inner timeline from t=0 (resolveComposition
+          //    ignores the comp's own window when it's the root), so whisper t
+          //    is the comp's source time directly — anchorBase = 0.
+          let wav: Blob | null;
+          let anchorBase: number;
+          if (target.child.type === "composition") {
+            wav = await mixCompositionAudio(target.child, {
+              includeAttachments:
+                compositionMode === "children-and-attachments",
+              // Root-level target → the document IS its enclosing scope, so
+              // its bin/macros are what binItem/`$$` references resolve against.
+              rootBin: document.bin,
+              rootMacros: document.macros,
+              resolveSource: (s) =>
+                opts.platform.resolveSource(s, opts.basePath),
+              onLeafError: (src, err) =>
+                accumulatedErrors.push(
+                  `${labelBase} / ${src}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`
+                ),
+              onCompileError: (message) =>
+                accumulatedErrors.push(`${labelBase}: ${message}`),
+            });
+            anchorBase = 0;
+            if (wav == null) {
+              accumulatedErrors.push(
+                `${labelBase}: composition has no transcribable audio`
+              );
+              continue;
+            }
+          } else {
+            const sourceUrl = opts.platform.resolveSource(
+              target.child.source,
+              opts.basePath
+            );
+            wav = await extractAudioWav(
+              sourceUrl,
+              target.child.in,
+              target.child.out
+            );
+            anchorBase = target.child.in;
+          }
           if (cancelRef.current) break;
 
           setProgress({
@@ -211,6 +263,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           });
 
           const form = new FormData();
+          console.log(wav);
           form.append("file", wav, "audio.wav");
           const res = await fetch(url, { method: "POST", body: form });
           if (!res.ok) {
@@ -229,9 +282,9 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           if (cancelRef.current) break;
 
           // Append one data attachment per whisper segment, anchored to the
-          // segment's source-time bounds on the clip. The whisper response
-          // timestamps are relative to the audio we sent (which started at
-          // `target.child.in` in source time), so we just shift by clip.in.
+          // segment's source-time bounds on the target (clip source time, or
+          // composition inner-timeline time — both reached by adding
+          // `anchorBase` to the mix-relative whisper timestamps).
           //
           // Inside `data`, word times are normalised to *phrase-local*
           // seconds (0 = phrase start) and `duration` is the phrase's
@@ -244,12 +297,12 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
             const start: TimeAnchor = {
               anchor: anchorId,
               timeSource: "source",
-              anchorPoint: target.child.in + seg.start,
+              anchorPoint: anchorBase + seg.start,
             };
             const end: TimeAnchor = {
               anchor: anchorId,
               timeSource: "source",
-              anchorPoint: target.child.in + seg.end,
+              anchorPoint: anchorBase + seg.end,
             };
             const phraseStart = seg.start;
             const words = (seg.words ?? []).map((w) => ({

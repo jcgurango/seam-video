@@ -1,16 +1,31 @@
 // Extract a mono PCM-16 WAV blob from an audio source's [in, out] range,
 // using mediabunny to decode. Used by the transcription job to feed the
 // generator server only the audio it needs.
+//
+// The decode half (`decodeMonoRange`) and the WAV encoder (`encodeWavMono16`)
+// are also reused by the composition audio mixer (`compositionAudioMix.ts`),
+// which schedules many such ranges into one OfflineAudioContext mix.
 
 import { Input, UrlSource, BlobSource, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 
-export async function extractAudioWav(
+/** Mono float PCM decoded from a source's [startSec, endSec] range. */
+export interface MonoRange {
+  samples: Float32Array;
+  sampleRate: number;
+}
+
+/**
+ * Decode a source file's [startSec, endSec] range to mono Float32 PCM at the
+ * source's native sample rate. Throws if the source has no decodable audio or
+ * the range yields no samples.
+ */
+export async function decodeMonoRange(
   sourceUrl: string,
   startSec: number,
   endSec: number
-): Promise<Blob> {
+): Promise<MonoRange> {
   if (!(endSec > startSec)) {
-    throw new Error(`extractAudioWav: invalid range (in=${startSec}, out=${endSec})`);
+    throw new Error(`decodeMonoRange: invalid range (in=${startSec}, out=${endSec})`);
   }
 
   const input = await openInput(sourceUrl);
@@ -79,13 +94,22 @@ export async function extractAudioWav(
       all.set(a, off);
       off += a.length;
     }
-    return encodeWavMono16(all, sampleRate);
+    return { samples: all, sampleRate };
   } finally {
     // mediabunny's Input has no explicit close() — let GC handle it. The
     // try/finally is here for symmetry with the resource lifetime so that
     // if we add cleanup later it has a home.
     void input;
   }
+}
+
+export async function extractAudioWav(
+  sourceUrl: string,
+  startSec: number,
+  endSec: number
+): Promise<Blob> {
+  const { samples, sampleRate } = await decodeMonoRange(sourceUrl, startSec, endSec);
+  return encodeWavMono16(samples, sampleRate);
 }
 
 async function openInput(sourceUrl: string): Promise<Input> {
@@ -101,7 +125,7 @@ async function openInput(sourceUrl: string): Promise<Input> {
 }
 
 /** Encode a mono Float32 [-1, 1] PCM stream as a 16-bit RIFF/WAV blob. */
-function encodeWavMono16(samples: Float32Array, sampleRate: number): Blob {
+export function encodeWavMono16(samples: Float32Array, sampleRate: number): Blob {
   const numSamples = samples.length;
   const bytesPerSample = 2;
   const dataBytes = numSamples * bytesPerSample;

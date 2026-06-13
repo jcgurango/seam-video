@@ -587,15 +587,16 @@ export default function ControlsBar({
             </button>
             <button
               onClick={onTranscribe}
-              disabled={transcribing}
+              disabled={transcribing || selectedIndices.length === 0}
               style={{
                 ...BTN_STYLE,
-                opacity: transcribing ? 0.3 : 1,
+                opacity:
+                  transcribing || selectedIndices.length === 0 ? 0.3 : 1,
               }}
               title={
-                selectedIndices.length > 0
-                  ? "Generate transcripts for the selected clip/audio nodes"
-                  : "Generate transcripts for all clip/audio children"
+                selectedIndices.length === 0
+                  ? "Select a clip, audio, or composition to generate subtitles"
+                  : "Generate subtitles for the selected clip/audio/composition nodes"
               }
             >
               <Captions size={ICON_SIZE} />

@@ -17,7 +17,8 @@ import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
 import SettingsDialog from "./SettingsDialog.js";
 import { useSettings } from "./useSettings.js";
-import { useTranscribe } from "./useTranscribe.js";
+import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
+import CompositionAudioDialog from "./CompositionAudioDialog.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import { compileDocument } from "./compile.js";
@@ -134,6 +135,7 @@ export default function App({ platform }: AppProps) {
   const [exportProgress, setExportProgress] =
     useState<ExportProgress | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [compAudioPromptOpen, setCompAudioPromptOpen] = useState(false);
   const { settings, updateSettings, resetSettings } = useSettings();
 
   // Web platform UI bridges (project picker / save-as prompt)
@@ -666,12 +668,36 @@ export default function App({ platform }: AppProps) {
     }
   }, [transcriber.errors]);
 
+  // Root-level selected nodes that are compositions — they need the mix-mode
+  // modal before the job runs (clip/audio targets transcribe directly).
+  const selectedCompositionCount = useMemo(() => {
+    const childCount = document.children.length;
+    return rootSelectedIndices.filter((idx) => {
+      const node =
+        idx < childCount
+          ? document.children[idx]
+          : document.attachments?.[idx - childCount];
+      return node?.type === "composition";
+    }).length;
+  }, [rootSelectedIndices, document]);
+
   const handleTranscribe = useCallback(() => {
-    void transcriber.run(
-      document,
-      rootIndicesFromKeys(selection, document.children.length),
-    );
-  }, [transcriber, document, selection]);
+    if (rootSelectedIndices.length === 0) return;
+    // A composition in the selection needs a mix-mode choice first.
+    if (selectedCompositionCount > 0) {
+      setCompAudioPromptOpen(true);
+      return;
+    }
+    void transcriber.run(document, rootSelectedIndices);
+  }, [transcriber, document, rootSelectedIndices, selectedCompositionCount]);
+
+  const handleCompAudioChoose = useCallback(
+    (mode: CompositionAudioMode) => {
+      setCompAudioPromptOpen(false);
+      void transcriber.run(document, rootSelectedIndices, mode);
+    },
+    [transcriber, document, rootSelectedIndices],
+  );
 
   // Remounts the <Timeline> (resetting playhead) when toggling CC-cut mode.
   const viewKey = ccCut ? `cc-cut-${ccCut.binId}` : "root";
@@ -933,6 +959,13 @@ export default function App({ platform }: AppProps) {
           onCancel={transcriber.cancel}
         />
       )}
+
+      <CompositionAudioDialog
+        open={compAudioPromptOpen}
+        compositionCount={selectedCompositionCount}
+        onChoose={handleCompAudioChoose}
+        onClose={() => setCompAudioPromptOpen(false)}
+      />
 
       <SettingsDialog
         open={settingsOpen}
