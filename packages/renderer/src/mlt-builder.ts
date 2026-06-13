@@ -1069,7 +1069,15 @@ export function buildMltDocument(
     const spatialAnimated =
       node.spatialInput != null && hasAnimatedSpatialInput(node.spatialInput);
     const opacityAnimated = nodeHasAnimatedOpacity(node);
-    const animated = spatialAnimated || opacityAnimated;
+    // A crossfade fades this overlay's alpha in over its first `transition`
+    // seconds — that's a time-varying alpha, so the overlay must emit
+    // keyframes (treated as animated). Only the *incoming* element fades;
+    // the outgoing one stays full and is occluded as this one ramps up
+    // (the same over-composite crossfade the preview does). `transition` is
+    // in the node's local output seconds.
+    const fadeInDur =
+      node.transition != null && node.transition > 0 ? node.transition : 0;
+    const animated = spatialAnimated || opacityAnimated || fadeInDur > 0;
     const rotated = nodeHasRotation(node);
 
     // For clip/static, override the resolver's stale parent-size natural
@@ -1089,7 +1097,8 @@ export function buildMltDocument(
       // segments are; if the rect matches the text's natural aspect
       // (default `size: "100%"`), there's no visible distortion.
       const rect = sampleContainerRect(node, W, H, t, dur, naturalOverride);
-      const alpha = sampleNodeOpacity(node, t, dur);
+      const fadeIn = fadeInDur > 0 ? Math.max(0, Math.min(1, t / fadeInDur)) : 1;
+      const alpha = sampleNodeOpacity(node, t, dur) * fadeIn;
       return { rect, alpha };
     };
 
@@ -1326,15 +1335,19 @@ ${transitionsXml.join("\n")}
 // ── Helpers ────────────────────────────────────────────────────
 
 /** A clip needs its own track when (a) its display rect isn't the
- *  full canvas, (b) objectFit is non-fit, or (c) it has any filter
+ *  full canvas, (b) objectFit is non-fit, (c) it has any filter
  *  (filters attach to the dedicated playlist, opacity also needs
- *  the per-clip qtblend transition for animated alpha). Plain clips
- *  ride the shared video playlist. */
+ *  the per-clip transition for animated alpha), or (d) it crossfades
+ *  (`transition` > 0) — it overlaps its predecessor, so it can't share
+ *  the sequential video playlist and needs its own track for the
+ *  fade-in alpha to composite over the outgoing clip. Plain clips ride
+ *  the shared video playlist. */
 function isClipPositioned(clip: ResolvedClip): boolean {
   if (clip.spatial != null) return true;
   if (clip.spatialInput != null) return true;
   if (clip.objectFit && clip.objectFit !== "fit") return true;
   if (clip.filters && clip.filters.length > 0) return true;
+  if (clip.transition != null && clip.transition > 0) return true;
   return false;
 }
 

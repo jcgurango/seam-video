@@ -60,6 +60,7 @@ A clip references a segment of a source video file.
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
 | `rotation` | number | no | Degrees clockwise about `origin` (see [Spatial Layout](#spatial-layout)) |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
@@ -87,6 +88,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `in`, `out` | number | yes | Source-time window (same shape as on a clip) |
 | `speed`, `duration`, `overflow`, `underflow` | — | no | Same shape as on a clip |
 | `volume` | number | no | Audio gain multiplier (default `1`). Same shape as on a clip. |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
@@ -112,6 +114,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
 | `filters` | array | no | See [Filters](#filters) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | See [Spatial Layout](#spatial-layout) |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
@@ -186,6 +189,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `textAlign` | `"left"` \| `"center"` \| `"right"` | no | Horizontal alignment within the inner box. Default `"center"` |
 | `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
@@ -259,6 +263,7 @@ A motion-graphics layer with its own internal keyframe timeline. The inner conte
 | `in`, `out`, `overflow`, `underflow` | — | no | Window into the internal timeline. Same shape as Composition. Defaults: full internal duration |
 | `filters` | array | no | Visual effects applied to the rasterized graphic (see [Filters](#filters)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -342,6 +347,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `underflow` | string | no | Strategy when the composition is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
 | `contentWidth` | `Length` | no | Inner canvas width (default: parent's content width). Percentages resolve against the parent; the **root composition** must use a pixel number. See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
+| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
@@ -784,6 +790,28 @@ The camera box is 25% of its natural fit-box. Its `origin: "100%"` is the bottom
 ```
 
 Defaults take care of the rest: `size: "100%"` evaluates to the aspect-preserved fit-box of the image, `origin: "50%"` is the center of that box, and `translation: { x: 0, y: -150 }` reads as "parent center, shifted up 150px". The image is centered horizontally, shifted up 150px, with no squish.
+
+## Transitions
+
+Any producing element used as a sequential child — `clip`, `audio`, `static`, `text`, `graphic`, `composition` — can set `transition`: a crossfade **overlap in seconds with the previous sibling**. The element starts that many seconds before the previous one ends and cross-dissolves over the overlap, so the composition shrinks by the same amount:
+
+```json
+{
+  "type": "composition",
+  "children": [
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 5 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 5, "transition": 1 }
+  ]
+}
+```
+
+Clip A (5s) + Clip B (5s, `transition: 1`) → a **9s** composition: B starts at t=4 and the two crossfade over `[4, 5]`.
+
+- **First child / attachments** ignore `transition` (there's no previous sequential sibling to overlap).
+- The overlap is **clamped** to the shorter of the two neighbours, so it can't reach past the previous child's start or exceed the element's own length.
+- It **chains**: each child overlaps whichever child precedes it.
+- Crossfade only — there's no transition *type* yet (no wipes/pushes).
+- **Video** dissolves by fading the incoming element in over the outgoing one (the outgoing one is simply occluded as the incoming ramps up). **Audio** ramps both sides (incoming up, outgoing down) since audio sums. The fade is linear and matches between the live preview and the exported render.
 
 ## Animation
 

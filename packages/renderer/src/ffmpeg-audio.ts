@@ -166,9 +166,37 @@ function buildAudioFromNode(
   }
   const audioDuration = (node.sourceOut - node.sourceIn) / effectiveSpeed;
   aChain += buildVolumeFilter(node.volume, audioDuration, ctx.fps);
+
+  // Crossfade fades. `transition` (incoming overlap) and `transitionOut`
+  // (next sibling's overlap) are in the node's container-local output
+  // seconds; the stream here is in absolute output seconds (post-speed), so
+  // divide by parentSpeed to match — same conversion as the `delay` below.
+  // Audio sums, so both ends ramp (unlike video, where only the incoming
+  // element fades and occlusion handles the rest). Linear (afade default
+  // `tri` curve) to match the preview's crossfade.
+  const fadeIn =
+    node.transition != null && node.transition > 0
+      ? Math.min(node.transition / parentSpeed, audioDuration)
+      : 0;
+  const fadeOut =
+    node.transitionOut != null && node.transitionOut > 0
+      ? Math.min(node.transitionOut / parentSpeed, audioDuration)
+      : 0;
+  if (fadeIn > 0) {
+    aChain += `,afade=t=in:st=0:d=${afnum(fadeIn)}`;
+  }
+  if (fadeOut > 0) {
+    aChain += `,afade=t=out:st=${afnum(audioDuration - fadeOut)}:d=${afnum(fadeOut)}`;
+  }
+
   const aLabel = `[a${seg}]`;
   ctx.filters.push(`${aChain}${aLabel}`);
   return aLabel;
+}
+
+/** Compact decimal for ffmpeg filter args (avoids long float tails). */
+function afnum(n: number): string {
+  return Number(n.toFixed(6)).toString();
 }
 
 /** `,volume=…` filter when the value is non-trivial. Static unity is

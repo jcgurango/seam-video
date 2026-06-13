@@ -138,6 +138,13 @@ const SpatialFieldsSchema = {
   rotation: keyframed(z.number()).optional(),
 };
 
+/** Crossfade overlap (seconds) with the previous sequential sibling.
+ *  Only meaningful for producing elements used as sequential `children`;
+ *  ignored on the first child and on attachments. */
+const TransitionFieldSchema = {
+  transition: z.number().nonnegative().optional(),
+};
+
 export const OverflowSchema = z.enum([
   "trim-end",
   "trim-start",
@@ -164,6 +171,7 @@ export const ClipSchema = z.object({
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
+  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict().refine(
@@ -180,6 +188,7 @@ export const StaticSchema = z.object({
   in: z.number().nonnegative().optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
+  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict();
@@ -201,6 +210,7 @@ export const AudioSchema = z.object({
   volume: keyframed(z.number().nonnegative().max(4)).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
+  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 })
@@ -266,6 +276,7 @@ export const TextSchema = z.object({
   filters: FiltersArraySchema,
   ...TextStyleFieldsSchema,
   ...SpatialFieldsSchema,
+  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict().refine(
@@ -477,6 +488,7 @@ export const GraphicSchema = z.object({
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
+  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict();
@@ -550,6 +562,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     contentWidth: LengthSchema.optional(),
     contentHeight: LengthSchema.optional(),
     ...SpatialFieldsSchema,
+    ...TransitionFieldSchema,
     ...AnchorFieldsSchema,
     ...MetadataFieldsSchema,
   }).strict().refine(

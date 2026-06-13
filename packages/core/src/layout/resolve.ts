@@ -340,9 +340,9 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
 
   // Sequential children: each child takes its natural duration. There's no
   // higher-order organizer (no flex, no justify, no container duration) —
-  // the composition's length is just the sum of its children.
+  // the composition's length is the sum of its children, minus any
+  // crossfade overlaps (`transition`), accumulated in the placement loop.
   const naturals = children.map((c) => naturalDuration(c));
-  const containerDuration = naturals.reduce((a, b) => a + b, 0);
 
   const resolvedChildren: ResolvedChild[] = [];
   const actualDurations: number[] = [];
@@ -365,13 +365,33 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   const idMap = new Map<string, IdMapEntry>();
   let pos = 0;
   for (let i = 0; i < resolvedChildren.length; i++) {
-    const start = pos;
-    const end = pos + actualDurations[i];
+    // Crossfade overlap: a child with `transition` starts that many seconds
+    // before the previous child ends. Clamped so it can't reach past the
+    // previous child's start (≤ prev duration) or exceed its own length
+    // (≤ own duration). First child ignores it. The composition shrinks by
+    // each applied overlap (the cursor `pos` rewinds before placing).
+    let overlap = 0;
+    if (i > 0) {
+      const authored = getTransition(children[i]) ?? 0;
+      if (authored > 0) {
+        overlap = Math.min(authored, actualDurations[i - 1], actualDurations[i]);
+      }
+    }
+    const start = pos - overlap;
+    const end = start + actualDurations[i];
     resolvedChildren[i] = {
       ...resolvedChildren[i],
       timelineStart: start,
       timelineEnd: end,
+      ...(overlap > 0 ? { transition: overlap } : {}),
     };
+    // Mirror the overlap onto the previous child as `transitionOut` so audio
+    // renderers can fade it out over the same window without sibling lookup.
+    // (Skip empty/data — they produce nothing and carry no such field.)
+    const prev = resolvedChildren[i - 1];
+    if (overlap > 0 && prev.type !== "empty" && prev.type !== "data") {
+      resolvedChildren[i - 1] = { ...prev, transitionOut: overlap };
+    }
     pos = end;
     const id = getId(children[i]);
     if (id != null) {
@@ -399,7 +419,8 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   }
 
   return {
-    duration: containerDuration,
+    // Total = end of the last placed child (sum of durations minus overlaps).
+    duration: pos,
     children: resolvedChildren,
     ...(composition.objectFit ? { objectFit: composition.objectFit } : {}),
     ...(composition.backgroundColor != null
@@ -426,6 +447,12 @@ interface IdMapEntry {
 
 function getId(child: Child): string | undefined {
   return (child as { id?: string }).id;
+}
+
+/** Authored crossfade overlap (seconds) with the previous sibling. Only
+ *  producing types carry it; everything else reads as `undefined`. */
+function getTransition(child: Child): number | undefined {
+  return (child as { transition?: number }).transition;
 }
 
 function buildIdMapEntry(

@@ -35,6 +35,25 @@ interface FlatClip {
   toSourceTime: (absoluteTime: number) => number;
 }
 
+/** Crossfade gain (0..1) for an audio-bearing clip at `currentTime`: fade in
+ *  over its first `transition` seconds and out over its last `transitionOut`
+ *  seconds. Audio sums (no occlusion), so both ends ramp — unlike the video
+ *  path where only the incoming element fades. */
+function audioCrossfadeGain(flat: FlatClip, currentTime: number): number {
+  let g = 1;
+  const inD = flat.clip.transition;
+  if (inD != null && inD > 0) {
+    const e = currentTime - flat.absoluteStart;
+    if (e < inD) g *= Math.max(0, Math.min(1, e / inD));
+  }
+  const outD = flat.clip.transitionOut;
+  if (outD != null && outD > 0) {
+    const e = flat.absoluteEnd - currentTime;
+    if (e < outD) g *= Math.max(0, Math.min(1, e / outD));
+  }
+  return g;
+}
+
 export class FrameCoordinator {
   /** Video buffers, keyed by resolved video clips only (audio nodes have none). */
   private buffers = new Map<ResolvedClip, ClipBuffer>();
@@ -304,20 +323,22 @@ export class FrameCoordinator {
     // Animated graphics: re-rasterize via fabric. Static graphics noop.
     void this.graphicStore.update(currentTime);
 
-    // Animated clip volumes: sample once per tick and push to the
-    // scheduler. Static-volume clips skip the lookup so we don't wake up
-    // the audio param graph every frame for nothing.
+    // Animated clip volumes + crossfade gain: sample once per tick and push
+    // to the scheduler. Static-volume clips with no transition skip the
+    // lookup so we don't wake up the audio param graph every frame for
+    // nothing. Crossfades fade the incoming element in over its first
+    // `transition` seconds AND the outgoing one out over its last
+    // `transitionOut` seconds — audio sums, so both sides must ramp.
     if (this.audioScheduler) {
       for (const flat of this.flatClips) {
         if (!flat.audioId) continue;
         const v = flat.clip.volume;
-        if (!isKeyframed(v)) continue;
+        const fade = audioCrossfadeGain(flat, currentTime);
+        if (!isKeyframed(v) && fade === 1) continue;
         const localT = currentTime - flat.absoluteStart;
         const dur = flat.absoluteEnd - flat.absoluteStart;
-        this.audioScheduler.setClipVolume(
-          flat.audioId,
-          sampleNumber(v, localT, dur)
-        );
+        const base = isKeyframed(v) ? sampleNumber(v, localT, dur) : (v ?? 1);
+        this.audioScheduler.setClipVolume(flat.audioId, base * fade);
       }
     }
 

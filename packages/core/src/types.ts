@@ -114,6 +114,11 @@ export interface ChildTimingFields extends SpatialFields {
   start?: TimeAnchor;
   /** Anchor for the child's timeline end (only meaningful in attachments). */
   end?: TimeAnchor;
+  /** Crossfade overlap in seconds with the previous sequential sibling.
+   *  The element starts this many seconds before the previous one ends and
+   *  cross-dissolves over the overlap, shortening the composition by the
+   *  same amount. Ignored on the first child and on attachments. */
+  transition?: number;
   metadata?: Metadata;
 }
 
@@ -145,6 +150,9 @@ export interface Static extends SpatialFields {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  /** Crossfade overlap (s) with the previous sequential sibling — see
+   *  {@link ChildTimingFields.transition}. */
+  transition?: number;
   metadata?: Metadata;
 }
 
@@ -177,6 +185,9 @@ export interface Audio {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  /** Crossfade overlap (s) with the previous sequential sibling — see
+   *  {@link ChildTimingFields.transition}. */
+  transition?: number;
   metadata?: Metadata;
 }
 
@@ -270,6 +281,9 @@ export interface Text extends SpatialFields, TextStyleFields {
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
+  /** Crossfade overlap (s) with the previous sequential sibling — see
+   *  {@link ChildTimingFields.transition}. */
+  transition?: number;
   metadata?: Metadata;
 }
 

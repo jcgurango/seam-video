@@ -49,6 +49,16 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Effective crossfade overlap (s) with the previous sequential sibling,
+   *  clamped to what fits. Present (>0) only on a non-first child that set
+   *  `transition`. Renderers fade this element in over its first
+   *  `transition` seconds. */
+  transition?: number;
+  /** Effective crossfade overlap (s) with the *next* sibling — the previous
+   *  side of that overlap. Audio renderers fade this element out over its
+   *  last `transitionOut` seconds (video relies on the next element fading
+   *  in over it). */
+  transitionOut?: number;
   /** Audio gain multiplier; absent means unity (1). */
   volume?: Keyframed<number>;
   filters?: Filter[];
@@ -73,6 +83,10 @@ export interface ResolvedStatic {
   sourceTime: number;
   timelineStart: number;
   timelineEnd: number;
+  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
+  transition?: number;
+  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
+  transitionOut?: number;
   filters?: Filter[];
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
@@ -97,6 +111,10 @@ export interface ResolvedAudio {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
+  transition?: number;
+  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
+  transitionOut?: number;
   volume?: Keyframed<number>;
 }
 
@@ -111,6 +129,10 @@ export interface ResolvedData {
 export interface ResolvedText extends TextStyleFields {
   type: "text";
   runs: TextRun[];
+  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
+  transition?: number;
+  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
+  transitionOut?: number;
   lineHeight?: Keyframed<number>;
   textAlign?: "left" | "center" | "right";
   verticalAlign?: "top" | "center" | "bottom";
@@ -138,6 +160,10 @@ export interface ResolvedComposition {
   timelineEnd: number;
   duration: number;
   speed: number;
+  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
+  transition?: number;
+  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
+  transitionOut?: number;
   children: ResolvedChild[];
   filters?: Filter[];
   spatial?: SpatialRect;
@@ -164,6 +190,10 @@ export interface ResolvedGraphic {
   type: "graphic";
   duration?: Length;
   loop?: boolean;
+  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
+  transition?: number;
+  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
+  transitionOut?: number;
   /** Animation design space. Renderers resolve authored Length values
    *  inside keyframes against this rect. */
   contentWidth?: Length;

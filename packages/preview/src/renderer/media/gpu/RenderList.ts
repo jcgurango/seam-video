@@ -280,6 +280,8 @@ function walkChildren(
       const scissor = scissorFor(clipRect, quad, rotation, pivotX, pivotY);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
 
+      const fade = transitionFade(child, localTime);
+
       commands.push({
         type: "draw",
         clip: child,
@@ -294,7 +296,7 @@ function walkChildren(
         rotation,
         pivotX,
         pivotY,
-        opacity,
+        opacity: opacity * fade,
         nodeTime: localTime - child.timelineStart,
         nodeDuration: child.timelineEnd - child.timelineStart,
       });
@@ -311,6 +313,8 @@ function walkChildren(
       const childClip = scissorFor(clipRect, container, rotation, pivotX, pivotY);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
+      const fade = transitionFade(child, localTime);
+
       const hasFilters = child.filters && child.filters.length > 0;
       // A rotated composition can't be flattened into the parent pass (its
       // children would need the rotation composed per-quad about the comp
@@ -318,7 +322,11 @@ function walkChildren(
       // path filters take. `spatial.rotation != null` covers static and
       // animated rotation alike (resolver only sets it when authored).
       const hasRotation = spatial.rotation != null;
-      const needsLayer = hasFilters || hasRotation;
+      // A crossfading composition must also go through the FBO so the fade
+      // applies to the composited group as a unit (not per child). Only
+      // while it's actually fading (fade < 1); at full opacity it flattens
+      // like before, and the boundary is seamless (fade === 1 either way).
+      const needsLayer = hasFilters || hasRotation || fade < 1;
 
       // Inner content dim: resolver collapsed contentWidth/Height to a
       // pixel number, falling back to the display rect when authored
@@ -380,7 +388,7 @@ function walkChildren(
           fboW,
           fboH,
           filters: child.filters ?? [],
-          opacity,
+          opacity: opacity * fade,
           rotation,
           pivotX,
           pivotY,
@@ -494,6 +502,22 @@ function rotatedAABB(
     maxY = Math.max(maxY, ry);
   }
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Crossfade fade-in factor (0..1) for an incoming child over its first
+ *  `transition` seconds. Returns 1 when there's no transition. The outgoing
+ *  sibling needs no fade — it's occluded as this one fades up (the renderer
+ *  composites over). */
+function transitionFade(
+  child: { transition?: number; timelineStart: number },
+  localTime: number,
+): number {
+  const d = child.transition;
+  if (d == null || d <= 0) return 1;
+  const elapsed = localTime - child.timelineStart;
+  if (elapsed <= 0) return 0;
+  if (elapsed >= d) return 1;
+  return elapsed / d;
 }
 
 /** Scissor for a (possibly rotated) quad, clipped to the parent region. */

@@ -67,6 +67,77 @@ describe("resolveComposition", () => {
     });
   });
 
+  describe("transition (crossfade overlap)", () => {
+    it("overlaps a child with its previous sibling and shrinks the total", () => {
+      // A (5s) + B (5s, 1s transition) = 9s; B starts at 4, overlap [4,5].
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 5 },
+            { type: "clip", source: "b.mp4", in: 0, out: 5, transition: 1 },
+          ],
+        })
+      );
+      expect(result.duration).toBe(9);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[1]).toMatchObject({
+        timelineStart: 4,
+        timelineEnd: 9,
+        transition: 1,
+      });
+      // First child never carries a transition.
+      expect((result.children[0] as { transition?: number }).transition).toBeUndefined();
+    });
+
+    it("ignores transition on the first child", () => {
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 5, transition: 2 },
+            { type: "clip", source: "b.mp4", in: 0, out: 5 },
+          ],
+        })
+      );
+      expect(result.duration).toBe(10);
+      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect((result.children[0] as { transition?: number }).transition).toBeUndefined();
+    });
+
+    it("clamps the overlap to the shorter of the two neighbours", () => {
+      // B asks for 10s overlap but A is only 3s and B is 4s → clamp to 3.
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 3 },
+            { type: "clip", source: "b.mp4", in: 0, out: 4, transition: 10 },
+          ],
+        })
+      );
+      expect(result.children[1]).toMatchObject({
+        timelineStart: 0,
+        timelineEnd: 4,
+        transition: 3,
+      });
+      expect(result.duration).toBe(4);
+    });
+
+    it("chains overlaps across several children", () => {
+      // 5 + (5-1) + (5-1) = 13.
+      const result = resolveComposition(
+        comp({
+          children: [
+            { type: "clip", source: "a.mp4", in: 0, out: 5 },
+            { type: "clip", source: "b.mp4", in: 0, out: 5, transition: 1 },
+            { type: "clip", source: "c.mp4", in: 0, out: 5, transition: 1 },
+          ],
+        })
+      );
+      expect(result.duration).toBe(13);
+      expect(result.children[1]).toMatchObject({ timelineStart: 4, timelineEnd: 9 });
+      expect(result.children[2]).toMatchObject({ timelineStart: 8, timelineEnd: 13 });
+    });
+  });
+
   describe("clip speed and duration", () => {
     it("clip speed changes natural duration", () => {
       const result = resolveComposition(

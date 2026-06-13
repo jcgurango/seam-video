@@ -197,7 +197,17 @@ function layoutGroup(
     //   • an expanded composition's expansion lands immediately below its
     //     own row and pushes lower rows down (so an attachment-comp's
     //     window sits between it and the next attachment).
-    const { placed, rows: bandRows } = packBand(items, 0);
+    // Sequential children share one row and are placed in authored order:
+    // they only ever overlap via a `transition` crossfade, and we *want*
+    // that overlap to show (block left edges drawn at `timelineStart`), not
+    // to bump the later child onto its own row. Attachments genuinely stack,
+    // so they still pack into band-local rows.
+    const { placed, rows: bandRows } = isAttachment
+      ? packBand(items, 0)
+      : {
+          placed: items.map((it) => ({ child: it.child, index: it.index, row: 0 })),
+          rows: items.length > 0 ? 1 : 0,
+        };
     for (let r = 0; r < bandRows; r++) {
       const toExpand: TreeBlock[] = [];
       for (const p of placed) {
