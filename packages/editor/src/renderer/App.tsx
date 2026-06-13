@@ -824,6 +824,8 @@ export default function App({ platform }: AppProps) {
               document={document}
               filePath={filePath}
               selectedIndices={rootSelectedIndices}
+              selection={selection}
+              timeline={editorTimeline}
               onSelectionChange={onRootSelectionChange}
               onDocumentChange={updateDocument}
               onUndo={handleUndo}

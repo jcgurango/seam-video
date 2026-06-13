@@ -20,6 +20,8 @@ import {
   Combine,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
+import type { ResolvedTimeline } from "@seam/core";
+import { getNodeAtPath, parsePath } from "./nodePath.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import {
@@ -44,6 +46,11 @@ interface ControlsBarProps {
   document: SeamFile;
   filePath: string | null;
   selectedIndices: number[];
+  /** Path-key selection (for the attach tool, which is path-aware). */
+  selection: string[];
+  /** Resolved editor timeline — used to map the playhead onto the attach
+   *  primary's source. */
+  timeline: ResolvedTimeline;
   onSelectionChange: (indices: number[]) => void;
   onDocumentChange: (doc: SeamFile) => void;
   onUndo: () => void;
@@ -160,6 +167,8 @@ export default function ControlsBar({
   document: doc,
   filePath,
   selectedIndices,
+  selection,
+  timeline,
   onSelectionChange,
   onDocumentChange,
   onUndo,
@@ -245,12 +254,16 @@ export default function ControlsBar({
     ? doc.children.some((c) => isSliceableType(c.type))
     : selectedIndices.some((i) => isSliceableType(doc.children[i]?.type));
 
-  // Attach: needs 2+ selected, all of which are children (not attachments),
-  // and a primary with a source axis.
+  // Attach: needs 2+ selected and a primary (first selection) with a source
+  // axis. The primary and secondaries can each be a child OR an attachment,
+  // at any level — secondaries are pulled into the primary's container and
+  // anchored/re-anchored on the chosen side. Bin-rooted primaries are out
+  // (the per-reference playhead is ambiguous).
   const canAttach = (() => {
-    if (selectedIndices.length < 2) return false;
-    if (selectedIndices.some((i) => i >= doc.children.length)) return false;
-    const primary = doc.children[selectedIndices[0]];
+    if (selection.length < 2) return false;
+    const pp = parsePath(selection[0]);
+    if (pp.length === 0 || pp.some((s) => s.field === "bin")) return false;
+    const primary = getNodeAtPath(doc, pp);
     if (!primary) return false;
     return (
       primary.type === "clip" ||
@@ -261,13 +274,22 @@ export default function ControlsBar({
 
   const handleAttach = useCallback(
     (side: "start" | "end") => {
-      const next = applyAttach(doc, currentTime, selectedIndices, side);
+      if (selection.length < 2) return;
+      const [primaryKey, ...secondaryKeys] = selection;
+      const next = applyAttach(
+        doc,
+        timeline,
+        currentTime,
+        primaryKey,
+        secondaryKeys,
+        side,
+      );
       if (next) {
         onDocumentChange(next);
         onSelectionChange([]);
       }
     },
-    [doc, currentTime, selectedIndices, onDocumentChange, onSelectionChange]
+    [doc, timeline, currentTime, selection, onDocumentChange, onSelectionChange]
   );
 
   // ── Compose ────────────────────────────────────────────────────

@@ -1085,11 +1085,9 @@ function TimelineGroup({
       {group.blocks.map((block) => {
         const { child, index, row, isAttachment, docChild, addr } = block;
         const isSelected = selection.includes(addr);
-        const isPrimary =
-          isSelected &&
-          !isAttachment &&
-          selection.length >= 2 &&
-          selection[0] === addr;
+        // The first selected item (the attach primary) is always the
+        // primary, regardless of type; the rest are secondaries.
+        const isPrimary = isSelected && selection[0] === addr;
         // Drag-to-move is for sequential children at any editable level
         // (attachments are anchor-positioned, so they don't reorder); the
         // drop pass routes it within or across containers. Resize also
@@ -1339,15 +1337,16 @@ function ChildBlockView({
   // Nested blocks sit slightly inset within their row so the nesting reads
   // visually without breaking time alignment on the x-axis.
   const vInset = isRoot ? 0 : Math.min(depth, 3) * DEPTH_INSET;
-  const border = isBinItem
-    ? `2px dashed ${colors.border}` // shared bin entry — dashed to signal it
+  // Primary (first selected) → solid; any other selected → dashed; these win
+  // over the binItem marker so the attach roles read clearly regardless of
+  // type. Unselected binItem refs keep their dashed marker.
+  const border = isPrimary
+    ? `2px solid ${PRIMARY_BORDER}`
     : isSelected
-      ? isPrimary
-        ? `2px solid ${PRIMARY_BORDER}`
-        : selection.length >= 2
-          ? `2px dashed ${SECONDARY_BORDER}`
-          : `2px solid ${PRIMARY_BORDER}`
-      : `2px solid ${colors.border}`;
+      ? `2px dashed ${SECONDARY_BORDER}`
+      : isBinItem
+        ? `2px dashed ${colors.border}`
+        : `2px solid ${colors.border}`;
 
   return (
     <div
