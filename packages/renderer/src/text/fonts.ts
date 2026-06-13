@@ -7,8 +7,7 @@
 //
 // Two font systems consume these:
 //   - @napi-rs/canvas (Skia) `GlobalFonts` drives text-node rasterization
-//     and the map's TinySDF glyph generation — and renders OpenMoji in
-//     colour via its COLR table.
+//     — and renders OpenMoji in colour via its COLR table.
 //   - node-canvas (Cairo) backs fabric/node for graphic rendering and has
 //     its OWN registry, so the same TTFs must be registered there too
 //     (`registerNodeCanvasFonts`). Cairo can't do colour fonts, so emoji

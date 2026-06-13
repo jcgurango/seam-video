@@ -74,21 +74,19 @@ export function loadFallbackFonts(): Promise<void> {
 
 // ── Map label fonts ────────────────────────────────────────────────
 //
-// With no `glyphs` URL on the style, maplibre-gl rasterizes every label
-// locally via TinySDF, using the layer's `text-font` name as the CSS font
-// family (and sniffing bold/italic out of that name). It does NOT consult
-// the weight/style descriptors of a FontFace — only the family name. So to
-// force Liberation Sans (rather than the host's `sans-serif`) we register a
-// distinct family per variant whose NAME carries the weight/style, and
-// rewrite each layer's `text-font` to the matching name (see
-// `mapLabelFontStack`). These names mirror what the native renderer
-// resolves server-side, keeping preview and final render consistent.
+// ol-mapbox-style renders labels with canvas text (no glyph PBFs). It runs
+// each layer's `text-font` through mapbox-to-css-font, which splits the
+// weight/style keywords off the END of the name — so "Liberation Sans Bold"
+// becomes `bold …px "Liberation Sans"`. That resolves against the base
+// "Liberation Sans" family with real weight/style faces (loadLiberationSans),
+// then falls through per-glyph to the CJK + emoji families — same chain as
+// text nodes, and no font CDN fetch since they're all in document.fonts.
 
-/** The `text-font` stack to use for a given style layer's original stack.
- *  The original names (e.g. "Noto Sans Bold") only tell us weight/style; we
- *  map to the matching Liberation Sans variant, then append the CJK + emoji
- *  fallbacks so maplibre's TinySDF (which builds a CSS family list from this
- *  stack) falls back per-glyph just like text nodes do. */
+/** The `text-font` stack to substitute for a style layer's original stack.
+ *  The original names (e.g. "Noto Sans Bold") only convey weight/style; we
+ *  map to the matching Liberation Sans variant name (mapbox-to-css-font then
+ *  re-derives the weight/style from it) and append the CJK + emoji fallbacks
+ *  for per-glyph coverage. */
 export function mapLabelFontStack(stack: string[] | string): string[] {
   const s = (Array.isArray(stack) ? stack.join(" ") : stack).toLowerCase();
   const bold = /bold|semibold|black|heavy/.test(s);
@@ -99,39 +97,16 @@ export function mapLabelFontStack(stack: string[] | string): string[] {
   return [family, CJK_FALLBACK_FAMILY, EMOJI_FALLBACK_FAMILY];
 }
 
-interface AliasFace {
-  family: string;
-  url: string;
-  descriptors: FontFaceDescriptors;
-}
-
-// Per-variant alias families. Each carries the weight/style descriptor that
-// matches the request maplibre's TinySDF makes (bold/italic sniffed from the
-// family name), so the browser doesn't synthesize faux-bold/italic on top of
-// an already-bold/italic TTF.
-const MAP_LABEL_FACES: AliasFace[] = [
-  { family: "Liberation Sans Bold", url: boldUrl, descriptors: { weight: "bold" } },
-  { family: "Liberation Sans Italic", url: italicUrl, descriptors: { style: "italic" } },
-  {
-    family: "Liberation Sans Bold Italic",
-    url: boldItalicUrl,
-    descriptors: { weight: "bold", style: "italic" },
-  },
-];
-
 let mapLabelPromise: Promise<void> | null = null;
 
-/** Register the Liberation Sans alias families used by map labels. Includes
- *  the base regular family via loadLiberationSans(). Idempotent. */
+/** Ensure the families map labels resolve to are in document.fonts: the
+ *  Liberation Sans weight/style faces plus the CJK + emoji fallbacks.
+ *  Idempotent. */
 export function loadMapLabelFonts(): Promise<void> {
   if (mapLabelPromise) return mapLabelPromise;
-  mapLabelPromise = (async () => {
-    await Promise.all([loadLiberationSans(), loadFallbackFonts()]);
-    const faces = MAP_LABEL_FACES.map((f) =>
-      new FontFace(f.family, `url(${f.url})`, f.descriptors).load(),
-    );
-    const loaded = await Promise.all(faces);
-    for (const face of loaded) document.fonts.add(face);
-  })();
+  mapLabelPromise = Promise.all([
+    loadLiberationSans(),
+    loadFallbackFonts(),
+  ]).then(() => undefined);
   return mapLabelPromise;
 }

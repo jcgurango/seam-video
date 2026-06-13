@@ -24,7 +24,49 @@ import {
   rasterizeAllText,
   renderWithMelt,
   runFfmpegAudio,
+  type OnRasterProgress,
+  type RasterProgress,
 } from "@seam/renderer";
+
+/** A small TTY-aware progress line for the otherwise-silent text/graphic
+ *  rasterization passes. On a TTY it redraws one carriage-return line and
+ *  clears it when done; piped/non-TTY, it prints one line per node. The
+ *  header + summary only appear if the pass actually has nodes. */
+function rasterReporter(noun: string): {
+  onProgress: OnRasterProgress;
+  done: () => void;
+} {
+  const tty = process.stderr.isTTY === true;
+  let started = false;
+  let total = 0;
+  let frames = 0;
+  let lastIndex = -1;
+  const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? "" : "s"}`;
+  return {
+    onProgress(p: RasterProgress) {
+      total = p.total;
+      frames++;
+      if (!started) {
+        started = true;
+        process.stderr.write(`Generating ${plural(total, noun)}…\n`);
+      }
+      if (tty) {
+        const frag = p.animated ? ` · frame ${p.frame}/${p.frameCount}` : "";
+        process.stderr.write(`\r  ${p.index + 1}/${total}${frag}\x1b[K`);
+      } else if (p.index !== lastIndex) {
+        lastIndex = p.index;
+        const frag = p.animated ? ` (${p.frameCount} frames)` : "";
+        process.stderr.write(`  ${p.index + 1}/${total}${frag}\n`);
+      }
+    },
+    done() {
+      if (!started) return;
+      const summary = `  done · ${plural(total, noun)}, ${plural(frames, "frame")}`;
+      if (tty) process.stderr.write(`\r${summary}\x1b[K\n`);
+      else process.stderr.write(`${summary}\n`);
+    },
+  };
+}
 
 /** Collect every clip/static `source` in the resolved tree (recursing
  *  into compositions). Used to probe media dimensions up front so the MLT
@@ -157,14 +199,24 @@ export async function renderCommand(file: string, options: RenderOptions) {
     // the MLT document — the document references each PNG by absolute
     // path, so the files have to exist when melt parses the project.
     const textDir = join(assetsDir, "text");
-    const textRasters = await rasterizeAllText(timeline, textDir, fps);
+    const textReporter = rasterReporter("text node");
+    const textRasters = await rasterizeAllText(
+      timeline,
+      textDir,
+      fps,
+      textReporter.onProgress,
+    );
+    textReporter.done();
     const graphicDir = join(assetsDir, "graphic");
+    const graphicReporter = rasterReporter("graphic");
     const graphicRasters = await rasterizeAllGraphics(
       timeline,
       graphicDir,
       fps,
       basePath,
+      graphicReporter.onProgress,
     );
+    graphicReporter.done();
 
     // Pre-render audio with ffmpeg first. MLT slices audio along the
     // video frame grid which produces audible artifacts at clip

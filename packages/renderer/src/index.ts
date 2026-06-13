@@ -33,6 +33,8 @@ export { rasterizeAllGraphics } from "./graphic/raster.js";
 export type {
   GraphicRasterEntry,
   GraphicRasterMap,
+  RasterProgress,
+  OnRasterProgress,
 } from "./graphic/raster.js";
 export {
   precomputeGraphicPlayback,

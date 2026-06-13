@@ -1,36 +1,37 @@
-// Server-side maplibre rendering for graphic Map elements. Loads
-// @maplibre/maplibre-gl-native (which ships prebuilt binaries for the
-// Node 22 and 24 LTS lines — ABI 127/137; Node 23 and 25 have no
-// prebuilt — see the package engines field), wires a custom
-// request callback into pmtiles + an http fetcher for glyphs/sprites,
-// and renders the requested view into an RGBA buffer.
+// Server-side OpenLayers rendering for graphic Map elements.
 //
-// PMTiles uses a custom node Source so byte-range reads hit the file
-// directly — no full-file load. Style dispatch (raster vs vector +
-// osm-bright) mirrors the same logic we settled on in motion-editor-test.
+// Mirrors the browser preview's OpenLayersMap, but headless: OpenLayers is
+// a browser library, so we fake a DOM with jsdom (backed by node-canvas)
+// and run OL's Canvas2D renderer to rasterize vector tiles — no maplibre,
+// no WebGL, no glyph-PBF synthesis. The flow per frame:
 //
-// `MapPool` reuses a mbgl.Map across frames for the same path-id:
-// per-tick mutations are confined to setSize / setCenter / setZoom and
-// the small set of geojson path layers, so a 4-second animated map
-// pays the style/load cost once instead of per output frame.
+//   set view → renderSync() → wait for `rendercomplete` (tiles loaded) →
+//   composite the layer canvas over the OSM Bright cream base → draw paths.
+//
+// pmtiles are read through a byte-range node file Source (no full-file
+// load). Labels render via ol-mapbox-style's canvas text using the bundled
+// fonts registered with node-canvas (registerNodeCanvasFonts) — the symbol
+// layers' `text-font` is rewritten to those families so there's no font CDN
+// fetch. POI icons (sprite) are not wired yet; text labels still render.
+//
+// jsdom globals are installed lazily (first render), AFTER all static
+// imports — notably fabric/node, which reads window.devicePixelRatio at
+// module load and otherwise builds its own private jsdom env. So OL's
+// globals and fabric coexist: fabric uses getEnv(), never the globals.
 
-import { createRequire } from "node:module";
 import { readFile, open, type FileHandle } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join } from "node:path";
 import { PMTiles, TileType, type Source } from "pmtiles";
 import { createCanvas, type Canvas as NodeCanvas } from "canvas";
-import { generateGlyphRangePBF } from "./glyphs.js";
-
-const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mbgl: any = require("@maplibre/maplibre-gl-native");
+import { JSDOM } from "jsdom";
+import { CJK_FALLBACK_FAMILY, EMOJI_FALLBACK_FAMILY } from "@seam/core";
+import { LIBERATION_SANS_FAMILY, registerNodeCanvasFonts } from "../text/fonts.js";
 
-// The OSM Bright style + sprite atlas are bundled in this package (copied
-// from the openmaptiles osm-bright-gl-style), so the renderer doesn't
-// depend on a sibling package's files or any external CDN. From either
-// src/graphic or dist/graphic, the dir sits two levels up at the package
-// root, alongside fonts/.
+// The OSM Bright style + sprite atlas are bundled in this package. From
+// either src/graphic or dist/graphic, the dir sits two levels up at the
+// package root, alongside fonts/.
 const OSM_BRIGHT_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -38,62 +39,20 @@ const OSM_BRIGHT_DIR = join(
   "osm-bright",
 );
 
-// Glyphs are synthesized locally from the bundled Liberation Sans (see
-// glyphs.ts) instead of fetched from an external server — the custom
-// `seamglyphs://` scheme is intercepted in handleRequest. No production
-// CDN dependency, and metrically consistent with the browser preview's
-// own local-font rendering.
-const GLYPHS_URL = "seamglyphs://{fontstack}/{range}.pbf";
+const DEFAULT_LINE_WIDTH = 4;
+const BACKGROUND_COLOR: [number, number, number] = [0xf8, 0xf4, 0xf0]; // OSM Bright base.
 
-// Sprite atlas served from the bundled osm-bright dir via the custom
-// `seamsprite://` scheme (intercepted in handleRequest). maplibre appends
-// `@2x`/`.json`/`.png` to this base, which `new URL()` parsing handles.
-const SPRITE_URL = "seamsprite://osm-bright/sprite";
+// Bump label text up from the OSM Bright defaults — they read small at our
+// graphic sizes. Must match the preview (OpenLayersMap.TEXT_SIZE_SCALE).
+const TEXT_SIZE_SCALE = 1.3;
 
-const RASTER_TYPES = new Set<TileType>([
-  TileType.Png,
-  TileType.Jpeg,
-  TileType.Webp,
-  TileType.Avif,
-]);
-
-/** PMTiles Source backed by a node file handle. byte-range reads only,
- *  so a multi-GB pmtiles file never lands fully in memory. */
-class NodeFileSource implements Source {
-  private handle: FileHandle | null = null;
-
-  constructor(private readonly filepath: string) {}
-
-  getKey(): string {
-    return this.filepath;
-  }
-
-  async getBytes(
-    offset: number,
-    length: number,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    signal?: AbortSignal,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    etag?: string,
-  ): Promise<{ data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string }> {
-    if (!this.handle) {
-      this.handle = await open(this.filepath, "r");
-    }
-    const buffer = Buffer.alloc(length);
-    await this.handle.read(buffer, 0, length, offset);
-    const ab = buffer.buffer.slice(
-      buffer.byteOffset,
-      buffer.byteOffset + buffer.byteLength,
-    ) as ArrayBuffer;
-    return { data: ab };
-  }
-
-  async close(): Promise<void> {
-    if (this.handle) {
-      await this.handle.close();
-      this.handle = null;
-    }
-  }
+// Web-mercator resolution (m/px at the equator) for a MapLibre/512-tile zoom
+// level — the convention seam `zoom` values were authored against. Set the
+// view resolution explicitly rather than view.setZoom (OL's XYZ default is
+// 256-based, half the resolution at the same zoom number).
+const RES_ZOOM_0 = 78271.51696402048;
+function zoomToResolution(zoom: number): number {
+  return RES_ZOOM_0 / Math.pow(2, zoom);
 }
 
 export interface MapInstanceOptions {
@@ -126,132 +85,416 @@ export interface MapRenderResult {
   height: number;
 }
 
-/** A live maplibre instance + its pmtiles handle. Style is loaded once;
- *  subsequent renders mutate the camera and the (small) set of path
- *  overlay layers. Held by the MapPool across animation frames. */
-export class MapInstance {
+/** PMTiles Source backed by a node file handle. byte-range reads only,
+ *  so a multi-GB pmtiles file never lands fully in memory. */
+class NodeFileSource implements Source {
+  private handle: FileHandle | null = null;
+
+  constructor(private readonly filepath: string) {}
+
+  getKey(): string {
+    return this.filepath;
+  }
+
+  async getBytes(
+    offset: number,
+    length: number,
+  ): Promise<{ data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string }> {
+    if (!this.handle) {
+      this.handle = await open(this.filepath, "r");
+    }
+    const buffer = Buffer.alloc(length);
+    await this.handle.read(buffer, 0, length, offset);
+    const ab = buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    ) as ArrayBuffer;
+    return { data: ab };
+  }
+
+  async close(): Promise<void> {
+    if (this.handle) {
+      await this.handle.close();
+      this.handle = null;
+    }
+  }
+}
+
+// ── jsdom + OpenLayers environment (lazy, process-global) ───────────
+
+interface OLEnv {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  OLMap: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  View: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  VectorTileLayer: any;
+  fromLonLat: (coord: number[]) => number[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  PMTilesVectorSource: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  applyStyle: any;
+}
+
+let jsdomInstalled = false;
+
+/** Fake the browser globals OpenLayers' canvas renderer reads. jsdom uses
+ *  node-canvas for <canvas> (so OL draws into a real raster backend) and
+ *  must be installed before `ol` modules load — they capture globals at
+ *  import time. Runs once; safe because fabric/node already initialised. */
+function installJsdomGlobals(): void {
+  if (jsdomInstalled) return;
+  jsdomInstalled = true;
+  const { window } = new JSDOM(
+    "<!DOCTYPE html><html><head></head><body></body></html>",
+    { pretendToBeVisual: true }, // gives requestAnimationFrame
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = window as any;
+  g.window = window;
+  g.document = window.document;
+  // jsdom has no FontFaceSet. ol-mapbox-style's getFonts awaits
+  // document.fonts.ready and probes document.fonts.load(...) to decide
+  // whether to fetch a web font from its CDN. Stub it so every probe
+  // "matches" — the real glyphs come from the node-canvas-registered
+  // families (registerNodeCanvasFonts), and no CDN fetch ever happens.
+  const fontsStub = {
+    ready: Promise.resolve(),
+    status: "loaded",
+    check: () => true,
+    add: () => {},
+    delete: () => {},
+    forEach: () => {},
+    // Echo the requested face back so getFonts' family/weight/style match
+    // passes. Probe string is `${style} ${weight} 16px "${family}"`.
+    load: (font: string) => {
+      const m = /^(\S+)\s+(\S+)\s+[\d.]+px\s+"(.+)"$/.exec(font);
+      const [, style = "normal", weight = "normal", family = ""] = m ?? [];
+      return Promise.resolve([{ family, weight, style, status: "loaded" }]);
+    },
+    [Symbol.iterator]: () => [][Symbol.iterator](),
+  };
+  Object.defineProperty(window.document, "fonts", {
+    value: fontsStub,
+    configurable: true,
+  });
+  // Node 24 ships read-only `navigator`/`location` globals; override them.
+  Object.defineProperty(globalThis, "navigator", {
+    value: window.navigator,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis, "location", {
+    value: window.location,
+    configurable: true,
+    writable: true,
+  });
+  for (const name of [
+    "HTMLElement",
+    "HTMLCanvasElement",
+    "HTMLImageElement",
+    "Image",
+    "Node",
+    "Element",
+    "ShadowRoot",
+    "Event",
+    "EventTarget",
+    "DOMParser",
+    "XMLSerializer",
+    "CSSStyleDeclaration",
+    "WheelEvent",
+    "PointerEvent",
+    "MouseEvent",
+    "KeyboardEvent",
+  ]) {
+    if (w[name] !== undefined) g[name] = w[name];
+  }
+  g.getComputedStyle = window.getComputedStyle.bind(window);
+  g.requestAnimationFrame = window.requestAnimationFrame.bind(window);
+  g.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+  w.devicePixelRatio = 1;
+  g.devicePixelRatio = 1;
+  g.OffscreenCanvas = w.OffscreenCanvas;
+  g.ResizeObserver =
+    w.ResizeObserver ??
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  w.ResizeObserver = g.ResizeObserver;
+}
+
+let olEnvPromise: Promise<OLEnv> | null = null;
+
+function initOL(): Promise<OLEnv> {
+  if (olEnvPromise) return olEnvPromise;
+  olEnvPromise = (async () => {
+    installJsdomGlobals();
+    // Map labels render through node-canvas (fabric/Cairo) text — register
+    // the bundled families it'll resolve to. Idempotent.
+    registerNodeCanvasFonts();
+    const [olMap, olView, olVTL, olProj, olPmtiles, olms] = await Promise.all([
+      import("ol/Map.js"),
+      import("ol/View.js"),
+      import("ol/layer/VectorTile.js"),
+      import("ol/proj.js"),
+      import("ol-pmtiles"),
+      import("ol-mapbox-style"),
+    ]);
+    return {
+      OLMap: olMap.default,
+      View: olView.default,
+      VectorTileLayer: olVTL.default,
+      fromLonLat: olProj.fromLonLat,
+      PMTilesVectorSource: olPmtiles.PMTilesVectorSource,
+      applyStyle: olms.applyStyle,
+    };
+  })();
+  return olEnvPromise;
+}
+
+// ── Style ──────────────────────────────────────────────────────────
+
+/** The `text-font` stack to substitute for a style layer's original stack:
+ *  the matching Liberation Sans variant name (ol-mapbox-style re-derives the
+ *  weight/style from it) plus the CJK + emoji fallbacks. Mirrors the
+ *  preview's mapLabelFontStack. */
+function mapLabelFontStack(stack: string[] | string): string[] {
+  const s = (Array.isArray(stack) ? stack.join(" ") : stack).toLowerCase();
+  const bold = /bold|semibold|black|heavy/.test(s);
+  const italic = /italic|oblique/.test(s);
+  let family = LIBERATION_SANS_FAMILY;
+  if (bold) family += " Bold";
+  if (italic) family += " Italic";
+  return [family, CJK_FALLBACK_FAMILY, EMOJI_FALLBACK_FAMILY];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function scaleTextSize(size: any): any {
+  if (size == null) return 16 * TEXT_SIZE_SCALE;
+  if (typeof size === "number") return size * TEXT_SIZE_SCALE;
+  if (Array.isArray(size.stops)) {
+    return {
+      ...size,
+      stops: size.stops.map((s: [number, number]) => [
+        s[0],
+        s[1] * TEXT_SIZE_SCALE,
+      ]),
+    };
+  }
+  return size;
+}
+
+/** Read + prepare the bundled OSM Bright style for OL: rewrite symbol
+ *  text-font to our bundled families, scale label text, drop glyphs/sprite
+ *  refs (canvas fonts, no icons yet). Mirrors the preview's basemapStyle. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function basemapStyle(): Promise<any> {
+  const data = await readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const style = JSON.parse(data) as any;
+  for (const layer of style.layers) {
+    if (layer.type !== "symbol") continue;
+    const layout = layer.layout;
+    const textFont = layout?.["text-font"];
+    if (textFont) layout["text-font"] = mapLabelFontStack(textFont);
+    if (layout) layout["text-size"] = scaleTextSize(layout["text-size"]);
+  }
+  delete style.glyphs;
+  delete style.sprite;
+  return style;
+}
+
+// ── MapInstance ─────────────────────────────────────────────────────
+
+/** A headless OL map + its pmtiles handle. Style is loaded once; subsequent
+ *  renders mutate the view + redraw. Held by the MapPool across frames so
+ *  the tile cache stays warm. */
+export class MapInstance {
   private constructor(
+    private readonly env: OLEnv,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private readonly map: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private readonly container: any,
     private readonly fileSource: NodeFileSource,
-    /** IDs of geojson path layers currently installed (so we can diff
-     *  them out before installing this frame's). */
-    private installedPathIds: string[],
+    private width: number,
+    private height: number,
   ) {}
 
   static async create(opts: MapInstanceOptions): Promise<MapInstance> {
+    const env = await initOL();
     const absPath = isAbsolute(opts.source)
       ? opts.source
       : join(opts.basePath ?? process.cwd(), opts.source);
     const fileSource = new NodeFileSource(absPath);
-    const pm = new PMTiles(fileSource);
-    const header = await pm.getHeader();
-    const metadata = await pm.getMetadata();
-    const style = await buildMapStyle(absPath, header, metadata);
-    if (!style) {
+
+    const header = await new PMTiles(fileSource).getHeader();
+    if (header.tileType !== TileType.Mvt) {
       await fileSource.close();
       throw new Error(
-        `[Map] unsupported pmtiles tileType: ${header.tileType} (${TileType[header.tileType]})`,
+        `[Map] only vector (MVT) pmtiles are supported; got ${header.tileType} (${TileType[header.tileType]})`,
       );
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const map: any = new mbgl.Map({
-      request: (
-        req: { url: string; kind: number },
-        callback: (err?: Error, response?: { data: Uint8Array }) => void,
-      ) => {
-        handleRequest(req, pm, absPath, callback).catch((err) => {
-          callback(err instanceof Error ? err : new Error(String(err)));
-        });
-      },
-      ratio: 1,
+    // Nominal initial size; render() sets the real one per frame.
+    const W = 256;
+    const H = 256;
+    const container = createContainer(W, H);
+
+    const layer = new env.VectorTileLayer({
+      source: new env.PMTilesVectorSource({ url: fileSource }),
+      declutter: true,
     });
-    map.load(style);
-    return new MapInstance(map, fileSource, []);
+    const map = new env.OLMap({
+      target: container,
+      layers: [layer],
+      view: new env.View({
+        center: [0, 0],
+        resolution: zoomToResolution(1),
+        constrainResolution: false,
+      }),
+      controls: [],
+      interactions: [],
+      pixelRatio: 1,
+    });
+    map.setSize([W, H]);
+
+    // updateSource:false — keep our pmtiles-backed source; only paint the GL
+    // layers onto it (else ol-mapbox-style resolves the style's remote URL).
+    await env.applyStyle(layer, await basemapStyle(), "openmaptiles", {
+      updateSource: false,
+    });
+
+    return new MapInstance(env, map, container, fileSource, W, H);
   }
 
   async render(input: MapRenderInput): Promise<MapRenderResult> {
-    // Remove the previous frame's path overlays before installing the
-    // current set. We always start from a clean slate because path
-    // sets can shrink, and a stale source would block the next addSource
-    // call with the same id.
-    for (const id of this.installedPathIds) {
-      try {
-        this.map.removeLayer(id);
-      } catch {
-        // already gone — ignore
-      }
-      try {
-        this.map.removeSource(id);
-      } catch {
-        // already gone — ignore
-      }
-    }
-    this.installedPathIds = [];
-
-    if (input.paths?.length) {
-      input.paths.forEach((p, i) => {
-        const id = `seam-path-${i}`;
-        this.map.addSource(id, {
-          type: "geojson",
-          lineMetrics: true,
-          data: {
-            type: "Feature",
-            properties: {},
-            geometry: {
-              type: "LineString",
-              coordinates: p.points,
-            },
-          },
-        });
-        const progress = Math.max(0, Math.min(1, p.progress ?? 1));
-        this.map.addLayer({
-          id,
-          type: "line",
-          source: id,
-          layout: { "line-cap": "round", "line-join": "round" },
-          paint: {
-            "line-width": p.lineWidth ?? 4,
-            "line-gradient": [
-              "step",
-              ["line-progress"],
-              p.color,
-              progress,
-              "rgba(0,0,0,0)",
-            ],
-          },
-        });
-        this.installedPathIds.push(id);
-      });
+    const w = input.width;
+    const h = input.height;
+    if (w !== this.width || h !== this.height) {
+      this.width = w;
+      this.height = h;
+      this.container.style.width = `${w}px`;
+      this.container.style.height = `${h}px`;
+      this.map.setSize([w, h]);
     }
 
-    const buffer: Uint8Array = await new Promise((resolve, reject) => {
-      this.map.render(
-        {
-          zoom: input.zoom,
-          width: input.width,
-          height: input.height,
-          center: [input.longitude, input.latitude],
-        },
-        (err?: Error, buf?: Uint8Array) => {
-          if (err || !buf) reject(err ?? new Error("empty render buffer"));
-          else resolve(buf);
-        },
-      );
+    const view = this.map.getView();
+    view.setCenter(this.env.fromLonLat([input.longitude, input.latitude]));
+    view.setResolution(zoomToResolution(input.zoom));
+
+    await this.renderComplete();
+
+    // Composite the OL layer canvas(es) over the cream base. We blend the
+    // straight-alpha pixels manually rather than drawImage the jsdom canvas
+    // (node-canvas only accepts its own Canvas/Image in drawImage).
+    const acc = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < acc.length; i += 4) {
+      acc[i] = BACKGROUND_COLOR[0];
+      acc[i + 1] = BACKGROUND_COLOR[1];
+      acc[i + 2] = BACKGROUND_COLOR[2];
+      acc[i + 3] = 255;
+    }
+    const canvases = this.container.querySelectorAll("canvas");
+    for (const c of canvases) {
+      if (c.width !== w || c.height !== h) continue;
+      const src = c.getContext("2d").getImageData(0, 0, w, h).data;
+      for (let i = 0; i < acc.length; i += 4) {
+        const a = src[i + 3] / 255;
+        if (a === 0) continue;
+        acc[i] = src[i] * a + acc[i] * (1 - a);
+        acc[i + 1] = src[i + 1] * a + acc[i + 1] * (1 - a);
+        acc[i + 2] = src[i + 2] * a + acc[i + 2] * (1 - a);
+      }
+    }
+
+    // Seed a node-canvas with the composite, draw paths on top, read back.
+    const out = createCanvas(w, h);
+    const ctx = out.getContext("2d");
+    const seed = ctx.createImageData(w, h);
+    seed.data.set(acc);
+    ctx.putImageData(seed, 0, 0);
+    this.drawPaths(ctx, w, h, input.paths);
+    const rgba = Buffer.from(ctx.getImageData(0, 0, w, h).data);
+    return { rgba, width: w, height: h };
+  }
+
+  /** Resolve once the current viewport's tiles are loaded and drawn. OL's
+   *  `rendercomplete` fires when all sources/tiles have finished loading for
+   *  the viewport; warm tiles resolve immediately. The timeout is a backstop
+   *  so a stuck source can't hang the whole render. */
+  private renderComplete(): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      // eslint-disable-next-line prefer-const
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.map.un("rendercomplete", finish);
+        clearTimeout(timer);
+        resolve();
+      };
+      this.map.on("rendercomplete", finish);
+      this.map.renderSync();
+      timer = setTimeout(finish, 10000);
     });
+  }
 
-    return {
-      rgba: Buffer.from(buffer),
-      width: input.width,
-      height: input.height,
-    };
+  /** Draw path overlays in 2D, truncating the progress reveal in projected
+   *  (web-mercator) space so it's distance-normalized and camera-independent,
+   *  then projecting to viewport pixels. Mirrors the preview. */
+  private drawPaths(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ctx: any,
+    w: number,
+    h: number,
+    paths: MapRenderInput["paths"],
+  ): void {
+    if (!paths?.length) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const p of paths) {
+      if (!Array.isArray(p.points) || p.points.length < 2) continue;
+      const coords = p.points.map(([lon, lat]) => this.env.fromLonLat([lon, lat]));
+      const progress =
+        typeof p.progress === "number"
+          ? Math.max(0, Math.min(1, p.progress))
+          : 1;
+      const revealed =
+        progress >= 1 ? coords : truncateToFraction(coords, progress);
+      const pts: number[][] = [];
+      for (const c of revealed) {
+        const px = this.map.getPixelFromCoordinate(c);
+        if (px) pts.push([px[0], px[1]]);
+      }
+      if (pts.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth =
+        typeof p.lineWidth === "number" ? p.lineWidth : DEFAULT_LINE_WIDTH;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   async release(): Promise<void> {
     try {
-      this.map.release();
+      this.map.setTarget(undefined);
+    } catch {
+      // ignore
+    }
+    try {
+      if (this.container.parentNode) {
+        this.container.parentNode.removeChild(this.container);
+      }
     } catch {
       // ignore
     }
@@ -259,11 +502,22 @@ export class MapInstance {
   }
 }
 
+/** Off-screen, hidden jsdom container OL renders into. visibility:hidden (not
+ *  display:none) keeps layout box metrics; setSize overrides them anyway. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createContainer(width: number, height: number): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const doc = (globalThis as any).document;
+  const container = doc.createElement("div");
+  container.style.cssText = `position:fixed;left:0;top:0;width:${width}px;height:${height}px;visibility:hidden;`;
+  doc.body.appendChild(container);
+  return container;
+}
+
 /** Path-id keyed pool of MapInstances. Owned by the rasterizer for the
- *  duration of one ResolvedGraphic — `releaseAll` at the end drains
- *  every instance. Pool key includes pmtilesSrc so a Map whose source
- *  changed across frames (rare, would also break the structural patch)
- *  doesn't accidentally share state. */
+ *  duration of one ResolvedGraphic — `releaseAll` at the end drains every
+ *  instance. Pool key includes source so a Map whose source changed across
+ *  frames doesn't share state. */
 export class MapPool {
   private instances = new Map<string, MapInstance>();
 
@@ -288,8 +542,8 @@ export class MapPool {
   }
 }
 
-/** Convenience: render a single map view (no pooling). Used by tests and
- *  any caller that just wants one frame. */
+/** Convenience: render a single map view (no pooling). Used by tests and any
+ *  caller that just wants one frame. */
 export async function renderMapToRgba(
   opts: MapInstanceOptions & MapRenderInput,
 ): Promise<MapRenderResult> {
@@ -301,8 +555,8 @@ export async function renderMapToRgba(
   }
 }
 
-/** Wrap an RGBA buffer in a node-canvas. Fabric/node consumes it as an
- *  Image source directly. */
+/** Wrap an RGBA buffer in a node-canvas. Fabric/node consumes it as an Image
+ *  source directly. */
 export function rgbaToCanvas(result: MapRenderResult): NodeCanvas {
   const canvas = createCanvas(result.width, result.height);
   const ctx = canvas.getContext("2d");
@@ -312,204 +566,35 @@ export function rgbaToCanvas(result: MapRenderResult): NodeCanvas {
   return canvas;
 }
 
-// ── Request dispatch ────────────────────────────────────────────────
-
-async function handleRequest(
-  req: { url: string; kind: number },
-  pm: PMTiles,
-  pmtilesPath: string,
-  callback: (err?: Error, response?: { data: Uint8Array }) => void,
-): Promise<void> {
-  const url = req.url;
-  const glyphMatch = url.match(/^seamglyphs:\/\/(.+)\/(\d+)-(\d+)\.pbf$/);
-  if (glyphMatch) {
-    const fontstack = decodeURIComponent(glyphMatch[1]);
-    const start = parseInt(glyphMatch[2], 10);
-    const end = parseInt(glyphMatch[3], 10);
-    callback(undefined, { data: generateGlyphRangePBF(fontstack, start, end) });
-    return;
+/** Return the polyline truncated to `fraction` (0..1) of its total length,
+ *  splitting the final segment so the reveal is smooth. */
+function truncateToFraction(
+  pts: number[][],
+  fraction: number,
+): number[][] {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
   }
-  const spriteMatch = url.match(/^seamsprite:\/\/.*\/(sprite(?:@2x)?\.(?:json|png))$/);
-  if (spriteMatch) {
-    // maplibre uses `@2x` in the URL; the bundled file is named `-2x`.
-    const file = spriteMatch[1].replace("@2x", "-2x");
-    const data = await readFile(join(OSM_BRIGHT_DIR, file));
-    callback(undefined, { data: new Uint8Array(data) });
-    return;
-  }
-  const tileMatch = url.match(/^pmtiles:\/\/(.+?)\/(\d+)\/(\d+)\/(\d+)$/);
-  if (tileMatch) {
-    const z = parseInt(tileMatch[2], 10);
-    const x = parseInt(tileMatch[3], 10);
-    const y = parseInt(tileMatch[4], 10);
-    const tile = await pm.getZxy(z, x, y);
-    if (!tile) {
-      callback(undefined, { data: new Uint8Array(0) });
-      return;
+  const target = total * fraction;
+  if (target <= 0) return [pts[0]];
+  const out: number[][] = [pts[0]];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const seg = Math.hypot(
+      pts[i][0] - pts[i - 1][0],
+      pts[i][1] - pts[i - 1][1],
+    );
+    if (acc + seg >= target) {
+      const t = (target - acc) / seg;
+      out.push([
+        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+      ]);
+      return out;
     }
-    callback(undefined, { data: new Uint8Array(tile.data) });
-    return;
+    out.push(pts[i]);
+    acc += seg;
   }
-  if (url === `pmtiles://${pmtilesPath}` || url.startsWith("pmtiles://")) {
-    const header = await pm.getHeader();
-    const metadata = await pm.getMetadata();
-    const tilejson = buildTileJson(pmtilesPath, header, metadata);
-    callback(undefined, {
-      data: new TextEncoder().encode(JSON.stringify(tilejson)),
-    });
-    return;
-  }
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    const res = await fetch(url);
-    if (!res.ok) {
-      callback(new Error(`HTTP ${res.status} for ${url}`));
-      return;
-    }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    callback(undefined, { data: buf });
-    return;
-  }
-  if (url.startsWith("file://")) {
-    const localPath = url.replace(/^file:\/\//, "");
-    const data = await readFile(localPath);
-    callback(undefined, { data: new Uint8Array(data) });
-    return;
-  }
-  callback(new Error(`[Map] unsupported request scheme: ${url}`));
-}
-
-function buildTileJson(
-  pmtilesPath: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  header: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata: any,
-): Record<string, unknown> {
-  return {
-    tilejson: "3.0.0",
-    tiles: [`pmtiles://${pmtilesPath}/{z}/{x}/{y}`],
-    minzoom: header.minZoom,
-    maxzoom: header.maxZoom,
-    bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-    center: [header.centerLon, header.centerLat, header.centerZoom],
-    vector_layers: metadata?.vector_layers,
-  };
-}
-
-// ── Style ──────────────────────────────────────────────────────────
-
-async function buildMapStyle(
-  pmtilesPath: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  header: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata: any,
-): Promise<Record<string, unknown> | null> {
-  if (RASTER_TYPES.has(header.tileType)) {
-    return {
-      version: 8,
-      sources: {
-        "pmtiles-source": {
-          type: "raster",
-          tiles: [`pmtiles://${pmtilesPath}/{z}/{x}/{y}`],
-          tileSize: 256,
-          minzoom: header.minZoom,
-          maxzoom: header.maxZoom,
-        },
-      },
-      layers: [
-        {
-          id: "pmtiles-layer",
-          type: "raster",
-          source: "pmtiles-source",
-        },
-      ],
-    };
-  }
-  if (header.tileType === TileType.Mvt) {
-    const template = await tryLoadOsmBrightStyle();
-    if (template) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const style = template as any;
-      style.sources = {
-        openmaptiles: {
-          type: "vector",
-          tiles: [`pmtiles://${pmtilesPath}/{z}/{x}/{y}`],
-          minzoom: header.minZoom,
-          maxzoom: header.maxZoom,
-        },
-      };
-      style.glyphs = GLYPHS_URL;
-      style.sprite = SPRITE_URL;
-      return style;
-    }
-    return buildAutoVectorStyle(pmtilesPath, header, metadata);
-  }
-  return null;
-}
-
-async function tryLoadOsmBrightStyle(): Promise<Record<string, unknown> | null> {
-  try {
-    const data = await readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8");
-    return JSON.parse(data) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function buildAutoVectorStyle(
-  pmtilesPath: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  header: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata: any,
-): Record<string, unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const layers: any[] = [
-    {
-      id: "pmtiles-bg",
-      type: "background",
-      paint: { "background-color": "#1a1a1a" },
-    },
-  ];
-  const vectorLayers = metadata?.vector_layers as
-    | Array<{ id: string }>
-    | undefined;
-  if (Array.isArray(vectorLayers) && vectorLayers.length > 0) {
-    const palette = ["#7fb069", "#5b8c5a", "#dec25b", "#d99873", "#85bcd6"];
-    vectorLayers.forEach((vl, i) => {
-      const color = palette[i % palette.length];
-      layers.push(
-        {
-          id: `pm-${vl.id}-fill`,
-          type: "fill",
-          source: "pmtiles-source",
-          "source-layer": vl.id,
-          paint: { "fill-color": color, "fill-opacity": 0.5 },
-          filter: ["==", ["geometry-type"], "Polygon"],
-        },
-        {
-          id: `pm-${vl.id}-line`,
-          type: "line",
-          source: "pmtiles-source",
-          "source-layer": vl.id,
-          paint: { "line-color": color, "line-width": 1 },
-          filter: ["==", ["geometry-type"], "LineString"],
-        },
-      );
-    });
-  }
-  return {
-    version: 8,
-    sources: {
-      "pmtiles-source": {
-        type: "vector",
-        tiles: [`pmtiles://${pmtilesPath}/{z}/{x}/{y}`],
-        minzoom: header.minZoom,
-        maxzoom: header.maxZoom,
-      },
-    },
-    glyphs: GLYPHS_URL,
-    layers,
-  };
+  return out;
 }

@@ -3,10 +3,9 @@
 // StaticCanvas sized to the graphic's design space, then serializes the
 // canvas to PNG.
 //
-// Map elements currently render a labelled placeholder rect — server-side
-// maplibre rendering is gated on @maplibre/maplibre-gl-native shipping
-// Node 25 prebuilds (or building from source). Everything else routes
-// through fabric's native renderers.
+// Map elements rasterize through OpenLayers (headless, jsdom + node-canvas)
+// — see ./map-render.ts. Everything else routes through fabric's native
+// renderers.
 
 import {
   FabricImage,
@@ -39,9 +38,9 @@ export interface GraphicContext {
   clipDefs: Map<string, ClipDefLike>;
   /** Used to resolve relative Map source paths. Defaults to cwd. */
   mapBasePath?: string;
-  /** Path-id keyed pool of maplibre instances. When supplied, Map
-   *  elements reuse one instance per (path, source) across all output
-   *  frames in this rasterize run. */
+  /** Path-id keyed pool of OL map instances. When supplied, Map elements
+   *  reuse one instance per (path, source) across all output frames in this
+   *  rasterize run. */
   mapPool?: MapPool;
 }
 
@@ -286,7 +285,7 @@ async function reviveSpec(spec: FilledObject): Promise<FabricObject | null> {
   }
 }
 
-/** Render the pmtiles-backed map to RGBA via maplibre-native, wrap the
+/** Render the pmtiles-backed map to RGBA via OpenLayers, wrap the
  *  buffer in a node-canvas, hand it to fabric as a FabricImage with the
  *  authored Map instance's transform. Uses context.mapPool when present
  *  so successive frames at the same path-id share the same instance. */

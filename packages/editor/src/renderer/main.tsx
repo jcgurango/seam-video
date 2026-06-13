@@ -29,7 +29,7 @@ setSourceResolver((source, basePath) =>
 );
 
 // pmtiles → byte-range Source — same shape on web (OPFS) + electron
-// (file:// FetchSource). MapLibreMap uses it when opening pmtiles.
+// (file:// FetchSource). OpenLayersMap uses it when opening pmtiles.
 setPmtilesResolver(async (filename: string) => {
   const src = await platform.openPmtilesSource(filename, "");
   return (src as Source | null) ?? null;

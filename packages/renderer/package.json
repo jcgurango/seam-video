@@ -17,19 +17,22 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=22 <23 || >=24 <25"
+    "node": ">=22"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",
-    "@mapbox/tiny-sdf": "^2.2.0",
-    "@maplibre/maplibre-gl-native": "^6.4.1",
     "@napi-rs/canvas": "^0.1.100",
     "@seam/core": "workspace:*",
     "canvas": "^3.2.3",
     "fabric": "^7.4.0",
+    "jsdom": "^29.1.1",
+    "ol": "^10.9.0",
+    "ol-mapbox-style": "^13.4.1",
+    "ol-pmtiles": "^2.0.2",
     "pmtiles": "^4.4.1"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.3",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

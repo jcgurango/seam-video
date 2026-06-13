@@ -19,6 +19,7 @@ import {
 import type { ResolvedChild, ResolvedText, ResolvedTimeline } from "@seam/core";
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import { installCanvasShim } from "./canvasShim.js";
+import type { OnRasterProgress } from "../graphic/raster.js";
 
 export interface TextRasterEntry {
   /** Either a single PNG path (static) or a `printf`-style sequence
@@ -46,15 +47,18 @@ export async function rasterizeAllText(
   timeline: ResolvedTimeline,
   outDir: string,
   fps: number,
+  onProgress?: OnRasterProgress,
 ): Promise<TextRasterMap> {
   installCanvasShim();
   const nodes = collectTextNodes(timeline.children);
   if (nodes.length === 0) return new Map();
   await mkdir(outDir, { recursive: true });
   const map: TextRasterMap = new Map();
-  let i = 0;
-  for (const node of nodes) {
-    map.set(node, await rasterizeNode(node, outDir, fps, i++));
+  for (let i = 0; i < nodes.length; i++) {
+    map.set(
+      nodes[i],
+      await rasterizeNode(nodes[i], outDir, fps, i, nodes.length, onProgress),
+    );
   }
   return map;
 }
@@ -64,6 +68,8 @@ async function rasterizeNode(
   outDir: string,
   fps: number,
   index: number,
+  total: number,
+  onProgress: OnRasterProgress | undefined,
 ): Promise<TextRasterEntry> {
   // Spatial pass collapses contentWidth/Height to a pixel number.
   const W = Math.max(1, Math.round(node.contentWidth as number));
@@ -76,6 +82,7 @@ async function rasterizeNode(
   };
 
   if (!textHasAnimatedStyle(node)) {
+    onProgress?.({ index, total, animated: false, frame: 1, frameCount: 1 });
     const path = join(outDir, `text-${index}.png`);
     await writeFrame(node, 0, W, H, path);
     return { path, isAnimated: false, frameCount: 1, ...meta };
@@ -84,6 +91,7 @@ async function rasterizeNode(
   const duration = node.timelineEnd - node.timelineStart;
   const frameCount = Math.max(1, Math.ceil(duration * fps));
   for (let f = 0; f < frameCount; f++) {
+    onProgress?.({ index, total, animated: true, frame: f + 1, frameCount });
     const t = f / fps;
     const framePath = join(
       outDir,

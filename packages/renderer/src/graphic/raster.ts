@@ -42,6 +42,24 @@ export interface GraphicRasterEntry {
 
 export type GraphicRasterMap = Map<ResolvedGraphic, GraphicRasterEntry>;
 
+/** Progress tick emitted once per output frame (and once for each static
+ *  node) during a rasterize pass — so the CLI can show that the otherwise
+ *  silent text/graphic generation is making headway. */
+export interface RasterProgress {
+  /** 0-based index of the node being rasterized. */
+  index: number;
+  /** Total nodes in this pass. */
+  total: number;
+  /** Whether this node spans multiple output frames. */
+  animated: boolean;
+  /** 1-based frame currently being rendered (always 1 for static). */
+  frame: number;
+  /** Total frames for this node (1 for static). */
+  frameCount: number;
+}
+
+export type OnRasterProgress = (p: RasterProgress) => void;
+
 export async function rasterizeAllGraphics(
   timeline: ResolvedTimeline,
   outDir: string,
@@ -49,14 +67,25 @@ export async function rasterizeAllGraphics(
   /** Base directory for resolving relative Map source paths
    *  (e.g. pmtiles files). Typically the directory of the .seam file. */
   mapBasePath?: string,
+  onProgress?: OnRasterProgress,
 ): Promise<GraphicRasterMap> {
   const nodes = collectGraphicNodes(timeline.children);
   if (nodes.length === 0) return new Map();
   await mkdir(outDir, { recursive: true });
   const map: GraphicRasterMap = new Map();
-  let i = 0;
-  for (const node of nodes) {
-    map.set(node, await rasterizeNode(node, outDir, fps, i++, mapBasePath));
+  for (let i = 0; i < nodes.length; i++) {
+    map.set(
+      nodes[i],
+      await rasterizeNode(
+        nodes[i],
+        outDir,
+        fps,
+        i,
+        mapBasePath,
+        nodes.length,
+        onProgress,
+      ),
+    );
   }
   return map;
 }
@@ -67,6 +96,8 @@ async function rasterizeNode(
   fps: number,
   index: number,
   mapBasePath: string | undefined,
+  total: number,
+  onProgress: OnRasterProgress | undefined,
 ): Promise<GraphicRasterEntry> {
   const W = Math.max(1, Math.round(asNumber(node.contentWidth, 1080)));
   const H = Math.max(1, Math.round(asNumber(node.contentHeight, 1920)));
@@ -116,6 +147,7 @@ async function rasterizeNode(
   try {
     // Single keyframe + no clips → static fast path.
     if (isStatic(playback) && clipPlaybacks.size === 0) {
+      onProgress?.({ index, total, animated: false, frame: 1, frameCount: 1 });
       const path = join(outDir, `graphic-${index}.png`);
       await writeFrame(playback, 0, W, H, path, baseContext);
       return { path, isAnimated: false, frameCount: 1, ...meta };
@@ -124,6 +156,7 @@ async function rasterizeNode(
     const duration = node.timelineEnd - node.timelineStart;
     const frameCount = Math.max(1, Math.ceil(duration * fps));
     for (let f = 0; f < frameCount; f++) {
+      onProgress?.({ index, total, animated: true, frame: f + 1, frameCount });
       const t = f / fps;
       const framePath = join(
         outDir,

@@ -3,9 +3,8 @@
 // authored contentWidth/Height, redrawn each tick by walking the
 // snapshot from playback.ts onto a fabric.StaticCanvas.
 //
-// Map elements emit a labelled placeholder rect for now; the full
-// maplibre-gl browser path will land in a follow-up that reuses
-// motion-editor-test/src/maplibre-map.ts.
+// Map elements are backed by OpenLayersMap (an off-screen OL Canvas2D
+// rasterizer); see ./graphic/OpenLayersMap.ts.
 
 import type {
   ResolvedChild,
@@ -35,10 +34,10 @@ import {
   type ClipDefLike,
   type ClipPlayback,
 } from "./graphic/clip.js";
-// Side-effect import: registers MapLibreMap into fabric's classRegistry
-// so enlivenObjects(spec.type === "Map") produces a live maplibre-backed
+// Side-effect import: registers OpenLayersMap into fabric's classRegistry
+// so enlivenObjects(spec.type === "Map") produces an OL-backed rasterizer
 // FabricObject instead of falling back to the default rect.
-import { MapLibreMap } from "./graphic/MapLibreMap.js";
+import { OpenLayersMap } from "./graphic/OpenLayersMap.js";
 import { installGraphicFontFallback } from "./graphic/fontFallback.js";
 
 // Patch fabric's font declaration so graphic text falls back to CJK/emoji
@@ -47,6 +46,12 @@ installGraphicFontFallback();
 
 interface GraphicEntry {
   node: ResolvedGraphic;
+  /** Maps the global playhead time to this graphic's enclosing-container
+   *  local time, composing every composition the graphic is nested in
+   *  (`(t - comp.timelineStart) · comp.speed`, clamped — matching
+   *  RenderList's descent). The root graphic's mapper is identity.
+   *  `node.timelineStart` is then subtracted to get the animation time. */
+  toLocal: (globalTime: number) => number;
   canvas: HTMLCanvasElement;
   fabric: StaticCanvas;
   playback: GraphicPlayback;
@@ -55,29 +60,20 @@ interface GraphicEntry {
   outerFrames: ReadonlyArray<ReadonlyArray<unknown>>;
   isStaticGraphic: boolean;
   lastT: number;
-  /** Wall-clock timestamp of the last fabric.renderAll for this entry.
-   *  Drives the 60 Hz draw throttle. */
-  lastDrawAtMs: number;
-  /** Maplibre fired a render since the last fabric draw — the live map
-   *  canvas advanced (tiles arriving, camera applied, etc.) but the
-   *  snapshot tree didn't. Forces a redraw even when isStaticGraphic
-   *  short-circuits and even when the node-local time hasn't advanced
-   *  (paused playback). Cleared on draw. */
+  /** The OL map rendered since the last fabric draw — its layer canvas
+   *  advanced (tiles arriving, style applying, etc.) but the snapshot tree
+   *  didn't. Forces a redraw even when isStaticGraphic short-circuits and
+   *  even when the node-local time hasn't advanced (paused playback).
+   *  Cleared on draw. */
   pendingMapWake: boolean;
-  /** MapLibreMap instances keyed by hierarchical path-id, persisted
+  /** OpenLayersMap instances keyed by hierarchical path-id, persisted
    *  across animation frames. Without this, each re-materialize would
-   *  spin up a fresh maplibre — destroying any chance of pooling. */
-  mapCache: Map<string, MapLibreMap>;
-  /** Unsubscribers for the maplibre onRender hooks installed against
-   *  each cached map. Drained in dispose. */
+   *  spin up a fresh OL map — destroying any chance of pooling. */
+  mapCache: Map<string, OpenLayersMap>;
+  /** Unsubscribers for the OL render hooks installed against each cached
+   *  map. Drained in dispose. */
   mapRenderUnsubs: Array<() => void>;
 }
-
-/** Wall-clock period between fabric redraws per graphic entry. 60 Hz
- *  is sufficient for visible smoothness and cheap enough that the
- *  drawImage from maplibre → fabric (~8MB blit + sync barrier on a
- *  full-canvas Map) doesn't pile up faster than the GPU can drain. */
-const FRAME_MS = 1000 / 60;
 
 export class GraphicStore {
   private entries = new Map<ResolvedGraphic, GraphicEntry>();
@@ -85,8 +81,8 @@ export class GraphicStore {
 
   async setTimeline(timeline: ResolvedTimeline): Promise<void> {
     this.dispose();
-    const nodes = collectGraphicNodes(timeline.children);
-    for (const node of nodes) {
+    const collected = collectGraphicEntries(timeline.children);
+    for (const { node, toLocal } of collected) {
       try {
         const W = Math.max(1, Math.round(asNumber(node.contentWidth, 1080)));
         const H = Math.max(1, Math.round(asNumber(node.contentHeight, 1920)));
@@ -101,8 +97,8 @@ export class GraphicStore {
         });
         // (No fabric after:render → onFrameAvailable wiring anymore —
         // fabric renders are driven exclusively by this store's
-        // throttled update(). Maplibre tile-load wake-ups go through
-        // MapLibreMap.addRenderListener below.)
+        // throttled update(). OL tile-load wake-ups go through
+        // OpenLayersMap.addRenderListener below.)
 
         const playback = await precomputeGraphicPlayback({
           duration:
@@ -128,6 +124,7 @@ export class GraphicStore {
 
         const entry: GraphicEntry = {
           node,
+          toLocal,
           canvas,
           fabric,
           playback,
@@ -136,9 +133,8 @@ export class GraphicStore {
           outerFrames: node.frames as ReadonlyArray<ReadonlyArray<unknown>>,
           isStaticGraphic: isStatic(playback) && clipPlaybacks.size === 0,
           lastT: -1,
-          lastDrawAtMs: 0,
           pendingMapWake: false,
-          mapCache: new Map<string, MapLibreMap>(),
+          mapCache: new Map<string, OpenLayersMap>(),
           mapRenderUnsubs: [],
         };
         this.entries.set(node, entry);
@@ -150,31 +146,29 @@ export class GraphicStore {
     if (this.entries.size > 0) this.onFrameAvailable?.();
   }
 
-  /** Per-tick hook. Three paths:
-   *    1. Static graphic + pendingMapWake → fabric.renderAll only
-   *       (the snapshot tree is unchanged; we just need fabric to
-   *       re-run Map._render so the new maplibre canvas lands).
-   *    2. Animated graphic + (time advanced OR pendingMapWake) →
-   *       full draw() so a fresh snapshot is interpolated AND the
-   *       map is picked up.
+  /** Per-tick hook. Redraws only when there's something new — driven by
+   *  the rAF loop, no extra throttle:
+   *    1. Static graphic + pendingMapWake → fabric.renderAll only (the
+   *       snapshot tree is unchanged; we just need fabric to re-run
+   *       Map._render so the freshly-rendered OL canvas lands).
+   *    2. Animated graphic + (time advanced OR pendingMapWake) → full
+   *       draw() so a new snapshot is interpolated AND the map is picked up.
    *    3. Otherwise → skip.
    *
-   *  Wall-clock 60Hz throttle applies uniformly. Without it, fabric
-   *  redraws (and the maplibre→fabric drawImage inside Map._render)
-   *  fire at whatever rate the rAF loop wakes. */
+   *  The old 60 Hz cap existed only because reading maplibre's WebGL canvas
+   *  into fabric's 2D context forced a GPU→CPU sync stall that piled up.
+   *  OpenLayers renders into a 2D canvas (plain canvas→canvas blit, no
+   *  readback), so graphics can redraw at the rAF rate. */
   async update(currentTime: number): Promise<void> {
     if (this.entries.size === 0) return;
-    const nowMs = performance.now();
     let anyRedrew = false;
     for (const entry of this.entries.values()) {
-      if (nowMs - entry.lastDrawAtMs < FRAME_MS) continue;
       const mapWake = entry.pendingMapWake;
 
       if (entry.isStaticGraphic) {
         // Single-keyframe + no clips. Only redraw on a map wake.
         if (!mapWake) continue;
         entry.pendingMapWake = false;
-        entry.lastDrawAtMs = nowMs;
         try {
           entry.fabric.renderAll();
           anyRedrew = true;
@@ -184,14 +178,16 @@ export class GraphicStore {
         continue;
       }
 
-      const t = currentTime - entry.node.timelineStart;
+      // Map the global playhead into the graphic's enclosing-container
+      // local time (accounts for any compositions it's nested in), then
+      // subtract its own start to get the animation time.
+      const t = entry.toLocal(currentTime) - entry.node.timelineStart;
       const duration = entry.node.timelineEnd - entry.node.timelineStart;
       if (t < 0 || t > duration) continue;
       const tChanged = Math.abs(t - entry.lastT) >= 0.001;
       if (!tChanged && !mapWake) continue;
       entry.pendingMapWake = false;
       entry.lastT = t;
-      entry.lastDrawAtMs = nowMs;
       try {
         await this.draw(entry, t);
         anyRedrew = true;
@@ -208,8 +204,8 @@ export class GraphicStore {
 
   dispose(): void {
     for (const entry of this.entries.values()) {
-      // Drop the maplibre wake-up hooks before disposing the maps,
-      // otherwise the unsubs would dangle.
+      // Drop the OL wake-up hooks before disposing the maps, otherwise
+      // the unsubs would dangle.
       for (const unsub of entry.mapRenderUnsubs) {
         try {
           unsub();
@@ -218,11 +214,11 @@ export class GraphicStore {
         }
       }
       entry.mapRenderUnsubs = [];
-      // Release pooled maplibre refs explicitly — the fabric canvas's
-      // own dispose() removes children which fires "removed", but
-      // isPreEnliven Maps short-circuit dispose there to survive
-      // frame churn. Drop the pre-enliven flag and call dispose
-      // ourselves so the SharedMaplibre refcount actually decrements.
+      // Release pooled OL refs explicitly — the fabric canvas's own
+      // dispose() removes children which fires "removed", but isPreEnliven
+      // Maps short-circuit dispose there to survive frame churn. Drop the
+      // pre-enliven flag and call dispose ourselves so the SharedOLMap
+      // refcount actually decrements.
       for (const map of entry.mapCache.values()) {
         map.isPreEnliven = false;
         try {
@@ -284,33 +280,31 @@ export class GraphicStore {
     if (typeof type !== "string") return null;
 
     if (type === "Map") {
-      // Reuse a cached MapLibreMap for this path-id across animation
+      // Reuse a cached OpenLayersMap for this path-id across animation
       // frames. Each tick the GraphicStore re-materializes; without
-      // caching we'd construct a new maplibre instance per frame
-      // (the pool would share the GL context but the wrapper-level
-      // setup churn alone is enough to chase maplibre into the weeds).
+      // caching we'd construct a new OL instance per frame (rebuilding the
+      // style + dropping the warm tile cache every tick).
       //
       // Cached instances stay alive across fabric's add/remove cycle
       // via isPreEnliven=true (which disables dispose-on-removed).
-      // Per-frame prop changes flow through .set() → the 16ms
-      // pendingUpdate buffer → flushPending.
+      // Per-frame prop changes flow through .set() → the OL view.
       const cached = entry.mapCache.get(path);
       if (cached) {
         cached.set(toFabricUpdate(filled));
         return cached;
       }
       const live = await reviveSpec(filled);
-      if (live instanceof MapLibreMap) {
+      if (live instanceof OpenLayersMap) {
         live.isPreEnliven = true;
         live.attachToPath(path);
         entry.mapCache.set(path, live);
-        // Maplibre fires render when tiles arrive / camera applies on
-        // its 16ms flush. Mark the entry as needing a refresh AND wake
-        // the rAF loop. The pendingMapWake flag is what lets a static
-        // single-keyframe graphic (or a paused multi-keyframe graphic)
-        // redraw at all — without it the isStaticGraphic / time-delta
-        // short-circuits in update() would drop the wake on the floor
-        // and the map would stay stuck on the loading placeholder.
+        // OL fires rendercomplete when tiles arrive / the style applies.
+        // Mark the entry as needing a refresh AND wake the rAF loop. The
+        // pendingMapWake flag is what lets a static single-keyframe graphic
+        // (or a paused multi-keyframe graphic) redraw at all — without it
+        // the isStaticGraphic / time-delta short-circuits in update() would
+        // drop the wake on the floor and the map would stay stuck on the
+        // loading placeholder.
         const unsub = live.addRenderListener(() => {
           entry.pendingMapWake = true;
           this.onFrameAvailable?.();
@@ -512,14 +506,34 @@ function asNumber(v: unknown, fallback: number): number {
   return fallback;
 }
 
-function collectGraphicNodes(children: ResolvedChild[]): ResolvedGraphic[] {
-  const out: ResolvedGraphic[] = [];
-  walk(children);
+interface CollectedGraphic {
+  node: ResolvedGraphic;
+  /** Global → enclosing-container local time for this graphic. */
+  toLocal: (globalTime: number) => number;
+}
+
+/** Flatten every graphic in the tree, carrying for each a `toLocal` mapper
+ *  that composes the time transform of every composition it's nested in.
+ *  The per-composition transform mirrors RenderList's descent exactly so a
+ *  graphic's animation stays in sync with where it's drawn. */
+function collectGraphicEntries(children: ResolvedChild[]): CollectedGraphic[] {
+  const out: CollectedGraphic[] = [];
+  walk(children, (t) => t);
   return out;
-  function walk(arr: ResolvedChild[]) {
+  function walk(arr: ResolvedChild[], toLocal: (t: number) => number) {
     for (const c of arr) {
-      if (c.type === "graphic") out.push(c);
-      else if (c.type === "composition") walk(c.children);
+      if (c.type === "graphic") {
+        out.push({ node: c, toLocal });
+      } else if (c.type === "composition") {
+        const comp = c;
+        const parentToLocal = toLocal;
+        const childToLocal = (t: number): number =>
+          Math.min(
+            (parentToLocal(t) - comp.timelineStart) * comp.speed,
+            comp.duration,
+          );
+        walk(comp.children, childToLocal);
+      }
     }
   }
 }

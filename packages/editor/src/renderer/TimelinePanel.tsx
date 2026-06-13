@@ -1125,6 +1125,7 @@ function TimelineGroup({
             selection={selection}
             onSelectionChange={onSelectionChange}
             isDraggingOut={reorderDragKey === addr}
+            reorderDragActive={reorderDragKey != null}
             onReorderDragStart={blockReorderStart}
             onResizeDragStart={blockResizeStart}
           />
@@ -1194,6 +1195,7 @@ function ChildBlockView({
   selection,
   onSelectionChange,
   isDraggingOut,
+  reorderDragActive,
   onReorderDragStart,
   onResizeDragStart,
 }: {
@@ -1227,6 +1229,10 @@ function ChildBlockView({
   /** True while this block is the source of an active reorder drag —
    *  fade it so the user sees the ghost is the live thing. */
   isDraggingOut: boolean;
+  /** True while *any* reorder drag is in flight (this block or another).
+   *  A target block's pointerup must then bubble to DesktopTimeline's
+   *  window drop handler instead of being swallowed as a click-to-select. */
+  reorderDragActive: boolean;
   /** When set, mouse-press + drag past the threshold hands off to the
    *  parent's drag tracker. `null` disables drag for this block (e.g.
    *  attachments, non-editable blocks, or read-only previews). */
@@ -1300,6 +1306,13 @@ function ChildBlockView({
       // Drag took over — DesktopTimeline owns the rest. Don't toggle
       // selection on this click-that-wasn't.
       reorderHandedOff.current = false;
+      return;
+    }
+    if (reorderDragActive) {
+      // Another block is being dragged and the user released over this one.
+      // Bail *without* stopPropagation so the pointerup bubbles to
+      // DesktopTimeline's window drop handler — otherwise the drop is
+      // swallowed here and the item can only land on empty space.
       return;
     }
     e.stopPropagation();
