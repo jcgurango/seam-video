@@ -418,9 +418,18 @@ export default function App({ platform }: AppProps) {
   );
 
   const handleCCCutCancel = useCallback(() => {
+    // Cancelling discards the in-progress cuts, which aren't on the undo
+    // stack — confirm before throwing them away (an empty session is a
+    // harmless no-op, so skip the prompt then).
+    if (ccSelections.length > 0) {
+      const ok = window.confirm(
+        "Discard all CC Cut selections? This can't be undone.",
+      );
+      if (!ok) return;
+    }
     setCcCut(null);
     setCcSelections([]);
-  }, []);
+  }, [ccSelections]);
 
   const handleCCCutOk = useCallback(() => {
     if (!ccCut) return;
