@@ -19,6 +19,7 @@ import SettingsDialog from "./SettingsDialog.js";
 import { useSettings } from "./useSettings.js";
 import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
 import CompositionAudioDialog from "./CompositionAudioDialog.js";
+import Toast from "./Toast.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import { compileDocument } from "./compile.js";
@@ -136,6 +137,10 @@ export default function App({ platform }: AppProps) {
     useState<ExportProgress | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [compAudioPromptOpen, setCompAudioPromptOpen] = useState(false);
+  // Transient transcription feedback (empty selection, server/decoding
+  // failures). Kept separate from `errors` so it shows as a dismissible toast
+  // rather than blanking the editor with the validation-error view.
+  const [transcribeNotice, setTranscribeNotice] = useState<string[]>([]);
   const { settings, updateSettings, resetSettings } = useSettings();
 
   // Web platform UI bridges (project picker / save-as prompt)
@@ -673,7 +678,7 @@ export default function App({ platform }: AppProps) {
 
   useEffect(() => {
     if (transcriber.errors.length > 0) {
-      setErrors(transcriber.errors);
+      setTranscribeNotice(transcriber.errors);
     }
   }, [transcriber.errors]);
 
@@ -692,6 +697,7 @@ export default function App({ platform }: AppProps) {
 
   const handleTranscribe = useCallback(() => {
     if (rootSelectedIndices.length === 0) return;
+    setTranscribeNotice([]);
     // A composition in the selection needs a mix-mode choice first.
     if (selectedCompositionCount > 0) {
       setCompAudioPromptOpen(true);
@@ -703,6 +709,7 @@ export default function App({ platform }: AppProps) {
   const handleCompAudioChoose = useCallback(
     (mode: CompositionAudioMode) => {
       setCompAudioPromptOpen(false);
+      setTranscribeNotice([]);
       void transcriber.run(document, rootSelectedIndices, mode);
     },
     [transcriber, document, rootSelectedIndices],
@@ -968,6 +975,12 @@ export default function App({ platform }: AppProps) {
           onCancel={transcriber.cancel}
         />
       )}
+
+      <Toast
+        messages={transcribeNotice}
+        kind="error"
+        onDismiss={() => setTranscribeNotice([])}
+      />
 
       <CompositionAudioDialog
         open={compAudioPromptOpen}
