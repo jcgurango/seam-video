@@ -1,4 +1,5 @@
-import type { SeamFile } from "@seam/core";
+import type { Composition, SeamFile } from "@seam/core";
+import { removeFromComp } from "./nodePath.js";
 
 /**
  * Selection indices are block-indices into the rendered timeline:
@@ -37,19 +38,11 @@ export function removeSelected(
     doc,
     selectedIndices
   );
-  const childDesc = [...childIndices].sort((a, b) => b - a);
-  const attDesc = [...attachmentIndices].sort((a, b) => b - a);
-
-  const newChildren = [...doc.children];
-  for (const i of childDesc) newChildren.splice(i, 1);
-
-  const newAttachments = [...(doc.attachments ?? [])];
-  for (const i of attDesc) newAttachments.splice(i, 1);
-
-  if (newAttachments.length > 0) {
-    return { ...doc, children: newChildren, attachments: newAttachments };
-  }
-  // Drop the attachments field entirely when empty so saved files stay clean.
-  const { attachments: _omit, ...rest } = doc;
-  return { ...rest, children: newChildren };
+  // `removeFromComp` cascades: deleting a child also drops the attachments
+  // anchored to it (transitively), so we don't leave dangling anchors behind.
+  return removeFromComp(
+    doc as Composition,
+    new Set(childIndices),
+    new Set(attachmentIndices),
+  ) as SeamFile;
 }

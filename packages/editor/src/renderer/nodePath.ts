@@ -191,6 +191,77 @@ export function editContainer(
   });
 }
 
+/** Ids a child references as time anchors (start/end). Only attachments
+ *  carry meaningful anchors, but reading them off any node is harmless. */
+function anchorRefs(child: Child): string[] {
+  const c = child as { start?: { anchor?: string }; end?: { anchor?: string } };
+  const out: string[] = [];
+  if (c.start?.anchor) out.push(c.start.anchor);
+  if (c.end?.anchor) out.push(c.end.anchor);
+  return out;
+}
+
+function nodeId(child: Child): string | undefined {
+  return (child as { id?: string }).id;
+}
+
+/**
+ * Remove the child/attachment slots named by `childIdx`/`attIdx` from a single
+ * composition, *cascading* into dependent attachments: any attachment anchored
+ * (via `start`/`end`) to a removed node is removed too, transitively (a removed
+ * attachment may itself be another attachment's anchor). Deleting a child thus
+ * takes its attachments with it — even when an attachment also anchors to a
+ * surviving node (one dangling end is enough), and even across several
+ * attachments. Anchors only ever point at siblings, so this stays per-comp.
+ */
+export function removeFromComp(
+  comp: Composition,
+  childIdx: ReadonlySet<number>,
+  attIdx: ReadonlySet<number>,
+): Composition {
+  const attachments = comp.attachments ?? [];
+
+  // Seed removed-id set from the explicitly removed children + attachments.
+  const removedIds = new Set<string>();
+  comp.children.forEach((c, i) => {
+    if (childIdx.has(i)) {
+      const id = nodeId(c);
+      if (id) removedIds.add(id);
+    }
+  });
+  const removedAtt = new Set<number>(attIdx);
+  attachments.forEach((a, i) => {
+    if (attIdx.has(i)) {
+      const id = nodeId(a);
+      if (id) removedIds.add(id);
+    }
+  });
+
+  // Fixpoint: pull in attachments anchored to any removed id, feeding their
+  // own ids back so chained anchors cascade.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    attachments.forEach((att, i) => {
+      if (removedAtt.has(i)) return;
+      if (anchorRefs(att).some((ref) => removedIds.has(ref))) {
+        removedAtt.add(i);
+        const id = nodeId(att);
+        if (id && !removedIds.has(id)) removedIds.add(id);
+        changed = true;
+      }
+    });
+  }
+
+  const newChildren = comp.children.filter((_, i) => !childIdx.has(i));
+  const newAttachments = attachments.filter((_, i) => !removedAtt.has(i));
+  if (newAttachments.length > 0) {
+    return { ...comp, children: newChildren, attachments: newAttachments };
+  }
+  const { attachments: _drop, ...rest } = comp;
+  return { ...rest, children: newChildren } as Composition;
+}
+
 /** Remove the node at `path`. No-op for the root path. */
 export function removeNodeAtPath(root: SeamFile, path: NodePath): SeamFile {
   const split = splitLast(path);
@@ -212,18 +283,25 @@ export function removeNodesAtPaths(
   root: SeamFile,
   paths: NodePath[],
 ): SeamFile {
-  // Group by (container key, field) → indices.
-  const groups = new Map<string, { path: NodePath; field: PathSeg["field"]; indices: number[] }>();
+  // Group by *container* (both fields together) so the cascade in
+  // `removeFromComp` sees every removal in a composition at once — a child and
+  // its dependent attachments live in the same comp but different fields.
+  const groups = new Map<
+    string,
+    { path: NodePath; children: Set<number>; attachments: Set<number> }
+  >();
   for (const p of paths) {
     const split = splitLast(p);
     if (!split) continue;
-    const key = `${pathKey(split.parent)}|${split.last.field}`;
+    const key = pathKey(split.parent);
     let g = groups.get(key);
     if (!g) {
-      g = { path: split.parent, field: split.last.field, indices: [] };
+      g = { path: split.parent, children: new Set(), attachments: new Set() };
       groups.set(key, g);
     }
-    g.indices.push(split.last.index);
+    (split.last.field === "children" ? g.children : g.attachments).add(
+      split.last.index,
+    );
   }
   // Apply deepest-container-first so a parent removal doesn't invalidate a
   // child group's path. Deeper paths have longer keys → sort by path length
@@ -233,13 +311,8 @@ export function removeNodesAtPaths(
   );
   let doc = root;
   for (const g of ordered) {
-    const desc = [...new Set(g.indices)].sort((a, b) => b - a);
     doc = updateCompAtPath(doc, g.path, (comp) =>
-      spliceField(comp, g.field, (arr) => {
-        const next = [...arr];
-        for (const i of desc) next.splice(i, 1);
-        return next;
-      }),
+      removeFromComp(comp, g.children, g.attachments),
     );
   }
   return doc;
