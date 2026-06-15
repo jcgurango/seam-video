@@ -841,6 +841,7 @@ export default function App({ platform }: AppProps) {
                 rootDocument={document}
                 onRootDocumentChange={updateDocument}
                 onEnterCCCut={handleEnterCCCut}
+                platform={platform}
               />
             )}
           </div>

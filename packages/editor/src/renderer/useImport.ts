@@ -27,13 +27,18 @@ const IMAGE_EXTENSIONS = [
   ".tiff",
 ];
 
-/** How long an imported image holds on the timeline by default. Same
- *  rough convention as most NLEs — a five-second still is long enough
- *  to read but short enough that no one will mistake it for a freeze
- *  bug. */
-const IMAGE_DEFAULT_DURATION = 5;
+export type MediaKind = "video" | "audio" | "image" | "pmtiles";
 
-type MediaKind = "video" | "audio" | "image" | "pmtiles";
+/** DataTransfer type carrying prebuilt `Child[]` JSON when an existing OPFS
+ *  clip is dragged from the media browser onto the timeline. Distinct from an
+ *  OS file drop (`"Files"`), which goes through the import path instead. */
+export const SOURCE_DRAG_MIME = "application/x-seam-source";
+
+/** How long an imported image holds on the timeline by default. Same rough
+ *  convention as most NLEs — a five-second still is long enough to read but
+ *  short enough that no one will mistake it for a freeze bug. Exported so the
+ *  media browser can build the same node for an existing image source. */
+export const IMAGE_DEFAULT_DURATION_S = 5;
 
 /** Sensible default for a pmtiles drop — 5s static map. Authors can
  *  then animate camera + paths in the graphic JSON. */
@@ -42,12 +47,21 @@ const PMTILES_DEFAULT_DURATION = 5;
  *  somewhere visible until they update it. */
 const PMTILES_DEFAULT_VIEW = { latitude: 0, longitude: 0, zoom: 1 };
 
+/** Classify by filename extension alone. Used both by `classifyMediaFile`
+ *  (with a MIME fallback) and by the media browser, which only has the
+ *  stored OPFS filename to go on. */
+export function classifyByName(name: string): MediaKind | null {
+  const n = name.toLowerCase();
+  if (n.endsWith(".pmtiles")) return "pmtiles";
+  if (VIDEO_EXTENSIONS.some((ext) => n.endsWith(ext))) return "video";
+  if (AUDIO_EXTENSIONS.some((ext) => n.endsWith(ext))) return "audio";
+  if (IMAGE_EXTENSIONS.some((ext) => n.endsWith(ext))) return "image";
+  return null;
+}
+
 function classifyMediaFile(file: File): MediaKind | null {
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".pmtiles")) return "pmtiles";
-  if (VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "video";
-  if (AUDIO_EXTENSIONS.some((ext) => name.endsWith(ext))) return "audio";
-  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return "image";
+  const byName = classifyByName(file.name);
+  if (byName) return byName;
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
   if (file.type.startsWith("image/")) return "image";
@@ -118,7 +132,7 @@ export async function buildItemsFromFiles(
     // just fail anyway.
     const duration =
       kind === "image"
-        ? IMAGE_DEFAULT_DURATION
+        ? IMAGE_DEFAULT_DURATION_S
         : kind === "pmtiles"
           ? PMTILES_DEFAULT_DURATION
           : await probeDuration(file, kind);
@@ -130,20 +144,30 @@ export async function buildItemsFromFiles(
       platform.kind === "electron" && baseDir && isAbsolute(stored)
         ? toRelativeSource(stored, baseDir)
         : stored;
-    if (kind === "video") {
-      const node: Clip = { type: "clip", source, in: 0, out: duration };
-      newChildren.push(node);
-    } else if (kind === "audio") {
-      const node: Audio = { type: "audio", source, in: 0, out: duration };
-      newChildren.push(node);
-    } else if (kind === "pmtiles") {
-      newChildren.push(makeMapGraphic(source, duration));
-    } else {
-      const node: Static = { type: "static", source, duration };
-      newChildren.push(node);
-    }
+    newChildren.push(buildItemFromSource(kind, source, duration));
   }
   return newChildren;
+}
+
+/** Build the timeline Child for an already-stored media `source` of a known
+ *  `kind`. `duration` is the natural length: for video/audio it's the probed
+ *  source duration (→ `out`), for image/pmtiles the display hold. Shared by
+ *  the file importer and the media browser's drag-to-timeline. */
+export function buildItemFromSource(
+  kind: MediaKind,
+  source: string,
+  duration: number,
+): Child {
+  switch (kind) {
+    case "video":
+      return { type: "clip", source, in: 0, out: duration } satisfies Clip;
+    case "audio":
+      return { type: "audio", source, in: 0, out: duration } satisfies Audio;
+    case "pmtiles":
+      return makeMapGraphic(source, duration);
+    case "image":
+      return { type: "static", source, duration } satisfies Static;
+  }
 }
 
 /** A graphic with a single Map element filling the canvas, ready for

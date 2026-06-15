@@ -8,15 +8,49 @@ import type {
   Platform,
 } from "./types.js";
 import { buildExportPlan } from "../exportHelpers.js";
+import { classifyByName, type MediaKind } from "../useImport.js";
 
 const PROJECTS_DIR = "projects";
 const CLIPS_DIR = "clips";
+const THUMBS_DIR = "thumbnails";
+const MEDIA_META_DIR = "media-meta";
+const MEDIA_INDEX_FILE = "index.json";
 
 export interface ProjectEntry {
   name: string;
   lastModified: number;
   size: number;
 }
+
+/** A media file in OPFS clips/, listed for the media browser. */
+export interface ClipEntry {
+  name: string;
+  size: number;
+  /** OPFS write time — doubles as the "date added" backfill. */
+  lastModified: number;
+}
+
+/** Per-clip metadata persisted in media-meta/index.json. All fields beyond
+ *  `kind`/`addedAt` are best-effort and filled lazily by the browser. */
+export interface MediaMeta {
+  kind: MediaKind;
+  /** Epoch ms the clip entered OPFS. */
+  addedAt: number;
+  /** Epoch ms the clip was last added to a timeline. */
+  lastUsedAt?: number;
+  /** EXIF/container capture date (epoch ms). */
+  captureDate?: number;
+  width?: number;
+  height?: number;
+  /** Natural duration (s) for video/audio. */
+  duration?: number;
+  /** Set once the one-time decode pass (thumbnail + capture date + duration)
+   *  has run, so the browser doesn't redo expensive decoding each open even
+   *  when a field legitimately came back undefined. */
+  probed?: boolean;
+}
+
+export type MediaIndex = Record<string, MediaMeta>;
 
 async function getRoot(): Promise<FileSystemDirectoryHandle> {
   return await navigator.storage.getDirectory();
@@ -155,6 +189,13 @@ export class WebPlatform implements Platform {
   // Map from clip source filename → blob URL (lazily created).
   private blobUrlCache = new Map<string, string>();
 
+  // In-memory media-meta index (lazily loaded from media-meta/index.json).
+  // Persists are serialized through `indexWriteChain` so concurrent updates
+  // (e.g. the browser building many entries at once) can't truncate-race.
+  private mediaIndex: MediaIndex | null = null;
+  private indexLoad: Promise<MediaIndex> | null = null;
+  private indexWriteChain: Promise<void> = Promise.resolve();
+
   // Map from fingerprint → existing clip filename. Lazily built on first
   // import-like operation, then kept in sync as we add/remove clips.
   private fingerprintIndex: Map<string, string> | null = null;
@@ -235,10 +276,16 @@ export class WebPlatform implements Platform {
       this.blobUrlCache.set(name, URL.createObjectURL(file));
     }
 
-    // Keep index fresh
+    // Keep the fingerprint index fresh
     const fp = await fingerprint(file);
     const index = await this.ensureFingerprintIndex();
     index.set(fp, name);
+
+    // Stamp the media-meta entry's "date added". Kind comes from the name;
+    // the rest (thumbnail, capture date, duration) is filled lazily when the
+    // media browser first sees the clip.
+    const kind = classifyByName(name);
+    if (kind) await this.updateMediaMeta(name, { addedAt: Date.now(), kind });
 
     return name;
   }
@@ -348,6 +395,82 @@ export class WebPlatform implements Platform {
         console.warn(`preloadBlobUrls: failed to load "${source}"`, err);
       }
     }
+  }
+
+  // ── Media browser (clips listing, thumbnails, meta index) ────────
+
+  /** List every file in clips/ with size + OPFS write time. */
+  async listClips(): Promise<ClipEntry[]> {
+    const dir = await getDir(CLIPS_DIR);
+    const out: ClipEntry[] = [];
+    // @ts-expect-error: values() is supported in all target browsers
+    for await (const entry of dir.values()) {
+      if (entry.kind !== "file") continue;
+      const file = await entry.getFile();
+      out.push({
+        name: entry.name,
+        size: file.size,
+        lastModified: file.lastModified,
+      });
+    }
+    return out;
+  }
+
+  /** The raw File for a clip — used to decode thumbnails / probe metadata. */
+  async getClipFile(name: string): Promise<File> {
+    return readFileFromDir(CLIPS_DIR, name);
+  }
+
+  /** Load (and cache) the media-meta index. Missing file → empty index. */
+  async getMediaIndex(): Promise<MediaIndex> {
+    if (this.mediaIndex) return this.mediaIndex;
+    if (!this.indexLoad) {
+      this.indexLoad = (async () => {
+        try {
+          const file = await readFileFromDir(MEDIA_META_DIR, MEDIA_INDEX_FILE);
+          this.mediaIndex = JSON.parse(await file.text()) as MediaIndex;
+        } catch {
+          this.mediaIndex = {};
+        }
+        return this.mediaIndex;
+      })();
+    }
+    return this.indexLoad;
+  }
+
+  /** Merge `patch` into a clip's meta entry and persist. Writes are chained
+   *  so overlapping updates serialize. */
+  async updateMediaMeta(
+    name: string,
+    patch: Partial<MediaMeta>,
+  ): Promise<void> {
+    const index = await this.getMediaIndex();
+    index[name] = { ...index[name], ...patch } as MediaMeta;
+    const snapshot = JSON.stringify(index);
+    this.indexWriteChain = this.indexWriteChain.then(() =>
+      writeFileToDir(MEDIA_META_DIR, MEDIA_INDEX_FILE, snapshot),
+    );
+    return this.indexWriteChain;
+  }
+
+  /** Bump a clip's "last used" timestamp (called when it lands on a timeline). */
+  async markClipUsed(name: string): Promise<void> {
+    await this.updateMediaMeta(name, { lastUsedAt: Date.now() });
+  }
+
+  /** A blob URL for a clip's cached thumbnail, or null if not generated yet. */
+  async readThumbnailUrl(name: string): Promise<string | null> {
+    try {
+      const file = await readFileFromDir(THUMBS_DIR, `${name}.jpg`);
+      return URL.createObjectURL(file);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a generated thumbnail for a clip. */
+  async writeThumbnail(name: string, blob: Blob): Promise<void> {
+    await writeFileToDir(THUMBS_DIR, `${name}.jpg`, blob);
   }
 
   // ── Fingerprint index ────────────────────────────────────────────

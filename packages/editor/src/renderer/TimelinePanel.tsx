@@ -8,7 +8,7 @@ import type {
   ResolvedChild,
   SeamFile,
 } from "@seam/core";
-import { buildItemsFromFiles } from "./useImport.js";
+import { buildItemsFromFiles, SOURCE_DRAG_MIME } from "./useImport.js";
 import { attachNewItems } from "./attachTool.js";
 import { dirname } from "./pathUtils.js";
 import type { History } from "./useHistory.js";
@@ -220,6 +220,14 @@ interface InnerProps {
     toIndex: number,
     files: FileList | File[],
   ) => Promise<void>;
+  /** Insert prebuilt nodes (dragged from the media browser) into a container
+   *  at a slot. Mirrors `onImportAt` but skips file import — the source is
+   *  already stored. */
+  onInsertChildrenAt?: (
+    toContainer: NodePath,
+    toIndex: number,
+    children: Child[],
+  ) => void;
   /** Receives a file drop on the attach zone — anchors new items to the
    *  selected primary (at `containerPath`'s `fieldIndex`) at its
    *  container-local `localTime` (the playhead). */
@@ -229,6 +237,15 @@ interface InnerProps {
     side: "start" | "end",
     localTime: number,
     files: FileList,
+  ) => void;
+  /** Attach-zone drop of prebuilt nodes (media-browser drag). Mirrors
+   *  `onAttachDropAt` without file import. */
+  onAttachChildrenAt?: (
+    containerPath: NodePath,
+    fieldIndex: number,
+    side: "start" | "end",
+    localTime: number,
+    children: Child[],
   ) => void;
   /** Receives a grabbed-node drop on the attach zone — moves the node at
    *  `fromPath` into the selected primary's container as an anchored
@@ -626,7 +643,9 @@ function DesktopTimeline({
   editHistory,
   onMoveNode,
   onImportAt,
+  onInsertChildrenAt,
   onAttachDropAt,
+  onAttachChildrenAt,
   onAttachExistingAt,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
@@ -865,8 +884,14 @@ function DesktopTimeline({
     };
   };
 
+  // Both OS files and media-browser source drags drive the same ghost +
+  // attach-zone affordance; the payload only differs at drop time.
+  const isDraggablePayload = (e: React.DragEvent) =>
+    e.dataTransfer.types.includes("Files") ||
+    e.dataTransfer.types.includes(SOURCE_DRAG_MIME);
+
   const handleFileDragOver = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes("Files")) return;
+    if (!isDraggablePayload(e)) return;
     e.preventDefault();
     const pos = cursorToContent(e);
     if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y });
@@ -891,32 +916,58 @@ function DesktopTimeline({
   };
 
   const handleFileDrop = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes("Files")) return;
+    if (!isDraggablePayload(e)) return;
     e.preventDefault();
     const pos = cursorToContent(e);
     setFileDrag(null);
     if (!pos) return;
-    if (e.dataTransfer.files.length === 0) return;
+
+    // Media-browser source drag carries prebuilt nodes; an OS drop carries
+    // files. Parse the source payload (if any) so both go through the same
+    // attach-zone / region branching below.
+    const raw = e.dataTransfer.getData(SOURCE_DRAG_MIME);
+    let sourceChildren: Child[] | null = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) sourceChildren = parsed;
+      } catch {
+        /* malformed payload — fall through to the file path */
+      }
+    }
+    if (!sourceChildren && e.dataTransfer.files.length === 0) return;
 
     const inAttachZone =
       showAttachZone &&
       pos.y >= contentHeight &&
-      attachTarget != null &&
-      onAttachDropAt != null;
+      attachTarget != null;
     if (inAttachZone) {
       const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
-      onAttachDropAt!(
-        attachTarget!.containerPath,
-        attachTarget!.fieldIndex,
-        side,
-        attachLocalTime(),
-        e.dataTransfer.files,
-      );
+      if (sourceChildren) {
+        onAttachChildrenAt?.(
+          attachTarget!.containerPath,
+          attachTarget!.fieldIndex,
+          side,
+          attachLocalTime(),
+          sourceChildren,
+        );
+      } else if (onAttachDropAt) {
+        onAttachDropAt(
+          attachTarget!.containerPath,
+          attachTarget!.fieldIndex,
+          side,
+          attachLocalTime(),
+          e.dataTransfer.files,
+        );
+      }
       return;
     }
-    if (onImportAt) {
-      const region = regionAt(regions, pos.x, pos.y);
-      const slot = insertionIndexIn(region, pos.x);
+
+    const region = regionAt(regions, pos.x, pos.y);
+    const slot = insertionIndexIn(region, pos.x);
+    if (sourceChildren) {
+      onInsertChildrenAt?.(region.path, slot, sourceChildren);
+    } else if (onImportAt) {
       void onImportAt(region.path, slot, e.dataTransfer.files);
     }
   };
@@ -1605,6 +1656,45 @@ export default function TimelinePanel({
     [doc, onDocumentChange, filePath, platform, rootBin],
   );
 
+  // Media-browser drag: insert prebuilt nodes (already-stored sources) into a
+  // container at a slot. Mirrors `onImportAt` minus the file-import step.
+  const onInsertChildrenAt = useCallback(
+    (toContainer: NodePath, toIndex: number, children: Child[]) => {
+      if (!doc || !onDocumentChange || children.length === 0) return;
+      let next = doc;
+      for (let k = 0; k < children.length; k++) {
+        next = insertNode(
+          next,
+          toContainer,
+          "children",
+          toIndex + k,
+          children[k],
+        );
+      }
+      onDocumentChange(next);
+    },
+    [doc, onDocumentChange],
+  );
+
+  // Media-browser drag onto the attach zone: anchor prebuilt nodes to the
+  // selected primary. Mirrors `handleAttachDropAt` minus the file-import step.
+  const onAttachChildrenAt = useCallback(
+    (
+      containerPath: NodePath,
+      fieldIndex: number,
+      side: "start" | "end",
+      anchorTime: number,
+      children: Child[],
+    ) => {
+      if (!doc || !onDocumentChange || children.length === 0) return;
+      const next = editContainer(doc, containerPath, rootBin, (sub) =>
+        attachNewItems(sub, anchorTime, fieldIndex, children, side),
+      );
+      if (next !== doc) onDocumentChange(next);
+    },
+    [doc, onDocumentChange, rootBin],
+  );
+
   // Move a grabbed node into the selected primary's container as a fresh
   // single-(start|end)-anchored attachment. Strips any existing anchors so
   // it can't end up pinned on both ends; clears selection since it moved.
@@ -1668,7 +1758,9 @@ export default function TimelinePanel({
   // preview should no-op on drop.
   const shellOnMoveNode = editable ? onMoveNode : undefined;
   const shellOnImportAt = editable ? onImportAt : undefined;
+  const shellOnInsertChildrenAt = editable ? onInsertChildrenAt : undefined;
   const shellOnAttachDropAt = editable ? handleAttachDropAt : undefined;
+  const shellOnAttachChildrenAt = editable ? onAttachChildrenAt : undefined;
   const shellOnAttachExistingAt = editable ? handleAttachExistingAt : undefined;
 
   return (
@@ -1705,7 +1797,9 @@ export default function TimelinePanel({
             editHistory={editHistory}
             onMoveNode={shellOnMoveNode}
             onImportAt={shellOnImportAt}
+            onInsertChildrenAt={shellOnInsertChildrenAt}
             onAttachDropAt={shellOnAttachDropAt}
+            onAttachChildrenAt={shellOnAttachChildrenAt}
             onAttachExistingAt={shellOnAttachExistingAt}
           />
         );

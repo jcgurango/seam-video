@@ -11,7 +11,10 @@ import type {
 import JsonNodePanel from "./JsonNodePanel.js";
 import ScriptPanel from "./ScriptPanel.js";
 import BinPanel from "./BinPanel.js";
+import MediaBrowser from "./MediaBrowser.js";
 import { findBinItem } from "./nodeBin.js";
+import type { Platform } from "./platform/index.js";
+import type { WebPlatform } from "./platform/web.js";
 
 type SectionId =
   | "properties"
@@ -19,15 +22,20 @@ type SectionId =
   | "json"
   | "script"
   | "inspector"
-  | "bin";
+  | "bin"
+  | "media";
 
-const SECTIONS: { id: SectionId; label: string }[] = [
+const BASE_SECTIONS: { id: SectionId; label: string }[] = [
   { id: "properties", label: "Properties" },
   { id: "filters", label: "Filters" },
   { id: "json", label: "JSON" },
   { id: "script", label: "Script" },
   { id: "inspector", label: "Inspector" },
   { id: "bin", label: "Bin" },
+];
+// The media browser is OPFS-backed, so web-only.
+const WEB_SECTIONS: { id: SectionId; label: string }[] = [
+  { id: "media", label: "Media" },
 ];
 
 interface InspectorAccordionProps {
@@ -52,6 +60,8 @@ interface InspectorAccordionProps {
   onRootDocumentChange: (next: SeamFile) => void;
   /** Enter CC Cut view for the given bin entry. */
   onEnterCCCut: (binId: string) => void;
+  /** Platform — gates the web-only Media section + backs its browser. */
+  platform: Platform;
 }
 
 /**
@@ -72,7 +82,10 @@ export default function InspectorAccordion({
   rootDocument,
   onRootDocumentChange,
   onEnterCCCut,
+  platform,
 }: InspectorAccordionProps) {
+  const sections =
+    platform.kind === "web" ? [...BASE_SECTIONS, ...WEB_SECTIONS] : BASE_SECTIONS;
   const [open, setOpen] = useState<Set<SectionId>>(
     () => new Set<SectionId>(["inspector"]),
   );
@@ -121,6 +134,13 @@ export default function InspectorAccordion({
             onEnterCCCut={onEnterCCCut}
           />
         );
+      case "media":
+        return (
+          <MediaBrowser
+            platform={platform as WebPlatform}
+            currentDoc={document}
+          />
+        );
     }
   };
 
@@ -135,7 +155,7 @@ export default function InspectorAccordion({
         background: "#222",
       }}
     >
-      {SECTIONS.map((section) => {
+      {sections.map((section) => {
         const isOpen = open.has(section.id);
         return (
           <div
