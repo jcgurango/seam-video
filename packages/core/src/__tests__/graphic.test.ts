@@ -217,12 +217,14 @@ describe("interp engine", () => {
     expect(snap.a.top).toBeCloseTo(25);
   });
 
-  it("respects per-object easing override", () => {
-    const prev = makeFrame(
-      [{ id: "a", type: "Rect", left: 0, easing: "ease-in" }],
-      0,
+  it("respects per-object easing override (from the destination keyframe)", () => {
+    // Easing governs the tween *arriving at* a keyframe, so it's authored on
+    // the `next` object (matches core's sampleFrames + every animated value).
+    const prev = makeFrame([{ id: "a", type: "Rect", left: 0 }], 0);
+    const next = makeFrame(
+      [{ id: "a", type: "Rect", left: 100, easing: "ease-in" }],
+      1,
     );
-    const next = makeFrame([{ id: "a", type: "Rect", left: 100 }], 1);
     // ease-in (cubic): t=0.5 → 0.5^3 = 0.125
     const snap = interpolateFrames(prev, next, 0.5, "linear");
     expect(snap.a.left).toBeCloseTo(12.5, 1);

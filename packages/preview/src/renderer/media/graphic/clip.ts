@@ -191,6 +191,8 @@ export function clipSnapAtLocalTime(
     extKfs[prevIdx].snap,
     extKfs[nextIdx].snap,
     pairT,
-    extKfs[prevIdx].easing,
+    // Easing governs the tween arriving at the destination keyframe (matches
+    // core's sampleFrames + every other animated value).
+    extKfs[nextIdx].easing,
   );
 }

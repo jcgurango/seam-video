@@ -306,7 +306,8 @@ const AngleDirectionSchema = z.enum(["shortest", "cw", "ccw"]);
 
 // Fields every inner object can carry. id is the stable cross-frame
 // correspondence key; revolutions/angleDirection drive winding for `angle`;
-// easing overrides the frame-level default for this object only.
+// easing overrides the frame-level default for this object only (and, like
+// the frame default, governs the tween *arriving at* this keyframe).
 const GraphicObjectBaseSchema = {
   id: z.string().min(1).optional(),
   easing: EasingSchema.optional(),
@@ -455,8 +456,9 @@ export const GraphicObjectSchema: z.ZodType<any> = z.lazy(() =>
 );
 
 // A keyframe: [stamp, objects, easing?]. Stamp is a Length so authors can
-// write "50%" of the graphic's duration. Easing is the default for
-// animations leaving this keyframe; per-object `easing` overrides it.
+// write "50%" of the graphic's duration. Easing is the default for the tween
+// *arriving at* this keyframe (matching core's keyframe sampler + every other
+// animated value); per-object `easing` overrides it.
 export const GraphicFrameSchema = z.union([
   z.tuple([LengthSchema, z.array(GraphicObjectSchema)]),
   z.tuple([LengthSchema, z.array(GraphicObjectSchema), EasingSchema]),

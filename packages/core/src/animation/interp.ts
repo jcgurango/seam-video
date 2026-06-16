@@ -322,10 +322,13 @@ function interpolateObject(
  *  (they appear discretely at next's stamp, when prev structure flips
  *  to next's, per the "Frame A structure until Frame B" rule).
  *
- *  `frameEasing` is the easing authored on the prev keyframe (3rd tuple
- *  element). Per-object `easing` attributes override it. Easing maps
- *  `t` before object interpolation; every numeric/color/angle lerp
- *  inside runs against the eased fraction. */
+ *  `frameEasing` is the easing authored on the `next` keyframe (3rd tuple
+ *  element) — easing governs the tween *arriving at* a keyframe, matching
+ *  core's `sampleFrames` (which uses the destination keyframe's ease) and
+ *  every other animated value in the app. The per-object `easing` attribute
+ *  on the `next` object overrides it. Easing maps `t` before object
+ *  interpolation; every numeric/color/angle lerp inside runs against the
+ *  eased fraction. */
 export function interpolateFrames(
   prev: FilledFrame,
   next: FilledFrame,
@@ -337,7 +340,7 @@ export function interpolateFrames(
     const a = prev.flat[path];
     const b = next.flat[path];
     if (b && a.type === b.type) {
-      const objEasing = typeof a.easing === "string" ? a.easing : undefined;
+      const objEasing = typeof b.easing === "string" ? b.easing : undefined;
       const easingFn = resolveEasing(objEasing ?? frameEasing);
       out[path] = interpolateObject(a, b, easingFn(t));
     } else {
