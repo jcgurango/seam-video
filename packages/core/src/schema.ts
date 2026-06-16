@@ -51,40 +51,37 @@ export function keyframed<T extends z.ZodTypeAny>(staticSchema: T): z.ZodType<an
 
 // ── Filters ────────────────────────────────────────────────────────
 
+// Filters are NOT animatable — params are plain numbers. (Opacity, the one
+// filter anyone ever keyframed, is now the first-class `opacity` field in
+// SpatialFieldsSchema below.)
 export const AdjustFilterSchema = z.object({
   type: z.literal("adjust"),
-  brightness: keyframed(z.number().min(-1).max(1)).default(0),
-  contrast: keyframed(z.number().min(-1000).max(1000)).default(1),
-  saturation: keyframed(z.number().min(0).max(3)).default(1),
-  gamma: keyframed(z.number().min(0.1).max(10)).default(1),
-});
-
-export const OpacityFilterSchema = z.object({
-  type: z.literal("opacity"),
-  value: keyframed(z.number().min(0).max(1)),
+  brightness: z.number().min(-1).max(1).default(0),
+  contrast: z.number().min(-1000).max(1000).default(1),
+  saturation: z.number().min(0).max(3).default(1),
+  gamma: z.number().min(0.1).max(10).default(1),
 });
 
 export const ColorBalanceFilterSchema = z.object({
   type: z.literal("colorbalance"),
-  rs: keyframed(z.number().min(-1).max(1)).default(0),
-  gs: keyframed(z.number().min(-1).max(1)).default(0),
-  bs: keyframed(z.number().min(-1).max(1)).default(0),
-  rm: keyframed(z.number().min(-1).max(1)).default(0),
-  gm: keyframed(z.number().min(-1).max(1)).default(0),
-  bm: keyframed(z.number().min(-1).max(1)).default(0),
-  rh: keyframed(z.number().min(-1).max(1)).default(0),
-  gh: keyframed(z.number().min(-1).max(1)).default(0),
-  bh: keyframed(z.number().min(-1).max(1)).default(0),
+  rs: z.number().min(-1).max(1).default(0),
+  gs: z.number().min(-1).max(1).default(0),
+  bs: z.number().min(-1).max(1).default(0),
+  rm: z.number().min(-1).max(1).default(0),
+  gm: z.number().min(-1).max(1).default(0),
+  bm: z.number().min(-1).max(1).default(0),
+  rh: z.number().min(-1).max(1).default(0),
+  gh: z.number().min(-1).max(1).default(0),
+  bh: z.number().min(-1).max(1).default(0),
 });
 
 export const ColorTemperatureFilterSchema = z.object({
   type: z.literal("colortemperature"),
-  temperature: keyframed(z.number().min(1000).max(40000)).default(6500),
+  temperature: z.number().min(1000).max(40000).default(6500),
 });
 
 export const FilterSchema = z.discriminatedUnion("type", [
   AdjustFilterSchema,
-  OpacityFilterSchema,
   ColorBalanceFilterSchema,
   ColorTemperatureFilterSchema,
 ]);
@@ -136,6 +133,9 @@ const SpatialFieldsSchema = {
   translation: keyframed(Point2DSchema).optional(),
   size: keyframed(Point2DSchema).optional(),
   rotation: keyframed(z.number()).optional(),
+  // First-class opacity (ejected from filters); animatable like volume.
+  // 0 = transparent, 1 = opaque. Absent = fully opaque.
+  opacity: keyframed(z.number().min(0).max(1)).optional(),
 };
 
 /** Crossfade overlap (seconds) with the previous sequential sibling.

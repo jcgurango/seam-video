@@ -283,21 +283,19 @@ describe("resolveComposition", () => {
   });
 
   describe("filters", () => {
-    it("passes filters through to resolved clips", () => {
-      const filters = [
-        { type: "adjust" as const, brightness: 0.5 },
-        { type: "opacity" as const, value: 0.8 },
-      ];
+    it("passes filters + opacity through to resolved clips", () => {
+      const filters = [{ type: "adjust" as const, brightness: 0.5 }];
       const result = resolveComposition(
         comp({
           children: [
-            { type: "clip", source: "v.mp4", in: 0, out: 5, filters },
+            { type: "clip", source: "v.mp4", in: 0, out: 5, filters, opacity: 0.8 },
           ],
         })
       );
       const clip = result.children[0];
       if (clip.type === "clip") {
         expect(clip.filters).toEqual(filters);
+        expect(clip.opacity).toBe(0.8);
       }
     });
 

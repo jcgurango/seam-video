@@ -21,8 +21,8 @@ describe("macro expansion", () => {
 
   it("substitutes object-valued macros as single array elements", () => {
     const fade = {
-      type: "opacity",
-      value: [[0, 0], [0.25, 1]],
+      type: "adjust",
+      brightness: 0.5,
     };
     const result = expandMacros({
       type: "composition",

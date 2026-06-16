@@ -60,6 +60,7 @@ A clip references a segment of a source video file.
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
 | `rotation` | number | no | Degrees clockwise about `origin` (see [Spatial Layout](#spatial-layout)) |
+| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
@@ -92,7 +93,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-Visual props (`filters`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
+Visual props (`filters`, `opacity`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
 
 ### Static
 
@@ -114,6 +115,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
 | `filters` | array | no | See [Filters](#filters) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | See [Spatial Layout](#spatial-layout) |
+| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -193,6 +195,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -263,6 +266,7 @@ A motion-graphics layer with its own internal keyframe timeline. The inner conte
 | `in`, `out`, `overflow`, `underflow` | — | no | Window into the internal timeline. Same shape as Composition. Defaults: full internal duration |
 | `filters` | array | no | Visual effects applied to the rasterized graphic (see [Filters](#filters)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
+| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
@@ -351,6 +355,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
+| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -581,16 +586,18 @@ Use it for editor concerns that should round-trip through saves — review state
 
 ## Filters
 
-Filters apply visual effects to clips and compositions. They are specified as an ordered array — each filter is applied in sequence.
+Filters apply visual effects to clips, static, text, graphic, and compositions. They are specified as an ordered array — each filter is applied in sequence.
+
+**Filters are not animatable** — every parameter is a static number. (The one effect anyone ever keyframed was opacity, which is now the first-class [`opacity`](#opacity) field instead.) To vary a look over time, animate `opacity` or author distinct compositions.
 
 ```json
 {
   "type": "clip",
   "source": "footage.mp4",
   "in": 0, "out": 10,
+  "opacity": 0.8,
   "filters": [
-    { "type": "adjust", "brightness": 0.2, "contrast": 1.1 },
-    { "type": "opacity", "value": 0.8 }
+    { "type": "adjust", "brightness": 0.2, "contrast": 1.1 }
   ]
 }
 ```
@@ -607,14 +614,6 @@ Color and tone adjustments. Maps to FFmpeg's `eq` filter.
 | `contrast` | number | `1` | -1000 to 1000 | Contrast multiplier |
 | `saturation` | number | `1` | 0 to 3 | Saturation multiplier (0 = grayscale) |
 | `gamma` | number | `1` | 0.1 to 10 | Gamma correction |
-
-#### opacity
-
-Sets the opacity of the node. Maps to FFmpeg's `colorchannelmixer` alpha channel.
-
-| Field | Type | Range | Description |
-|-------|------|-------|-------------|
-| `value` | number | 0 to 1 | Opacity (0 = fully transparent, 1 = fully opaque) |
 
 #### colorbalance
 
@@ -648,6 +647,17 @@ Filters can also be applied to compositions, affecting all children as a group:
   ]
 }
 ```
+
+## Opacity
+
+`opacity` is a first-class field on every visual node (`clip`, `static`, `text`, `graphic`, `composition` — not `audio`). It's a multiplier from `0` (fully transparent) to `1` (fully opaque); the default (absent) is fully opaque. Unlike filters, **`opacity` is animatable** — it follows the keyframe-tuple syntax (see [Animation](#animation)):
+
+```json
+{ "type": "clip", "source": "v.mp4", "in": 0, "out": 5,
+  "opacity": [[0, 0], [1, 1, "ease-in-out"]] }
+```
+
+On a composition, `opacity` applies to the whole group as a unit (the children composite first, then the group fades), so overlapping children don't double-expose through each other. (Earlier formats expressed this as an `{ "type": "opacity", "value": … }` filter; that filter no longer exists.)
 
 ## Spatial Layout
 
@@ -837,9 +847,7 @@ A node-local time of `0` is when the node first becomes active; `100%` is when i
   "in": 0, "out": 5,
   "volume": [[0, 0], ["50%", 1, "ease-in"], ["100%", 0, "ease-out"]],
   "translation": [[0, { "x": 0, "y": 0 }], [2, { "x": 200, "y": 0 }]],
-  "filters": [
-    { "type": "opacity", "value": [[0, 0], [1, 1, "ease-in-out"]] }
-  ]
+  "opacity": [[0, 0], [1, 1, "ease-in-out"]]
 }
 ```
 
@@ -849,13 +857,13 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 
 | Node | Fields |
 |------|--------|
-| **Clip** | `volume`, `origin`, `translation`, `size`, `rotation` |
+| **Clip** | `opacity`, `volume`, `origin`, `translation`, `size`, `rotation` |
 | **Audio** | `volume` |
-| **Composition** | `origin`, `translation`, `size`, `rotation` |
-| **Static** | `origin`, `translation`, `size`, `rotation` |
-| **Text** (and per-run inside `text` array) | `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
-| **Graphic** | Outer wrapper: `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
-| **Filters** | every numeric value: `adjust.{brightness,contrast,saturation,gamma}`, `opacity.value`, `colorbalance.{rs,gs,bs,rm,gm,bm,rh,gh,bh}`, `colortemperature.temperature` |
+| **Composition** | `opacity`, `origin`, `translation`, `size`, `rotation` |
+| **Static** | `opacity`, `origin`, `translation`, `size`, `rotation` |
+| **Text** (and per-run inside `text` array) | `opacity`, `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
+| **Graphic** | Outer wrapper: `opacity`, `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
+| **Filters** | Nothing — filter parameters are static numbers (not animatable). |
 
 ### Renderer support
 
@@ -868,6 +876,7 @@ The CLI ffmpeg / melt path supports every animatable field:
 | `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into the compositing transition's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect, so authoring with non-default `size` overrides means stretching is intentional. |
 | `rotation` | Rotated nodes composite via melt's `qtblend` (`rotation` degrees + `rotate_center`) instead of the default `affine` — melt 7.38's `affine` can't do in-plane 2D rotation. The rect is shifted so qtblend's center-pivot reproduces rotation about the authored `origin`. Static and keyframed rotation both supported; an overflowing (cover) rect that's also rotated may mis-scale in non-portrait profiles (surfaced as a build limitation). |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
-| Filter parameters | `eq` (adjust) uses `eval=frame` + per-parameter expressions. `colorchannelmixer` (opacity), `colorbalance`, and `colortemperature` use `sendcmd` to deliver one stepwise update per output frame to a labelled filter instance. |
+| `opacity` | Folded into the compositing transition's `rect` ALPHA channel (`X Y W H ALPHA`) — same per-frame rect path as `origin`/`translation`/`size`, so animated opacity rides the existing keyframed rect. |
+| Filter parameters | Static — `eq` (adjust), `colorbalance`, and `colortemperature` emit single `av.*` values (no `eval=frame` / `sendcmd`), since filters are no longer animatable. |
 
 Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

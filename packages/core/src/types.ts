@@ -22,32 +22,30 @@ export type Point2D = Length | { x?: Length; y?: Length };
 
 // ── Filters ────────────────────────────────────────────────────────
 
+// Filters are NOT animatable — params are plain numbers. (Opacity, the one
+// filter anyone keyframed, is now the first-class `opacity` field on
+// SpatialFields.)
 export interface AdjustFilter {
   type: "adjust";
-  brightness?: Keyframed<number>;
-  contrast?: Keyframed<number>;
-  saturation?: Keyframed<number>;
-  gamma?: Keyframed<number>;
-}
-
-export interface OpacityFilter {
-  type: "opacity";
-  value: Keyframed<number>;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  gamma?: number;
 }
 
 export interface ColorBalanceFilter {
   type: "colorbalance";
-  rs?: Keyframed<number>; gs?: Keyframed<number>; bs?: Keyframed<number>;
-  rm?: Keyframed<number>; gm?: Keyframed<number>; bm?: Keyframed<number>;
-  rh?: Keyframed<number>; gh?: Keyframed<number>; bh?: Keyframed<number>;
+  rs?: number; gs?: number; bs?: number;
+  rm?: number; gm?: number; bm?: number;
+  rh?: number; gh?: number; bh?: number;
 }
 
 export interface ColorTemperatureFilter {
   type: "colortemperature";
-  temperature?: Keyframed<number>;
+  temperature?: number;
 }
 
-export type Filter = AdjustFilter | OpacityFilter | ColorBalanceFilter | ColorTemperatureFilter;
+export type Filter = AdjustFilter | ColorBalanceFilter | ColorTemperatureFilter;
 
 export interface SpatialFields {
   objectFit?: ObjectFit;
@@ -66,6 +64,10 @@ export interface SpatialFields {
   /** Rotation in degrees, clockwise, about the item's `origin` point.
    *  Default `0` (no rotation). Animatable. */
   rotation?: Keyframed<number>;
+  /** Opacity multiplier, 0 (transparent) to 1 (opaque). Default 1. Animatable
+   *  (ejected from filters). Mirrors how `volume` rides through resolution as
+   *  a Keyframed value sampled per-frame by renderers. */
+  opacity?: Keyframed<number>;
 }
 
 /**

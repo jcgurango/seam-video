@@ -181,7 +181,7 @@ describe("data node", () => {
             type: "data",
             data: {},
             duration: 1,
-            filters: [{ type: "opacity", value: 0.5 }],
+            filters: [{ type: "adjust", brightness: 0.5 }],
           },
         ],
       })

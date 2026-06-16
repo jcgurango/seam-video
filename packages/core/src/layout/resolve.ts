@@ -142,6 +142,7 @@ function resolveChild(
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...(child.opacity != null ? { opacity: child.opacity } : {}),
       },
       actualDuration: target,
     };
@@ -186,6 +187,7 @@ function resolveChild(
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...(child.opacity != null ? { opacity: child.opacity } : {}),
       } as ResolvedChild,
       actualDuration: target,
     };
@@ -212,6 +214,7 @@ function resolveChild(
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...(child.opacity != null ? { opacity: child.opacity } : {}),
       } as ResolvedChild,
       actualDuration: target,
     };
@@ -263,6 +266,7 @@ function resolveChild(
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...(child.opacity != null ? { opacity: child.opacity } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
@@ -326,6 +330,7 @@ function resolveChild(
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
+      ...(leaf.opacity != null ? { opacity: leaf.opacity } : {}),
     },
     actualDuration: leafDur,
   };

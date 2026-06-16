@@ -520,9 +520,7 @@ export function buildMltDocument(
         z: nextZ++,
       });
       // Flag non-opacity filters — they'd need MLT filter chains.
-      const unsupportedFilters = (child.filters ?? []).filter(
-        (f) => f.type !== "opacity",
-      );
+      const unsupportedFilters = child.filters ?? [];
       if (unsupportedFilters.length) {
         limitations.push({
           node: "static",
@@ -545,9 +543,7 @@ export function buildMltDocument(
         z: nextZ++,
       });
       // Flag any non-opacity filters; they'll need MLT filter chains.
-      const unsupportedFilters = (child.filters ?? []).filter(
-        (f) => f.type !== "opacity",
-      );
+      const unsupportedFilters = child.filters ?? [];
       if (unsupportedFilters.length) {
         limitations.push({
           node: "text",
@@ -569,9 +565,7 @@ export function buildMltDocument(
         node: child,
         z: nextZ++,
       });
-      const unsupportedFilters = (child.filters ?? []).filter(
-        (f) => f.type !== "opacity",
-      );
+      const unsupportedFilters = child.filters ?? [];
       if (unsupportedFilters.length) {
         limitations.push({
           node: "graphic",
@@ -744,7 +738,7 @@ export function buildMltDocument(
     const filterIn = startK;
     const filterOut = endK - 1;
     const dur = seg.end - seg.start;
-    const filtersXml = compileNonOpacityFilters(seg.node.filters, filterIn, filterOut, dur);
+    const filtersXml = compileFilters(seg.node.filters, filterIn, filterOut, dur);
     if (filtersXml) lines.push(filtersXml);
     lines.push(`  </playlist>`);
     return lines.join("\n");
@@ -795,26 +789,26 @@ export function buildMltDocument(
     const filterIn = startK;
     const filterOut = endK - 1;
     const dur = seg.end - seg.start;
-    const filtersXml = compileNonOpacityFilters(seg.node.filters, filterIn, filterOut, dur);
+    const filtersXml = compileFilters(seg.node.filters, filterIn, filterOut, dur);
     if (filtersXml) lines.push(filtersXml);
     lines.push(`  </playlist>`);
     return lines.join("\n");
   }
 
-  function compileNonOpacityFilters(
+  function compileFilters(
     filters: Filter[] | undefined,
     inF: number,
     outF: number,
     duration: number,
   ): string {
     if (!filters || filters.length === 0) return "";
+    void duration; // filters are static now — no keyframe baking
     const blocks: string[] = [];
     for (const f of filters) {
-      if (f.type === "opacity") continue; // folded into qtblend rect alpha
       let block: string | null = null;
-      if (f.type === "adjust") block = compileAdjustFilter(f, inF, outF, duration);
-      else if (f.type === "colorbalance") block = compileColorBalanceFilter(f, inF, outF, duration);
-      else if (f.type === "colortemperature") block = compileColorTemperatureFilter(f, inF, outF, duration);
+      if (f.type === "adjust") block = compileAdjustFilter(f, inF, outF);
+      else if (f.type === "colorbalance") block = compileColorBalanceFilter(f, inF, outF);
+      else if (f.type === "colortemperature") block = compileColorTemperatureFilter(f, inF, outF);
       if (block) blocks.push(block);
     }
     return blocks.join("\n");
@@ -837,24 +831,18 @@ export function buildMltDocument(
     f: AdjustFilter,
     inF: number,
     outF: number,
-    duration: number,
   ): string {
     // Wraps ffmpeg's `eq` filter — same parameter semantics as seam:
     // brightness is a -1..1 offset, contrast/saturation/gamma are
-    // multipliers around 1.
-    //
-    // `av.eval=frame` tells ffmpeg's eq to re-evaluate parameters per
-    // frame; MLT's avfilter wrapper updates `av.*` properties on each
-    // frame, and eq's `process_command` picks them up.
+    // multipliers around 1. Static values (filters aren't animatable).
     const lines = [
       `    <filter in="${inF}" out="${outF}">`,
       `      <property name="mlt_service">avfilter.eq</property>`,
-      `      <property name="av.eval">frame</property>`,
     ];
-    if (f.brightness != null) lines.push(`      <property name="av.brightness">${escAttr(compileKeyframedProp(f.brightness, duration, inF))}</property>`);
-    if (f.contrast != null) lines.push(`      <property name="av.contrast">${escAttr(compileKeyframedProp(f.contrast, duration, inF))}</property>`);
-    if (f.saturation != null) lines.push(`      <property name="av.saturation">${escAttr(compileKeyframedProp(f.saturation, duration, inF))}</property>`);
-    if (f.gamma != null) lines.push(`      <property name="av.gamma">${escAttr(compileKeyframedProp(f.gamma, duration, inF))}</property>`);
+    if (f.brightness != null) lines.push(`      <property name="av.brightness">${escAttr(String(f.brightness))}</property>`);
+    if (f.contrast != null) lines.push(`      <property name="av.contrast">${escAttr(String(f.contrast))}</property>`);
+    if (f.saturation != null) lines.push(`      <property name="av.saturation">${escAttr(String(f.saturation))}</property>`);
+    if (f.gamma != null) lines.push(`      <property name="av.gamma">${escAttr(String(f.gamma))}</property>`);
     lines.push(`    </filter>`);
     return lines.join("\n");
   }
@@ -863,10 +851,9 @@ export function buildMltDocument(
     f: ColorBalanceFilter,
     inF: number,
     outF: number,
-    duration: number,
   ): string {
     // Wraps ffmpeg's `colorbalance` (rs/gs/bs shadow, rm/gm/bm
-    // midtones, rh/gh/bh highlights — each -1..1).
+    // midtones, rh/gh/bh highlights — each -1..1). Static values.
     const lines = [
       `    <filter in="${inF}" out="${outF}">`,
       `      <property name="mlt_service">avfilter.colorbalance</property>`,
@@ -875,7 +862,7 @@ export function buildMltDocument(
     for (const k of channels) {
       const v = f[k];
       if (v == null) continue;
-      lines.push(`      <property name="av.${k}">${escAttr(compileKeyframedProp(v as Keyframed<number>, duration, inF))}</property>`);
+      lines.push(`      <property name="av.${k}">${escAttr(String(v))}</property>`);
     }
     lines.push(`    </filter>`);
     return lines.join("\n");
@@ -885,16 +872,15 @@ export function buildMltDocument(
     f: ColorTemperatureFilter,
     inF: number,
     outF: number,
-    duration: number,
   ): string {
     // Wraps ffmpeg's `colortemperature` filter. Default 6500K is
-    // neutral; lower values warm the image, higher cool it.
+    // neutral; lower values warm the image, higher cool it. Static value.
     const lines = [
       `    <filter in="${inF}" out="${outF}">`,
       `      <property name="mlt_service">avfilter.colortemperature</property>`,
     ];
     if (f.temperature != null) {
-      lines.push(`      <property name="av.temperature">${escAttr(compileKeyframedProp(f.temperature, duration, inF))}</property>`);
+      lines.push(`      <property name="av.temperature">${escAttr(String(f.temperature))}</property>`);
     }
     lines.push(`    </filter>`);
     return lines.join("\n");
@@ -1027,7 +1013,7 @@ export function buildMltDocument(
     lines.push(`    <entry producer="${seg.producer}" in="0" out="${len - 1}"/>`);
     const trailing = totalFrames - endK;
     if (trailing > 0) lines.push(`    <blank length="${trailing}"/>`);
-    const filtersXml = compileNonOpacityFilters(
+    const filtersXml = compileFilters(
       seg.node.filters,
       startK,
       endK - 1,
@@ -1481,31 +1467,19 @@ function sampleContainerRect(
   };
 }
 
-function nodeHasAnimatedOpacity(node: { filters?: Filter[] }): boolean {
-  if (!node.filters) return false;
-  for (const f of node.filters) {
-    if (f.type === "opacity" && isKeyframed(f.value)) return true;
-  }
-  return false;
+function nodeHasAnimatedOpacity(node: { opacity?: Keyframed<number> }): boolean {
+  return node.opacity != null && isKeyframed(node.opacity);
 }
 
 function sampleNodeOpacity(
-  node: { filters?: Filter[] },
+  node: { opacity?: Keyframed<number> },
   t: number,
   duration: number,
 ): number {
-  if (!node.filters) return 1;
-  let alpha = 1;
-  for (const f of node.filters) {
-    if (f.type !== "opacity") continue;
-    const value = f.value;
-    if (value == null) continue;
-    if (isKeyframed(value)) {
-      alpha *= sampleNumber(value, t, duration);
-    } else {
-      alpha *= value as number;
-    }
-  }
+  if (node.opacity == null) return 1;
+  const alpha = isKeyframed(node.opacity)
+    ? sampleNumber(node.opacity, t, duration)
+    : (node.opacity as number);
   return Math.max(0, Math.min(1, alpha));
 }
 

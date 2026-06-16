@@ -16,9 +16,7 @@ import type {
   ResolvedStatic,
   ResolvedText,
   Filter,
-  Keyframed,
 } from "@seam/core";
-import { sampleNumber } from "@seam/core";
 
 type Drawable = ResolvedClip | ResolvedStatic | ResolvedText | ResolvedGraphic;
 import { TextureManager } from "./TextureManager.js";
@@ -478,7 +476,7 @@ export class WebGPURenderer {
   }
 
   private writeUniforms(slot: number, cmd: DrawCommand): void {
-    const fp = extractFilterParams(cmd.clip.filters, cmd.nodeTime, cmd.nodeDuration);
+    const fp = extractFilterParams(cmd.clip.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -490,7 +488,7 @@ export class WebGPURenderer {
     f32[3] = cmd.quadH;
     f32[4] = 0; // canvas_w — set during encode
     f32[5] = 0; // canvas_h — set during encode
-    f32[6] = cmd.opacity * fp.opacity;
+    f32[6] = cmd.opacity; // node opacity already folded in by RenderList
     f32[7] = 0;
     f32[8] = fp.brightness;
     f32[9] = fp.contrast;
@@ -528,7 +526,7 @@ export class WebGPURenderer {
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
-    const fp = extractFilterParams(cmd.filters, cmd.nodeTime, cmd.nodeDuration);
+    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -541,7 +539,7 @@ export class WebGPURenderer {
     f32[3] = cmd.destH;
     f32[4] = 0; // canvas_w — set during encode
     f32[5] = 0; // canvas_h — set during encode
-    f32[6] = cmd.opacity * fp.opacity;
+    f32[6] = cmd.opacity; // node opacity already folded in by RenderList
     f32[7] = 0;
     f32[8] = fp.brightness;
     f32[9] = fp.contrast;
@@ -775,7 +773,6 @@ interface FilterParams {
   contrast: number;
   saturation: number;
   gamma: number;
-  opacity: number;
   cb_rs: number; cb_gs: number; cb_bs: number;
   cb_rm: number; cb_gm: number; cb_bm: number;
   cb_rh: number; cb_gh: number; cb_bh: number;
@@ -783,43 +780,35 @@ interface FilterParams {
 }
 
 const IDENTITY_PARAMS: FilterParams = {
-  brightness: 0, contrast: 1, saturation: 1, gamma: 1, opacity: 1,
+  brightness: 0, contrast: 1, saturation: 1, gamma: 1,
   cb_rs: 0, cb_gs: 0, cb_bs: 0,
   cb_rm: 0, cb_gm: 0, cb_bm: 0,
   cb_rh: 0, cb_gh: 0, cb_bh: 0,
   ct_r: 1, ct_g: 1, ct_b: 1,
 };
 
-function extractFilterParams(
-  filters: Filter[] | undefined,
-  t: number,
-  duration: number,
-): FilterParams {
+// Filters are static now (opacity was ejected to a node field), so this is a
+// plain fold over their literal params — no per-frame sampling.
+function extractFilterParams(filters: Filter[] | undefined): FilterParams {
   if (!filters?.length) return IDENTITY_PARAMS;
-
-  const sN = (v: Keyframed<number> | undefined, fallback: number): number =>
-    v == null ? fallback : sampleNumber(v, t, duration);
 
   const p = { ...IDENTITY_PARAMS };
 
   for (const f of filters) {
     switch (f.type) {
       case "adjust":
-        p.brightness += sN(f.brightness, 0);
-        p.contrast *= sN(f.contrast, 1);
-        p.saturation *= sN(f.saturation, 1);
-        p.gamma *= sN(f.gamma, 1);
-        break;
-      case "opacity":
-        p.opacity *= sN(f.value, 1);
+        p.brightness += f.brightness ?? 0;
+        p.contrast *= f.contrast ?? 1;
+        p.saturation *= f.saturation ?? 1;
+        p.gamma *= f.gamma ?? 1;
         break;
       case "colorbalance":
-        p.cb_rs += sN(f.rs, 0); p.cb_gs += sN(f.gs, 0); p.cb_bs += sN(f.bs, 0);
-        p.cb_rm += sN(f.rm, 0); p.cb_gm += sN(f.gm, 0); p.cb_bm += sN(f.bm, 0);
-        p.cb_rh += sN(f.rh, 0); p.cb_gh += sN(f.gh, 0); p.cb_bh += sN(f.bh, 0);
+        p.cb_rs += f.rs ?? 0; p.cb_gs += f.gs ?? 0; p.cb_bs += f.bs ?? 0;
+        p.cb_rm += f.rm ?? 0; p.cb_gm += f.gm ?? 0; p.cb_bm += f.bm ?? 0;
+        p.cb_rh += f.rh ?? 0; p.cb_gh += f.gh ?? 0; p.cb_bh += f.bh ?? 0;
         break;
       case "colortemperature": {
-        const { r, g, b } = tempToScale(sN(f.temperature, 6500));
+        const { r, g, b } = tempToScale(f.temperature ?? 6500);
         p.ct_r *= r; p.ct_g *= g; p.ct_b *= b;
         break;
       }

@@ -27,7 +27,17 @@ import type {
   ObjectFit,
   Filter,
 } from "@seam/core";
-import { resolveBoxProps } from "@seam/core";
+import { resolveBoxProps, sampleNumber, type Keyframed } from "@seam/core";
+
+/** Sample a node's first-class opacity (Keyframed, ejected from filters);
+ *  absent means fully opaque. */
+function sampleOpacity(
+  opacity: Keyframed<number> | undefined,
+  t: number,
+  duration: number,
+): number {
+  return opacity == null ? 1 : sampleNumber(opacity, t, duration);
+}
 
 export interface DrawCommand {
   type: "draw";
@@ -47,8 +57,6 @@ export interface DrawCommand {
   pivotX: number;
   pivotY: number;
   opacity: number;
-  nodeTime: number;
-  nodeDuration: number;
 }
 
 export interface FillCommand {
@@ -86,8 +94,6 @@ export interface GroupCommand {
   pivotX: number;
   pivotY: number;
   children: RenderCommand[];
-  nodeTime: number;
-  nodeDuration: number;
 }
 
 export type RenderCommand = DrawCommand | GroupCommand | FillCommand;
@@ -281,6 +287,9 @@ function walkChildren(
       if (scissor.w <= 0 || scissor.h <= 0) continue;
 
       const fade = transitionFade(child, localTime);
+      const drawDuration = child.timelineEnd - child.timelineStart;
+      const drawTime = localTime - child.timelineStart;
+      const nodeOpacity = sampleOpacity(child.opacity, drawTime, drawDuration);
 
       commands.push({
         type: "draw",
@@ -296,9 +305,7 @@ function walkChildren(
         rotation,
         pivotX,
         pivotY,
-        opacity: opacity * fade,
-        nodeTime: localTime - child.timelineStart,
-        nodeDuration: child.timelineEnd - child.timelineStart,
+        opacity: opacity * fade * nodeOpacity,
       });
     } else {
       // composition
@@ -314,6 +321,7 @@ function walkChildren(
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
       const fade = transitionFade(child, localTime);
+      const nodeOpacity = sampleOpacity(child.opacity, childLocalTime, child.duration);
 
       const hasFilters = child.filters && child.filters.length > 0;
       // A rotated composition can't be flattened into the parent pass (its
@@ -322,11 +330,12 @@ function walkChildren(
       // path filters take. `spatial.rotation != null` covers static and
       // animated rotation alike (resolver only sets it when authored).
       const hasRotation = spatial.rotation != null;
-      // A crossfading composition must also go through the FBO so the fade
-      // applies to the composited group as a unit (not per child). Only
-      // while it's actually fading (fade < 1); at full opacity it flattens
-      // like before, and the boundary is seamless (fade === 1 either way).
-      const needsLayer = hasFilters || hasRotation || fade < 1;
+      // A crossfading or partially-opaque composition must also go through
+      // the FBO so the fade/opacity applies to the composited group as a unit
+      // (not per child). Only while actually <1; at full opacity it flattens
+      // like before, and the boundary is seamless (=== 1 either way).
+      const needsLayer =
+        hasFilters || hasRotation || fade < 1 || nodeOpacity < 1;
 
       // Inner content dim: resolver collapsed contentWidth/Height to a
       // pixel number, falling back to the display rect when authored
@@ -388,13 +397,11 @@ function walkChildren(
           fboW,
           fboH,
           filters: child.filters ?? [],
-          opacity: opacity * fade,
+          opacity: opacity * fade * nodeOpacity,
           rotation,
           pivotX,
           pivotY,
           children: groupChildren,
-          nodeTime: childLocalTime,
-          nodeDuration: child.duration,
         });
       } else {
         const childViewport: Viewport = {

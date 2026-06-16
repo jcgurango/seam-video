@@ -149,7 +149,7 @@ describe("audio", () => {
             source: "a.mp3",
             in: 0,
             out: 4,
-            filters: [{ type: "opacity", value: 0.5 }],
+            filters: [{ type: "adjust", brightness: 0.5 }],
           },
         ],
       })

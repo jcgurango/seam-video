@@ -62,6 +62,9 @@ export interface ResolvedClip {
   /** Audio gain multiplier; absent means unity (1). */
   volume?: Keyframed<number>;
   filters?: Filter[];
+  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
+   *  renderers, like `volume`. */
+  opacity?: Keyframed<number>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -88,6 +91,9 @@ export interface ResolvedStatic {
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
   filters?: Filter[];
+  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
+   *  renderers, like `volume`. */
+  opacity?: Keyframed<number>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -145,6 +151,9 @@ export interface ResolvedText extends TextStyleFields {
   timelineStart: number;
   timelineEnd: number;
   filters?: Filter[];
+  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
+   *  renderers, like `volume`. */
+  opacity?: Keyframed<number>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -166,6 +175,9 @@ export interface ResolvedComposition {
   transitionOut?: number;
   children: ResolvedChild[];
   filters?: Filter[];
+  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
+   *  renderers, like `volume`. */
+  opacity?: Keyframed<number>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -210,6 +222,9 @@ export interface ResolvedGraphic {
   naturalWidth?: number;
   naturalHeight?: number;
   filters?: Filter[];
+  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
+   *  renderers, like `volume`. */
+  opacity?: Keyframed<number>;
 }
 
 export type ResolvedChild =

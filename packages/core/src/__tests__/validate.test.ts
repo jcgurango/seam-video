@@ -308,10 +308,8 @@ describe("validate", () => {
           source: "v.mp4",
           in: 0,
           out: 5,
-          filters: [
-            { type: "adjust", brightness: 0.2, contrast: 1.5 },
-            { type: "opacity", value: 0.8 },
-          ],
+          opacity: 0.8,
+          filters: [{ type: "adjust", brightness: 0.2, contrast: 1.5 }],
         },
       ],
     });
@@ -452,17 +450,31 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts keyframed filter values", () => {
+  it("accepts keyframed opacity", () => {
     const result = validate({
       type: "composition",
-      filters: [
-        { type: "opacity", value: [[0, 0], [1, 1, "ease-in"]] },
-      ],
+      opacity: [[0, 0], [1, 1, "ease-in"]],
       children: [
         { type: "clip", source: "v.mp4", in: 0, out: 5 },
       ],
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects keyframed filter params (filters are static)", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "clip",
+          source: "v.mp4",
+          in: 0,
+          out: 5,
+          filters: [{ type: "adjust", brightness: [[0, 0], [1, 1]] }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects malformed keyframe time expressions", () => {
@@ -481,9 +493,7 @@ describe("validate", () => {
   it("rejects keyframe values outside the static field's range", () => {
     const result = validate({
       type: "composition",
-      filters: [
-        { type: "opacity", value: [[0, 0], [1, 5]] }, // 5 > max(1)
-      ],
+      opacity: [[0, 0], [1, 5]], // 5 > max(1)
       children: [
         { type: "clip", source: "v.mp4", in: 0, out: 5 },
       ],
