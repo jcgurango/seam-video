@@ -23,7 +23,9 @@ import type {
   ResolvedChild,
   ResolvedComposition,
   ResolvedTimeline,
+  SpatialRect,
 } from "@seam/core";
+import { resolveBoxProps, isKeyframed } from "@seam/core";
 import {
   buildMltDocument,
   isComplexComposition,
@@ -107,6 +109,46 @@ export async function prerenderCompositionMlts(
         compositionMlts,
       });
       limitations.push(...subLimits);
+
+      // `inset` (crop) → wrap the content sub-`.mlt` in a cropping sub-`.mlt`
+      // (same cw×ch canvas) that affine-places the content so the visible
+      // sub-rect zoom-fills the canvas; the overflow is clipped by the fixed
+      // canvas. Animation rides the affine `rect` keyframes — no crop filter,
+      // no varying canvas. The parent then places this at the comp's
+      // (windowed) display rect exactly as it would the plain content.
+      const cropNode = buildCropNode(child, cw, ch, parentW, parentH, fps);
+      if (cropNode) {
+        const contentPath = join(dir, `comp-${seq}-src.mlt`);
+        await writeFile(contentPath, xml, "utf-8");
+        const cropTimeline: ResolvedTimeline = {
+          duration: child.duration,
+          width: cw,
+          height: ch,
+          contentWidth: cw,
+          contentHeight: ch,
+          children: [cropNode],
+        };
+        const { xml: cropXml, limitations: cropLimits } = buildMltDocument(
+          cropTimeline,
+          {
+            fps,
+            width: cw,
+            height: ch,
+            basePath: options.basePath,
+            // Transparent base so it composites as a layer; the comp's speed
+            // is already baked into the content sub-`.mlt`, so rootSpeed = 1.
+            defaultBackgroundColor: "#00000000",
+            rootSpeed: 1,
+            compositionMlts: new Map([[cropNode, contentPath]]),
+          },
+        );
+        limitations.push(...cropLimits);
+        const path = join(dir, `comp-${seq++}.mlt`);
+        await writeFile(path, cropXml, "utf-8");
+        compositionMlts.set(child, path);
+        continue;
+      }
+
       const path = join(dir, `comp-${seq++}.mlt`);
       await writeFile(path, xml, "utf-8");
       compositionMlts.set(child, path);
@@ -115,4 +157,89 @@ export async function prerenderCompositionMlts(
 
   await walk(timeline.children, rootW, rootH);
   return { compositionMlts, limitations };
+}
+
+/** Map a visible source sub-rect (`sourceRect` fractions) to the affine rect
+ *  that zoom-fills a `cw×ch` canvas with it: scale the content up by
+ *  `1/(u1−u0)` and shift so the sub-rect's top-left lands at the origin. */
+function cropZoomRect(
+  sr: { u0: number; v0: number; u1: number; v1: number },
+  cw: number,
+  ch: number,
+): SpatialRect {
+  const du = Math.max(1e-6, sr.u1 - sr.u0);
+  const dv = Math.max(1e-6, sr.v1 - sr.v0);
+  const width = cw / du;
+  const height = ch / dv;
+  return { x: -sr.u0 * width, y: -sr.v0 * height, width, height };
+}
+
+/** Build the synthetic crop composition node placed inside the cropping
+ *  sub-`.mlt`. Returns null when the comp isn't inset. Static inset bakes a
+ *  single rect; animated inset bakes per-frame size/translation keyframes (the
+ *  builder emits them as an affine `rect` keyframe string). */
+function buildCropNode(
+  comp: ResolvedComposition,
+  cw: number,
+  ch: number,
+  parentW: number,
+  parentH: number,
+  fps: number,
+): ResolvedComposition | null {
+  const insetAnimated =
+    comp.spatialInput?.inset != null && isKeyframed(comp.spatialInput.inset);
+  const staticSR = comp.spatial?.sourceRect;
+  if (!insetAnimated && !staticSR) return null;
+
+  const base = {
+    type: "composition" as const,
+    timelineStart: 0,
+    timelineEnd: comp.duration,
+    duration: comp.duration,
+    speed: 1,
+    children: [],
+    contentWidth: cw,
+    contentHeight: ch,
+    naturalWidth: cw,
+    naturalHeight: ch,
+    objectFit: "fit" as const,
+  };
+
+  if (!insetAnimated && staticSR) {
+    return { ...base, spatial: cropZoomRect(staticSR, cw, ch) };
+  }
+
+  // Animated: sample the crop-zoom rect per output frame and feed it to the
+  // builder as keyframed size/translation (origin top-left), so its existing
+  // rect-keyframe baking animates the affine placement. `0% ± n` keeps the
+  // translation absolute (a bare number would add the 50%-center default).
+  const len = (v: number): string =>
+    v >= 0 ? `0% + ${round(v)}` : `0% - ${round(-v)}`;
+  const frameCount = Math.max(1, Math.round(comp.duration * fps));
+  const sizeKf: [number, { x: number; y: number }][] = [];
+  const transKf: [number, { x: string; y: string }][] = [];
+  for (let f = 0; f <= frameCount; f++) {
+    const t = f / fps;
+    const sr =
+      resolveBoxProps(
+        comp.spatialInput!,
+        parentW,
+        parentH,
+        comp.naturalWidth ?? parentW,
+        comp.naturalHeight ?? parentH,
+        t,
+        comp.duration,
+      ).sourceRect ?? { u0: 0, v0: 0, u1: 1, v1: 1 };
+    const r = cropZoomRect(sr, cw, ch);
+    sizeKf.push([t, { x: round(r.width), y: round(r.height) }]);
+    transKf.push([t, { x: len(r.x), y: len(r.y) }]);
+  }
+  return {
+    ...base,
+    spatialInput: { origin: "0%", size: sizeKf, translation: transKf },
+  };
+}
+
+function round(n: number): number {
+  return Number(n.toFixed(3));
 }

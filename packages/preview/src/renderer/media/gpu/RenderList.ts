@@ -57,6 +57,9 @@ export interface DrawCommand {
   pivotX: number;
   pivotY: number;
   opacity: number;
+  /** Visible source sub-rect (UV fractions) when the node is `inset`; absent
+   *  = full texture. The blit samples this window into the quad. */
+  sourceRect?: { u0: number; v0: number; u1: number; v1: number };
 }
 
 export interface FillCommand {
@@ -94,6 +97,8 @@ export interface GroupCommand {
   pivotX: number;
   pivotY: number;
   children: RenderCommand[];
+  /** Visible FBO sub-rect (UV fractions) when the composition is `inset`. */
+  sourceRect?: { u0: number; v0: number; u1: number; v1: number };
 }
 
 export type RenderCommand = DrawCommand | GroupCommand | FillCommand;
@@ -306,6 +311,7 @@ function walkChildren(
         pivotX,
         pivotY,
         opacity: opacity * fade * nodeOpacity,
+        sourceRect: spatial.sourceRect,
       });
     } else {
       // composition
@@ -333,9 +339,15 @@ function walkChildren(
       // A crossfading or partially-opaque composition must also go through
       // the FBO so the fade/opacity applies to the composited group as a unit
       // (not per child). Only while actually <1; at full opacity it flattens
-      // like before, and the boundary is seamless (=== 1 either way).
+      // like before, and the boundary is seamless (=== 1 either way). An
+      // `inset` composition likewise needs the FBO so we can sample its
+      // cropped sub-rect (`sourceRect`) out of the composited content box.
       const needsLayer =
-        hasFilters || hasRotation || fade < 1 || nodeOpacity < 1;
+        hasFilters ||
+        hasRotation ||
+        fade < 1 ||
+        nodeOpacity < 1 ||
+        spatial.sourceRect != null;
 
       // Inner content dim: resolver collapsed contentWidth/Height to a
       // pixel number, falling back to the display rect when authored
@@ -402,6 +414,7 @@ function walkChildren(
           pivotX,
           pivotY,
           children: groupChildren,
+          sourceRect: spatial.sourceRect,
         });
       } else {
         const childViewport: Viewport = {

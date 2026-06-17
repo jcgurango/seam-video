@@ -70,6 +70,28 @@ export interface SpatialFields {
   opacity?: Keyframed<number>;
 }
 
+/** Per-edge inset, in the text-padding shorthand shape but `Length`-valued:
+ *  `L` (all edges) | `[v, h]` | `[t, r, b, l]`. `%` resolves against the
+ *  content box's matching axis (left/right → width, top/bottom → height). */
+export type Inset =
+  | Length
+  | [Length, Length]
+  | [Length, Length, Length, Length];
+
+/**
+ * How a cropped window maps within the content box's placement.
+ * `origin`/`translation`/`size` always place the *content box*; this only
+ * affects the window:
+ * - `"window"` (default): the window stays in place — just a clip, no
+ *   reposition or resize.
+ * - `"center"`: the window is centered within the content box's placement.
+ * - `"fit"`: the window is scaled (aspect-preserving) to fit the content box,
+ *   centered (letterboxed) — like objectFit `fit`.
+ * - `"cover"`: the window is scaled (aspect-preserving) to cover the content
+ *   box, cropping the overflow — like objectFit `cover`.
+ */
+export type InsetMode = "window" | "center" | "fit" | "cover";
+
 /**
  * A timing anchor references another child (by `id`) in the enclosing
  * composition's scope.
@@ -306,6 +328,16 @@ export interface BinEntry {
 export interface Composition extends ChildTimingFields {
   type: "composition";
   children: Child[];
+  /**
+   * Per-edge inset (crop) of the composition's content box — composition-only.
+   * Clips the children without rescaling and shrinks the comp's output extent
+   * to the visible window; `origin`/`translation`/`rotation` then place that
+   * window. Animatable. See {@link Inset}.
+   */
+  inset?: Keyframed<Inset>;
+  /** How the `inset` window maps within the content box's placement. Default
+   *  `"window"` (clip in place). See {@link InsetMode}. */
+  insetMode?: InsetMode;
   /**
    * Playback rate of the inner window (the `[in, out]` slice of the inner
    * timeline, defaulting to the whole thing). >1 plays faster, shortening

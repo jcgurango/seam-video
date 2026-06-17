@@ -9,7 +9,7 @@ interface ToastProps {
 }
 
 /**
- * Transient, dismissible notice anchored bottom-centre. Used for job-level
+ * Transient, dismissible notice anchored bottom-center. Used for job-level
  * feedback (e.g. transcription warnings) that should NOT clear the editor the
  * way document validation errors do — those still render full-screen.
  */

@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ResolvedComposition, ResolvedTimeline } from "@seam/core";
 import { buildMltDocument, isComplexComposition } from "../mlt-builder.js";
+import { prerenderCompositionMlts } from "../composition-prerender.js";
 
 // These tests construct already-resolved nodes directly (the shape
 // `resolveSpatial` produces), since the builder consumes the resolved
@@ -221,5 +225,64 @@ describe("nested composition as external .mlt producer", () => {
       fps: 30,
     });
     expect(limitations.some((l) => l.node === "composition" && l.field === "wrapper")).toBe(true);
+  });
+});
+
+describe("inset (crop) windowing", () => {
+  // A composition cropped to its left half: windowed extent 540×1920, source
+  // sub-rect u∈[0,0.5]. The crop sub-`.mlt` should zoom-fill its 1080×1920
+  // canvas by ×2 horizontally → an affine rect of "0 0 2160 1920 …".
+  it("emits a cropping sub-.mlt that zoom-fills the visible sub-rect", async () => {
+    const comp = nestedComp({
+      spatial: {
+        x: 270,
+        y: 0,
+        width: 540,
+        height: 1920,
+        sourceRect: { u0: 0, v0: 0, u1: 0.5, v1: 1 },
+      },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "seam-inset-"));
+    const { compositionMlts } = await prerenderCompositionMlts(
+      timelineWith(comp),
+      dir,
+      30,
+    );
+    const cropPath = compositionMlts.get(comp);
+    expect(cropPath).toBeTruthy();
+    const xml = await readFile(cropPath!, "utf-8");
+    // The crop sub-.mlt references the content sub-.mlt and places it with the
+    // ×2 zoom rect (width 1080/0.5 = 2160).
+    expect(xml).toContain("mlt_service");
+    expect(xml).toMatch(/rect">0 0 2160 1920/);
+    // Two files written: the content source and the crop wrapper.
+    const files = await readdir(dir);
+    expect(files.length).toBe(2);
+  });
+
+  it("animated inset bakes the crop-zoom as an affine rect keyframe string", async () => {
+    // inset ramps 0 → left:50% over the comp's 1s; the crop-zoom rect is
+    // sampled per frame and emitted as a multi-stop `rect` keyframe string.
+    const comp = nestedComp({
+      duration: 1,
+      spatialInput: { inset: [[0, [0, 0, 0, 0]], [1, [0, 0, 0, "50%"]]] },
+      spatial: {
+        x: 0,
+        y: 0,
+        width: 1080,
+        height: 1920,
+        sourceRect: { u0: 0, v0: 0, u1: 1, v1: 1 },
+      },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "seam-inset-anim-"));
+    const { compositionMlts } = await prerenderCompositionMlts(
+      timelineWith(comp),
+      dir,
+      30,
+    );
+    const xml = await readFile(compositionMlts.get(comp)!, "utf-8");
+    // The cropNode placement is a multi-stop `rect` keyframe string
+    // (`f=X Y W H A;f=…`) — the crop-zoom baked per frame.
+    expect(xml).toMatch(/name="rect">[^<]*;[^<]*</);
   });
 });

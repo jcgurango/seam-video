@@ -3,6 +3,8 @@ import type {
   Length,
   ObjectFit,
   Point2D,
+  Inset,
+  InsetMode,
   Filter,
   GraphicClipDef,
   GraphicFrame,
@@ -27,6 +29,12 @@ export interface SpatialRect {
    *  alongside `rotation`. */
   originX?: number;
   originY?: number;
+  /** Visible source sub-rect when the node is `inset` (cropped), as fractions
+   *  of the content box: `{u0,v0,u1,v1}` ∈ [0,1]. The renderer samples this
+   *  sub-rect of the content into the (already inset-shrunk) `width`×`height`.
+   *  Absent when there's no inset — non-inset rects stay plain so existing
+   *  equality checks hold. */
+  sourceRect?: { u0: number; v0: number; u1: number; v1: number };
 }
 
 /** Authored spatial input retained on a resolved node when any of its
@@ -39,6 +47,8 @@ export interface SpatialInput {
   translation?: Keyframed<Point2D>;
   size?: Keyframed<Point2D>;
   rotation?: Keyframed<number>;
+  inset?: Keyframed<Inset>;
+  insetMode?: InsetMode;
 }
 
 export interface ResolvedClip {

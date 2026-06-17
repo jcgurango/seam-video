@@ -39,6 +39,7 @@ struct Uniforms {
   cb_highlights: vec4f,
   ct_scale: vec4f,
   rot: vec4f, // rotation_radians, pivot_x, pivot_y, _
+  crop: vec4f, // u0, v0, u1, v1 — visible source sub-rect (inset); full = 0,0,1,1
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -73,7 +74,9 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   }
   let ndc_x = (px / u.canvas_opacity.x) * 2.0 - 1.0;
   let ndc_y = 1.0 - (py / u.canvas_opacity.y) * 2.0;
-  return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), p);
+  // Map the quad corner into the visible source sub-rect (inset/crop).
+  let uv = u.crop.xy + p * (u.crop.zw - u.crop.xy);
+  return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), uv);
 }
 
 fn rgb_to_yuv(rgb: vec3f) -> vec3f {
@@ -128,7 +131,7 @@ fn fs(input: VSOut) -> @location(0) vec4f {
 }
 `;
 
-const UNIFORM_SIZE = 128; // 8 × vec4f
+const UNIFORM_SIZE = 144; // 9 × vec4f
 const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 128;
 const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
@@ -499,6 +502,7 @@ export class WebGPURenderer {
     f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
     f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
+    writeCrop(f32, cmd.sourceRect);
   }
 
   private writeFillUniforms(slot: number, cmd: FillCommand): void {
@@ -523,6 +527,7 @@ export class WebGPURenderer {
     f32[24] = 1; f32[25] = 1; f32[26] = 1; f32[27] = 0;
     // Fills are never rotated (a rotated comp's bg fill rides inside its FBO).
     f32[28] = 0; f32[29] = 0; f32[30] = 0; f32[31] = 0;
+    writeCrop(f32, undefined); // fills sample no sub-rect
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
@@ -550,6 +555,7 @@ export class WebGPURenderer {
     f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
     f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
+    writeCrop(f32, cmd.sourceRect);
   }
 
   // ── Phase 3: Encode ──
@@ -786,6 +792,17 @@ const IDENTITY_PARAMS: FilterParams = {
   cb_rh: 0, cb_gh: 0, cb_bh: 0,
   ct_r: 1, ct_g: 1, ct_b: 1,
 };
+
+/** Write the crop sub-rect (uniform float slots 32–35). Absent → full 0,0,1,1. */
+function writeCrop(
+  f32: Float32Array,
+  sr: { u0: number; v0: number; u1: number; v1: number } | undefined,
+): void {
+  f32[32] = sr?.u0 ?? 0;
+  f32[33] = sr?.v0 ?? 0;
+  f32[34] = sr?.u1 ?? 1;
+  f32[35] = sr?.v1 ?? 1;
+}
 
 // Filters are static now (opacity was ejected to a node field), so this is a
 // plain fold over their literal params — no per-frame sampling.

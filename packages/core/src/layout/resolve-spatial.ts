@@ -28,7 +28,7 @@ import type {
 } from "../resolved-types.js";
 import type { Length, ObjectFit, Point2D, Keyframed } from "../types.js";
 import { resolveLength, hasPercent } from "./units.js";
-import { isKeyframed, sampleLength, sampleNumber } from "../animation/keyframes.js";
+import { isKeyframed, sampleLength, sampleNumber, sampleInset } from "../animation/keyframes.js";
 
 /** Fallback canvas dimensions used when the root composition doesn't set
  *  `contentWidth` / `contentHeight`. Portrait 1080×1920 — picked once so
@@ -52,7 +52,8 @@ export function hasAnimatedSpatialInput(input: SpatialInput | undefined): boolea
     isKeyframedPoint(input.origin) ||
     isKeyframedPoint(input.translation) ||
     isKeyframedPoint(input.size) ||
-    (input.rotation != null && isKeyframed(input.rotation))
+    (input.rotation != null && isKeyframed(input.rotation)) ||
+    (input.inset != null && isKeyframed(input.inset))
   );
 }
 
@@ -277,15 +278,16 @@ export function resolveBoxProps(
   t: number = 0,
   duration: number = 0,
 ): SpatialRect {
-  // size → final width/height
+  // size → content box. `origin`/`translation` place THIS box (decoupled from
+  // any inset), so cropping never silently drifts the placement.
   const sizeXY = samplePoint(input.size, t, duration, naturalW, naturalH, SIZE_DEFAULT_PCT);
-  const width = sizeXY?.x ?? naturalW;
-  const height = sizeXY?.y ?? naturalH;
+  const contentW = sizeXY?.x ?? naturalW;
+  const contentH = sizeXY?.y ?? naturalH;
 
-  // origin → point on this item (origin defaults to 50% — center).
-  const originXY = samplePoint(input.origin, t, duration, width, height, ORIGIN_DEFAULT_PCT);
-  const originX = originXY?.x ?? width / 2;
-  const originY = originXY?.y ?? height / 2;
+  // origin → point on the content box (defaults to 50% — center).
+  const originXY = samplePoint(input.origin, t, duration, contentW, contentH, ORIGIN_DEFAULT_PCT);
+  const originX = originXY?.x ?? contentW / 2;
+  const originY = originXY?.y ?? contentH / 2;
 
   // translation → point in parent (default 50% — center).
   const transXY = samplePoint(
@@ -299,23 +301,104 @@ export function resolveBoxProps(
   const transX = transXY?.x ?? parentW / 2;
   const transY = transXY?.y ?? parentH / 2;
 
-  const rect: SpatialRect = {
-    x: transX - originX,
-    y: transY - originY,
-    width,
-    height,
-  };
+  // The content box placed in parent space ("full" rect, pre-inset).
+  const fullX = transX - originX;
+  const fullY = transY - originY;
 
-  // Rotation is about the `origin` point. Carry it (plus the origin point
-  // in item-local px, so renderers can recover the pivot) only when
-  // authored — non-rotated rects stay a plain `{x,y,width,height}`.
+  // inset (crop): clip the content box to a visible window. `sourceRect`
+  // records which fraction of the content fills the output; `insetMode` decides
+  // how that window maps within the full rect (default: stay put — "window").
+  let outX = fullX;
+  let outY = fullY;
+  let outW = contentW;
+  let outH = contentH;
+  let sourceRect: SpatialRect["sourceRect"];
+  if (input.inset != null && contentW > 0 && contentH > 0) {
+    const edges = sampleInset(input.inset, t, duration, contentW, contentH);
+    const l = Math.max(0, edges.left);
+    const r = Math.max(0, edges.right);
+    const tEdge = Math.max(0, edges.top);
+    const b = Math.max(0, edges.bottom);
+    const winW = Math.max(0, contentW - l - r);
+    const winH = Math.max(0, contentH - tEdge - b);
+    const u0 = clamp01(l / contentW);
+    const v0 = clamp01(tEdge / contentH);
+    const u1 = Math.max(u0, clamp01((contentW - r) / contentW));
+    const v1 = Math.max(v0, clamp01((contentH - b) / contentH));
+    sourceRect = { u0, v0, u1, v1 };
+
+    const mode = input.insetMode ?? "window";
+    if (mode === "cover") {
+      // Cover: scale the window aspect-preserving to fill the whole content
+      // box, cropping the overflow. We can't add a second clip region (it'd
+      // need another sub-`.mlt`), so instead we tighten the *source* sub-rect
+      // to a centered, box-aspect crop of the window — the part cover would
+      // have shown — and output at the full box. Same visible result, reusing
+      // the existing sourceRect + output-rect pipeline, no extra clip.
+      const boxAspect = contentW / contentH;
+      const winAspect = winW > 0 && winH > 0 ? winW / winH : boxAspect;
+      let cropW = winW;
+      let cropH = winH;
+      let cropX = l;
+      let cropY = tEdge;
+      if (winAspect > boxAspect) {
+        // Window too wide → crop its sides.
+        cropW = winH * boxAspect;
+        cropX = l + (winW - cropW) / 2;
+      } else if (winAspect < boxAspect) {
+        // Window too tall → crop top/bottom.
+        cropH = winW / boxAspect;
+        cropY = tEdge + (winH - cropH) / 2;
+      }
+      sourceRect = {
+        u0: clamp01(cropX / contentW),
+        v0: clamp01(cropY / contentH),
+        u1: Math.max(clamp01(cropX / contentW), clamp01((cropX + cropW) / contentW)),
+        v1: Math.max(clamp01(cropY / contentH), clamp01((cropY + cropH) / contentH)),
+      };
+      outX = fullX;
+      outY = fullY;
+      outW = contentW;
+      outH = contentH;
+    } else if (mode === "fit") {
+      // Scale the window (aspect-preserving) to fit the content box, centred.
+      const k = winW > 0 && winH > 0 ? Math.min(contentW / winW, contentH / winH) : 1;
+      outW = winW * k;
+      outH = winH * k;
+      outX = fullX + (contentW - outW) / 2;
+      outY = fullY + (contentH - outH) / 2;
+    } else if (mode === "center") {
+      // Window at its own size, centred within the content box.
+      outW = winW;
+      outH = winH;
+      outX = fullX + (contentW - winW) / 2;
+      outY = fullY + (contentH - winH) / 2;
+    } else {
+      // "window" (default): just a clip — the window stays where it sits.
+      outW = winW;
+      outH = winH;
+      outX = fullX + l;
+      outY = fullY + tEdge;
+    }
+  }
+
+  const rect: SpatialRect = { x: outX, y: outY, width: outW, height: outH };
+  if (sourceRect) rect.sourceRect = sourceRect;
+
+  // Rotation pivots about the authored `origin` — i.e. the `translation` point
+  // in parent space, regardless of how `insetMode` moved/scaled the window.
+  // Carry it only when authored (non-rotated rects stay plain `{x,y,w,h}`).
   if (input.rotation != null) {
     rect.rotation = sampleNumber(input.rotation, t, duration);
-    rect.originX = originX;
-    rect.originY = originY;
+    rect.originX = transX - outX;
+    rect.originY = transY - outY;
   }
 
   return rect;
+}
+
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
 interface XY {

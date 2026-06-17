@@ -356,6 +356,8 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
+| `inset` | `Length` \| `[v,h]` \| `[t,r,b,l]` \| keyframes | no | Per-edge crop of the content box; animatable. **Composition-only** (see [Inset](#inset)) |
+| `insetMode` | string | no | `"window"` (default) \| `"center"` \| `"fit"` \| `"cover"` — how the cropped window maps within the placed content box (see [Inset](#inset)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -659,6 +661,47 @@ Filters can also be applied to compositions, affecting all children as a group:
 
 On a composition, `opacity` applies to the whole group as a unit (the children composite first, then the group fades), so overlapping children don't double-expose through each other. (Earlier formats expressed this as an `{ "type": "opacity", "value": … }` filter; that filter no longer exists.)
 
+## Inset
+
+`inset` crops a **composition** to a sub-rectangle of its content box. It's **composition-only** — to crop a clip or image, wrap it in a composition and inset that. (This keeps the windowing render cost an explicit, authored choice rather than something every node silently pays.)
+
+It uses the same per-edge shorthand as text `padding`, but each edge is a `Length` (so `%`, px, and `%` ± px all work):
+
+```json
+{ "type": "composition", "inset": 100, "children": [ … ] }          // 100px off every edge
+{ "type": "composition", "inset": [50, "10%"], "children": [ … ] }  // [vertical, horizontal]
+{ "type": "composition", "inset": [0, "50%", 0, 0], "children": [ … ] } // [top, right, bottom, left] → left half
+```
+
+Percentages resolve against the matching axis of the content box: `left`/`right` against width, `top`/`bottom` against height.
+
+Semantics (the order within [Spatial Layout](#spatial-layout)): objectFit/`size` build the content box → `origin`/`translation`/`size`/`rotation` place **that box** in the parent (placement is decoupled from the crop — no silent drift) → **`inset` clips a window** out of it, and **`insetMode`** decides how that window maps within the placed box.
+
+### `insetMode`
+
+| Mode | Behavior |
+|------|----------|
+| `window` *(default)* | Just a clip — the window stays exactly where it sits in the content box (no reposition or resize). The cropped-away area is simply not drawn. |
+| `center` | The window is re-centered within the content box (at its own size). |
+| `fit` | The window is scaled (aspect-preserving) to fit the content box, centered — letterboxed, like objectFit `fit`. |
+| `cover` | The window is scaled (aspect-preserving) to cover the content box, cropping the overflow — like objectFit `cover`. |
+
+```json
+{ "type": "composition", "inset": [0, "50%", 0, 0], "insetMode": "cover", "children": [ … ] }
+```
+
+`insetMode` is a fixed enum (not animatable). To pan/zoom a crop on screen, animate `inset` (and/or `translation`/`size`), not the mode.
+
+`inset` is **animatable** (keyframe-tuple syntax) for pan/zoom-style crops:
+
+```json
+{ "type": "composition",
+  "inset": [[0, 0], ["100%", "25%", "ease-in-out"]],
+  "children": [ … ] }
+```
+
+Both renderers honour animation. In the CLI/MLT path the comp renders to its content sub-`.mlt`, and a **cropping sub-`.mlt`** affine-places it so the visible sub-rect zoom-fills the canvas (overflow clipped by the fixed canvas) — the crop animates through the affine `rect` keyframes, no crop filter involved. The MLT is an internal byte-consistency intermediary; the `.seam` is the source of truth, so this would look unusual opened in another editor and that's fine.
+
 ## Spatial Layout
 
 A node's on-screen rect is built from three things:
@@ -859,7 +902,7 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 |------|--------|
 | **Clip** | `opacity`, `volume`, `origin`, `translation`, `size`, `rotation` |
 | **Audio** | `volume` |
-| **Composition** | `opacity`, `origin`, `translation`, `size`, `rotation` |
+| **Composition** | `opacity`, `inset`, `origin`, `translation`, `size`, `rotation` |
 | **Static** | `opacity`, `origin`, `translation`, `size`, `rotation` |
 | **Text** (and per-run inside `text` array) | `opacity`, `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
 | **Graphic** | Outer wrapper: `opacity`, `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
@@ -877,6 +920,7 @@ The CLI ffmpeg / melt path supports every animatable field:
 | `rotation` | Rotated nodes composite via melt's `qtblend` (`rotation` degrees + `rotate_center`) instead of the default `affine` — melt 7.38's `affine` can't do in-plane 2D rotation. The rect is shifted so qtblend's center-pivot reproduces rotation about the authored `origin`. Static and keyframed rotation both supported; an overflowing (cover) rect that's also rotated may mis-scale in non-portrait profiles (surfaced as a build limitation). |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
 | `opacity` | Folded into the compositing transition's `rect` ALPHA channel (`X Y W H ALPHA`) — same per-frame rect path as `origin`/`translation`/`size`, so animated opacity rides the existing keyframed rect. |
+| `inset` (composition) | The comp renders to a content sub-`.mlt`; a cropping sub-`.mlt` affine-places it so the visible sub-rect zoom-fills the canvas (overflow clipped by the fixed canvas). Animated inset bakes per-frame into that affine `rect` keyframe string — fixed canvas, no crop filter. |
 | Filter parameters | Static — `eq` (adjust), `colorbalance`, and `colortemperature` emit single `av.*` values (no `eval=frame` / `sendcmd`), since filters are no longer animatable. |
 
 Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

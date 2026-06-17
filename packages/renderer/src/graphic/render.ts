@@ -185,7 +185,7 @@ async function materializeClip(
   // Build the children from clipDef.frames[0]'s structure (the "Frame A
   // structure until Frame B" rule). Each child gets its state from the
   // clip snap; clip-local coords are shifted by (-cw/2, -ch/2) so the
-  // (0, 0) origin lands at the group's top-left rather than centre.
+  // (0, 0) origin lands at the group's top-left rather than center.
   const tree0 = playback.filledFrames[0]?.tree ?? [];
   const cw = playback.contentWidth;
   const ch = playback.contentHeight;

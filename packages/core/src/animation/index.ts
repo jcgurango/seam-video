@@ -15,6 +15,7 @@ export {
   sampleColor,
   samplePadding,
   sampleLength,
+  sampleInset,
 } from "./keyframes.js";
 
 export type { FilledObject, FilledTree, FlatFrame, FilledFrame } from "./interp.js";

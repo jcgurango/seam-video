@@ -127,6 +127,21 @@ const MetadataFieldsSchema = {
   metadata: z.record(z.string(), z.unknown()).optional(),
 };
 
+// Per-edge inset (crop) of a composition's content box — composition-only, so
+// the windowing render cost is something the author opts into by wrapping
+// content in a composition. Uses the text-padding shorthand shape —
+// `L` | `[v, h]` | `[t, r, b, l]` — but each edge is a `Length` (so `%`/px/
+// combos work) rather than a plain number. `%` resolves against the content
+// box's matching axis (left/right → width, top/bottom → height). Clips the
+// content without rescaling and shrinks the comp's output extent to the
+// visible window; `origin`/`translation`/`rotation` then place that window.
+// Animatable. See the [Inset] section of FILE-FORMAT.md.
+const InsetSchema = z.union([
+  LengthSchema,
+  z.tuple([LengthSchema, LengthSchema]),
+  z.tuple([LengthSchema, LengthSchema, LengthSchema, LengthSchema]),
+]);
+
 const SpatialFieldsSchema = {
   objectFit: ObjectFitSchema.optional(),
   origin: keyframed(Point2DSchema).optional(),
@@ -563,6 +578,10 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     backgroundColor: z.string().optional(),
     contentWidth: LengthSchema.optional(),
     contentHeight: LengthSchema.optional(),
+    // Per-edge inset / crop — composition-only. See InsetSchema above.
+    inset: keyframed(InsetSchema).optional(),
+    // How the inset window maps within the content box's placement.
+    insetMode: z.enum(["window", "center", "fit", "cover"]).optional(),
     ...SpatialFieldsSchema,
     ...TransitionFieldSchema,
     ...AnchorFieldsSchema,

@@ -82,16 +82,20 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
     return undefined;
   }
   const { objectFit, origin, translation, size, rotation } = child;
+  // `inset` (crop) + `insetMode` are composition-only.
+  const inset = child.type === "composition" ? child.inset : undefined;
+  const insetMode = child.type === "composition" ? child.insetMode : undefined;
   if (
     objectFit == null &&
     origin == null &&
     translation == null &&
     size == null &&
-    rotation == null
+    rotation == null &&
+    inset == null
   ) {
     return undefined;
   }
-  return { objectFit, origin, translation, size, rotation };
+  return { objectFit, origin, translation, size, rotation, inset, insetMode };
 }
 
 /**

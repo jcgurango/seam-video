@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveSpatial } from "../layout/resolve-spatial.js";
+import { resolveSpatial, resolveBoxProps } from "../layout/resolve-spatial.js";
 import type {
   ResolvedTimeline,
   ResolvedClip,
@@ -448,5 +448,97 @@ describe("resolveSpatial — animation passthrough", () => {
     const result = resolveSpatial(timeline, 1000, 1000);
     const comp = result.children[0] as ResolvedComposition;
     expect(comp.spatialInput).toBeUndefined();
+  });
+});
+
+describe("resolveSpatial — inset (crop)", () => {
+  // A clip with no probed media → content box = parent dims (1920×1080).
+  const insetClip = (inset: unknown, insetMode?: string) => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [makeClip({ spatialInput: { inset, insetMode } as never })],
+    };
+    const clip = resolveSpatial(timeline, 1920, 1080).children[0] as ResolvedClip;
+    return clip.spatial!;
+  };
+
+  it("default mode 'window' clips in place — no reposition/resize", () => {
+    // Left half (right: 50%) stays at the left, where the content box was.
+    const r = insetClip([0, "50%", 0, 0]);
+    expect(r).toMatchObject({ x: 0, y: 0, width: 960, height: 1080 });
+    expect(r.sourceRect).toEqual({ u0: 0, v0: 0, u1: 0.5, v1: 1 });
+  });
+
+  it("symmetric inset: window stays where it was (also centered here)", () => {
+    const r = insetClip(100);
+    expect(r).toMatchObject({ x: 100, y: 100, width: 1720, height: 880 });
+    expect(r.sourceRect).toEqual({
+      u0: 100 / 1920,
+      v0: 100 / 1080,
+      u1: 1820 / 1920,
+      v1: 980 / 1080,
+    });
+  });
+
+  it("mode 'center' re-centers the window within the content box", () => {
+    const r = insetClip([0, "50%", 0, 0], "center");
+    // 960×1080 window centered in the 1920×1080 box → x = (1920-960)/2 = 480
+    expect(r).toMatchObject({ x: 480, y: 0, width: 960, height: 1080 });
+    expect(r.sourceRect).toEqual({ u0: 0, v0: 0, u1: 0.5, v1: 1 });
+  });
+
+  it("mode 'fit' scales the window (aspect-preserving) to fit, centered", () => {
+    // window 960×1080 into 1920×1080: k = min(1920/960, 1080/1080) = 1 → 960×1080
+    const r = insetClip([0, "50%", 0, 0], "fit");
+    expect(r).toMatchObject({ x: 480, y: 0, width: 960, height: 1080 });
+    // A wider crop letterboxes vertically: window 1920×540 (bottom 50% off) →
+    // k = min(1920/1920, 1080/540) = 1 → unchanged; use a taller test instead.
+    const r2 = insetClip(["25%", 0, "25%", 0], "fit"); // window 1920×540
+    // k = min(1920/1920, 1080/540) = 1 → 1920×540, centered vertically
+    expect(r2).toMatchObject({ x: 0, y: 270, width: 1920, height: 540 });
+  });
+
+  it("mode 'cover' fills the box aspect-preserving, cropping the window", () => {
+    // Window = left half (960×1080, 8:9) into the 16:9 box → too tall, so the
+    // source is cropped top/bottom to 16:9 (centered) and output fills the box.
+    const r = insetClip([0, "50%", 0, 0], "cover");
+    expect(r).toMatchObject({ x: 0, y: 0, width: 1920, height: 1080 });
+    expect(r.sourceRect).toEqual({ u0: 0, v0: 0.25, u1: 0.5, v1: 0.75 });
+  });
+
+  it("[v, h] shorthand maps to top/bottom + left/right", () => {
+    const r = insetClip([50, 100]);
+    expect(r).toMatchObject({ width: 1720, height: 980 });
+    expect(r.sourceRect).toEqual({
+      u0: 100 / 1920,
+      v0: 50 / 1080,
+      u1: 1820 / 1920,
+      v1: 1030 / 1080,
+    });
+  });
+
+  it("no sourceRect when there's no inset (rects stay plain)", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [makeClip({ spatialInput: { translation: 0 } })],
+    };
+    const clip = resolveSpatial(timeline, 1920, 1080).children[0] as ResolvedClip;
+    expect(clip.spatial!.sourceRect).toBeUndefined();
+  });
+
+  it("animated inset samples per frame via resolveBoxProps", () => {
+    // left edge ramps 0 → 960 over [0,1]s; at t=0.5 it's 480.
+    const half = resolveBoxProps(
+      { inset: [[0, [0, 0, 0, 0]], [1, [0, 0, 0, 960]]] } as never,
+      1920,
+      1080,
+      1920,
+      1080,
+      0.5,
+      1,
+    );
+    expect(half.width).toBeCloseTo(1440); // 1920 - 480
+    expect(half.sourceRect!.u0).toBeCloseTo(480 / 1920);
+    expect(half.sourceRect!.u1).toBeCloseTo(1);
   });
 });

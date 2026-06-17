@@ -175,9 +175,9 @@ export function buildItemFromSource(
  *  refining the editing experience comes later.
  *
  *  fabric defaults `originX`/`originY` to `"center"`, so `left`/`top`
- *  specify the centre of the Map. To fill a 1080×1920 canvas we centre
+ *  specify the center of the Map. To fill a 1080×1920 canvas we center
  *  the 1080×1920 Map at (540, 960). Authoring `left: 0, top: 0` would
- *  put the centre at the canvas origin and clip three quarters of the
+ *  put the center at the canvas origin and clip three quarters of the
  *  Map off-screen. */
 function makeMapGraphic(source: string, duration: number): Graphic {
   const W = 1080;

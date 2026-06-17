@@ -374,6 +374,33 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts inset on a composition (shorthand forms)", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "composition", inset: 100, children: [] },
+        { type: "composition", inset: [50, "10%"], children: [] },
+        { type: "composition", inset: ["5%", 10, "5%", 10], children: [] },
+        {
+          type: "composition",
+          inset: [[0, 0], [1, 100, "ease-in"]],
+          children: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects inset on a clip (composition-only)", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5, inset: 100 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects out-of-range filter values", () => {
     const result = validate({
       type: "composition",

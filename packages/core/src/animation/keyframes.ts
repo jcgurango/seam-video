@@ -7,7 +7,7 @@ import { interpolateNumber, interpolateRgb } from "d3-interpolate";
 import { resolveEasing } from "./easing.js";
 import { resolveTimeExpr, type TimeExpr } from "./time.js";
 import { resolveLength } from "../layout/units.js";
-import type { TextPadding } from "../types.js";
+import type { Inset, Length, TextPadding } from "../types.js";
 
 export type Keyframe<T> = [TimeExpr, T] | [TimeExpr, T, string];
 export type Keyframed<T> = T | Keyframe<T>[];
@@ -124,6 +124,53 @@ export function sampleLength(
     resolveLength(v, referenceSize, percentDefault),
   );
   return sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
+}
+
+// Inset: per-edge crop in the text-padding shorthand shape (`L` | `[v,h]` |
+// `[t,r,b,l]`), but Length-valued. Each edge resolves through `sampleLength`
+// against its axis (left/right → refW, top/bottom → refH), so `%`/px/combos
+// and keyframing all work. Returns the four edges in pixels.
+export function sampleInset(
+  value: Keyframed<Inset>,
+  t: number,
+  duration: number,
+  refW: number,
+  refH: number,
+): { top: number; right: number; bottom: number; left: number } {
+  if (!isKeyframed(value)) {
+    const e = expandInset(value as Inset);
+    return {
+      top: resolveLength(e[0], refH, 0),
+      right: resolveLength(e[1], refW, 0),
+      bottom: resolveLength(e[2], refH, 0),
+      left: resolveLength(e[3], refW, 0),
+    };
+  }
+  const kf = value as Keyframe<Inset>[];
+  // Project the keyframed shorthand onto one edge → Keyframed<Length>, then
+  // sample (same trick `sampleAxis` uses for Point2D).
+  const edge = (i: number, ref: number): number => {
+    const projected = kf.map((entry) => {
+      const len = expandInset(entry[1])[i];
+      return entry.length === 3
+        ? ([entry[0], len, entry[2]] as [TimeExpr, Length, string])
+        : ([entry[0], len] as [TimeExpr, Length]);
+    });
+    return sampleLength(projected, t, duration, ref, 0);
+  };
+  return {
+    top: edge(0, refH),
+    right: edge(1, refW),
+    bottom: edge(2, refH),
+    left: edge(3, refW),
+  };
+}
+
+/** Expand the inset shorthand to `[top, right, bottom, left]`. */
+function expandInset(v: Inset): [Length, Length, Length, Length] {
+  if (typeof v === "number" || typeof v === "string") return [v, v, v, v];
+  if (v.length === 2) return [v[0], v[1], v[0], v[1]];
+  return v;
 }
 
 // Generic numeric sampler that already-prepared frames (used when the same
