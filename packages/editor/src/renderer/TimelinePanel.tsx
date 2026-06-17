@@ -1445,6 +1445,12 @@ function ChildBlockView({
         border,
         cursor: onReorderDragStart ? "grab" : editable ? "pointer" : "default",
         opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : depth > 0 ? 0.92 : 1,
+        // A `transition` crossfade overlaps the incoming block back over the
+        // previous one's tail, covering its right resize handle. Lift a
+        // selected block above its siblings so its handles stay grabbable
+        // (primary above secondaries when several overlap). Kept below the
+        // attach zone (9) / insertion ghost (8).
+        zIndex: isPrimary ? 4 : isSelected ? 3 : undefined,
       }}
     >
       {isComposition && (
