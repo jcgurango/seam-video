@@ -1356,7 +1356,22 @@ export function isComplexComposition(comp: ResolvedComposition): boolean {
   if (comp.objectFit != null && comp.objectFit !== "fit") return true;
   if (comp.filters && comp.filters.length > 0) return true;
   if (comp.backgroundColor != null) return true;
+  // Group opacity (animated, or static < 1) must apply to the composited
+  // group *as a unit* — flattening would drop it (the children composite at
+  // full opacity, so the comp pops in instead of fading). Pre-render so the
+  // parent composite carries the opacity in its affine-rect alpha, mirroring
+  // the preview routing an opacity/crossfading comp through the FBO.
+  if (compHasGroupOpacity(comp)) return true;
   return false;
+}
+
+/** Group opacity that flattening can't reproduce: animated, or a static
+ *  value below 1. Absent / static 1 is a no-op and stays flattenable. */
+function compHasGroupOpacity(comp: ResolvedComposition): boolean {
+  const o = comp.opacity;
+  if (o == null) return false;
+  if (isKeyframed(o)) return true;
+  return o !== 1;
 }
 
 function escAttr(s: string): string {

@@ -36,6 +36,11 @@ import {
 export interface AudioGraphOptions {
   basePath?: string;
   fps?: number;
+  /** Absolute source paths confirmed to have no audio stream (video-only
+   *  clips). Their nodes are skipped entirely — emitting `[idx:a]` for them
+   *  makes ffmpeg's filtergraph "match no streams" and abort. Keyed the same
+   *  way `buildAudioFromNode` resolves sources (`resolve(basePath, source)`). */
+  audiolessSources?: Set<string>;
 }
 
 interface FfmpegInput {
@@ -48,6 +53,7 @@ interface BuildContext {
   segmentIndex: number;
   fps: number;
   basePath: string | undefined;
+  audiolessSources: Set<string> | undefined;
 }
 
 export interface FfmpegAudioCommand {
@@ -70,6 +76,7 @@ export function buildFfmpegAudioCommand(
     segmentIndex: 0,
     fps: options.fps ?? 30,
     basePath: options.basePath,
+    audiolessSources: options.audiolessSources,
   };
 
   const audioLabels = collectAudioLabels(ctx, timeline.children, 1);
@@ -150,6 +157,9 @@ function buildAudioFromNode(
   parentSpeed: number,
 ): string | null {
   const source = ctx.basePath ? resolve(ctx.basePath, node.source) : node.source;
+  // Skip inputs with no audio stream — `[idx:a]` would match no streams and
+  // abort ffmpeg's whole filtergraph. Video-only clips contribute no audio.
+  if (ctx.audiolessSources?.has(source)) return null;
   const idx = getOrAddInput(ctx, source);
   const seg = ctx.segmentIndex++;
   const effectiveSpeed = node.speed * parentSpeed;

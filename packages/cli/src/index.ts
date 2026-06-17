@@ -57,4 +57,11 @@ program
   .option("--no-pretty", "Emit minified JSON")
   .action(resolveCommand);
 
-program.parse();
+// parseAsync (not parse) so async command actions are awaited and their
+// rejections surface here with full detail, rather than becoming an unhandled
+// promise rejection that crashes with no context.
+program.parseAsync(process.argv).catch((err) => {
+  console.error("\nseam: command failed");
+  console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+  process.exit(1);
+});

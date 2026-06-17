@@ -519,14 +519,25 @@ function resolveImageFlat(
     if (
       e.type === "Image" &&
       typeof src === "string" &&
-      !/^(data:|https?:|file:)/i.test(src) &&
-      !isAbsolute(src)
+      !/^(data:|https?:|blob:|file:)/i.test(src)
     ) {
+      // fabric/node's image loader HANGS on a bare filesystem path (it never
+      // resolves the load promise) — it needs a `file://` URL. So resolve to
+      // an absolute path (join basePath if relative) and wrap it as a URL, the
+      // same scheme the preview/electron resolver hands fabric. Absolute paths
+      // are wrapped too (they'd otherwise hang just the same).
+      const abs = isAbsolute(src) ? src : basePath ? join(basePath, src) : src;
       if (out === flat) out = { ...flat };
-      out[key] = { ...flat[key], src: basePath ? join(basePath, src) : src };
+      out[key] = { ...flat[key], src: pathToFileUrl(abs) };
     }
   }
   return out;
+}
+
+/** Wrap an absolute (or, as a last resort, relative) path as a `file://` URL
+ *  for fabric/node's image loader. Mirrors the preview's `defaultResolveSource`. */
+function pathToFileUrl(p: string): string {
+  return `file:///${p.replace(/^\/+/, "")}`;
 }
 
 async function renderMapPlaceholder(

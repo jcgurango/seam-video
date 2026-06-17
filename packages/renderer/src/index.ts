@@ -50,6 +50,8 @@ export { fillObject, fillFrame, CUSTOM_PROPS } from "./graphic/fill.js";
 export {
   probeIntrinsicSize,
   probeIntrinsicSizes,
+  probeHasAudio,
+  probeAudiolessSources,
   checkFfprobe,
 } from "./media-probe.js";
 export type { IntrinsicSize, IntrinsicSizeMap } from "./media-probe.js";

@@ -20,6 +20,7 @@ import {
   checkMelt,
   prerenderCompositionMlts,
   probeIntrinsicSizes,
+  probeAudiolessSources,
   rasterizeAllGraphics,
   rasterizeAllText,
   renderWithMelt,
@@ -77,6 +78,18 @@ function collectMediaSources(children: ResolvedChild[], out: Set<string>): void 
       out.add(child.source);
     } else if (child.type === "composition") {
       collectMediaSources(child.children, out);
+    }
+  }
+}
+
+/** Sources that feed the audio mix — clip + audio nodes (recursing through
+ *  compositions). Probed for audio streams so video-only clips can be skipped. */
+function collectAudioSources(children: ResolvedChild[], out: Set<string>): void {
+  for (const child of children) {
+    if (child.type === "clip" || child.type === "audio") {
+      out.add(child.source);
+    } else if (child.type === "composition") {
+      collectAudioSources(child.children, out);
     }
   }
 }
@@ -194,6 +207,10 @@ export async function renderCommand(file: string, options: RenderOptions) {
   const audioPath = join(assetsDir, "audio.m4a");
   const audioFilterScript = join(assetsDir, "audio-filter.txt");
 
+  // Keep the assets dir on a dry run (as documented) AND on failure, so the
+  // partially-generated text/graphic PNGs can be inspected when something in
+  // the pipeline throws.
+  let keepAssets = dryRun;
   try {
     // Rasterize text nodes to PNGs in the assets dir before building
     // the MLT document — the document references each PNG by absolute
@@ -218,6 +235,20 @@ export async function renderCommand(file: string, options: RenderOptions) {
     );
     graphicReporter.done();
 
+    // A clip with no audio stream (video-only camera roll, silent screen
+    // capture) would make ffmpeg's `[idx:a]` match no streams and abort the
+    // whole audio mix. Probe the audio-bearing nodes up front and skip the
+    // ones confirmed silent.
+    const audioSources = new Set<string>();
+    collectAudioSources(timeline.children, audioSources);
+    const audiolessSources = await probeAudiolessSources(audioSources, basePath);
+    if (audiolessSources.size > 0) {
+      console.warn(
+        `Excluding ${audiolessSources.size} source(s) with no audio stream from the mix:`,
+      );
+      for (const s of audiolessSources) console.warn(`  ${s}`);
+    }
+
     // Pre-render audio with ffmpeg first. MLT slices audio along the
     // video frame grid which produces audible artifacts at clip
     // boundaries and when volume animates; ffmpeg's audio filters
@@ -227,6 +258,7 @@ export async function renderCommand(file: string, options: RenderOptions) {
     const audioCommand = buildFfmpegAudioCommand(timeline, audioPath, {
       basePath,
       fps,
+      audiolessSources,
     });
 
     // Probe each clip/static's display dimensions so the builder can emit
@@ -329,8 +361,17 @@ export async function renderCommand(file: string, options: RenderOptions) {
       console.error(`\nmelt failed (exited after ${renderResult.duration.toFixed(1)}s).`);
       process.exit(1);
     }
+  } catch (err) {
+    // Surface any pipeline error (text/graphic rasterization, audio command
+    // build, MLT build, …) with full detail instead of letting it bubble as
+    // an opaque crash, and keep the assets dir around for inspection.
+    keepAssets = true;
+    console.error("\nRender failed:");
+    console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+    console.error(`\nAssets preserved for inspection: ${assetsDir}`);
+    process.exitCode = 1;
   } finally {
-    if (!dryRun) {
+    if (!keepAssets) {
       try {
         await rm(assetsDir, { recursive: true, force: true });
       } catch {

@@ -138,6 +138,64 @@ export async function probeIntrinsicSize(absPath: string): Promise<IntrinsicSize
   }
 }
 
+/** Whether a file has at least one audio stream. `true`/`false` when ffprobe
+ *  answers definitively; `null` when it couldn't be determined (ffprobe error
+ *  / unreadable) — callers should treat `null` as "assume audio" so we never
+ *  silently drop a track we just failed to inspect. */
+export async function probeHasAudio(absPath: string): Promise<boolean | null> {
+  const args = [
+    "-v",
+    "error",
+    "-select_streams",
+    "a",
+    "-show_entries",
+    "stream=index",
+    "-of",
+    "json",
+    absPath,
+  ];
+  let stdout: string;
+  try {
+    stdout = await new Promise<string>((res, rej) => {
+      execFile("ffprobe", args, { encoding: "utf-8" }, (err, out) => {
+        if (err) rej(err);
+        else res(out);
+      });
+    });
+  } catch {
+    return null;
+  }
+  try {
+    const json = JSON.parse(stdout) as { streams?: unknown[] };
+    return Array.isArray(json.streams) ? json.streams.length > 0 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Of `relPaths`, the set of absolute paths confirmed to have NO audio stream
+ *  (video-only clips, silent images). Only definitive "no audio" results are
+ *  included — a probe failure leaves the source out (treated as "has audio"),
+ *  so we never drop a real track we couldn't inspect. The ffmpeg audio graph
+ *  uses this to skip `[idx:a]` for inputs that would otherwise match no
+ *  streams and abort the whole filtergraph. */
+export async function probeAudiolessSources(
+  relPaths: Iterable<string>,
+  basePath?: string,
+): Promise<Set<string>> {
+  const noAudio = new Set<string>();
+  const unique = new Set<string>();
+  for (const rel of relPaths) {
+    unique.add(basePath ? resolve(basePath, rel) : rel);
+  }
+  await Promise.all(
+    [...unique].map(async (abs) => {
+      if ((await probeHasAudio(abs)) === false) noAudio.add(abs);
+    }),
+  );
+  return noAudio;
+}
+
 /** Probe many sources in parallel, deduped, into an `IntrinsicSizeMap`
  *  keyed by absolute path. `basePath` resolves relative `source` strings the
  *  same way the MLT builder does (`resolve(basePath, relPath)`). Sources that

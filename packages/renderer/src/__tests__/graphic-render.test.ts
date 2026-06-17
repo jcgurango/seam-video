@@ -1,4 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createCanvas } from "canvas";
+import { buildFlat } from "@seam/core";
 import { fillFrame } from "../graphic/fill.js";
 import {
   precomputeGraphicPlayback,
@@ -26,6 +31,36 @@ describe("graphic render", () => {
     expect(buf[1]).toBe(0x50);
     expect(buf[2]).toBe(0x4e);
     expect(buf[3]).toBe(0x47);
+  }, 15000);
+
+  it("renders a graphic Image from a filesystem path without hanging", async () => {
+    // Regression: fabric/node's image loader HANGS forever on a bare absolute
+    // path (the load promise never settles → the whole render silently drains
+    // the event loop and exits). `resolveImageFlat` must hand it a file:// URL.
+    // If that regresses, this test times out rather than passing.
+    const dir = await mkdtemp(join(tmpdir(), "seam-img-"));
+    const imgPath = join(dir, "dot.png");
+    const c = createCanvas(8, 8);
+    const cx = c.getContext("2d");
+    cx.fillStyle = "magenta";
+    cx.fillRect(0, 0, 8, 8);
+    await writeFile(imgPath, c.toBuffer("image/png"));
+
+    // Build the frame with buildFlat (pure, no image I/O) so the test setup
+    // itself doesn't hit the fill-time load — the fix under test is the
+    // render-time resolution in renderSnapshotToPng.
+    const tree = [
+      { type: "Image", id: "img", src: imgPath, width: 8, height: 8, left: 0, top: 0 },
+    ];
+    const flat: Record<string, Record<string, unknown>> = {};
+    buildFlat(tree, "", flat);
+
+    const buf = await renderSnapshotToPng(flat, tree, {
+      contentWidth: 16,
+      contentHeight: 16,
+    });
+    expect(buf.length).toBeGreaterThan(100);
+    expect(buf[0]).toBe(0x89); // PNG magic
   }, 15000);
 
   it("structure follows the prev keyframe — a later-introduced object appears at its frame", async () => {

@@ -399,7 +399,6 @@ export class MapInstance {
     const view = this.map.getView();
     view.setCenter(this.env.fromLonLat([input.longitude, input.latitude]));
     view.setResolution(zoomToResolution(input.zoom));
-
     await this.renderComplete();
 
     // Composite the OL layer canvas(es) over the cream base. We blend the
