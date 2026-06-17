@@ -308,20 +308,20 @@ A graphic can declare reusable inner animations under `clips`. Each clip is itse
   }],
   "frames": [
     [0, [{ "id": "p1", "type": "Clip", "clipId": "pulse", "startPosition": 0, "left": 100, "top": 200 }]],
-    [3, [{ "id": "p1", "type": "Clip", "clipId": "pulse",                       "left": 700, "top": 1400 }]]
+    [3, [{ "id": "p1", "type": "Clip", "clipId": "pulse",                     "left": 700, "top": 1400 }]]
   ]
 }
 ```
 
 #### Maps
 
-`Map` elements composite a maplibre-rendered pmtiles view. `source` resolves the same way as clip sources (relative filename → platform-specific lookup). On web the pmtiles file lives in OPFS; reads are byte-range only — multi-GB pmtiles never fully materialise. Style dispatch picks OSM Bright for vector tiles or a passthrough raster style for raster tiles. The `paths` array overlays geojson lines with optional `progress` (0..1, partial line draw) and `lineWidth`.
+`Map` elements composite an OpenLayers-rendered pmtiles view. `source` resolves the same way as clip sources (relative filename → platform-specific lookup). On web the pmtiles file lives in OPFS; reads are byte-range only — multi-GB pmtiles never fully materialise. Rendering is pure Canvas2D (no maplibre, no WebGL): OpenLayers runs off-screen purely as an on-demand rasterizer, `ol-mapbox-style` applies the bundled OSM Bright style, and the layer canvas is composited over a cream base. The `paths` array overlays geojson lines with optional `progress` (0..1, partial line draw) and `lineWidth`.
 
-Animating a Map across keyframes pans + zooms the same maplibre instance (path-id pooling), so a 30s animated map keeps using one GL context across all frames. Map updates are throttled to one flush per ~16 ms to keep maplibre's tile loader from falling behind.
+Animating a Map across keyframes pans + zooms the same OpenLayers instance (path-id pooling), so a 30s animated map reuses one map instance and its warm tile cache across all frames. There's no flush throttle — OL's canvas→canvas blit has no WebGL readback stall, so frames redraw only when the camera moves or async tile loads complete.
 
 #### Renderer support
 
-Both the editor preview and the CLI rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement` → WebGPU texture; the CLI goes to `fabric/node` → PNG sequence → MLT `qimage` producer (one PNG per output frame, `ttl=1`). Maps render via maplibre-gl in the browser and via `@maplibre/maplibre-gl-native` (Node 22+ prebuilt) server-side.
+Both the editor preview and the CLI rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement` → WebGPU texture; the CLI goes to `fabric/node` → PNG sequence → MLT `qimage` producer (one PNG per output frame, `ttl=1`). Maps render via OpenLayers in both environments — Canvas2D in the browser, and the same OL pipeline run headlessly under jsdom + node-canvas server-side (no native code).
 
 ### Composition
 
@@ -915,7 +915,7 @@ The CLI ffmpeg / melt path supports every animatable field:
 | Field | How it's rendered |
 |---|---|
 | Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
-| Graphic frames (fabric objects + sub-clips + maps) | Pre-rasterized to a PNG sequence at output fps via `fabric/node` (and `@maplibre/maplibre-gl-native` for Map elements). One PNG per static graphic, numbered sequence per animated. Same MLT `qimage` + `ttl=1` pipeline as text. |
+| Graphic frames (fabric objects + sub-clips + maps) | Pre-rasterized to a PNG sequence at output fps via `fabric/node` (and headless OpenLayers under jsdom + node-canvas for Map elements). One PNG per static graphic, numbered sequence per animated. Same MLT `qimage` + `ttl=1` pipeline as text. |
 | `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into the compositing transition's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect, so authoring with non-default `size` overrides means stretching is intentional. |
 | `rotation` | Rotated nodes composite via melt's `qtblend` (`rotation` degrees + `rotate_center`) instead of the default `affine` — melt 7.38's `affine` can't do in-plane 2D rotation. The rect is shifted so qtblend's center-pivot reproduces rotation about the authored `origin`. Static and keyframed rotation both supported; an overflowing (cover) rect that's also rotated may mis-scale in non-portrait profiles (surfaced as a build limitation). |
 | Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
