@@ -254,6 +254,15 @@ export interface TextStyleFields {
   color?: Keyframed<string>;
   /** Any valid SVG `font-weight` (e.g. "bold", "700"). */
   fontWeight?: string;
+  /** CSS `font-style` ("italic" / "oblique" / "normal"). */
+  fontStyle?: string;
+  /** A single text-decoration line, drawn manually (canvas has no native
+   *  text-decoration). */
+  textDecoration?: "none" | "underline" | "overline" | "line-through";
+  /** Vertical glyph stretch as a percentage string ("100%" = natural
+   *  height). Applied as a per-glyph vertical scale about the baseline;
+   *  horizontal advance is unchanged. */
+  letterHeight?: string;
   /** Any valid SVG fill string. Drawn as a rect behind the run, expanding
    *  per line on wrap (mirrors the way a span's background flows in HTML). */
   backgroundColor?: Keyframed<string>;

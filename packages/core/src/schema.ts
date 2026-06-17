@@ -267,6 +267,19 @@ const TextStyleFieldsSchema = {
   fontSize: keyframed(z.number().positive()).optional(),
   color: keyframed(z.string()).optional(),
   fontWeight: z.string().optional(),
+  // CSS `font-style` ("italic" / "oblique" / "normal"). Plain string like
+  // fontWeight — passed straight into the canvas font shorthand.
+  fontStyle: z.string().optional(),
+  // Single text-decoration line. Canvas has no native support, so the
+  // layout/draw passes render the rule manually.
+  textDecoration: z
+    .enum(["none", "underline", "overline", "line-through"])
+    .optional(),
+  // Vertical glyph stretch as a percentage string ("100%" = natural
+  // height). Not a CSS property — applied as a per-glyph vertical scale
+  // about the baseline; horizontal advance (and thus line-breaking) is
+  // unaffected. A string keeps the percentage unambiguous (no "1.5 vs 150").
+  letterHeight: PercentStringSchema.optional(),
   backgroundColor: keyframed(z.string()).optional(),
   backgroundPadding: keyframed(TextPaddingSchema).optional(),
   strokeColor: keyframed(z.string()).optional(),

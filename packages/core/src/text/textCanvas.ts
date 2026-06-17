@@ -31,6 +31,15 @@ export function drawTextLayout(
   ctx.textBaseline = "alphabetic";
   for (const g of layout.glyphs) {
     ctx.font = g.font;
+    // `letterHeight` stretches glyphs vertically about the baseline. Scale
+    // around `g.y` so the baseline stays put and letters grow up/down.
+    const scaled = g.scaleY !== 1;
+    if (scaled) {
+      ctx.save();
+      ctx.translate(0, g.y);
+      ctx.scale(1, g.scaleY);
+      ctx.translate(0, -g.y);
+    }
     if (g.stroke && g.strokeWidth > 0) {
       ctx.strokeStyle = g.stroke;
       ctx.lineWidth = g.strokeWidth;
@@ -42,5 +51,16 @@ export function drawTextLayout(
     }
     ctx.fillStyle = g.fill;
     ctx.fillText(g.text, g.x, g.y);
+    // Decoration rides the same vertical scale as the glyphs (its `y` is in
+    // unscaled baseline-relative space), in the text fill colour.
+    if (g.decoration) {
+      ctx.fillRect(
+        g.x,
+        g.decoration.y - g.decoration.thickness / 2,
+        g.decoration.width,
+        g.decoration.thickness,
+      );
+    }
+    if (scaled) ctx.restore();
   }
 }

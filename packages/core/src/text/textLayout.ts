@@ -67,36 +67,38 @@ function sP(v: Keyframed<TextPadding> | undefined, d: number, t: number): TextPa
   return samplePadding(v, t, d);
 }
 
-function cssFontShorthand(
-  run: TextRun,
-  defaults: ResolvedText,
-  duration: number,
-  t: number,
-): string {
-  const family = run.fontFamily ?? defaults.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const size = sN(run.fontSize, duration, t)
-    ?? sN(defaults.fontSize, duration, t)
-    ?? DEFAULT_FONT_SIZE;
-  const weight = run.fontWeight ?? defaults.fontWeight;
-  // Family with spaces gets quoted to keep the shorthand parser happy.
-  // Append the CJK/emoji fallbacks so Pretext *measures* against the same
-  // fonts the draw pass renders — otherwise CJK/emoji measure as tofu and
-  // line-breaking / fragment widths drift from the drawn glyphs.
-  const familyToken = withFallbackFamilies(
-    /\s/.test(family) ? `"${family}"` : family,
-  );
-  return `${weight ? `${weight} ` : ""}${size}px ${familyToken}`;
-}
+type Decoration = "underline" | "overline" | "line-through";
 
 interface RunStyle {
   fontFamily: string;
   fontSize: number;
   color: string;
   fontWeight: string | null;
+  fontStyle: string | null;
+  textDecoration: Decoration | null;
+  /** Vertical glyph scale (1 = natural). `letterHeight` percent / 100. */
+  letterScaleY: number;
   backgroundColor: string | null;
   backgroundPadding: PaddingBox;
   strokeColor: string | null;
   strokeWidth: number;
+}
+
+/** The CSS font shorthand for a resolved run style. The SAME string drives
+ *  both Pretext's measurement and the draw pass, so glyph positions can't
+ *  drift. Order follows CSS: style → weight → size → family. The family is
+ *  quoted when it contains spaces, then trailed by the CJK/emoji fallbacks
+ *  so Pretext measures against the same fonts the draw pass renders. */
+function fontStringFromStyle(style: RunStyle): string {
+  const familyToken = withFallbackFamilies(
+    /\s/.test(style.fontFamily) ? `"${style.fontFamily}"` : style.fontFamily,
+  );
+  const parts: string[] = [];
+  if (style.fontStyle) parts.push(style.fontStyle);
+  if (style.fontWeight) parts.push(style.fontWeight);
+  parts.push(`${style.fontSize}px`);
+  parts.push(familyToken);
+  return parts.join(" ");
 }
 
 function resolveRunStyle(
@@ -105,6 +107,11 @@ function resolveRunStyle(
   duration: number,
   t: number,
 ): RunStyle {
+  const decoration = run.textDecoration ?? defaults.textDecoration ?? null;
+  // "150%" → 1.5. parseFloat ignores the trailing "%".
+  const letterHeightPct = run.letterHeight ?? defaults.letterHeight;
+  const letterScaleY =
+    letterHeightPct != null ? parseFloat(letterHeightPct) / 100 : NaN;
   return {
     fontFamily: run.fontFamily ?? defaults.fontFamily ?? DEFAULT_FONT_FAMILY,
     fontSize: sN(run.fontSize, duration, t)
@@ -114,6 +121,9 @@ function resolveRunStyle(
       ?? sC(defaults.color, duration, t)
       ?? DEFAULT_COLOR,
     fontWeight: run.fontWeight ?? defaults.fontWeight ?? null,
+    fontStyle: run.fontStyle ?? defaults.fontStyle ?? null,
+    textDecoration: decoration === "none" ? null : decoration,
+    letterScaleY: Number.isFinite(letterScaleY) && letterScaleY > 0 ? letterScaleY : 1,
     backgroundColor: sC(run.backgroundColor, duration, t)
       ?? sC(defaults.backgroundColor, duration, t)
       ?? null,
@@ -170,6 +180,13 @@ export interface TextGlyph {
   /** Stroke is drawn first when present (mimics SVG `paint-order: stroke fill`). */
   stroke: string | null;
   strokeWidth: number;
+  /** A decoration rule to draw in the fill colour. `y` is the line centre
+   *  (canvas px), `width` spans the glyph text, `thickness` in px. Null when
+   *  no `textDecoration`. */
+  decoration: { y: number; width: number; thickness: number } | null;
+  /** Vertical glyph scale about the baseline (1 = natural). Drawn under a
+   *  `scale(1, scaleY)` transform anchored at `y`. */
+  scaleY: number;
 }
 
 export interface TextLayoutResult {
@@ -240,7 +257,7 @@ export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult 
       const style = styles[piece.runIndex];
       return {
         text: piece.text,
-        font: cssFontShorthand(node.runs[piece.runIndex], node, duration, t),
+        font: fontStringFromStyle(style),
         extraWidth: style.backgroundPadding.left + style.backgroundPadding.right,
       };
     });
@@ -337,21 +354,35 @@ export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult 
       // Glyphs sit inside the padded fragment; offset by the left
       // padding so the text isn't drawn flush against the rect edge.
       const textX = tx + padLeft;
-      const fontWeight = style.fontWeight;
-      const familyToken = withFallbackFamilies(
-        /\s/.test(style.fontFamily)
-          ? `"${style.fontFamily}"`
-          : style.fontFamily,
-      );
-      const font = `${fontWeight ? `${fontWeight} ` : ""}${style.fontSize}px ${familyToken}`;
+      // Decoration spans the glyph text (fragment minus its bg padding).
+      let decoration: TextGlyph["decoration"] = null;
+      if (style.textDecoration) {
+        const width =
+          frag.occupiedWidth -
+          style.backgroundPadding.left -
+          style.backgroundPadding.right;
+        const offset =
+          style.textDecoration === "underline"
+            ? style.fontSize * 0.12 // just below the baseline
+            : style.textDecoration === "line-through"
+              ? -style.fontSize * 0.3 // through the x-height
+              : -style.fontSize * 0.8; // overline, near the cap line
+        decoration = {
+          y: baseline + offset,
+          width,
+          thickness: Math.max(1, style.fontSize / 14),
+        };
+      }
       glyphs.push({
         x: textX,
         y: baseline,
         text: frag.text,
-        font,
+        font: fontStringFromStyle(style),
         fill: style.color,
         stroke: style.strokeWidth > 0 ? (style.strokeColor ?? "black") : null,
         strokeWidth: style.strokeWidth,
+        decoration,
+        scaleY: style.letterScaleY,
       });
       tx += frag.occupiedWidth;
     }
