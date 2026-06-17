@@ -47,27 +47,42 @@ function pickFreshId(existingIds: Set<string>, base: string): string {
   return `${base}_${i}`;
 }
 
+/** The `timeSource`/`anchorPoint` pair an attachment should use to pin to a
+ *  point on the primary at the playhead. Either a `source`-mode seconds value
+ *  (for types with a real content axis) or an `output`-mode percentage. */
+type AnchorSpec =
+  | { timeSource: "source"; anchorPoint: number }
+  | { timeSource: "output"; anchorPoint: string };
+
 /**
- * Source-time of the playhead within `primary`, clamped to its source range.
- * Maps the resolver's source→output formula in reverse:
+ * The anchor spec for pinning to the playhead point on `primary`.
+ *
+ * For types with a real source axis (clip/audio/composition) we anchor in
+ * **source** mode — a content moment that survives later trims. Maps the
+ * resolver's source→output formula in reverse:
  *   source_time = base + (output_time − timelineStart) * speed
  * where `base` is `sourceIn` (clip/audio) or `in ?? 0` (composition).
  *
- * Returns null for primaries that have no meaningful source axis (data,
- * empty) — the attach tool is disabled in those cases.
+ * Every other type (empty, static, text, graphic, data) has no content axis
+ * but still occupies an output span — anchor in **output** mode as a
+ * percentage of that span (the file format allows attaching to any node).
+ *
+ * Returns null only when the resolved span is degenerate enough to be
+ * unusable (it otherwise always produces a spec).
  */
-function sourceAnchorPoint(
+function computeAnchorSpec(
   primary: Child,
   resolved: ResolvedChild,
   t: number,
-): number | null {
+): AnchorSpec | null {
   if (
     (primary.type === "clip" || primary.type === "audio") &&
     (resolved.type === "clip" || resolved.type === "audio")
   ) {
     const sourceTime =
       resolved.sourceIn + (t - resolved.timelineStart) * resolved.speed;
-    return Math.max(primary.in, Math.min(primary.out, sourceTime));
+    const clamped = Math.max(primary.in, Math.min(primary.out, sourceTime));
+    return { timeSource: "source", anchorPoint: clamped };
   }
   if (primary.type === "composition" && resolved.type === "composition") {
     const compIn = primary.in ?? 0;
@@ -77,9 +92,17 @@ function sourceAnchorPoint(
     const compOut = compIn + resolved.duration * resolved.speed;
     const sourceTime =
       compIn + (t - resolved.timelineStart) * resolved.speed;
-    return Math.max(compIn, Math.min(compOut, sourceTime));
+    const clamped = Math.max(compIn, Math.min(compOut, sourceTime));
+    return { timeSource: "source", anchorPoint: clamped };
   }
-  return null;
+  // No source axis — pin to a percentage of the output span.
+  const span = resolved.timelineEnd - resolved.timelineStart;
+  const pct = span > 0 ? (t - resolved.timelineStart) / span : 0;
+  const clamped = Math.max(0, Math.min(1, pct));
+  return {
+    timeSource: "output",
+    anchorPoint: `${parseFloat((clamped * 100).toFixed(4))}%`,
+  };
 }
 
 /**
@@ -130,8 +153,8 @@ export function applyAttach(
       : desc.aContainer.children.length + last.index;
   const resolvedPrimary = desc.rContainer.children[flat];
   if (!resolvedPrimary) return null;
-  const anchorPoint = sourceAnchorPoint(primary, resolvedPrimary, desc.localTime);
-  if (anchorPoint == null) return null;
+  const anchorSpec = computeAnchorSpec(primary, resolvedPrimary, desc.localTime);
+  if (anchorSpec == null) return null;
 
   // Valid secondaries: non-bin, not the primary's container, not an
   // ancestor-or-equal of the primary (can't attach the primary's container
@@ -158,8 +181,7 @@ export function applyAttach(
   }
   const anchor: TimeAnchor = {
     anchor: primaryId,
-    timeSource: "source",
-    anchorPoint,
+    ...anchorSpec,
     offset: 0,
   };
 
@@ -235,26 +257,30 @@ function attachRebuild(
 }
 
 /**
- * Append `newItems` as attachments anchored to `primaryIndex` at the
- * source-mode point corresponding to `currentTime` on the primary.
+ * Append `newItems` as attachments anchored to the primary at
+ * `primaryField[primaryIndex]` (a sequential child or an existing
+ * attachment), at the point corresponding to `currentTime` on the primary.
  * Used by the drag-drop attach zone: dropped files become attachments
- * pre-anchored to the selected clip at the playhead. Auto-assigns an
+ * pre-anchored to the selected primary at the playhead. Auto-assigns an
  * id to the primary if it lacks one.
  *
  * `side === "start"` anchors each new item's `start` to the playhead
  * (item lives to the right of the playhead); `side === "end"` anchors
- * the `end` (item lives to the left). Returns null when the primary's
- * type has no source axis.
+ * the `end` (item lives to the left). Any primary type works — types with
+ * a source axis anchor in source mode, the rest in output-percentage mode.
  */
 export function attachNewItems(
   doc: SeamFile,
   currentTime: number,
+  primaryField: "children" | "attachments",
   primaryIndex: number,
   newItems: Child[],
   side: "start" | "end",
 ): SeamFile | null {
   if (newItems.length === 0) return null;
-  const primary = doc.children[primaryIndex];
+  const sourceArr =
+    primaryField === "children" ? doc.children : doc.attachments ?? [];
+  const primary = sourceArr[primaryIndex];
   if (!primary) return null;
 
   let resolved;
@@ -272,11 +298,16 @@ export function attachNewItems(
   } catch {
     return null;
   }
-  const resolvedPrimary = resolved.children[primaryIndex];
+  // The resolver appends resolved attachments after resolved children.
+  const resolvedIndex =
+    primaryField === "children"
+      ? primaryIndex
+      : doc.children.length + primaryIndex;
+  const resolvedPrimary = resolved.children[resolvedIndex];
   if (!resolvedPrimary) return null;
 
-  const anchorPoint = sourceAnchorPoint(primary, resolvedPrimary, currentTime);
-  if (anchorPoint == null) return null;
+  const anchorSpec = computeAnchorSpec(primary, resolvedPrimary, currentTime);
+  if (anchorSpec == null) return null;
 
   const existingIds = collectAllIds(doc);
   let primaryId = (primary as { id?: string }).id;
@@ -288,8 +319,7 @@ export function attachNewItems(
 
   const anchor: TimeAnchor = {
     anchor: primaryId,
-    timeSource: "source",
-    anchorPoint,
+    ...anchorSpec,
     offset: 0,
   };
 
@@ -303,12 +333,23 @@ export function attachNewItems(
     return updated;
   });
 
-  const newChildren = [...doc.children];
-  newChildren[primaryIndex] = updatedPrimary;
+  // Write the (possibly id-stamped) primary back into its own array, then
+  // append the new attachments. New items always land in `attachments` and
+  // after the primary in array order, so they can reference its id.
+  const children =
+    primaryField === "children"
+      ? doc.children.map((c, i) => (i === primaryIndex ? updatedPrimary : c))
+      : doc.children;
+  const baseAttachments =
+    primaryField === "attachments"
+      ? (doc.attachments ?? []).map((a, i) =>
+          i === primaryIndex ? updatedPrimary : a,
+        )
+      : doc.attachments ?? [];
 
   return {
     ...doc,
-    children: newChildren,
-    attachments: [...(doc.attachments ?? []), ...anchored],
+    children,
+    attachments: [...baseAttachments, ...anchored],
   };
 }

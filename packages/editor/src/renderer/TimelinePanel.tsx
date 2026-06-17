@@ -229,10 +229,12 @@ interface InnerProps {
     children: Child[],
   ) => void;
   /** Receives a file drop on the attach zone — anchors new items to the
-   *  selected primary (at `containerPath`'s `fieldIndex`) at its
-   *  container-local `localTime` (the playhead). */
+   *  selected primary (at `containerPath`'s `field[fieldIndex]`, where
+   *  `field` is the primary's own band) at its container-local `localTime`
+   *  (the playhead). */
   onAttachDropAt?: (
     containerPath: NodePath,
+    field: "children" | "attachments",
     fieldIndex: number,
     side: "start" | "end",
     localTime: number,
@@ -242,6 +244,7 @@ interface InnerProps {
    *  `onAttachDropAt` without file import. */
   onAttachChildrenAt?: (
     containerPath: NodePath,
+    field: "children" | "attachments",
     fieldIndex: number,
     side: "start" | "end",
     localTime: number,
@@ -252,6 +255,7 @@ interface InnerProps {
    *  attachment. */
   onAttachExistingAt?: (
     containerPath: NodePath,
+    field: "children" | "attachments",
     fieldIndex: number,
     side: "start" | "end",
     localTime: number,
@@ -689,25 +693,27 @@ function DesktopTimeline({
     [rootGroup, pxPerSec, contentWidth, contentHeight],
   );
 
-  // The single selected node that's a valid anchor primary — a sequential
-  // child with a source axis, at any editable level. (`attachNewItems`
-  // resolves its container un-windowed, so windowed containers are fine.)
+  // The single selected node that's a valid anchor primary — any node type
+  // (the format lets you anchor to anything), as a sequential child or an
+  // existing attachment, at any editable level. (`attachNewItems` resolves
+  // its container un-windowed, so windowed containers are fine.)
   const attachTarget = useMemo(() => {
     if (!docRoot || selection.length !== 1) return null;
     const key = selection[0];
     const path = parsePath(key);
     const last = path[path.length - 1];
-    if (!last || last.field !== "children") return null;
-    const node = getNodeAtPath(docRoot as SeamFile, path);
-    if (
-      !node ||
-      (node.type !== "clip" &&
-        node.type !== "audio" &&
-        node.type !== "composition")
-    ) {
+    if (!last || (last.field !== "children" && last.field !== "attachments")) {
       return null;
     }
-    return { key, path, containerPath: path.slice(0, -1), fieldIndex: last.index };
+    const node = getNodeAtPath(docRoot as SeamFile, path);
+    if (!node) return null;
+    return {
+      key,
+      path,
+      containerPath: path.slice(0, -1),
+      field: last.field,
+      fieldIndex: last.index,
+    };
   }, [docRoot, selection]);
 
   // The attach zone is available during a file drag (drop files as
@@ -835,6 +841,7 @@ function DesktopTimeline({
         const side = x >= currentTime * pxPerSec ? "start" : "end";
         onAttachExistingAt(
           attachTarget.containerPath,
+          attachTarget.field,
           attachTarget.fieldIndex,
           side,
           attachLocalTime(),
@@ -946,6 +953,7 @@ function DesktopTimeline({
       if (sourceChildren) {
         onAttachChildrenAt?.(
           attachTarget!.containerPath,
+          attachTarget!.field,
           attachTarget!.fieldIndex,
           side,
           attachLocalTime(),
@@ -954,6 +962,7 @@ function DesktopTimeline({
       } else if (onAttachDropAt) {
         onAttachDropAt(
           attachTarget!.containerPath,
+          attachTarget!.field,
           attachTarget!.fieldIndex,
           side,
           attachLocalTime(),
@@ -1639,6 +1648,7 @@ export default function TimelinePanel({
   const handleAttachDropAt = useCallback(
     async (
       containerPath: NodePath,
+      field: "children" | "attachments",
       fieldIndex: number,
       side: "start" | "end",
       anchorTime: number,
@@ -1649,7 +1659,7 @@ export default function TimelinePanel({
       const items = await buildItemsFromFiles(files, platform, baseDir);
       if (items.length === 0) return;
       const next = editContainer(doc, containerPath, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, fieldIndex, items, side),
+        attachNewItems(sub, anchorTime, field, fieldIndex, items, side),
       );
       if (next !== doc) onDocumentChange(next);
     },
@@ -1681,6 +1691,7 @@ export default function TimelinePanel({
   const onAttachChildrenAt = useCallback(
     (
       containerPath: NodePath,
+      field: "children" | "attachments",
       fieldIndex: number,
       side: "start" | "end",
       anchorTime: number,
@@ -1688,7 +1699,7 @@ export default function TimelinePanel({
     ) => {
       if (!doc || !onDocumentChange || children.length === 0) return;
       const next = editContainer(doc, containerPath, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, fieldIndex, children, side),
+        attachNewItems(sub, anchorTime, field, fieldIndex, children, side),
       );
       if (next !== doc) onDocumentChange(next);
     },
@@ -1701,6 +1712,7 @@ export default function TimelinePanel({
   const handleAttachExistingAt = useCallback(
     (
       containerPath: NodePath,
+      field: "children" | "attachments",
       fieldIndex: number,
       side: "start" | "end",
       anchorTime: number,
@@ -1712,19 +1724,19 @@ export default function TimelinePanel({
       const item = stripAnchors({ ...node } as Child);
       const removed = removeNodeAtPath(doc, fromPath);
       const adjContainer = adjustPathAfterRemoval(containerPath, fromPath);
-      // Removing an earlier sibling in the same container shifts the
-      // primary's index down by one.
+      // Removing an earlier sibling in the primary's *own* band (same
+      // container, same field) shifts the primary's index down by one.
       const last = fromPath[fromPath.length - 1];
       let adjFieldIndex = fieldIndex;
       if (
         samePath(fromPath.slice(0, -1), containerPath) &&
-        last?.field === "children" &&
+        last?.field === field &&
         last.index < fieldIndex
       ) {
         adjFieldIndex -= 1;
       }
       const next = editContainer(removed, adjContainer, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, adjFieldIndex, [item], side),
+        attachNewItems(sub, anchorTime, field, adjFieldIndex, [item], side),
       );
       if (next !== removed) {
         onDocumentChange(next);

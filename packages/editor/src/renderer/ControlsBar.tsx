@@ -290,22 +290,17 @@ export default function ControlsBar({
   const canSlice =
     selection.length > 0 || doc.children.some((c) => isSliceableType(c.type));
 
-  // Attach: needs 2+ selected and a primary (first selection) with a source
-  // axis. The primary and secondaries can each be a child OR an attachment,
-  // at any level — secondaries are pulled into the primary's container and
-  // anchored/re-anchored on the chosen side. Bin-rooted primaries are out
-  // (the per-reference playhead is ambiguous).
+  // Attach: needs 2+ selected and a resolvable primary (first selection).
+  // The primary and secondaries can each be any node type (the file format
+  // lets you anchor to anything — empties included) and can each be a child
+  // OR an attachment, at any level: secondaries are pulled into the primary's
+  // container and anchored/re-anchored on the chosen side. Bin-rooted
+  // primaries are out (the per-reference playhead is ambiguous).
   const canAttach = (() => {
     if (selection.length < 2) return false;
     const pp = parsePath(selection[0]);
     if (pp.length === 0 || pp.some((s) => s.field === "bin")) return false;
-    const primary = getNodeAtPath(doc, pp);
-    if (!primary) return false;
-    return (
-      primary.type === "clip" ||
-      primary.type === "audio" ||
-      primary.type === "composition"
-    );
+    return getNodeAtPath(doc, pp) != null;
   })();
 
   const handleAttach = useCallback(
