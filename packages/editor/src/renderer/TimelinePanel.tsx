@@ -47,6 +47,7 @@ import { layoutTree, type TreeGroup } from "./timelineTree.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
 import { resizeChild } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
+import { isTypingInEditableSurface } from "./keyboardGuards.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -1758,6 +1759,9 @@ export default function TimelinePanel({
   useEffect(() => {
     if (!doc) return;
     const handler = (e: KeyboardEvent) => {
+      // Bail when typing into an input (e.g. the Media panel's filter box) —
+      // otherwise Backspace there would delete the timeline selection.
+      if (isTypingInEditableSurface(e)) return;
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
         selection.length > 0 &&
