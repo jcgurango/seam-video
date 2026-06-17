@@ -327,7 +327,18 @@ function walkChildren(
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
       const fade = transitionFade(child, localTime);
-      const nodeOpacity = sampleOpacity(child.opacity, childLocalTime, child.duration);
+      // Opacity describes the composition box in its *parent*, like the other
+      // spatial fields (`dynamicSpatial` above samples them in output time),
+      // so it resolves against the output span / output-relative time — NOT
+      // the sped inner timeline `childLocalTime` used to recurse the comp's
+      // own children. This keeps a keyframe at "1s" landing at 1s of the
+      // block regardless of the comp's speed, matching the CLI overlay
+      // sampler (`mlt-builder`) and keeping preview↔render in lockstep.
+      const nodeOpacity = sampleOpacity(
+        child.opacity,
+        localTime - child.timelineStart,
+        child.timelineEnd - child.timelineStart,
+      );
 
       const hasFilters = child.filters && child.filters.length > 0;
       // A rotated composition can't be flattened into the parent pass (its

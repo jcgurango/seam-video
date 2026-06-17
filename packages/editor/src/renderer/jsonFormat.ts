@@ -1,16 +1,21 @@
 /**
  * JSON.stringify(_, null, 2)-compatible formatter that also records the
- * character offset of every element of every "children" / "attachments"
- * array it encounters, keyed by its dotted JSON path:
+ * character offset of every array element it encounters (the
+ * "children" / "attachments" arrays that locate timeline nodes, but also
+ * every other array — so a keyframe can be jumped to), keyed by its dotted
+ * JSON path:
  *
  *   children.<i>
  *   attachments.<i>
  *   bin.<i>.children.<i>
+ *   children.<i>.opacity.<k>      ← a keyframe of an animated property
+ *   children.<i>.frames.<k>       ← a graphic frame
  *   …
  *
  * Recording at any depth lets the JSON editor jump into nested
  * surfaces — e.g. a bin entry's children show up under
- * `bin.N.children.M`.
+ * `bin.N.children.M`, and a diamond on a keyframe lane jumps to the exact
+ * keyframe tuple.
  *
  * Output is byte-identical to JSON.stringify(value, null, 2) for the data
  * shapes we ship (no NaN/Infinity, no functions, no class instances).
@@ -65,7 +70,9 @@ export function formatJsonWithLocations(
       for (let i = 0; i < v.length; i++) {
         if (i > 0) append(",");
         append("\n" + pad(depth + 1));
-        emitValue(v[i], depth + 1, `${path}.${i}`);
+        const elementPath = `${path}.${i}`;
+        locations.set(elementPath, offset);
+        emitValue(v[i], depth + 1, elementPath);
       }
       append("\n" + pad(depth) + "]");
       return;

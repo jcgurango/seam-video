@@ -29,6 +29,7 @@ import {
 import { compileDocument } from "./compile.js";
 import { findBinItem } from "./nodeBin.js";
 import { pathKey, type NodePath } from "./nodePath.js";
+import { hasAnimatedLanes, lanesForNode, type KeyframeLane } from "./keyframeLanes.js";
 
 interface AuthoredBody {
   children: Child[];
@@ -51,10 +52,18 @@ export interface TreeBlock {
   docChild?: Child;
   isComposition: boolean;
   isBinItem: boolean;
+  /** True when the node has any animated property (so it's expandable to
+   *  show keyframe lanes even when it isn't a composition). */
+  hasLanes: boolean;
   isExpanded: boolean;
   /** Present when `isExpanded` and the body resolved: the nested group +
    *  the local row its `overflow:hidden` container begins at. */
   expansion?: { group: TreeGroup; topRow: number };
+  /** Present when `isExpanded` and the node has animated properties: one
+   *  keyframe lane per property, plus the local row the lanes begin at
+   *  (below any composition window). One standard row per lane. */
+  lanes?: KeyframeLane[];
+  laneTopRow?: number;
 }
 
 /** One composition body laid out: its blocks (in the body's own inner
@@ -224,6 +233,11 @@ function layoutGroup(
           { field: isAttachment ? "attachments" : "children", index: fieldIndex },
         ];
         const addr = pathKey(path);
+        // A node is expandable when it's a composition (window) or has any
+        // animated property (keyframe lanes). Non-comp animated nodes get
+        // the expand toggle purely for their lanes.
+        const hasLanes = hasAnimatedLanes(docChild);
+        const expandable = isComposition || hasLanes;
         const block: TreeBlock = {
           child: p.child,
           index: p.index,
@@ -234,7 +248,8 @@ function layoutGroup(
           docChild,
           isComposition,
           isBinItem,
-          isExpanded: isComposition && expanded.has(addr),
+          hasLanes,
+          isExpanded: expandable && expanded.has(addr),
         };
         blocks.push(block);
         if (block.isExpanded) toExpand.push(block);
@@ -244,11 +259,26 @@ function layoutGroup(
         const expBaseRow = cursor;
         let maxRows = 0;
         for (const block of toExpand) {
-          const group = buildExpansion(block, expanded, rootBin, editable);
-          if (group) {
-            block.expansion = { group, topRow: expBaseRow };
-            maxRows = Math.max(maxRows, group.rowCount);
+          // Composition window first (its own nested group), then keyframe
+          // lanes below it. Both are local rows within this group; sibling
+          // expansions on the same band row share `expBaseRow` (they sit at
+          // different x, under their own blocks).
+          let winRows = 0;
+          if (block.isComposition) {
+            const group = buildExpansion(block, expanded, rootBin, editable);
+            if (group) {
+              block.expansion = { group, topRow: expBaseRow };
+              winRows = group.rowCount;
+            }
           }
+          if (block.hasLanes && block.docChild) {
+            const lanes = lanesForNode(block.docChild, block.child);
+            if (lanes.length > 0) {
+              block.lanes = lanes;
+              block.laneTopRow = expBaseRow + winRows;
+            }
+          }
+          maxRows = Math.max(maxRows, winRows + (block.lanes?.length ?? 0));
         }
         cursor += maxRows;
       }

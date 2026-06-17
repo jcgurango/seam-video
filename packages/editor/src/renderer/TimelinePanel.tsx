@@ -7,6 +7,7 @@ import type {
   ResolvedTimeline,
   ResolvedChild,
   SeamFile,
+  TimeExpr,
 } from "@seam/core";
 import { buildItemsFromFiles, SOURCE_DRAG_MIME } from "./useImport.js";
 import { attachNewItems } from "./attachTool.js";
@@ -44,6 +45,9 @@ import {
   rowTop,
 } from "./timelineLayout.js";
 import { layoutTree, type TreeGroup } from "./timelineTree.js";
+import type { KeyframeLane } from "./keyframeLanes.js";
+import KeyframeDiamond, { KEYFRAME_DIAMOND_SIZE } from "./KeyframeDiamond.js";
+import { setKeyframeTime, timeExprForLocal } from "./keyframeEdit.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
 import { resizeChild } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
@@ -66,6 +70,9 @@ export interface TimelinePanelProps {
   onDocumentChange?: (doc: SeamFile) => void;
   history: History<SeamFile>;
   platform: Platform;
+  /** Reveal a dotted JSON path in the inspector's JSON editor — used when a
+   *  keyframe diamond on a lane is clicked (`children.3.opacity.2`). */
+  onJumpToJson?: (pathKey: string) => void;
 }
 
 const MIN_PX_PER_SEC = 10;
@@ -262,6 +269,8 @@ interface InnerProps {
     localTime: number,
     fromPath: NodePath,
   ) => void;
+  /** Reveal a dotted JSON path (keyframe diamond click). */
+  onJumpToJson?: (pathKey: string) => void;
 }
 
 // ── Timeline surface (hook + body) ───────────────────────────────────
@@ -372,6 +381,9 @@ interface TimelineSurfaceProps {
   /** Highlight state for the attach zone's two halves. Null when the
    *  cursor isn't over the zone. */
   attachHoverSide?: "start" | "end" | null;
+  /** Reveal a dotted JSON path (e.g. a keyframe `children.3.opacity.2`)
+   *  when a keyframe diamond is clicked. */
+  onJumpToJson: ((pathKey: string) => void) | null;
 }
 
 /** Body of the timeline: ruler + child blocks + anchor lines. Positioned
@@ -393,6 +405,7 @@ function TimelineSurface({
   insertionGhost,
   showAttachZone,
   attachHoverSide,
+  onJumpToJson,
 }: TimelineSurfaceProps) {
   const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
   const { currentTime, totalDuration, seek } = useTimeline();
@@ -482,6 +495,78 @@ function TimelineSurface({
 
   const onResizeDragStart = editHistory ? startResize : null;
 
+  // Keyframe-diamond drag. Mirrors `startResize`: pointer-captures the
+  // diamond, tracks a cursor delta, and live-`replace`s the doc. A press that
+  // never crosses the threshold is a click → reveal the keyframe in JSON
+  // (otherwise the diamond would be un-clickable once drag is wired). The
+  // delta is converted px → output-seconds (window `scale`) → local-seconds
+  // (the lane's `outputPerLocal`), so it works at any nesting level.
+  const startKeyframeDrag = useEvent((args: KeyframeDragArgs) => {
+    const {
+      path,
+      prop,
+      kfIndex,
+      timeExpr,
+      domain,
+      startLocalSec,
+      scale,
+      jumpKey,
+      e,
+    } = args;
+    e.stopPropagation();
+    e.preventDefault();
+    const target = e.currentTarget as Element;
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const initialDoc = editHistory?.current;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      /* element gone — fall back to ambient pointer events */
+    }
+    let pushed = false;
+    let dragged = false;
+
+    const onMove = (ev: Event) => {
+      const me = ev as PointerEvent;
+      if (me.pointerId !== pointerId) return;
+      const deltaPx = me.clientX - startX;
+      if (!dragged && Math.abs(deltaPx) < KEYFRAME_DRAG_THRESHOLD_PX) return;
+      dragged = true;
+      if (!editHistory || initialDoc == null) return;
+      // px → output-seconds: a nested group compresses time by `scale`
+      // (identity at root). Output-seconds === local-seconds (uniform domain).
+      const deltaLocal = (deltaPx / pxPerSec) * scale;
+      const newLocal = Math.max(0, Math.min(domain, startLocalSec + deltaLocal));
+      const newTime = timeExprForLocal(timeExpr, newLocal, domain);
+      if (!pushed) {
+        editHistory.pushPast(initialDoc);
+        pushed = true;
+      }
+      editHistory.replace(
+        setKeyframeTime(initialDoc, path, prop, kfIndex, newTime),
+      );
+    };
+    const onUp = (ev: Event) => {
+      const me = ev as PointerEvent;
+      if (me.pointerId !== pointerId) return;
+      target.removeEventListener("pointermove", onMove);
+      target.removeEventListener("pointerup", onUp);
+      target.removeEventListener("pointercancel", onUp);
+      try {
+        target.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (!dragged) onJumpToJson?.(jumpKey);
+    };
+    target.addEventListener("pointermove", onMove);
+    target.addEventListener("pointerup", onUp);
+    target.addEventListener("pointercancel", onUp);
+  });
+
+  const onKeyframeDragStart = editHistory ? startKeyframeDrag : null;
+
   return (
     <>
       <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
@@ -497,6 +582,8 @@ function TimelineSurface({
         reorderDragKey={reorderDragKey}
         onReorderDragStart={onReorderDragStart}
         onResizeDragStart={onResizeDragStart}
+        onJumpToJson={onJumpToJson ?? null}
+        onKeyframeDragStart={onKeyframeDragStart}
       />
       <AnchorLinesLayer
         selection={selection}
@@ -652,6 +739,7 @@ function DesktopTimeline({
   onAttachDropAt,
   onAttachChildrenAt,
   onAttachExistingAt,
+  onJumpToJson,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1045,6 +1133,7 @@ function DesktopTimeline({
           insertionGhost={insertionGhost}
           showAttachZone={showAttachZone}
           attachHoverSide={attachHoverSide}
+          onJumpToJson={onJumpToJson ?? null}
         />
         <Playhead x={playheadX} height={contentHeight} />
       </div>
@@ -1089,6 +1178,150 @@ function RulerLayer({ pxPerSec, ticks }: { pxPerSec: number; ticks: number[] }) 
   );
 }
 
+// Vertical offset (px) of a lane's track line within its ROW_HEIGHT row.
+// The small property label sits above it.
+const LANE_TRACK_Y = 21;
+
+/** Args for a diamond's pointer press. The handler distinguishes a click
+ *  (→ jump to JSON) from a drag (→ retime) via a small threshold. */
+export interface KeyframeDragArgs {
+  path: NodePath;
+  prop: string;
+  kfIndex: number;
+  timeExpr: TimeExpr;
+  /** Duration (s) the time expression resolves against (the block's output
+   *  span); also the clamp range for the dragged time. */
+  domain: number;
+  /** The keyframe's current resolved local time (s) — the drag baseline. */
+  startLocalSec: number;
+  /** The enclosing group's window scale (px↔sec). */
+  scale: number;
+  /** Dotted keyframe path, revealed on a click (no drag). */
+  jumpKey: string;
+  e: React.PointerEvent;
+}
+export type KeyframeDragStart = (args: KeyframeDragArgs) => void;
+
+/** Pixels of cursor travel before a diamond press becomes a retime drag
+ *  rather than a click-to-reveal. */
+const KEYFRAME_DRAG_THRESHOLD_PX = 3;
+
+/**
+ * One keyframe lane: a small property label, a horizontal track spanning the
+ * block's width, and a diamond at each keyframe. Positioned in the enclosing
+ * group's coordinate space (same `toX` as the block), so the lane lines up
+ * under its block. A diamond drags to retime (editable) and clicks to reveal
+ * its JSON; in a read-only preview it only clicks-to-jump.
+ */
+function KeyframeLaneRow({
+  lane,
+  nodePath,
+  nodeKey,
+  scale,
+  top,
+  toX,
+  onJump,
+  onKeyframeDragStart,
+}: {
+  lane: KeyframeLane;
+  /** The lane's node path (for write-back). */
+  nodePath: NodePath;
+  /** The lane's node path key (`children.3`) — keyframe jump paths are
+   *  `${nodeKey}.${lane.prop}.${index}`. */
+  nodeKey: string;
+  /** The enclosing group's window scale (px↔sec for drag deltas). */
+  scale: number;
+  /** Top of this lane's row in the group container (px). */
+  top: number;
+  toX: (sec: number) => number;
+  /** Jump the JSON editor to a dotted keyframe path. */
+  onJump?: (pathKey: string) => void;
+  /** Begin a diamond drag (editable timelines only). */
+  onKeyframeDragStart?: KeyframeDragStart | null;
+}) {
+  const left = toX(lane.outputStart);
+  const right = toX(lane.outputStart + lane.outputSpan);
+  const width = Math.max(right - left, 2);
+  const r = KEYFRAME_DIAMOND_SIZE / 2;
+  return (
+    <>
+      <div
+        style={{
+          position: "absolute",
+          left,
+          top: top + 2,
+          width,
+          height: 11,
+          fontSize: 9,
+          lineHeight: "11px",
+          color: "#9a8fb5",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          pointerEvents: "none",
+        }}
+      >
+        {lane.label}
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left,
+          top: top + LANE_TRACK_Y,
+          width,
+          height: 2,
+          background: "rgba(212, 196, 110, 0.35)",
+          borderRadius: 1,
+          pointerEvents: "none",
+        }}
+      />
+      {lane.diamonds.map((d, pos) => {
+        const jumpKey = `${nodeKey}.${lane.prop}.${d.index}`;
+        return (
+          <div
+            key={d.index}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute",
+              left: toX(d.outputSec) - r,
+              top: top + LANE_TRACK_Y + 1 - r,
+            }}
+          >
+            <KeyframeDiamond
+              incomingEasing={d.easing}
+              outgoingEasing={lane.diamonds[pos + 1]?.easing}
+              onPointerDown={
+                onKeyframeDragStart
+                  ? (e) =>
+                      onKeyframeDragStart({
+                        path: nodePath,
+                        prop: lane.prop,
+                        kfIndex: d.index,
+                        timeExpr: d.timeExpr,
+                        domain: lane.outputSpan,
+                        startLocalSec: d.localSec,
+                        scale,
+                        jumpKey,
+                        e,
+                      })
+                  : undefined
+              }
+              onClick={
+                !onKeyframeDragStart && onJump
+                  ? (e) => {
+                      e.stopPropagation();
+                      onJump(jumpKey);
+                    }
+                  : undefined
+              }
+            />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /**
  * Renders one composition body's blocks, then — for each expanded
  * composition — an `overflow:hidden` container holding a nested
@@ -1115,6 +1348,8 @@ function TimelineGroup({
   reorderDragKey,
   onReorderDragStart,
   onResizeDragStart,
+  onJumpToJson,
+  onKeyframeDragStart,
 }: {
   group: TreeGroup;
   /** Y offset (px) for row 0 within this group's container. */
@@ -1135,6 +1370,10 @@ function TimelineGroup({
         e: React.PointerEvent,
       ) => void)
     | null;
+  /** Reveal a dotted JSON path (e.g. a keyframe `children.3.opacity.2`). */
+  onJumpToJson: ((pathKey: string) => void) | null;
+  /** Begin a keyframe-diamond drag (editable timelines only). */
+  onKeyframeDragStart: KeyframeDragStart | null;
 }) {
   const isRoot = depth === 0;
   // Window transform: inner time → this group's container px. A child of a
@@ -1180,6 +1419,7 @@ function TimelineGroup({
             isPrimary={isPrimary}
             isRoot={isRoot}
             isComposition={block.isComposition}
+            isExpandable={block.isComposition || block.hasLanes}
             isBinItem={block.isBinItem}
             isExpanded={block.isExpanded}
             onToggleExpand={() => onToggleExpand(addr)}
@@ -1221,6 +1461,8 @@ function TimelineGroup({
               reorderDragKey={reorderDragKey}
               onReorderDragStart={onReorderDragStart}
               onResizeDragStart={onResizeDragStart}
+              onJumpToJson={onJumpToJson}
+              onKeyframeDragStart={onKeyframeDragStart}
             />
             {/* Window boundary lines (left = in, right = out), drawn over
                 the clipped content so the composition's extent is clear. */}
@@ -1228,6 +1470,23 @@ function TimelineGroup({
             <div style={EXP_BOUNDARY_RIGHT} />
           </div>
         );
+      })}
+      {group.blocks.map((block) => {
+        if (!block.lanes || block.laneTopRow == null) return null;
+        const laneTopRow = block.laneTopRow;
+        return block.lanes.map((lane, i) => (
+          <KeyframeLaneRow
+            key={`${block.addr}-lane-${lane.prop}`}
+            lane={lane}
+            nodePath={block.path}
+            nodeKey={block.addr}
+            scale={group.scale}
+            top={yBase + rowTop(laneTopRow + i)}
+            toX={toX}
+            onJump={onJumpToJson ?? undefined}
+            onKeyframeDragStart={group.editable ? onKeyframeDragStart : null}
+          />
+        ));
       })}
     </>
   );
@@ -1250,6 +1509,7 @@ function ChildBlockView({
   isPrimary,
   isRoot,
   isComposition,
+  isExpandable,
   isBinItem,
   isExpanded,
   onToggleExpand,
@@ -1282,6 +1542,9 @@ function ChildBlockView({
   /** depth === 0: the root level (drives reorder / scrub specifics). */
   isRoot: boolean;
   isComposition: boolean;
+  /** Whether to show the expand toggle — composition (window) or any node
+   *  with animated properties (keyframe lanes). */
+  isExpandable: boolean;
   isBinItem: boolean;
   isExpanded: boolean;
   onToggleExpand: () => void;
@@ -1454,7 +1717,7 @@ function ChildBlockView({
         zIndex: isPrimary ? 4 : isSelected ? 3 : undefined,
       }}
     >
-      {isComposition && (
+      {isExpandable && (
         <button
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
@@ -1576,6 +1839,7 @@ export default function TimelinePanel({
   onDocumentChange,
   history,
   platform,
+  onJumpToJson,
 }: TimelinePanelProps) {
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
@@ -1823,6 +2087,7 @@ export default function TimelinePanel({
             onAttachDropAt={shellOnAttachDropAt}
             onAttachChildrenAt={shellOnAttachChildrenAt}
             onAttachExistingAt={shellOnAttachExistingAt}
+            onJumpToJson={onJumpToJson}
           />
         );
       })()}

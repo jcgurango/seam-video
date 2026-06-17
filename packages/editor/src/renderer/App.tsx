@@ -338,12 +338,28 @@ export default function App({ platform }: AppProps) {
   // appear as a `script` string.
   const jsonNode = document;
 
+  // A keyframe diamond click reveals a deeper path than the selection
+  // (`children.3.opacity.2`). It's transient state, reset whenever the
+  // selection changes so node selection still drives the jump otherwise.
+  // The token forces the JSON section open + re-reveals on repeat clicks.
+  const [jsonReveal, setJsonReveal] = useState<{ path: string; token: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    setJsonReveal(null);
+  }, [selection]);
+  const handleJumpToJson = useCallback((path: string) => {
+    setJsonReveal((prev) => ({ path, token: (prev?.token ?? 0) + 1 }));
+  }, []);
+
   // The current selection's path key already *is* a dotted JSON path
-  // (`children.0`, `children.3.attachments.1`) — jump straight to it.
+  // (`children.0`, `children.3.attachments.1`) — jump straight to it. A
+  // diamond click overrides with the exact keyframe path.
   const jsonJumpPath = useMemo<string | null>(() => {
+    if (jsonReveal) return jsonReveal.path;
     if (selection.length !== 1) return null;
     return selection[0];
-  }, [selection]);
+  }, [selection, jsonReveal]);
 
   // The Script tab targets the root composition.
   const scriptComposition = document as Composition;
@@ -852,6 +868,7 @@ export default function App({ platform }: AppProps) {
                 jsonNode={jsonNode}
                 onJsonNodeSave={handleJsonNodeSave}
                 jsonJumpPath={jsonJumpPath}
+                jsonRevealToken={jsonReveal?.token ?? 0}
                 scriptComposition={scriptComposition}
                 scriptError={scriptError}
                 onScriptApply={handleScriptApply}
@@ -909,6 +926,7 @@ export default function App({ platform }: AppProps) {
               onDocumentChange={updateDocument}
               history={history}
               platform={platform}
+              onJumpToJson={handleJumpToJson}
             />
             {showSelectionBar && (
               <SelectionBar
