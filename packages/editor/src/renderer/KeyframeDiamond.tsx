@@ -58,6 +58,7 @@ export default function KeyframeDiamond({
   selected,
   onPointerDown,
   onClick,
+  onDoubleClick,
 }: {
   /** Easing arriving at this keyframe (its own `kf[2]`). */
   incomingEasing: string;
@@ -66,6 +67,7 @@ export default function KeyframeDiamond({
   selected?: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
   onClick?: (e: React.MouseEvent) => void;
+  onDoubleClick?: (e: React.MouseEvent) => void;
 }) {
   const r = KEYFRAME_DIAMOND_SIZE / 2;
   const bowScale = r * 0.85;
@@ -81,6 +83,7 @@ export default function KeyframeDiamond({
       viewBox={`0 0 ${KEYFRAME_DIAMOND_SIZE} ${KEYFRAME_DIAMOND_SIZE}`}
       onPointerDown={onPointerDown}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       style={{
         display: "block",
         cursor: onPointerDown ? "ew-resize" : onClick ? "pointer" : "default",

@@ -23,12 +23,14 @@ import {
 import {
   precomputeGraphicPlayback,
   snapshotAt,
+  treeAt,
   isStatic,
   type GraphicPlayback,
 } from "./graphic/playback.js";
 import {
   precomputeClipPlayback,
   clipSnapAtLocalTime,
+  clipTreeAtLocalTime,
   computeLocalTime,
   getClipAnchorsAtPath,
   type ClipDefLike,
@@ -285,7 +287,9 @@ export class GraphicStore {
 
   private async draw(entry: GraphicEntry, t: number): Promise<void> {
     const snap = resolveImageFlat(snapshotAt(entry.playback, t), this.basePath);
-    const tree = entry.playback.filledFrames[0]?.tree ?? [];
+    // Structure follows the *prev* keyframe at `t` (not always frame 0), so an
+    // object introduced in a later keyframe renders once its frame is reached.
+    const tree = treeAt(entry.playback, t);
     // Materialize FIRST (this is the async part — image enliven decodes the
     // bitmap), leaving the previous frame on the canvas. Only once the new
     // objects are ready do we swap them in, in one synchronous burst. Clearing
@@ -395,7 +399,7 @@ export class GraphicStore {
         clipSnapAtLocalTime(playback, localT),
         this.basePath,
       );
-      const tree0 = playback.filledFrames[0]?.tree ?? [];
+      const tree0 = clipTreeAtLocalTime(playback, localT);
       const cw = playback.contentWidth;
       const ch = playback.contentHeight;
       const childSpecs = collectClipChildSpecs(tree0, clipSnap, "");

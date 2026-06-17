@@ -20,6 +20,7 @@ import {
 import type { FlatFrame, FilledObject, FilledTree, FilledFrame } from "@seam/core";
 import {
   clipSnapAtLocalTime,
+  clipTreeAtLocalTime,
   computeLocalTime,
   getClipAnchorsAtPath,
   type ClipDefLike,
@@ -193,11 +194,12 @@ async function materializeClip(
     context.mapBasePath,
   );
 
-  // Build the children from clipDef.frames[0]'s structure (the "Frame A
-  // structure until Frame B" rule). Each child gets its state from the
-  // clip snap; clip-local coords are shifted by (-cw/2, -ch/2) so the
+  // Build the children from the prev clip-frame's structure (the "Frame A
+  // structure until Frame B" rule) at `localT` — so a clip object introduced
+  // in a later clip-frame appears once reached. Each child gets its state from
+  // the clip snap; clip-local coords are shifted by (-cw/2, -ch/2) so the
   // (0, 0) origin lands at the group's top-left rather than center.
-  const tree0 = playback.filledFrames[0]?.tree ?? [];
+  const tree0 = clipTreeAtLocalTime(playback, localT);
   const cw = playback.contentWidth;
   const ch = playback.contentHeight;
   const childSpecs = collectClipChildSpecs(tree0, clipSnap, "");

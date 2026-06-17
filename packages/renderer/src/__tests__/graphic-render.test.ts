@@ -3,6 +3,7 @@ import { fillFrame } from "../graphic/fill.js";
 import {
   precomputeGraphicPlayback,
   snapshotAt,
+  treeAt,
 } from "../graphic/playback.js";
 import {
   renderSnapshotToPng,
@@ -26,6 +27,31 @@ describe("graphic render", () => {
     expect(buf[2]).toBe(0x4e);
     expect(buf[3]).toBe(0x47);
   }, 15000);
+
+  it("structure follows the prev keyframe — a later-introduced object appears at its frame", async () => {
+    const playback = await precomputeGraphicPlayback({
+      duration: 2,
+      frames: [
+        [0, [{ id: "a", type: "Rect", left: 0, top: 0, width: 10, height: 10 }]],
+        [
+          1,
+          [
+            { id: "a", type: "Rect", left: 0, top: 0, width: 10, height: 10 },
+            { id: "b", type: "Circle", left: 50, top: 50, radius: 5 },
+          ],
+        ],
+      ],
+    });
+    const ids = (t: number) =>
+      treeAt(playback, t).map((o) => (o as { id?: string }).id);
+    // Before frame 1, the structure is just frame 0 (no "b" yet) — the bug was
+    // that frame 0's tree was used for ALL times, so "b" never rendered.
+    expect(ids(0)).toEqual(["a"]);
+    expect(ids(0.5)).toEqual(["a"]);
+    // Once frame 1 is reached, "b" is in the structure AND the snapshot.
+    expect(ids(1)).toEqual(["a", "b"]);
+    expect(snapshotAt(playback, 1).b).toBeDefined();
+  });
 
   it("interpolates between two keyframes mid-pair", async () => {
     const playback = await precomputeGraphicPlayback({

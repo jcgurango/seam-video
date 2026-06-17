@@ -48,7 +48,7 @@ function rasterReporter(noun: string): {
       frames++;
       if (!started) {
         started = true;
-        process.stderr.write(`Generating ${plural(total, noun)}…\n`);
+        process.stderr.write(`Generating ${plural(total, noun)}...\n`);
       }
       if (tty) {
         const frag = p.animated ? ` · frame ${p.frame}/${p.frameCount}` : "";

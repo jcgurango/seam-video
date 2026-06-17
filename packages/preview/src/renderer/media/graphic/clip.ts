@@ -8,7 +8,12 @@
 // requires distinguishing "explicitly authored at 0" from "missing /
 // defaulted to 0". The filled snapshot can't tell the two apart.
 
-import { interpolateFrames, type FilledFrame, type FlatFrame } from "@seam/core";
+import {
+  interpolateFrames,
+  type FilledFrame,
+  type FilledTree,
+  type FlatFrame,
+} from "@seam/core";
 import { fillFrame } from "./fill.js";
 
 export interface ClipDefLike {
@@ -164,6 +169,29 @@ export function computeLocalTime(
   const cyclesTotal = repeat + 1;
   if (elapsed >= duration * cyclesTotal) return duration;
   return elapsed % duration;
+}
+
+/** The clip's *structure* (object tree) at local time `localTime`: the prev
+ *  keyframe's tree, so a clip object introduced in a later clip-frame appears
+ *  once its frame becomes the prev side. Mirrors `clipSnapAtLocalTime`'s pair
+ *  selection so tree paths line up with the flat snapshot. */
+export function clipTreeAtLocalTime(
+  playback: ClipPlayback,
+  localTime: number,
+): FilledTree {
+  const { extKfs } = playback;
+  if (extKfs.length === 0) return [];
+  if (extKfs.length === 1) return extKfs[0].snap.tree;
+  if (localTime <= extKfs[0].stamp) return extKfs[0].snap.tree;
+  if (localTime >= extKfs[extKfs.length - 1].stamp) {
+    return extKfs[extKfs.length - 1].snap.tree;
+  }
+  for (let i = 0; i < extKfs.length - 1; i++) {
+    if (extKfs[i].stamp <= localTime && localTime < extKfs[i + 1].stamp) {
+      return extKfs[i].snap.tree;
+    }
+  }
+  return extKfs[extKfs.length - 1].snap.tree;
 }
 
 export function clipSnapAtLocalTime(

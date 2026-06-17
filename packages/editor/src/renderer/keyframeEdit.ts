@@ -92,3 +92,42 @@ export function setKeyframeTime(
       : ({ ...comp, attachments: newArr } as Composition);
   });
 }
+
+/** Immutably replace the objects array (element 1) of a graphic's frame at
+ *  `frameIndex` on the node at `path`. The stamp (element 0) and any frame
+ *  easing (element 2) are preserved — only the fabric scene changes. Used by
+ *  the fabric frame editor's write-back. */
+export function setFrameObjects(
+  doc: SeamFile,
+  path: NodePath,
+  frameIndex: number,
+  objects: unknown[],
+): SeamFile {
+  const split = splitLast(path);
+  if (!split) return doc;
+  const { parent, last } = split;
+  if (last.field === "bin") return doc;
+  const field = last.field;
+  return updateCompAtPath(doc, parent, (comp) => {
+    const arr = field === "children" ? comp.children : comp.attachments;
+    if (!arr) return comp;
+    const child = arr[last.index] as (Child & Record<string, unknown>) | undefined;
+    if (!child || child.type !== "graphic") return comp;
+    const frames = (child as Record<string, unknown>).frames;
+    if (!Array.isArray(frames)) return comp;
+    const frame = frames[frameIndex];
+    if (!Array.isArray(frame)) return comp;
+
+    const newFrame = [...(frame as unknown[])];
+    newFrame[1] = objects;
+    const newFrames = [...(frames as unknown[])];
+    newFrames[frameIndex] = newFrame;
+    const newChild = { ...child, frames: newFrames } as unknown as Child;
+
+    const newArr = [...arr];
+    newArr[last.index] = newChild;
+    return field === "children"
+      ? ({ ...comp, children: newArr } as Composition)
+      : ({ ...comp, attachments: newArr } as Composition);
+  });
+}

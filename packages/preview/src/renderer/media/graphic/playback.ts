@@ -4,7 +4,12 @@
 // builds an extended keyframe list with ghost entries when loop=true,
 // matching the seam semantics designed in @seam/motion-editor-test.
 
-import { interpolateFrames, type FilledFrame, type FlatFrame } from "@seam/core";
+import {
+  interpolateFrames,
+  type FilledFrame,
+  type FilledTree,
+  type FlatFrame,
+} from "@seam/core";
 import { fillFrame } from "./fill.js";
 
 interface ExtKf {
@@ -136,6 +141,32 @@ export function snapshotAt(playback: GraphicPlayback, t: number): FlatFrame {
     // core's sampleFrames + every other animated value).
     extKfs[nextIdx].easing,
   );
+}
+
+/** The *structure* (object tree) to draw at local time `t`: the tree of the
+ *  keyframe on the **prev** side of the current pair. Structure follows prev
+ *  until we cross into the next keyframe — so an object introduced in a later
+ *  keyframe appears once its keyframe becomes the prev side, and the tree's
+ *  paths line up with `snapshotAt`'s flat (which is also built from prev).
+ *  Mirrors `snapshotAt`'s pair selection exactly. */
+export function treeAt(playback: GraphicPlayback, t: number): FilledTree {
+  const { extKfs, duration, loop } = playback;
+  if (extKfs.length === 0) return [];
+  let local = t;
+  if (loop) {
+    local = ((local % duration) + duration) % duration;
+  } else if (local <= extKfs[0].stamp) {
+    return extKfs[0].snap.tree;
+  } else if (local >= extKfs[extKfs.length - 1].stamp) {
+    return extKfs[extKfs.length - 1].snap.tree;
+  }
+  if (extKfs.length === 1) return extKfs[0].snap.tree;
+  for (let i = 0; i < extKfs.length - 1; i++) {
+    if (extKfs[i].stamp <= local && local < extKfs[i + 1].stamp) {
+      return extKfs[i].snap.tree;
+    }
+  }
+  return extKfs[extKfs.length - 1].snap.tree;
 }
 
 /** Returns true when no interpolation occurs across the graphic's

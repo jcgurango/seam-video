@@ -23,7 +23,7 @@ describe("graphic schema validation", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts Length stamps but rejects Length box dims on inner objects", () => {
+  it("accepts Length stamps; inner-object props are fabric's domain (unvalidated)", () => {
     // Frame stamps are seam-domain — Length is fine.
     const stampsOk = validate({
       type: "composition",
@@ -42,9 +42,11 @@ describe("graphic schema validation", () => {
     });
     expect(stampsOk.success).toBe(true);
 
-    // Inner-object props are fabric-domain — Length strings should not
-    // round-trip through the schema.
-    const innerLengthRejected = validate({
+    // Inner-object props are fabric's domain, not Seam's — the schema does
+    // NOT model the fabric JSON format, so anything inside a frame object
+    // (even a stray Length-looking string) passes. Only the frame envelope
+    // and the graphic's outer fields are validated.
+    const innerAnything = validate({
       type: "composition",
       children: [
         {
@@ -56,7 +58,7 @@ describe("graphic schema validation", () => {
         },
       ],
     });
-    expect(innerLengthRejected.success).toBe(false);
+    expect(innerAnything.success).toBe(true);
   });
 
   it("accepts a graphic with clips and a Clip-instance keyframe object", () => {
@@ -154,23 +156,11 @@ describe("graphic schema validation", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a Map without a source", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "graphic",
-          duration: 2,
-          frames: [
-            [0, [{ type: "Map", latitude: 0, longitude: 0, zoom: 1 }]],
-          ],
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects a MapPath without color or points", () => {
+  it("accepts arbitrary fabric objects in a frame (fabric's domain, not validated)", () => {
+    // Frame objects are not modelled by the schema — unknown fabric types,
+    // gradient fills (objects, not strings), and seam constructs missing
+    // fields all pass. The renderers read them dynamically; authoring
+    // correctness lives in the fabric editor + the renderers, not here.
     const result = validate({
       type: "composition",
       children: [
@@ -181,18 +171,18 @@ describe("graphic schema validation", () => {
             [
               0,
               [
-                {
-                  type: "Map",
-                  source: "a.pmtiles",
-                  paths: [{ color: "red", points: [[0, 0]] }],
-                },
+                { type: "Polyline", points: [{ x: 0, y: 0 }] },
+                { type: "Rect", fill: { type: "linear", colorStops: [] } },
+                { type: "Map", latitude: 0, longitude: 0, zoom: 1 },
+                { type: "Map", source: "a.pmtiles", paths: [{ color: "red" }] },
+                { foo: "bar" },
               ],
             ],
           ],
         },
       ],
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 });
 

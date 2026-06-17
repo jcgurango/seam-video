@@ -631,22 +631,6 @@ describe("validate — verbose error messages", () => {
       messages.some((m) => /children\[0\]\.children\[0\]\.out/.test(m))
     ).toBe(true);
   });
-
-  it("reports a real problem inside a graphic object union", () => {
-    const messages = errs({
-      type: "composition",
-      children: [
-        {
-          type: "graphic",
-          duration: 2,
-          frames: [[0, [{ type: "Circle", radius: -5 }]]],
-        },
-      ],
-    });
-    const joined = messages.join("\n");
-    expect(joined).not.toMatch(/Invalid input/);
-    expect(joined).toMatch(/radius/);
-  });
 });
 
 describe("validate — macro expansion runs before schema checks", () => {

@@ -12,6 +12,7 @@ import type { ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import InspectorAccordion from "./InspectorAccordion.js";
+import FrameEditorPane, { type FrameEditorTarget } from "./FrameEditorPane.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
@@ -351,6 +352,21 @@ export default function App({ platform }: AppProps) {
   const handleJumpToJson = useCallback((path: string) => {
     setJsonReveal((prev) => ({ path, token: (prev?.token ?? 0) + 1 }));
   }, []);
+
+  // Fabric frame editor: double-clicking a graphic `frames` keyframe splits
+  // the viewport and opens that frame's scene for direct manipulation.
+  const [frameEdit, setFrameEdit] = useState<FrameEditorTarget | null>(null);
+  const handleOpenFrameEditor = useCallback(
+    (graphicPath: string, frameIndex: number) => {
+      setFrameEdit({ graphicPath, frameIndex });
+    },
+    [],
+  );
+  // Leaving CC-cut mode (or any mode flip) closes the editor — its target
+  // path is only meaningful against the root document timeline.
+  useEffect(() => {
+    if (ccCut) setFrameEdit(null);
+  }, [ccCut]);
 
   // The current selection's path key already *is* a dotted JSON path
   // (`children.0`, `children.3.attachments.1`) — jump straight to it. A
@@ -891,12 +907,40 @@ export default function App({ platform }: AppProps) {
           >
             {/* VideoCanvas supplies its own flex:1 centering stage — don't
                 wrap it in another flex box or the canvas loses a definite
-                height to fit against and overflows vertically. */}
-            <VideoCanvas
-              width={playerTimeline.contentWidth}
-              height={playerTimeline.contentHeight}
-              style={{ background: "#111" }}
-            />
+                height to fit against and overflows vertically. When the frame
+                editor is open the viewport splits: editor pane (left) + the
+                usual preview (right), both flex:1 within a definite-height row
+                so VideoCanvas still gets a height to fit against. */}
+            {frameEdit ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  flex: "1 1 0",
+                  minHeight: 0,
+                }}
+              >
+                <FrameEditorPane
+                  document={document}
+                  target={frameEdit}
+                  onDocumentChange={updateDocument}
+                  filePath={filePath}
+                  platform={platform}
+                  onClose={() => setFrameEdit(null)}
+                />
+                <VideoCanvas
+                  width={playerTimeline.contentWidth}
+                  height={playerTimeline.contentHeight}
+                  style={{ flex: "1 1 0", minWidth: 0, minHeight: 0, background: "#111" }}
+                />
+              </div>
+            ) : (
+              <VideoCanvas
+                width={playerTimeline.contentWidth}
+                height={playerTimeline.contentHeight}
+                style={{ background: "#111" }}
+              />
+            )}
             <ControlsBar
               document={document}
               filePath={filePath}
@@ -927,6 +971,7 @@ export default function App({ platform }: AppProps) {
               history={history}
               platform={platform}
               onJumpToJson={handleJumpToJson}
+              onOpenFrameEditor={handleOpenFrameEditor}
             />
             {showSelectionBar && (
               <SelectionBar

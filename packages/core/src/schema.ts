@@ -323,11 +323,10 @@ export const TextSchema = z.object({
 // Text, Image, Group, Clip-instance, Map). The renderer/preview run the
 // pure interp engine in `animation/interp.ts` against these snapshots.
 //
-// Inner-object schemas are intentionally permissive (`passthrough`): fabric
-// has a long tail of optional props (cornerStyle, strokeLineCap, ...) we
-// don't want to enumerate, and the animation engine treats unknown props
-// as discrete (no interpolation) by default. The well-known animation
-// props are typed explicitly so authoring tools have something to validate.
+// The typed inner-object schemas below describe the well-known fabric shapes
+// (for authoring tools / reference), but they no longer *gate* frame objects:
+// see `GraphicObjectSchema` at the end of this section, which validates a
+// frame object as any plain object — fabric's domain, not Seam's.
 
 // Animation direction for the `angle` property when revolutions != 0.
 const AngleDirectionSchema = z.enum(["shortest", "cw", "ccw"]);
@@ -497,22 +496,16 @@ export const GraphicGroupSchema: z.ZodType<any> = z.lazy(() =>
   }).passthrough()
 );
 
-// Recursive due to Group containing more GraphicObjects, so this is a
-// union rather than a discriminated union (Zod's discriminated form
-// doesn't accept lazy-resolved options).
-export const GraphicObjectSchema: z.ZodType<any> = z.lazy(() =>
-  z.union([
-    RectSchema,
-    CircleSchema,
-    PathSchema,
-    PolygonSchema,
-    GraphicTextSchema,
-    GraphicImageSchema,
-    GraphicClipInstanceSchema,
-    MapElementSchema,
-    GraphicGroupSchema,
-  ])
-);
+// Inside a graphic frame is **fabric's domain, not Seam's** (the "Graphic
+// boundary" in CLAUDE.md). We deliberately don't model fabric's full JSON
+// format: now that the fabric frame editor round-trips arbitrary fabric output
+// (SVG-parsed paths, gradient fills, IText / Polyline / Ellipse, and fabric's
+// long tail of optional props), enumerating object types + props would only
+// manufacture false validation failures. So a frame object is just "an object"
+// — the interp engine + renderers read it dynamically, treating unknown props
+// as discrete (non-interpolated). Seam still validates the frame envelope
+// ([stamp, objects, easing?]) and the graphic node's own outer-world fields.
+export const GraphicObjectSchema: z.ZodType<any> = z.object({}).passthrough();
 
 // A keyframe: [stamp, objects, easing?]. Stamp is a Length so authors can
 // write "50%" of the graphic's duration. Easing is the default for the tween
