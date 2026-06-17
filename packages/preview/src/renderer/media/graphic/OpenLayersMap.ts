@@ -99,6 +99,22 @@ export interface MapOptions extends Partial<FabricObjectProps> {
   paths?: MapPath[];
 }
 
+/** Where an overlay's (0,0) anchors on the map. `geo` projects a coordinate;
+ *  `path` projects the point at `position` (0..1) along a polyline. */
+export type MapAnchor =
+  | { kind: "geo"; longitude: number; latitude: number }
+  | { kind: "path"; points: number[][]; position: number };
+
+/** A live fabric object drawn over the map at a projected anchor. The host
+ *  (GraphicStore) materializes `live` — so Clips/Groups go through the normal
+ *  graphic pipeline with clip context — and hands it here with its anchor;
+ *  this object owns only the projection + draw. The object's own left/top is
+ *  the offset from the anchor pixel. */
+export interface MapOverlay {
+  live: FabricObject;
+  anchor: MapAnchor;
+}
+
 /** Deep-clone the bundled style and prepare it for OL:
  *   - rewrite each symbol layer's `text-font` to our bundled families via
  *     mapLabelFontStack (Liberation Sans for Latin + Noto CJK + OpenMoji),
@@ -304,6 +320,11 @@ export class OpenLayersMap extends FabricObject {
   zoom = 1;
   paths: MapPath[] = [];
 
+  /** Overlays drawn over the map at projected anchors. Set each tick by the
+   *  host (GraphicStore) — not a serialized fabric prop, since `live` is a
+   *  materialized fabric object. */
+  private _overlays: MapOverlay[] = [];
+
   private _path = "";
   private _shared: SharedOLMap | null = null;
   private _ready = false;
@@ -443,6 +464,62 @@ export class OpenLayersMap extends FabricObject {
     }
 
     this._drawPaths(ctx, map, w, h);
+    this._drawOverlays(ctx, map, w, h);
+  }
+
+  /** Replace the overlay objects drawn over the map. Called by the host each
+   *  tick after materializing the embedded objects (so Clips get their
+   *  context). Anchors are projected lazily in `_render` against the current
+   *  view, so a panning camera moves the overlays for free. */
+  setOverlayObjects(overlays: MapOverlay[]): void {
+    this._overlays = overlays;
+  }
+
+  /** Project an anchor to a viewport pixel (top-left origin) against the
+   *  current view. Returns null when the point isn't projectable. */
+  private _projectAnchor(map: OLMap, anchor: MapAnchor): [number, number] | null {
+    let coord: number[] | undefined;
+    if (anchor.kind === "geo") {
+      coord = fromLonLat([anchor.longitude, anchor.latitude]);
+    } else {
+      if (!Array.isArray(anchor.points) || anchor.points.length < 2) return null;
+      const coords = anchor.points.map(([lon, lat]) => fromLonLat([lon, lat]));
+      const frac = Math.max(0, Math.min(1, anchor.position));
+      // Truncate in projected (web-mercator) space so the fraction is
+      // distance-normalized and camera-independent — same convention as the
+      // path reveal. The truncation's last point is the point at `frac`.
+      coord =
+        frac >= 1
+          ? coords[coords.length - 1]
+          : truncateToFraction(
+              coords as Array<[number, number]>,
+              frac,
+            ).at(-1);
+    }
+    if (!coord) return null;
+    const px = map.getPixelFromCoordinate(coord);
+    return px ? [px[0], px[1]] : null;
+  }
+
+  /** Draw each overlay at its projected anchor. The object's own transform
+   *  (left/top/origin/scale/angle) offsets it from the anchor — so we just
+   *  translate the context to the anchor (in fabric's center-origin local
+   *  space) and let the object render itself. */
+  private _drawOverlays(
+    ctx: CanvasRenderingContext2D,
+    map: OLMap,
+    w: number,
+    h: number,
+  ): void {
+    if (!this._overlays.length) return;
+    for (const ov of this._overlays) {
+      const px = this._projectAnchor(map, ov.anchor);
+      if (!px) continue;
+      ctx.save();
+      ctx.translate(px[0] - w / 2, px[1] - h / 2);
+      ov.live.render(ctx);
+      ctx.restore();
+    }
   }
 
   /** Draw path overlays directly in 2D, projecting each lon/lat through

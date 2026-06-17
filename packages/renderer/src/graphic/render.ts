@@ -7,6 +7,7 @@
 // — see ./map-render.ts. Everything else routes through fabric's native
 // renderers.
 
+import { isAbsolute, join } from "node:path";
 import {
   FabricImage,
   FixedLayout,
@@ -24,7 +25,11 @@ import {
   type ClipDefLike,
   type ClipPlayback,
 } from "./clip.js";
-import { rgbaToCanvas, type MapPool } from "./map-render.js";
+import {
+  rgbaToCanvas,
+  type MapPool,
+  type MapAnchorQuery,
+} from "./map-render.js";
 import { installGraphicFontFallback } from "./fontFallback.js";
 
 /** Outer-graphic context threaded through materialize so Clip instances
@@ -70,8 +75,11 @@ export async function renderSnapshotToPng(
   });
 
   // Build live objects by walking the tree and substituting each node
-  // with the eased state from `snap`.
-  const specs = await materializeTree(tree, snap, "", opts.context);
+  // with the eased state from `snap`. Resolve graphic Image `src`s to
+  // absolute paths first (node-canvas loads paths directly) — the same
+  // host-resolution clips/maps get.
+  const rsnap = resolveImageFlat(snap, opts.context?.mapBasePath);
+  const specs = await materializeTree(tree, rsnap, "", opts.context);
   for (const obj of specs) canvas.add(obj);
   canvas.renderAll();
 
@@ -125,7 +133,7 @@ async function materializeOne(
 
   if (type === "Map") {
     if (context) {
-      const rendered = await renderMapToFabric(filled, path, context);
+      const rendered = await renderMapToFabric(filled, snap, path, context);
       if (rendered) return rendered;
     }
     return renderMapPlaceholder(filled);
@@ -180,7 +188,10 @@ async function materializeClip(
     playback.duration,
     repeat,
   );
-  const clipSnap = clipSnapAtLocalTime(playback, localT);
+  const clipSnap = resolveImageFlat(
+    clipSnapAtLocalTime(playback, localT),
+    context.mapBasePath,
+  );
 
   // Build the children from clipDef.frames[0]'s structure (the "Frame A
   // structure until Frame B" rule). Each child gets its state from the
@@ -291,6 +302,7 @@ async function reviveSpec(spec: FilledObject): Promise<FabricObject | null> {
  *  so successive frames at the same path-id share the same instance. */
 async function renderMapToFabric(
   spec: FilledObject,
+  snap: FlatFrame,
   path: string,
   context: GraphicContext,
 ): Promise<FabricObject | null> {
@@ -314,43 +326,44 @@ async function renderMapToFabric(
             typeof p.lineWidth === "number" ? p.lineWidth : undefined,
         }))
     : undefined;
+
+  // Collect embedded objects (map-level geo anchors + per-path anchors), each
+  // with its anchor query. Order is preserved so `anchorPixels` lines up.
+  const embedded = collectMapEmbeddedObjects(spec, snap, path);
+  const anchors = embedded.map((e) => e.anchor);
+
   try {
     let rendered;
+    const input = {
+      latitude: numberOr(spec.latitude, 0),
+      longitude: numberOr(spec.longitude, 0),
+      zoom: numberOr(spec.zoom, 1),
+      width,
+      height,
+      paths,
+      anchors: anchors.length ? anchors : undefined,
+    };
     if (context.mapPool) {
       const inst = await context.mapPool.acquire(
         path,
         source,
         context.mapBasePath,
       );
-      rendered = await inst.render({
-        latitude: numberOr(spec.latitude, 0),
-        longitude: numberOr(spec.longitude, 0),
-        zoom: numberOr(spec.zoom, 1),
-        width,
-        height,
-        paths,
-      });
+      rendered = await inst.render(input);
     } else {
       const { renderMapToRgba } = await import("./map-render.js");
       rendered = await renderMapToRgba({
         source,
         basePath: context.mapBasePath,
-        latitude: numberOr(spec.latitude, 0),
-        longitude: numberOr(spec.longitude, 0),
-        zoom: numberOr(spec.zoom, 1),
-        width,
-        height,
-        paths,
+        ...input,
       });
     }
     const nodeCanvas = rgbaToCanvas(rendered);
-    // fabric/node's FabricImage accepts a node-canvas as the element.
-    // Origin: pass through as-is; fabric's own default (center) applies
-    // when unset. The browser preview honours the same default, so a
-    // graphic JSON renders identically across both surfaces.
-    const img = new FabricImage(
-      nodeCanvas as unknown as HTMLImageElement,
-      {
+
+    // No embedded objects → the map image alone, carrying the spec transform.
+    // (Origin passes through as-is; fabric's default center matches preview.)
+    if (!embedded.length) {
+      return new FabricImage(nodeCanvas as unknown as HTMLImageElement, {
         left: numberOr(spec.left, 0),
         top: numberOr(spec.top, 0),
         scaleX: numberOr(spec.scaleX, 1),
@@ -359,23 +372,159 @@ async function renderMapToFabric(
         opacity: typeof spec.opacity === "number" ? spec.opacity : 1,
         flipX: spec.flipX === true,
         flipY: spec.flipY === true,
-        originX: spec.originX as
-          | "left"
-          | "center"
-          | "right"
-          | undefined,
-        originY: spec.originY as
-          | "top"
-          | "center"
-          | "bottom"
-          | undefined,
-      },
-    );
-    return img as unknown as FabricObject;
+        originX: spec.originX as "left" | "center" | "right" | undefined,
+        originY: spec.originY as "top" | "center" | "bottom" | undefined,
+      }) as unknown as FabricObject;
+    }
+
+    // Embedded objects → wrap the map (filling the group) + the projected
+    // children in a Group that carries the spec transform. Children sit at
+    // (anchorPixel − halfSize + their own left/top) in group-local center
+    // coords — matching the preview's translate-then-render.
+    const mapImage = new FabricImage(nodeCanvas as unknown as HTMLImageElement, {
+      left: -width / 2,
+      top: -height / 2,
+      originX: "left",
+      originY: "top",
+    });
+    const children: FabricObject[] = [mapImage as unknown as FabricObject];
+    for (let i = 0; i < embedded.length; i++) {
+      const px = rendered.anchorPixels?.[i];
+      if (!px) continue;
+      const live = await materializeOne(
+        embedded[i].spec,
+        snap,
+        `${path}.embed.${i}`,
+        context,
+      );
+      if (!live) continue;
+      live.set({
+        left: px[0] - width / 2 + numberOr(embedded[i].spec.left, 0),
+        top: px[1] - height / 2 + numberOr(embedded[i].spec.top, 0),
+      });
+      children.push(live);
+    }
+    return new Group(children, {
+      left: numberOr(spec.left, 0),
+      top: numberOr(spec.top, 0),
+      width,
+      height,
+      scaleX: numberOr(spec.scaleX, 1),
+      scaleY: numberOr(spec.scaleY, 1),
+      angle: numberOr(spec.angle, 0),
+      opacity: typeof spec.opacity === "number" ? spec.opacity : 1,
+      flipX: spec.flipX === true,
+      flipY: spec.flipY === true,
+      originX: spec.originX as "left" | "center" | "right" | undefined,
+      originY: spec.originY as "top" | "center" | "bottom" | undefined,
+      layoutManager: new LayoutManager(new FixedLayout()),
+    });
   } catch (err) {
     console.warn("[graphic] map render failed:", (err as Error).message);
     return null;
   }
+}
+
+/** Flatten a Map's embedded objects (map-level geo anchors + per-path
+ *  anchors) into a list of {spec, anchor}. Structure (which objects exist,
+ *  their ids, the path points/progress) comes from the map `spec`; the
+ *  per-object animated state — the object's own props AND its anchor
+ *  (lat/lng / position) — comes from its own flat path in `snap` (see core's
+ *  buildFlat). Path position defaults to the path's current `progress`
+ *  (unset ⇒ 1, the path's end). Mirrors the preview's materializeMapOverlays. */
+function collectMapEmbeddedObjects(
+  spec: FilledObject,
+  snap: FlatFrame,
+  path: string,
+): Array<{ spec: FilledObject; anchor: MapAnchorQuery }> {
+  const out: Array<{ spec: FilledObject; anchor: MapAnchorQuery }> = [];
+
+  const mapObjs = Array.isArray(spec.objects) ? spec.objects : [];
+  (mapObjs as Array<Record<string, unknown>>).forEach((wrap, i) => {
+    const obj = wrap.object as FilledObject | undefined;
+    if (!obj || typeof obj.type !== "string") return;
+    const key = objId(obj, i);
+    const state =
+      (snap[`${path}.objects.${key}`] as FilledObject | undefined) ?? {
+        ...obj,
+        latitude: wrap.latitude,
+        longitude: wrap.longitude,
+      };
+    const { latitude, longitude, ...objSpec } = state as Record<string, unknown>;
+    out.push({
+      spec: objSpec as FilledObject,
+      anchor: {
+        kind: "geo",
+        longitude: numberOr(longitude, numberOr(wrap.longitude, 0)),
+        latitude: numberOr(latitude, numberOr(wrap.latitude, 0)),
+      },
+    });
+  });
+
+  const paths = Array.isArray(spec.paths) ? spec.paths : [];
+  (paths as Array<Record<string, unknown>>).forEach((p, pi) => {
+    const pObjs = Array.isArray(p.objects) ? p.objects : [];
+    if (!pObjs.length) return;
+    const points = Array.isArray(p.points)
+      ? (p.points as Array<[number, number]>)
+      : [];
+    if (points.length < 2) return;
+    const progress = typeof p.progress === "number" ? p.progress : 1;
+    (pObjs as Array<Record<string, unknown>>).forEach((wrap, oi) => {
+      const obj = wrap.object as FilledObject | undefined;
+      if (!obj || typeof obj.type !== "string") return;
+      const key = objId(obj, oi);
+      const state =
+        (snap[`${path}.paths.${pi}.objects.${key}`] as FilledObject | undefined) ?? {
+          ...obj,
+          position: wrap.position,
+        };
+      const { position, ...objSpec } = state as Record<string, unknown>;
+      out.push({
+        spec: objSpec as FilledObject,
+        anchor: {
+          kind: "path",
+          points,
+          position: typeof position === "number" ? position : progress,
+        },
+      });
+    });
+  });
+
+  return out;
+}
+
+/** Flat-path key for an embedded object: its id, else its positional index
+ *  (matches core's buildFlat keying of the lifted anchor objects). */
+function objId(obj: FilledObject, index: number): string {
+  const id = obj.id;
+  return typeof id === "string" && id.length > 0 ? id : String(index);
+}
+
+/** Resolve every graphic `Image` node's relative `src` to an absolute path
+ *  against `basePath` (the .seam dir) so fabric/node's loader finds the file —
+ *  the same host-resolution clips/maps get. `data:`/`http(s)`/`file:`/already-
+ *  absolute srcs pass through. Only changed entries are cloned (the cached
+ *  snapshot isn't mutated). */
+function resolveImageFlat(
+  flat: FlatFrame,
+  basePath: string | undefined,
+): FlatFrame {
+  let out = flat;
+  for (const key in flat) {
+    const e = flat[key] as { type?: unknown; src?: unknown };
+    const src = e.src;
+    if (
+      e.type === "Image" &&
+      typeof src === "string" &&
+      !/^(data:|https?:|file:)/i.test(src) &&
+      !isAbsolute(src)
+    ) {
+      if (out === flat) out = { ...flat };
+      out[key] = { ...flat[key], src: basePath ? join(basePath, src) : src };
+    }
+  }
+  return out;
 }
 
 async function renderMapPlaceholder(

@@ -414,8 +414,10 @@ export const GraphicImageSchema = z.object({
   type: z.literal("Image"),
   ...GraphicObjectBaseSchema,
   ...FabricTransformSchema,
-  // Logical id resolved by the host (cache lookup); same convention as
-  // existing `source` fields elsewhere in the schema.
+  // External media reference, host-resolved like `source` on clip/audio/
+  // static: a bare filename / project-relative path is resolved (blob URL on
+  // web, file:// on electron, absolute path for the CLI renderer) and bundled
+  // on export. `data:`/`http(s)`/`blob:` srcs pass through untouched.
   src: z.string().min(1).optional(),
 }).passthrough();
 
@@ -432,28 +434,57 @@ export const GraphicClipInstanceSchema = z.object({
   repeat: z.number().int().optional(),
 }).passthrough();
 
+// A fabric object anchored to a Map. Its (0,0) projects to screen space —
+// from a fraction along a path (path-level) or a geo coordinate (map-level)
+// — and the object draws there, offset by its own left/top. `object` is any
+// graphic object (recursive → lazy; same union as everywhere else, so there's
+// no separate "map-embeddable" object type).
+export const MapPathObjectSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    // Fraction (0..1) along the path. Default: the path's own `progress`
+    // (so the object rides the head of the reveal); progress unset ⇒ 1 (end).
+    position: z.number().min(0).max(1).optional(),
+    object: GraphicObjectSchema,
+  }).strict()
+);
+
+export const MapObjectSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    object: GraphicObjectSchema,
+  }).strict()
+);
+
 // Geo polyline rendered on a Map. progress fades the gradient; lineWidth
 // stays in display pixels (no Length: maplibre interprets in px directly).
-export const MapPathSchema = z.object({
-  color: z.string(),
-  points: z.array(z.tuple([z.number(), z.number()])).min(2),
-  progress: z.number().min(0).max(1).optional(),
-  lineWidth: z.number().positive().optional(),
-  easing: EasingSchema.optional(),
-}).strict();
+// Lazy because `objects` recurses into the GraphicObject union.
+export const MapPathSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    color: z.string(),
+    points: z.array(z.tuple([z.number(), z.number()])).min(2),
+    progress: z.number().min(0).max(1).optional(),
+    lineWidth: z.number().positive().optional(),
+    easing: EasingSchema.optional(),
+    objects: z.array(MapPathObjectSchema).optional(),
+  }).strict()
+);
 
-export const MapElementSchema = z.object({
-  type: z.literal("Map"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  // pmtiles file path — host-resolved (file:// for renderer/electron,
-  // OPFS for web).
-  source: z.string().min(1),
-  latitude: z.number().min(-90).max(90).optional(),
-  longitude: z.number().min(-180).max(180).optional(),
-  zoom: z.number().nonnegative().optional(),
-  paths: z.array(MapPathSchema).optional(),
-}).passthrough();
+export const MapElementSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal("Map"),
+    ...GraphicObjectBaseSchema,
+    ...FabricTransformSchema,
+    // pmtiles file path — host-resolved (file:// for renderer/electron,
+    // OPFS for web).
+    source: z.string().min(1),
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
+    zoom: z.number().nonnegative().optional(),
+    paths: z.array(MapPathSchema).optional(),
+    objects: z.array(MapObjectSchema).optional(),
+  }).passthrough()
+);
 
 // Recursive group of graphic objects. fabric semantics: child coordinates
 // are group-local (relative to group center).

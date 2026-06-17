@@ -67,6 +67,13 @@ export interface MapCamera {
   zoom: number;
 }
 
+/** Where an embedded object's (0,0) anchors. Mirrors the preview's MapAnchor:
+ *  `geo` projects a coordinate; `path` projects the point at `position`
+ *  (0..1) along a polyline. */
+export type MapAnchorQuery =
+  | { kind: "geo"; longitude: number; latitude: number }
+  | { kind: "path"; points: Array<[number, number]>; position: number };
+
 export interface MapRenderInput extends MapCamera {
   width: number;
   height: number;
@@ -76,6 +83,9 @@ export interface MapRenderInput extends MapCamera {
     progress?: number;
     lineWidth?: number;
   }>;
+  /** Anchors to project to viewport pixels (for embedded objects). The
+   *  result's `anchorPixels` lines up index-for-index. */
+  anchors?: MapAnchorQuery[];
 }
 
 export interface MapRenderResult {
@@ -83,6 +93,9 @@ export interface MapRenderResult {
   rgba: Buffer;
   width: number;
   height: number;
+  /** Viewport pixels (top-left origin) for each requested anchor; null when
+   *  unprojectable. Aligned with `input.anchors`. */
+  anchorPixels?: Array<[number, number] | null>;
 }
 
 /** PMTiles Source backed by a node file handle. byte-range reads only,
@@ -420,7 +433,30 @@ export class MapInstance {
     ctx.putImageData(seed, 0, 0);
     this.drawPaths(ctx, w, h, input.paths);
     const rgba = Buffer.from(ctx.getImageData(0, 0, w, h).data);
-    return { rgba, width: w, height: h };
+    const anchorPixels = input.anchors?.map((a) => this.projectAnchor(a));
+    return { rgba, width: w, height: h, anchorPixels };
+  }
+
+  /** Project an anchor to a viewport pixel (top-left origin) against the
+   *  current view. Mirrors the preview's _projectAnchor. */
+  private projectAnchor(a: MapAnchorQuery): [number, number] | null {
+    let coord: number[] | undefined;
+    if (a.kind === "geo") {
+      coord = this.env.fromLonLat([a.longitude, a.latitude]);
+    } else {
+      if (!Array.isArray(a.points) || a.points.length < 2) return null;
+      const coords = a.points.map(([lon, lat]) => this.env.fromLonLat([lon, lat]));
+      const frac = Math.max(0, Math.min(1, a.position));
+      // Truncate in projected (web-mercator) space — distance-normalized,
+      // camera-independent — then the last point is the point at `frac`.
+      coord =
+        frac >= 1
+          ? coords[coords.length - 1]
+          : truncateToFraction(coords, frac).at(-1);
+    }
+    if (!coord) return null;
+    const px = this.map.getPixelFromCoordinate(coord);
+    return px ? [px[0], px[1]] : null;
   }
 
   /** Resolve once the current viewport's tiles are loaded and drawn. OL's

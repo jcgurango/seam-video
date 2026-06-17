@@ -99,7 +99,7 @@ export class FrameCoordinator {
     void this.staticStore.setTimeline(timeline, basePath, mediaStore);
 
     this.graphicStore.onFrameAvailable = () => this.onFrameAvailable?.();
-    void this.graphicStore.setTimeline(timeline);
+    void this.graphicStore.setTimeline(timeline, basePath);
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {

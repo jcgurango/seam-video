@@ -509,6 +509,22 @@ export interface GraphicClipInstance extends GraphicObjectBase, FabricTransform 
   [key: string]: unknown;
 }
 
+/** A fabric object anchored to a Map: its (0,0) projects to screen space,
+ *  then the object draws there offset by its own left/top. */
+export interface MapPathObject {
+  /** Fraction (0..1) along the path. Default: the path's `progress`
+   *  (progress unset ⇒ 1, the path's end). */
+  position?: number;
+  object: GraphicObject;
+}
+
+/** A fabric object anchored to a geo coordinate on a Map. */
+export interface MapObject {
+  latitude: number;
+  longitude: number;
+  object: GraphicObject;
+}
+
 /** Geo polyline drawn over a Map. */
 export interface MapPath {
   color: string;
@@ -520,6 +536,8 @@ export interface MapPath {
   lineWidth?: number;
   /** Per-path easing override for color/progress/lineWidth interpolation. */
   easing?: string;
+  /** Objects anchored along the path (default at the reveal head). */
+  objects?: MapPathObject[];
 }
 
 export interface GraphicMap extends GraphicObjectBase, FabricTransform {
@@ -530,6 +548,8 @@ export interface GraphicMap extends GraphicObjectBase, FabricTransform {
   longitude?: number;
   zoom?: number;
   paths?: MapPath[];
+  /** Objects anchored to geo coordinates on the map. */
+  objects?: MapObject[];
   [key: string]: unknown;
 }
 

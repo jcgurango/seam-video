@@ -37,8 +37,12 @@ import {
 // Side-effect import: registers OpenLayersMap into fabric's classRegistry
 // so enlivenObjects(spec.type === "Map") produces an OL-backed rasterizer
 // FabricObject instead of falling back to the default rect.
-import { OpenLayersMap } from "./graphic/OpenLayersMap.js";
+import {
+  OpenLayersMap,
+  type MapOverlay,
+} from "./graphic/OpenLayersMap.js";
 import { installGraphicFontFallback } from "./graphic/fontFallback.js";
+import { resolveSource } from "../components/resolveSource.js";
 
 // Patch fabric's font declaration so graphic text falls back to CJK/emoji
 // (same as the renderer). Side-effect at module load, before any render.
@@ -60,6 +64,13 @@ interface GraphicEntry {
   outerFrames: ReadonlyArray<ReadonlyArray<unknown>>;
   isStaticGraphic: boolean;
   lastT: number;
+  /** True while a `draw()` is in flight. Draws are single-flighted per entry
+   *  so an async (image-enliven) draw can't pile up or land out of order. */
+  drawing: boolean;
+  /** Latest draw time requested while a draw was in flight. Coalesced — only
+   *  the most recent is kept; intermediate frames are dropped, then one final
+   *  draw converges to it. */
+  pendingDrawT: number | null;
   /** The OL map rendered since the last fabric draw — its layer canvas
    *  advanced (tiles arriving, style applying, etc.) but the snapshot tree
    *  didn't. Forces a redraw even when isStaticGraphic short-circuits and
@@ -78,9 +89,13 @@ interface GraphicEntry {
 export class GraphicStore {
   private entries = new Map<ResolvedGraphic, GraphicEntry>();
   onFrameAvailable: (() => void) | null = null;
+  /** Base path for resolving relative graphic `Image` `src`s (mirrors the
+   *  media layer's `basePath`). Set per-timeline. */
+  private basePath = "";
 
-  async setTimeline(timeline: ResolvedTimeline): Promise<void> {
+  async setTimeline(timeline: ResolvedTimeline, basePath = ""): Promise<void> {
     this.dispose();
+    this.basePath = basePath;
     const collected = collectGraphicEntries(timeline.children);
     for (const { node, toLocal } of collected) {
       try {
@@ -133,12 +148,15 @@ export class GraphicStore {
           outerFrames: node.frames as ReadonlyArray<ReadonlyArray<unknown>>,
           isStaticGraphic: isStatic(playback) && clipPlaybacks.size === 0,
           lastT: -1,
+          drawing: false,
+          pendingDrawT: null,
           pendingMapWake: false,
           mapCache: new Map<string, OpenLayersMap>(),
           mapRenderUnsubs: [],
         };
         this.entries.set(node, entry);
-        await this.draw(entry, 0);
+        // Prime the first frame through the same single-flight path.
+        this.scheduleDraw(entry, 0);
       } catch (err) {
         console.error("[graphic] store setup failed:", err);
       }
@@ -161,17 +179,17 @@ export class GraphicStore {
    *  readback), so graphics can redraw at the rAF rate. */
   async update(currentTime: number): Promise<void> {
     if (this.entries.size === 0) return;
-    let anyRedrew = false;
     for (const entry of this.entries.values()) {
       const mapWake = entry.pendingMapWake;
 
       if (entry.isStaticGraphic) {
-        // Single-keyframe + no clips. Only redraw on a map wake.
+        // Single-keyframe + no clips. Only redraw on a map wake (synchronous —
+        // the objects are already on the canvas, we just re-blit the map).
         if (!mapWake) continue;
         entry.pendingMapWake = false;
         try {
           entry.fabric.renderAll();
-          anyRedrew = true;
+          this.onFrameAvailable?.();
         } catch (err) {
           console.error("[graphic] static map redraw failed:", err);
         }
@@ -188,14 +206,40 @@ export class GraphicStore {
       if (!tChanged && !mapWake) continue;
       entry.pendingMapWake = false;
       entry.lastT = t;
-      try {
-        await this.draw(entry, t);
-        anyRedrew = true;
-      } catch (err) {
-        console.error("[graphic] redraw failed:", err);
-      }
+      // Non-blocking + coalesced: never await here (update() is called every
+      // rAF tick, fire-and-forget). scheduleDraw keeps the canvas on its last
+      // good frame until the new one is ready, so an async image-enliven draw
+      // can't leave the graphic invisible.
+      this.scheduleDraw(entry, t);
     }
-    if (anyRedrew) this.onFrameAvailable?.();
+  }
+
+  /** Single-flight, coalesced draw for one entry. If a draw is already
+   *  running, the latest requested time is stashed (intermediate frames
+   *  dropped) and run once the current draw finishes. */
+  private scheduleDraw(entry: GraphicEntry, t: number): void {
+    if (entry.drawing) {
+      entry.pendingDrawT = t;
+      return;
+    }
+    entry.drawing = true;
+    void (async () => {
+      let cur: number | null = t;
+      while (cur != null) {
+        try {
+          await this.draw(entry, cur);
+          this.onFrameAvailable?.();
+        } catch (err) {
+          console.error("[graphic] redraw failed:", err);
+        }
+        // Pick up the most recent request that arrived during the draw (no
+        // await between this read and the `drawing = false` below, so the
+        // single-threaded loop can't drop a late request).
+        cur = entry.pendingDrawT;
+        entry.pendingDrawT = null;
+      }
+      entry.drawing = false;
+    })();
   }
 
   getFrame(node: ResolvedGraphic): HTMLCanvasElement | null {
@@ -240,11 +284,16 @@ export class GraphicStore {
   // ── Drawing ───────────────────────────────────────────────────
 
   private async draw(entry: GraphicEntry, t: number): Promise<void> {
-    const snap = snapshotAt(entry.playback, t);
+    const snap = resolveImageFlat(snapshotAt(entry.playback, t), this.basePath);
     const tree = entry.playback.filledFrames[0]?.tree ?? [];
+    // Materialize FIRST (this is the async part — image enliven decodes the
+    // bitmap), leaving the previous frame on the canvas. Only once the new
+    // objects are ready do we swap them in, in one synchronous burst. Clearing
+    // up front (as before) blanked the canvas for the whole enliven gap, so a
+    // graphic with an animated image read back invisible every frame.
+    const specs = await this.materializeTree(tree, snap, "", entry, t);
     entry.fabric.clear();
     entry.fabric.backgroundColor = "rgba(0,0,0,0)";
-    const specs = await this.materializeTree(tree, snap, "", entry, t);
     for (const obj of specs) entry.fabric.add(obj);
     entry.fabric.renderAll();
   }
@@ -288,13 +337,12 @@ export class GraphicStore {
       // Cached instances stay alive across fabric's add/remove cycle
       // via isPreEnliven=true (which disables dispose-on-removed).
       // Per-frame prop changes flow through .set() → the OL view.
-      const cached = entry.mapCache.get(path);
-      if (cached) {
-        cached.set(toFabricUpdate(filled));
-        return cached;
-      }
-      const live = await reviveSpec(filled);
-      if (live instanceof OpenLayersMap) {
+      let olMap = entry.mapCache.get(path) ?? null;
+      if (olMap) {
+        olMap.set(toFabricUpdate(filled));
+      } else {
+        const live = await reviveSpec(filled);
+        if (!(live instanceof OpenLayersMap)) return live;
         live.isPreEnliven = true;
         live.attachToPath(path);
         entry.mapCache.set(path, live);
@@ -310,8 +358,16 @@ export class GraphicStore {
           this.onFrameAvailable?.();
         });
         entry.mapRenderUnsubs.push(unsub);
+        olMap = live;
       }
-      return live;
+      // Materialize the embedded objects (map-level geo anchors + per-path
+      // anchors) through the normal pipeline — so Clips/Groups get clip
+      // context — and hand them to the map as overlays. The map projects +
+      // draws them against its current view in _render.
+      olMap.setOverlayObjects(
+        await this.materializeMapOverlays(filled, path, entry, outerT, snap),
+      );
+      return olMap;
     }
     if (type === "Group" && Array.isArray(filled.objects)) {
       const children = await this.materializeTree(
@@ -335,7 +391,10 @@ export class GraphicStore {
       const anchors = getClipAnchorsAtPath(entry.outerFrames, path);
       const repeat = typeof filled.repeat === "number" ? filled.repeat : -1;
       const localT = computeLocalTime(anchors, outerT, playback.duration, repeat);
-      const clipSnap = clipSnapAtLocalTime(playback, localT);
+      const clipSnap = resolveImageFlat(
+        clipSnapAtLocalTime(playback, localT),
+        this.basePath,
+      );
       const tree0 = playback.filledFrames[0]?.tree ?? [];
       const cw = playback.contentWidth;
       const ch = playback.contentHeight;
@@ -390,6 +449,96 @@ export class GraphicStore {
       }
     }
     return reviveSpec(filled);
+  }
+
+  /** Build the live overlay objects for a Map. Structure (which objects
+   *  exist, their ids, path points/progress) comes from the map node; each
+   *  object's animated state — its own props AND its anchor (lat/lng /
+   *  position) — comes from its own flat path in `snap` (see core's
+   *  buildFlat). Objects materialize through the normal pipeline so
+   *  Clips/Groups get context. Path position default = the path's current
+   *  `progress` (unset ⇒ 1, the path's end). */
+  private async materializeMapOverlays(
+    filled: FilledObject,
+    path: string,
+    entry: GraphicEntry,
+    outerT: number,
+    snap: FlatFrame,
+  ): Promise<MapOverlay[]> {
+    const overlays: MapOverlay[] = [];
+
+    const mapObjs = Array.isArray(filled.objects) ? filled.objects : [];
+    for (let i = 0; i < mapObjs.length; i++) {
+      const wrap = mapObjs[i] as Record<string, unknown>;
+      const obj = wrap.object as FilledObject | undefined;
+      if (!obj || typeof obj.type !== "string") continue;
+      const key = pathKey(obj, i);
+      const state =
+        (snap[`${path}.objects.${key}`] as FilledObject | undefined) ?? {
+          ...obj,
+          latitude: wrap.latitude,
+          longitude: wrap.longitude,
+        };
+      const { latitude, longitude, ...objSpec } = state as Record<
+        string,
+        unknown
+      >;
+      const live = await this.materializeOne(
+        objSpec as FilledObject,
+        snap,
+        `${path}.objects.${key}`,
+        entry,
+        outerT,
+      );
+      if (!live) continue;
+      overlays.push({
+        live,
+        anchor: {
+          kind: "geo",
+          longitude: numberOr(longitude, numberOr(wrap.longitude, 0)),
+          latitude: numberOr(latitude, numberOr(wrap.latitude, 0)),
+        },
+      });
+    }
+
+    const paths = Array.isArray(filled.paths) ? filled.paths : [];
+    for (let pi = 0; pi < paths.length; pi++) {
+      const p = paths[pi] as Record<string, unknown>;
+      const pObjs = Array.isArray(p.objects) ? p.objects : [];
+      if (!pObjs.length) continue;
+      const points = Array.isArray(p.points) ? (p.points as number[][]) : [];
+      if (points.length < 2) continue;
+      const progress = typeof p.progress === "number" ? p.progress : 1;
+      for (let oi = 0; oi < pObjs.length; oi++) {
+        const wrap = pObjs[oi] as Record<string, unknown>;
+        const obj = wrap.object as FilledObject | undefined;
+        if (!obj || typeof obj.type !== "string") continue;
+        const key = pathKey(obj, oi);
+        const state =
+          (snap[`${path}.paths.${pi}.objects.${key}`] as
+            | FilledObject
+            | undefined) ?? { ...obj, position: wrap.position };
+        const { position, ...objSpec } = state as Record<string, unknown>;
+        const live = await this.materializeOne(
+          objSpec as FilledObject,
+          snap,
+          `${path}.paths.${pi}.objects.${key}`,
+          entry,
+          outerT,
+        );
+        if (!live) continue;
+        overlays.push({
+          live,
+          anchor: {
+            kind: "path",
+            points,
+            position: typeof position === "number" ? position : progress,
+          },
+        });
+      }
+    }
+
+    return overlays;
   }
 }
 
@@ -481,6 +630,29 @@ function collectClipChildSpecs(
  *  object's .set() — everything we'd otherwise pass to the constructor
  *  on a fresh enliven. Type + clipId/source-style identity is dropped
  *  because those are immutable for a cached instance. */
+/** Return a flat snapshot with every graphic `Image` node's `src` resolved to
+ *  a loadable URL (blob:/file:// via the platform's `resolveSource`), so
+ *  fabric's image enliven gets a URL it can actually fetch — the same
+ *  host-resolution clips get. `data:`/`http(s)`/`blob:` srcs pass through.
+ *  Non-Image entries are shared by reference (only changed entries are
+ *  cloned, so the cached snapshot isn't mutated). */
+function resolveImageFlat(flat: FlatFrame, basePath: string): FlatFrame {
+  let out = flat;
+  for (const key in flat) {
+    const e = flat[key];
+    const src = (e as { type?: unknown; src?: unknown }).src;
+    if (
+      (e as { type?: unknown }).type === "Image" &&
+      typeof src === "string" &&
+      !/^(data:|https?:|blob:)/i.test(src)
+    ) {
+      if (out === flat) out = { ...flat };
+      out[key] = { ...e, src: resolveSource(src, basePath) };
+    }
+  }
+  return out;
+}
+
 function toFabricUpdate(filled: FilledObject): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { type, id, ...rest } = filled;

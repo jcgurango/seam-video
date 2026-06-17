@@ -2,6 +2,9 @@ import { compileSeamFile } from "@seam/core";
 import type { SeamFile, Child } from "@seam/core";
 import { basename, isAbsolute, relative } from "./pathUtils.js";
 import { isMediaSource } from "./mediaSource.js";
+import { mapGraphicImageSources } from "./graphicSources.js";
+
+type Obj = Record<string, unknown>;
 
 export interface ExportPlan {
   /** Rewritten document: media-source fields are flat basenames. */
@@ -43,6 +46,9 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
   const rewriteChild = (child: Child): Child => {
     if (isMediaSource(child)) {
       return { ...child, source: pickExportName(child.source) };
+    }
+    if (child.type === "graphic") {
+      return mapGraphicImageSources(child as Obj, pickExportName) as Child;
     }
     if (child.type === "composition") {
       const rewritten: Child = {
@@ -90,6 +96,11 @@ export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile
     if (isMediaSource(child) && isAbsolute(child.source)) {
       return { ...child, source: toRelative(child.source) };
     }
+    if (child.type === "graphic") {
+      return mapGraphicImageSources(child as Obj, (src) =>
+        isAbsolute(src) ? toRelative(src) : src,
+      ) as Child;
+    }
     if (child.type === "composition") {
       return {
         ...child,
@@ -125,6 +136,13 @@ export function collectClipSources(doc: SeamFile, out: string[] = []): string[] 
   const visit = (child: Child) => {
     if (isMediaSource(child)) {
       out.push(child.source);
+    } else if (child.type === "graphic") {
+      // Graphic Image `src`s are file-backed media too — collect them (for
+      // blob-URL preload / export bundling) without altering the node.
+      mapGraphicImageSources(child as Obj, (src) => {
+        out.push(src);
+        return src;
+      });
     } else if (child.type === "composition") {
       child.children.forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);

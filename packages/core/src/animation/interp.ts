@@ -30,6 +30,27 @@ function pathKey(node: FilledObject, index: number): string {
   return String(index);
 }
 
+/** Turn a Map's anchor wrappers ({...anchorKeys, object}) into a flat tree of
+ *  the inner objects, with the wrapper's anchor scalars merged onto each so
+ *  they animate alongside the object's own props. Mapped 1:1 (invalid
+ *  wrappers become inert placeholders) so an id-less object keeps the same
+ *  positional key the host uses when it materializes from `snap`. */
+function liftAnchored(
+  wrappers: unknown[],
+  anchorKeys: string[],
+): FilledTree {
+  return wrappers.map((w) => {
+    const wrap = w as Record<string, unknown>;
+    const obj = wrap.object as FilledObject | undefined;
+    if (!obj || typeof obj.type !== "string") return {} as FilledObject;
+    const merged: FilledObject = { ...obj };
+    for (const k of anchorKeys) {
+      if (wrap[k] !== undefined) merged[k] = wrap[k];
+    }
+    return merged;
+  });
+}
+
 /** Walk a filled tree, building the flat path-keyed map. Children of
  *  groups recurse under the parent's path. `objects` is stripped from
  *  each flat entry — the live node's geometry is what the path
@@ -42,6 +63,39 @@ export function buildFlat(
   tree.forEach((node, i) => {
     const key = pathKey(node, i);
     const path = parentPath === "" ? key : `${parentPath}.${key}`;
+    // A Map's `objects` are geo/path anchor *wrappers* ({latitude, object} /
+    // {position, object}), not bare graphic objects. Keep the whole node on
+    // the flat entry (the host reads it for anchor *structure* — which
+    // objects exist, their ids, the path points/progress), AND lift each
+    // inner object into its own flat path so its props animate like any
+    // other object. The wrapper's anchor scalars (latitude/longitude /
+    // position) ride along on the lifted entry as animatable numbers, so the
+    // anchor itself can tween too.
+    if (node.type === "Map") {
+      flat[path] = { ...node };
+      const mapObjs = node.objects;
+      if (Array.isArray(mapObjs)) {
+        buildFlat(
+          liftAnchored(mapObjs, ["latitude", "longitude"]),
+          `${path}.objects`,
+          flat,
+        );
+      }
+      const paths = node.paths;
+      if (Array.isArray(paths)) {
+        (paths as FilledObject[]).forEach((p, pi) => {
+          const pObjs = (p as { objects?: unknown }).objects;
+          if (Array.isArray(pObjs)) {
+            buildFlat(
+              liftAnchored(pObjs, ["position"]),
+              `${path}.paths.${pi}.objects`,
+              flat,
+            );
+          }
+        });
+      }
+      return;
+    }
     const { objects: children, ...rest } = node;
     flat[path] = rest;
     if (Array.isArray(children)) {
