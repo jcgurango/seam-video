@@ -305,15 +305,32 @@ export default function App({ platform }: AppProps) {
     await loadDocument(result.data, fp);
   });
 
+  // Commit an edited document to history. On web, warm the blob URL cache for
+  // any newly-referenced clip sources *before* the doc reaches state — the
+  // timeline reads resolveSource() synchronously on mount, so a source that
+  // isn't cached yet (one introduced by pasting JSON, editing a node's
+  // `source`, etc.) would resolve to a bare filename and fail to decode.
+  // Mirrors loadDocument's preload, minus the cache reset (this is
+  // incremental — preloadBlobUrls skips sources already cached). Selection /
+  // mode state stays in the synchronous callers so it isn't reordered behind
+  // this await.
+  const commitDocument = useEvent(async (newDoc: SeamFile) => {
+    if (platform.kind === "web") {
+      const wp = platform as WebPlatform;
+      await wp.preloadBlobUrls(collectClipSources(newDoc));
+    }
+    history.push(newDoc);
+  });
+
   const updateDocument = useCallback(
     (newDoc: SeamFile) => {
       // No more script-original / rendered-body bookkeeping — the
       // authored doc is the canonical state and the compile pass runs
       // lazily in rootTimeline. Any compile errors get reported there.
-      history.push(newDoc);
+      void commitDocument(newDoc);
       setSelection([]);
     },
-    [history]
+    [commitDocument]
   );
 
   // The JSON tab edits the authored root document directly. Bin
@@ -346,11 +363,11 @@ export default function App({ platform }: AppProps) {
         return [...compileErrors, String(err)];
       }
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
-      history.push(newDoc);
+      void commitDocument(newDoc);
       setSelection([]);
       return null;
     },
-    [history]
+    [commitDocument]
   );
 
   const handleJsonNodeSave = useCallback(
@@ -384,11 +401,11 @@ export default function App({ platform }: AppProps) {
       }
 
       setScriptError(compileErrors.length > 0 ? compileErrors.join("\n") : null);
-      history.push(validated.data);
+      void commitDocument(validated.data);
       setSelection([]);
       return null;
     },
-    [history]
+    [commitDocument]
   );
 
   const onSelectionChange = useCallback((next: string[]) => {
@@ -456,10 +473,10 @@ export default function App({ platform }: AppProps) {
       ...document,
       children: [...document.children, ...spliced],
     };
-    history.push(newDoc);
+    void commitDocument(newDoc);
     setCcCut(null);
     setCcSelections([]);
-  }, [ccCut, ccBinEntry, ccSelections, document, history, handleCCCutCancel]);
+  }, [ccCut, ccBinEntry, ccSelections, document, commitDocument, handleCCCutCancel]);
 
   // Delete in CC-cut mode: drop the timeline-selected entries from
   // `ccSelections` (which the timeline + word ribbon both drive off of).
