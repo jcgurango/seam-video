@@ -93,9 +93,9 @@ function packBand(
     let row = rowEnds.findIndex((end) => end <= it.child.timelineStart);
     if (row === -1) {
       row = rowEnds.length;
-      rowEnds.push(it.child.timelineEnd);
+      rowEnds.push(Math.floor(it.child.timelineEnd * 1000) / 1000);
     } else {
-      rowEnds[row] = it.child.timelineEnd;
+      rowEnds[row] = Math.floor(it.child.timelineEnd * 1000) / 1000;
     }
     placed.push({ child: it.child, index: it.index, row: baseRow + row });
   }
