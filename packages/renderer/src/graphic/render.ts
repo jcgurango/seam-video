@@ -59,14 +59,23 @@ export interface RenderOptions {
   context?: GraphicContext;
 }
 
-/** Render a flat snapshot to a PNG buffer. The flat snapshot must come
- *  paired with the originating filled tree so groups/clips can reach
- *  their authored child structure when reviving. */
-export async function renderSnapshotToPng(
+/** The underlying node-canvas behind fabric/node's StaticCanvas. */
+interface NodeCanvas {
+  toBuffer(mime: string): Buffer;
+  getContext(type: "2d"): {
+    getImageData(x: number, y: number, w: number, h: number): {
+      data: Uint8ClampedArray;
+    };
+  };
+}
+
+/** Render a flat snapshot onto a fabric StaticCanvas and return the backing
+ *  node-canvas. Shared by the PNG (MLT) and RGBA (WebGPU) paths. */
+async function renderSnapshotToNodeCanvas(
   snap: FlatFrame,
   tree: FilledTree,
   opts: RenderOptions,
-): Promise<Buffer> {
+): Promise<NodeCanvas> {
   installGraphicFontFallback();
   const canvas = new StaticCanvas(undefined, {
     width: opts.contentWidth,
@@ -84,15 +93,33 @@ export async function renderSnapshotToPng(
   for (const obj of specs) canvas.add(obj);
   canvas.renderAll();
 
-  // fabric/node's StaticCanvas exposes getNodeCanvas() returning the
-  // underlying node-canvas, which has toBuffer().
-  return (
-    canvas as unknown as {
-      getNodeCanvas(): { toBuffer(mime: string): Buffer };
-    }
-  )
-    .getNodeCanvas()
-    .toBuffer("image/png");
+  return (canvas as unknown as { getNodeCanvas(): NodeCanvas }).getNodeCanvas();
+}
+
+/** Render a flat snapshot to a PNG buffer. The flat snapshot must come
+ *  paired with the originating filled tree so groups/clips can reach
+ *  their authored child structure when reviving. */
+export async function renderSnapshotToPng(
+  snap: FlatFrame,
+  tree: FilledTree,
+  opts: RenderOptions,
+): Promise<Buffer> {
+  const nodeCanvas = await renderSnapshotToNodeCanvas(snap, tree, opts);
+  return nodeCanvas.toBuffer("image/png");
+}
+
+/** Render a flat snapshot directly to RGBA pixels (no PNG round-trip) — for
+ *  the in-memory WebGPU renderer. */
+export async function renderSnapshotToRgba(
+  snap: FlatFrame,
+  tree: FilledTree,
+  opts: RenderOptions,
+): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  const nodeCanvas = await renderSnapshotToNodeCanvas(snap, tree, opts);
+  const w = opts.contentWidth;
+  const h = opts.contentHeight;
+  const { data } = nodeCanvas.getContext("2d").getImageData(0, 0, w, h);
+  return { data, width: w, height: h };
 }
 
 /** Recursively walks the filled tree and the snapshot in lockstep,
@@ -389,24 +416,16 @@ async function renderMapToFabric(
       originX: "left",
       originY: "top",
     });
-    const children: FabricObject[] = [mapImage as unknown as FabricObject];
-    for (let i = 0; i < embedded.length; i++) {
-      const px = rendered.anchorPixels?.[i];
-      if (!px) continue;
-      const live = await materializeOne(
-        embedded[i].spec,
-        snap,
-        `${path}.embed.${i}`,
-        context,
-      );
-      if (!live) continue;
-      live.set({
-        left: px[0] - width / 2 + numberOr(embedded[i].spec.left, 0),
-        top: px[1] - height / 2 + numberOr(embedded[i].spec.top, 0),
-      });
-      children.push(live);
-    }
-    return new Group(children, {
+    // Construct the group with ONLY the map image, then add the embedded
+    // objects. fabric's FixedLayout snaps the group's center to the children's
+    // bounding box on `initialization` (when objects are passed to the
+    // constructor) — so an embedded object whose anchor projects off-screen
+    // would drag the whole group, cropping the map. The map image alone is
+    // symmetric about the group center, so it's pinned to the box; later
+    // `add()`s don't re-layout (FixedLayout only lays out on init). Each added
+    // object's group-local position is then set explicitly so it still scales
+    // with the map.
+    const group = new Group([mapImage as unknown as FabricObject], {
       left: numberOr(spec.left, 0),
       top: numberOr(spec.top, 0),
       width,
@@ -421,6 +440,26 @@ async function renderMapToFabric(
       originY: spec.originY as "top" | "center" | "bottom" | undefined,
       layoutManager: new LayoutManager(new FixedLayout()),
     });
+    for (let i = 0; i < embedded.length; i++) {
+      const px = rendered.anchorPixels?.[i];
+      if (!px) continue;
+      const live = await materializeOne(
+        embedded[i].spec,
+        snap,
+        `${path}.embed.${i}`,
+        context,
+      );
+      if (!live) continue;
+      group.add(live);
+      // Set the group-local position AFTER entering the group (the value add()
+      // computes is irrelevant; we override it). Center is (width/2, height/2).
+      live.set({
+        left: px[0] - width / 2 + numberOr(embedded[i].spec.left, 0),
+        top: px[1] - height / 2 + numberOr(embedded[i].spec.top, 0),
+      });
+      live.setCoords();
+    }
+    return group;
   } catch (err) {
     console.warn("[graphic] map render failed:", (err as Error).message);
     return null;

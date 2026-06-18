@@ -9,7 +9,7 @@ import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
 import { FrameCoordinator } from "../media/FrameCoordinator.js";
 import { WebGPURenderer } from "../media/gpu/WebGPURenderer.js";
-import { buildRenderList } from "../media/gpu/RenderList.js";
+import { buildRenderList } from "@seam/compositor";
 
 interface TimelineProps {
   timeline: ResolvedTimeline;

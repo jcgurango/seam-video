@@ -164,7 +164,7 @@ As a child, a `data` node takes up `duration` seconds of sequential time. As an 
 }
 ```
 
-The renderer and preview skip `data` nodes — they don't draw, don't make sound, and don't produce ffmpeg input.
+The renderer and preview skip `data` nodes — they don't draw and don't make sound.
 
 ### Text
 
@@ -236,7 +236,7 @@ Inline runs participate the same way — `[ "foo\n", { "text": "bar", "color": "
 
 Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's intrinsic canvas (defaulting to the parent display size; percentages resolve against the parent), then [Spatial Layout](#spatial-layout) places that canvas on the parent. Line wrapping uses the inner box (`contentWidth − padding.left − padding.right`). `\n` in the source text still forces a break inside that inner box.
 
-Both backends share Pretext for layout. The editor preview measures + draws on `OffscreenCanvas`; the FFmpeg CLI path does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side, then writes one PNG per static text node and a numbered sequence per animated text node, which ffmpeg pulls in via `overlay`. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
+Both the editor preview and the headless renderer share Pretext for layout. The preview measures + draws on `OffscreenCanvas`; the renderer does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
 
 ### Graphic
 
@@ -321,7 +321,7 @@ Animating a Map across keyframes pans + zooms the same OpenLayers instance (path
 
 #### Renderer support
 
-Both the editor preview and the CLI rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement` → WebGPU texture; the CLI goes to `fabric/node` → PNG sequence → MLT `qimage` producer (one PNG per output frame, `ttl=1`). Maps render via OpenLayers in both environments — Canvas2D in the browser, and the same OL pipeline run headlessly under jsdom + node-canvas server-side (no native code).
+Both the editor preview and the headless renderer rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement`; the renderer goes to `fabric/node`, rendering each output frame on demand to an RGBA buffer that the WebGPU compositor uploads as a texture. Maps render via OpenLayers in both environments — Canvas2D in the browser, and the same OL pipeline run headlessly under jsdom + node-canvas server-side (no native code).
 
 ### Composition
 
@@ -608,7 +608,7 @@ Filters apply visual effects to clips, static, text, graphic, and compositions. 
 
 #### adjust
 
-Color and tone adjustments. Maps to FFmpeg's `eq` filter.
+Color and tone adjustments: brightness, contrast, saturation, and gamma.
 
 | Field | Type | Default | Range | Description |
 |-------|------|---------|-------|-------------|
@@ -619,7 +619,7 @@ Color and tone adjustments. Maps to FFmpeg's `eq` filter.
 
 #### colorbalance
 
-Adjusts color balance for shadows, midtones, and highlights independently. Maps to FFmpeg's `colorbalance` filter.
+Adjusts color balance for shadows, midtones, and highlights independently.
 
 | Field | Type | Default | Range | Description |
 |-------|------|---------|-------|-------------|
@@ -629,7 +629,7 @@ Adjusts color balance for shadows, midtones, and highlights independently. Maps 
 
 #### colortemperature
 
-Shifts the color temperature. Maps to FFmpeg's `colortemperature` filter.
+Shifts the color temperature.
 
 | Field | Type | Default | Range | Description |
 |-------|------|---------|-------|-------------|
@@ -700,7 +700,7 @@ Semantics (the order within [Spatial Layout](#spatial-layout)): objectFit/`size`
   "children": [ … ] }
 ```
 
-Both renderers honour animation. In the CLI/MLT path the comp renders to its content sub-`.mlt`, and a **cropping sub-`.mlt`** affine-places it so the visible sub-rect zoom-fills the canvas (overflow clipped by the fixed canvas) — the crop animates through the affine `rect` keyframes, no crop filter involved. The MLT is an internal byte-consistency intermediary; the `.seam` is the source of truth, so this would look unusual opened in another editor and that's fine.
+Both renderers honour animation: the visible sub-rect zoom-fills the placed box (overflow clipped) and the crop animates through the inset keyframes.
 
 ## Spatial Layout
 
@@ -910,17 +910,6 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 
 ### Renderer support
 
-The CLI ffmpeg / melt path supports every animatable field:
-
-| Field | How it's rendered |
-|---|---|
-| Text styles (incl. per-run) | Pre-rasterized to a PNG sequence at output fps |
-| Graphic frames (fabric objects + sub-clips + maps) | Pre-rasterized to a PNG sequence at output fps via `fabric/node` (and headless OpenLayers under jsdom + node-canvas for Map elements). One PNG per static graphic, numbered sequence per animated. Same MLT `qimage` + `ttl=1` pipeline as text. |
-| `origin` / `translation` / `size` | Re-resolved per output frame against the parent's content dims and the node's natural box (the value of `size: "100%"`); the resulting rect is written into the compositing transition's `rect` keyframe string as `X Y W H ALPHA`. The source stretches to that rect, so authoring with non-default `size` overrides means stretching is intentional. |
-| `rotation` | Rotated nodes composite via melt's `qtblend` (`rotation` degrees + `rotate_center`) instead of the default `affine` — melt 7.38's `affine` can't do in-plane 2D rotation. The rect is shifted so qtblend's center-pivot reproduces rotation about the authored `origin`. Static and keyframed rotation both supported; an overflowing (cover) rect that's also rotated may mis-scale in non-portrait profiles (surfaced as a build limitation). |
-| Volume | `volume=eval=frame` with the keyframes baked into a piecewise-linear expression in `t` (clip-local seconds). |
-| `opacity` | Folded into the compositing transition's `rect` ALPHA channel (`X Y W H ALPHA`) — same per-frame rect path as `origin`/`translation`/`size`, so animated opacity rides the existing keyframed rect. |
-| `inset` (composition) | The comp renders to a content sub-`.mlt`; a cropping sub-`.mlt` affine-places it so the visible sub-rect zoom-fills the canvas (overflow clipped by the fixed canvas). Animated inset bakes per-frame into that affine `rect` keyframe string — fixed canvas, no crop filter. |
-| Filter parameters | Static — `eq` (adjust), `colorbalance`, and `colortemperature` emit single `av.*` values (no `eval=frame` / `sendcmd`), since filters are no longer animatable. |
+The headless renderer honours every animatable field. It runs the same per-output-frame layout the editor preview uses (`buildRenderList`) and composites on WebGPU, so `origin`/`translation`/`size`, `rotation` (about the authored `origin`), `opacity`, `inset`, and `volume` all animate identically to the preview. Text and graphics rasterize per frame (Skia for text; `fabric/node` + headless OpenLayers for graphics/maps), and `origin`/`translation`/`size` are re-resolved each frame against the parent's content dims and the node's natural box. Filter parameters are static (not animatable).
 
 Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

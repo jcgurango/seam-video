@@ -21,18 +21,25 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",
+    "@mediabunny/server": "^1.45.0",
     "@napi-rs/canvas": "^0.1.100",
+    "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
     "canvas": "^3.2.3",
     "fabric": "^7.4.0",
     "jsdom": "^29.1.1",
+    "mediabunny": "^1.45.0",
+    "node-web-audio-api": "^1.0.0",
     "ol": "^10.9.0",
     "ol-mapbox-style": "^13.4.1",
     "ol-pmtiles": "^2.0.2",
-    "pmtiles": "^4.4.1"
+    "pmtiles": "^4.4.1",
+    "webgpu": "^0.4.0"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",
+    "@types/node": "^22.0.0",
+    "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
