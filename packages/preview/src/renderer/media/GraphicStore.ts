@@ -662,10 +662,13 @@ function collectGraphicEntries(children: ResolvedChild[]): CollectedGraphic[] {
       } else if (c.type === "composition") {
         const comp = c;
         const parentToLocal = toLocal;
+        // Clamp to the comp's inner-window span (duration × speed), not its
+        // output duration — see FrameCoordinator/RenderList. Otherwise a
+        // graphic in a duration-compressed comp freezes past output 2s.
         const childToLocal = (t: number): number =>
           Math.min(
             (parentToLocal(t) - comp.timelineStart) * comp.speed,
-            comp.duration,
+            comp.duration * comp.speed,
           );
         walk(comp.children, childToLocal);
       }

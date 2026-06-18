@@ -322,9 +322,17 @@ function walkChildren(
       });
     } else {
       // composition
+      // `childLocalTime` is the comp's *inner-window* time (children were
+      // rebased into inner coords spanning [0, windowOut−windowIn]). Clamp it
+      // to the inner span, NOT the comp's output `duration`: for a sped/
+      // duration-compressed comp the span is `duration * speed`
+      // (windowDur = span / speed), which also holds with overflow/underflow
+      // stretch folded into `speed`. Clamping to `duration` alone pinned inner
+      // time at the output length, freezing the first child and starving every
+      // later child.
       const childLocalTime = Math.min(
         (localTime - child.timelineStart) * child.speed,
-        child.duration,
+        child.duration * child.speed,
       );
 
       const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);

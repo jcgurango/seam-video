@@ -383,9 +383,15 @@ function collectClips(
 
       const childToLocal = (t: number): number => {
         const parentLocal = parentToLocal(t);
+        // Clamp to the composition's *inner-window* span, not its output
+        // `duration`: nested clips live in inner coords (span = duration ×
+        // speed, since windowDur = span / speed). Clamping to `duration` pinned
+        // inner time at the output length, freezing the first child and
+        // collapsing every later child onto its `sourceIn` (frame 0). Mirrors
+        // the compositor's RenderList clamp.
         return Math.min(
           Math.max(0, (parentLocal - comp.timelineStart) * comp.speed),
-          comp.duration
+          comp.duration * comp.speed
         );
       };
       const childToAbsolute = (localT: number): number => {

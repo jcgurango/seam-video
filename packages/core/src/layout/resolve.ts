@@ -668,9 +668,14 @@ function cropChildrenToWindow(
         timelineEnd: rebasedEnd,
       });
     } else {
-      // Nested composition — crop recursively
-      const innerWindowIn = visibleStart - child.timelineStart;
-      const innerWindowOut = innerWindowIn + (visibleEnd - visibleStart);
+      // Nested composition — crop recursively. The child's children live in
+      // its INNER-window coords (span = duration × speed), but visibleStart/End
+      // are output-time positions, so map the visible output window into inner
+      // time by the child's speed. Omitting the ×speed clamped the inner window
+      // to the child's output length, cropping/dropping children of a sped or
+      // duration-compressed nested comp (e.g. clip2 of a duration:2 comp).
+      const innerWindowIn = (visibleStart - child.timelineStart) * child.speed;
+      const innerWindowOut = (visibleEnd - child.timelineStart) * child.speed;
       const croppedInner = cropChildrenToWindow(child.children, innerWindowIn, innerWindowOut);
 
       result.push({
