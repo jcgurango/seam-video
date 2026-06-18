@@ -21,6 +21,7 @@ export const CUSTOM_PROPS = [
   "longitude",
   "zoom",
   "paths",
+  "theme",
   "revolutions",
   "angleDirection",
 ] as const;

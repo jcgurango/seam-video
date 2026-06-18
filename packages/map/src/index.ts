@@ -18,6 +18,7 @@ export {
   drawPaths,
   type MapPathInput,
 } from "./rasterize.js";
+export { applyTheme, type MapTheme } from "./theme.js";
 export {
   MapView,
   lngLatToWorld,

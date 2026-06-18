@@ -25,6 +25,7 @@ const CUSTOM_PROPS: string[] = [
   "longitude",
   "zoom",
   "source",
+  "theme",
   // Image-source related — preserved verbatim through the round-trip.
   "src",
   "crossOrigin",

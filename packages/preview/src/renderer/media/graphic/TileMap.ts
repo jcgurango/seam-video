@@ -20,12 +20,25 @@ import {
   MapView,
   drawBasemap,
   drawPaths,
+  applyTheme,
   type MapPathInput,
+  type MapTheme,
 } from "@seam/map";
 // Bundled OSM Bright style — same JSON the renderer reads from disk. Vite
 // inlines it. @seam/map reads text-font/paint directly and never fetches the
 // style's glyphs/sprite/source URLs, so we pass it through as-is.
 import osmBrightStyle from "./osm-bright/style.json";
+
+// Themed styles, derived from the base once per theme (light = base verbatim).
+const themedStyles = new Map<MapTheme, unknown>();
+function styleFor(theme: MapTheme): unknown {
+  let s = themedStyles.get(theme);
+  if (!s) {
+    s = applyTheme(osmBrightStyle, theme);
+    themedStyles.set(theme, s);
+  }
+  return s;
+}
 
 // ── Seam-owned TileSource pool ──────────────────────────────────────
 
@@ -65,6 +78,7 @@ export interface MapOptions extends Partial<FabricObjectProps> {
   latitude?: number;
   longitude?: number;
   zoom?: number;
+  theme?: MapTheme;
   paths?: MapPath[];
   /** Embedded objects (anchor-wrapped specs). Opaque to TileMap — the host
    *  reads them from the snapshot to build overlays; we only carry them so
@@ -95,6 +109,7 @@ export class TileMap extends FabricObject {
   latitude = 0;
   longitude = 0;
   zoom = 1;
+  theme: MapTheme = "light";
   paths: MapPath[] = [];
   /** Embedded objects, carried verbatim so serialization round-trips (the
    *  frame editor, Group rebuilds) don't drop them. Not rendered from here —
@@ -112,6 +127,7 @@ export class TileMap extends FabricObject {
       latitude,
       longitude,
       zoom,
+      theme,
       paths,
       objects,
       ...rest
@@ -122,6 +138,7 @@ export class TileMap extends FabricObject {
     if (typeof latitude === "number") this.latitude = latitude;
     if (typeof longitude === "number") this.longitude = longitude;
     if (typeof zoom === "number") this.zoom = zoom;
+    if (theme === "dark" || theme === "light") this.theme = theme;
     if (Array.isArray(paths)) this.paths = paths as MapPath[];
     if (Array.isArray(objects)) this.embeddedObjects = objects;
     if (typeof rest.width !== "number") this.width = 400;
@@ -174,7 +191,7 @@ export class TileMap extends FabricObject {
     // Shift to top-left origin so @seam/map's screen coords line up.
     ctx.save();
     ctx.translate(-w / 2, -h / 2);
-    drawBasemap(ctx, view, osmBrightStyle, tiles); // requests missing tiles → bubble up
+    drawBasemap(ctx, view, styleFor(this.theme), tiles); // requests missing tiles → bubble up
     drawPaths(ctx, view, this.paths);
     this._drawOverlays(ctx, view);
     ctx.restore();
@@ -215,6 +232,7 @@ export class TileMap extends FabricObject {
       "latitude",
       "longitude",
       "zoom",
+      "theme",
       "paths",
     ];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

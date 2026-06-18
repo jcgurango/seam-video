@@ -17,7 +17,9 @@ import {
   MapView,
   drawBasemap,
   drawPaths,
+  applyTheme,
   type MapPathInput,
+  type MapTheme,
 } from "@seam/map";
 import { registerNodeCanvasFonts } from "../text/fonts.js";
 
@@ -31,15 +33,21 @@ const OSM_BRIGHT_DIR = join(
   "osm-bright",
 );
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let stylePromise: Promise<any> | null = null;
+let baseStylePromise: Promise<any> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function loadStyle(): Promise<any> {
-  if (!stylePromise) {
-    stylePromise = readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8").then(
+const themedStyles = new Map<MapTheme, any>();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadStyle(theme: MapTheme): Promise<any> {
+  if (!baseStylePromise) {
+    baseStylePromise = readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8").then(
       (s) => JSON.parse(s),
     );
   }
-  return stylePromise;
+  const cached = themedStyles.get(theme);
+  if (cached) return cached;
+  const styled = applyTheme(await baseStylePromise, theme);
+  themedStyles.set(theme, styled);
+  return styled;
 }
 
 /** Where an embedded object's (0,0) anchors. `geo` projects a coordinate;
@@ -54,6 +62,7 @@ export interface MapViewInput {
   zoom: number;
   width: number;
   height: number;
+  theme?: MapTheme;
   paths?: MapPathInput[];
   /** Anchors to project to viewport pixels (embedded objects). The result's
    *  `anchorPixels` lines up index-for-index. */
@@ -113,7 +122,7 @@ export async function renderMapView(
   input: MapViewInput,
 ): Promise<RenderedMap> {
   registerNodeCanvasFonts(); // labels resolve to node-canvas-registered families
-  const style = await loadStyle();
+  const style = await loadStyle(input.theme === "dark" ? "dark" : "light");
   const header = await tiles.header();
   const view = new MapView(
     input,

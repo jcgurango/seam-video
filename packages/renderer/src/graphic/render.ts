@@ -379,6 +379,7 @@ async function renderMapToFabric(
       zoom: numberOr(spec.zoom, 1),
       width,
       height,
+      theme: spec.theme === "dark" ? ("dark" as const) : ("light" as const),
       paths,
       anchors: anchors.length ? anchors : undefined,
     };
