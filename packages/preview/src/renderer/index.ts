@@ -18,5 +18,5 @@ export {
   resetSourceResolver,
 } from "./components/resolveSource.js";
 export type { SourceResolver } from "./components/resolveSource.js";
-export { setPmtilesResolver } from "./media/graphic/OpenLayersMap.js";
-export type { PmtilesResolver } from "./media/graphic/OpenLayersMap.js";
+export { setPmtilesResolver } from "./media/graphic/TileMap.js";
+export type { PmtilesResolver } from "./media/graphic/TileMap.js";

@@ -14,12 +14,10 @@
     "@chenglou/pretext": "^0.0.6",
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
+    "@seam/map": "workspace:*",
     "chokidar": "^4.0.0",
     "fabric": "^7.4.0",
     "mediabunny": "^1.38.0",
-    "ol": "^10.9.0",
-    "ol-mapbox-style": "^13.4.1",
-    "ol-pmtiles": "^2.0.2",
     "pmtiles": "^4.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

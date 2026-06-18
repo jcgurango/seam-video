@@ -3,8 +3,8 @@
 // authored contentWidth/Height, redrawn each tick by walking the
 // snapshot from playback.ts onto a fabric.StaticCanvas.
 //
-// Map elements are backed by OpenLayersMap (an off-screen OL Canvas2D
-// rasterizer); see ./graphic/OpenLayersMap.ts.
+// Map elements are backed by TileMap (a synchronous Canvas2D rasterizer over
+// the shared @seam/map TileSource); see ./graphic/TileMap.ts.
 
 import type {
   ResolvedChild,
@@ -36,13 +36,15 @@ import {
   type ClipDefLike,
   type ClipPlayback,
 } from "./graphic/clip.js";
-// Side-effect import: registers OpenLayersMap into fabric's classRegistry
-// so enlivenObjects(spec.type === "Map") produces an OL-backed rasterizer
-// FabricObject instead of falling back to the default rect.
+// Side-effect import: registers the Map class into fabric's classRegistry so
+// enlivenObjects(spec.type === "Map") produces the @seam/map-backed rasterizer
+// FabricObject instead of falling back to the default rect. subscribeMapWake
+// bubbles tile loads up to the redraw loop (like an Image's load event).
 import {
-  OpenLayersMap,
+  TileMap,
+  subscribeMapWake,
   type MapOverlay,
-} from "./graphic/OpenLayersMap.js";
+} from "./graphic/TileMap.js";
 import { installGraphicFontFallback } from "./graphic/fontFallback.js";
 import { resolveSource } from "../components/resolveSource.js";
 
@@ -73,19 +75,11 @@ interface GraphicEntry {
    *  the most recent is kept; intermediate frames are dropped, then one final
    *  draw converges to it. */
   pendingDrawT: number | null;
-  /** The OL map rendered since the last fabric draw — its layer canvas
-   *  advanced (tiles arriving, style applying, etc.) but the snapshot tree
-   *  didn't. Forces a redraw even when isStaticGraphic short-circuits and
-   *  even when the node-local time hasn't advanced (paused playback).
-   *  Cleared on draw. */
+  /** A map tile (or header) finished loading since the last fabric draw — the
+   *  decoded-tile cache advanced but the snapshot tree didn't. Forces a redraw
+   *  even when isStaticGraphic short-circuits and even when the node-local time
+   *  hasn't advanced (paused playback). Cleared on draw. */
   pendingMapWake: boolean;
-  /** OpenLayersMap instances keyed by hierarchical path-id, persisted
-   *  across animation frames. Without this, each re-materialize would
-   *  spin up a fresh OL map — destroying any chance of pooling. */
-  mapCache: Map<string, OpenLayersMap>;
-  /** Unsubscribers for the OL render hooks installed against each cached
-   *  map. Drained in dispose. */
-  mapRenderUnsubs: Array<() => void>;
 }
 
 export class GraphicStore {
@@ -94,10 +88,17 @@ export class GraphicStore {
   /** Base path for resolving relative graphic `Image` `src`s (mirrors the
    *  media layer's `basePath`). Set per-timeline. */
   private basePath = "";
+  /** One subscription to the Map tile pool: any tile/header load anywhere
+   *  flags every entry for a redraw (coalesced by the single-flight draw). */
+  private mapWakeUnsub: (() => void) | null = null;
 
   async setTimeline(timeline: ResolvedTimeline, basePath = ""): Promise<void> {
     this.dispose();
     this.basePath = basePath;
+    this.mapWakeUnsub = subscribeMapWake(() => {
+      for (const entry of this.entries.values()) entry.pendingMapWake = true;
+      this.onFrameAvailable?.();
+    });
     const collected = collectGraphicEntries(timeline.children);
     for (const { node, toLocal } of collected) {
       try {
@@ -113,9 +114,8 @@ export class GraphicStore {
           enableRetinaScaling: false,
         });
         // (No fabric after:render → onFrameAvailable wiring anymore —
-        // fabric renders are driven exclusively by this store's
-        // throttled update(). OL tile-load wake-ups go through
-        // OpenLayersMap.addRenderListener below.)
+        // fabric renders are driven exclusively by this store's update().
+        // Map tile-load wake-ups arrive via subscribeMapWake → pendingMapWake.)
 
         const playback = await precomputeGraphicPlayback({
           duration:
@@ -153,8 +153,6 @@ export class GraphicStore {
           drawing: false,
           pendingDrawT: null,
           pendingMapWake: false,
-          mapCache: new Map<string, OpenLayersMap>(),
-          mapRenderUnsubs: [],
         };
         this.entries.set(node, entry);
         // Prime the first frame through the same single-flight path.
@@ -170,15 +168,13 @@ export class GraphicStore {
    *  the rAF loop, no extra throttle:
    *    1. Static graphic + pendingMapWake → fabric.renderAll only (the
    *       snapshot tree is unchanged; we just need fabric to re-run
-   *       Map._render so the freshly-rendered OL canvas lands).
+   *       Map._render so the freshly-loaded tiles land).
    *    2. Animated graphic + (time advanced OR pendingMapWake) → full
    *       draw() so a new snapshot is interpolated AND the map is picked up.
    *    3. Otherwise → skip.
    *
-   *  The old 60 Hz cap existed only because reading maplibre's WebGL canvas
-   *  into fabric's 2D context forced a GPU→CPU sync stall that piled up.
-   *  OpenLayers renders into a 2D canvas (plain canvas→canvas blit, no
-   *  readback), so graphics can redraw at the rAF rate. */
+   *  Map draws are a pure Canvas2D rasterize from decoded tiles (no WebGL
+   *  readback stall), so graphics redraw at the rAF rate with no throttle. */
   async update(currentTime: number): Promise<void> {
     if (this.entries.size === 0) return;
     for (const entry of this.entries.values()) {
@@ -249,31 +245,9 @@ export class GraphicStore {
   }
 
   dispose(): void {
+    this.mapWakeUnsub?.();
+    this.mapWakeUnsub = null;
     for (const entry of this.entries.values()) {
-      // Drop the OL wake-up hooks before disposing the maps, otherwise
-      // the unsubs would dangle.
-      for (const unsub of entry.mapRenderUnsubs) {
-        try {
-          unsub();
-        } catch {
-          // ignore
-        }
-      }
-      entry.mapRenderUnsubs = [];
-      // Release pooled OL refs explicitly — the fabric canvas's own
-      // dispose() removes children which fires "removed", but isPreEnliven
-      // Maps short-circuit dispose there to survive frame churn. Drop the
-      // pre-enliven flag and call dispose ourselves so the SharedOLMap
-      // refcount actually decrements.
-      for (const map of entry.mapCache.values()) {
-        map.isPreEnliven = false;
-        try {
-          map.dispose();
-        } catch {
-          // ignore
-        }
-      }
-      entry.mapCache.clear();
       try {
         entry.fabric.dispose();
       } catch {
@@ -333,45 +307,21 @@ export class GraphicStore {
     if (typeof type !== "string") return null;
 
     if (type === "Map") {
-      // Reuse a cached OpenLayersMap for this path-id across animation
-      // frames. Each tick the GraphicStore re-materializes; without
-      // caching we'd construct a new OL instance per frame (rebuilding the
-      // style + dropping the warm tile cache every tick).
-      //
-      // Cached instances stay alive across fabric's add/remove cycle
-      // via isPreEnliven=true (which disables dispose-on-removed).
-      // Per-frame prop changes flow through .set() → the OL view.
-      let olMap = entry.mapCache.get(path) ?? null;
-      if (olMap) {
-        olMap.set(toFabricUpdate(filled));
-      } else {
-        const live = await reviveSpec(filled);
-        if (!(live instanceof OpenLayersMap)) return live;
-        live.isPreEnliven = true;
-        live.attachToPath(path);
-        entry.mapCache.set(path, live);
-        // OL fires rendercomplete when tiles arrive / the style applies.
-        // Mark the entry as needing a refresh AND wake the rAF loop. The
-        // pendingMapWake flag is what lets a static single-keyframe graphic
-        // (or a paused multi-keyframe graphic) redraw at all — without it
-        // the isStaticGraphic / time-delta short-circuits in update() would
-        // drop the wake on the floor and the map would stay stuck on the
-        // loading placeholder.
-        const unsub = live.addRenderListener(() => {
-          entry.pendingMapWake = true;
-          this.onFrameAvailable?.();
-        });
-        entry.mapRenderUnsubs.push(unsub);
-        olMap = live;
-      }
+      // Throwaway like every other object: build a fresh fabric Map from the
+      // snapshot. It holds no state — the decoded-tile cache lives in the
+      // pooled TileSource (keyed by source), and tile loads bubble up via
+      // subscribeMapWake → pendingMapWake. _render draws synchronously from
+      // whatever tiles are in memory now and requests any missing ones.
+      const live = await reviveSpec(filled);
+      if (!(live instanceof TileMap)) return live;
       // Materialize the embedded objects (map-level geo anchors + per-path
       // anchors) through the normal pipeline — so Clips/Groups get clip
       // context — and hand them to the map as overlays. The map projects +
       // draws them against its current view in _render.
-      olMap.setOverlayObjects(
+      live.setOverlayObjects(
         await this.materializeMapOverlays(filled, path, entry, outerT, snap),
       );
-      return olMap;
+      return live;
     }
     if (type === "Group" && Array.isArray(filled.objects)) {
       const children = await this.materializeTree(
@@ -472,6 +422,7 @@ export class GraphicStore {
     const overlays: MapOverlay[] = [];
 
     const mapObjs = Array.isArray(filled.objects) ? filled.objects : [];
+      console.log(filled);
     for (let i = 0; i < mapObjs.length; i++) {
       const wrap = mapObjs[i] as Record<string, unknown>;
       const obj = wrap.object as FilledObject | undefined;
@@ -655,12 +606,6 @@ function resolveImageFlat(flat: FlatFrame, basePath: string): FlatFrame {
     }
   }
   return out;
-}
-
-function toFabricUpdate(filled: FilledObject): Record<string, unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { type, id, ...rest } = filled;
-  return rest;
 }
 
 function pathKey(node: FilledObject, index: number): string {

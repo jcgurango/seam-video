@@ -74,28 +74,10 @@ export function loadFallbackFonts(): Promise<void> {
 
 // ── Map label fonts ────────────────────────────────────────────────
 //
-// ol-mapbox-style renders labels with canvas text (no glyph PBFs). It runs
-// each layer's `text-font` through mapbox-to-css-font, which splits the
-// weight/style keywords off the END of the name — so "Liberation Sans Bold"
-// becomes `bold …px "Liberation Sans"`. That resolves against the base
-// "Liberation Sans" family with real weight/style faces (loadLiberationSans),
-// then falls through per-glyph to the CJK + emoji families — same chain as
-// text nodes, and no font CDN fetch since they're all in document.fonts.
-
-/** The `text-font` stack to substitute for a style layer's original stack.
- *  The original names (e.g. "Noto Sans Bold") only convey weight/style; we
- *  map to the matching Liberation Sans variant name (mapbox-to-css-font then
- *  re-derives the weight/style from it) and append the CJK + emoji fallbacks
- *  for per-glyph coverage. */
-export function mapLabelFontStack(stack: string[] | string): string[] {
-  const s = (Array.isArray(stack) ? stack.join(" ") : stack).toLowerCase();
-  const bold = /bold|semibold|black|heavy/.test(s);
-  const italic = /italic|oblique/.test(s);
-  let family = "Liberation Sans";
-  if (bold) family += " Bold";
-  if (italic) family += " Italic";
-  return [family, CJK_FALLBACK_FAMILY, EMOJI_FALLBACK_FAMILY];
-}
+// @seam/map renders labels as canvas text. `buildLabelFont` there derives the
+// weight/style keywords and resolves against the base "Liberation Sans" family
+// (real weight/style faces), then falls through per-glyph to the CJK + emoji
+// families — so all three must be in document.fonts before the first map draw.
 
 let mapLabelPromise: Promise<void> | null = null;
 

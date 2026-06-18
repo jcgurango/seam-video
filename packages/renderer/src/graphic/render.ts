@@ -3,9 +3,9 @@
 // StaticCanvas sized to the graphic's design space, then serializes the
 // canvas to PNG.
 //
-// Map elements rasterize through OpenLayers (headless, jsdom + node-canvas)
-// — see ./map-render.ts. Everything else routes through fabric's native
-// renderers.
+// Map elements rasterize through the shared @seam/map tile rasterizer (pmtiles
+// + MVT + Canvas2D) — see ./map-tiles.ts. Everything else routes through
+// fabric's native renderers.
 
 import { isAbsolute, join } from "node:path";
 import {
@@ -27,10 +27,11 @@ import {
   type ClipPlayback,
 } from "./clip.js";
 import {
-  rgbaToCanvas,
-  type MapPool,
+  createTileSourcePool,
+  renderMapView,
   type MapAnchorQuery,
-} from "./map-render.js";
+} from "./map-tiles.js";
+import type { TileSourcePool } from "@seam/map";
 import { installGraphicFontFallback } from "./fontFallback.js";
 
 /** Outer-graphic context threaded through materialize so Clip instances
@@ -44,10 +45,9 @@ export interface GraphicContext {
   clipDefs: Map<string, ClipDefLike>;
   /** Used to resolve relative Map source paths. Defaults to cwd. */
   mapBasePath?: string;
-  /** Path-id keyed pool of OL map instances. When supplied, Map elements
-   *  reuse one instance per (path, source) across all output frames in this
-   *  rasterize run. */
-  mapPool?: MapPool;
+  /** Pool of decoded-tile sources keyed by source filename. When supplied, Map
+   *  elements share a warm tile cache across all output frames in this run. */
+  mapPool?: TileSourcePool;
 }
 
 export interface RenderOptions {
@@ -325,10 +325,10 @@ async function reviveSpec(spec: FilledObject): Promise<FabricObject | null> {
   }
 }
 
-/** Render the pmtiles-backed map to RGBA via OpenLayers, wrap the
- *  buffer in a node-canvas, hand it to fabric as a FabricImage with the
- *  authored Map instance's transform. Uses context.mapPool when present
- *  so successive frames at the same path-id share the same instance. */
+/** Render the pmtiles-backed map to a node-canvas via @seam/map, hand it to
+ *  fabric as a FabricImage with the authored Map instance's transform. Uses
+ *  context.mapPool when present so successive frames share a warm tile cache;
+ *  falls back to a one-off pool otherwise. */
 async function renderMapToFabric(
   spec: FilledObject,
   snap: FlatFrame,
@@ -362,7 +362,6 @@ async function renderMapToFabric(
   const anchors = embedded.map((e) => e.anchor);
 
   try {
-    let rendered;
     const input = {
       latitude: numberOr(spec.latitude, 0),
       longitude: numberOr(spec.longitude, 0),
@@ -372,22 +371,9 @@ async function renderMapToFabric(
       paths,
       anchors: anchors.length ? anchors : undefined,
     };
-    if (context.mapPool) {
-      const inst = await context.mapPool.acquire(
-        path,
-        source,
-        context.mapBasePath,
-      );
-      rendered = await inst.render(input);
-    } else {
-      const { renderMapToRgba } = await import("./map-render.js");
-      rendered = await renderMapToRgba({
-        source,
-        basePath: context.mapBasePath,
-        ...input,
-      });
-    }
-    const nodeCanvas = rgbaToCanvas(rendered);
+    const pool = context.mapPool ?? createTileSourcePool(context.mapBasePath);
+    const rendered = await renderMapView(pool.acquire(source), input);
+    const nodeCanvas = rendered.canvas;
 
     // No embedded objects → the map image alone, carrying the spec transform.
     // (Origin passes through as-is; fabric's default center matches preview.)

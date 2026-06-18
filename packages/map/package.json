@@ -1,5 +1,5 @@
 {
-  "name": "@seam/renderer",
+  "name": "@seam/map",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -13,29 +13,20 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.6",
-    "@mediabunny/server": "^1.45.0",
-    "@napi-rs/canvas": "^0.1.100",
-    "@seam/compositor": "workspace:*",
+    "@mapbox/vector-tile": "^2.0.3",
+    "@maplibre/maplibre-gl-style-spec": "^24.10.0",
     "@seam/core": "workspace:*",
-    "@seam/map": "workspace:*",
-    "canvas": "^3.2.3",
-    "fabric": "^7.4.0",
-    "mediabunny": "^1.45.0",
-    "node-web-audio-api": "^1.0.0",
-    "pmtiles": "^4.4.1",
-    "webgpu": "^0.4.0"
+    "pbf": "^4.0.1",
+    "pmtiles": "^4.4.1"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

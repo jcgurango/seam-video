@@ -142,9 +142,10 @@ export async function renderSeamToFile(
   // per-node renderers so we can release their Map pools at the end.
   const graphicRenderers = new Map<ResolvedGraphic, GraphicFrameRenderer>();
   try {
-    // Mix audio FIRST: graphics' first map render lazily installs jsdom globals
-    // (Event/EventTarget) that break node-web-audio-api's OfflineAudioContext
-    // event dispatch. Audio runs entirely before the loop, so there's no clash.
+    // Audio is a standalone pass; mix it before the frame loop. (Maps no
+    // longer install global jsdom DOM shims — the OpenLayers path that
+    // clobbered Event/EventTarget for node-web-audio-api is gone — but keeping
+    // audio up front stays simplest and matches the rest of the pipeline.)
     const audioMix = await renderAudioMix(timeline, basePath, timeline.duration);
     mark("audio mix");
 

@@ -2,14 +2,14 @@
 //
 // This is the production descendant of the motion-editor-test bench: a fabric
 // Canvas bound bidirectionally to a frame's authored object array. It reuses
-// the production graphic machinery — `OpenLayersMap` (registered into fabric's
+// the production graphic machinery — `TileMap` (registered into fabric's
 // classRegistry on import) for Map elements, and the global `resolveSource`
 // (blob/file URLs) + pmtiles resolver the rest of the app already wires — so
 // what you edit here renders identically in the main preview.
 //
 // Scope (v1): native fabric shapes + text + images are fully editable. Maps
-// render via the OpenLayers rasterizer and move/scale/rotate as boxes; their
-// camera (lat/lng/zoom) is tuned in JSON. Clips render as a labelled
+// render via the @seam/map tile rasterizer and move/scale/rotate as boxes;
+// their camera (lat/lng/zoom) is tuned in JSON. Clips render as a labelled
 // placeholder box that round-trips its authored props — the real clip content
 // shows live in the right-hand preview.
 //
@@ -29,8 +29,8 @@ import {
   type FabricObject,
   type TMat2D,
 } from "fabric";
-// Side-effect: registers OpenLayersMap as the "Map" class in fabric's registry.
-import { OpenLayersMap } from "../media/graphic/OpenLayersMap.js";
+// Side-effect: registers TileMap as the "Map" class in fabric's registry.
+import { TileMap } from "../media/graphic/TileMap.js";
 import { CUSTOM_PROPS } from "../media/graphic/fill.js";
 import { resolveSource } from "./resolveSource.js";
 
@@ -139,30 +139,6 @@ function toLogical(objects: unknown[]): unknown[] {
   }) as unknown[];
 }
 
-/** Give every OpenLayersMap in the tree a stable path id so the OL pool can
- *  share instances; mark pre-enliven so fabric's add/remove churn doesn't
- *  dispose them mid-edit. */
-function attachMaps(objs: FabricObject[], parent: string): void {
-  objs.forEach((obj, i) => {
-    const id = (obj as unknown as { id?: string }).id;
-    const key = typeof id === "string" && id.length > 0 ? id : String(i);
-    const path = parent === "" ? key : `${parent}.${key}`;
-    if (obj instanceof OpenLayersMap) {
-      obj.isPreEnliven = true;
-      obj.attachToPath(path);
-    }
-    const inner = (obj as unknown as { getObjects?: () => FabricObject[] }).getObjects;
-    if (typeof inner === "function") attachMaps(inner.call(obj), path);
-  });
-}
-
-function disposeMaps(objs: FabricObject[]): void {
-  for (const obj of objs) {
-    if (obj instanceof OpenLayersMap) obj.dispose();
-    const inner = (obj as unknown as { getObjects?: () => FabricObject[] }).getObjects;
-    if (typeof inner === "function") disposeMaps(inner.call(obj));
-  }
-}
 
 export interface FrameEditorCanvasProps {
   /** The frame's authored objects (`frames[i][1]`), with logical source ids. */
@@ -306,7 +282,7 @@ export default function FrameEditorCanvas({
             c.setActiveObject(img);
             c.fire("object:modified", { target: img });
           } else {
-            const map = new OpenLayersMap({
+            const map = new TileMap({
               source: imported.source,
               left: world.x,
               top: world.y,
@@ -319,7 +295,6 @@ export default function FrameEditorCanvas({
               zoom: 1,
             });
             c.add(map);
-            map.attachToPath(String(c.getObjects().length - 1));
             c.setActiveObject(map);
             c.fire("object:modified", { target: map });
           }
@@ -350,7 +325,6 @@ export default function FrameEditorCanvas({
       wrap.removeEventListener("dragover", onDragOver);
       wrap.removeEventListener("drop", onDrop);
       window.removeEventListener("keydown", onKeyDown);
-      disposeMaps(c.getObjects());
       void c.dispose();
       fabricRef.current = null;
     };
@@ -385,11 +359,9 @@ export default function FrameEditorCanvas({
 
     let cancelled = false;
     isLoadingRef.current = true;
-    disposeMaps(c.getObjects());
     const resolved = toReal(objects, stateRef.current.basePath) as Record<string, unknown>[];
     void c.loadFromJSON({ objects: resolved }).then(() => {
       if (cancelled) return;
-      attachMaps(c.getObjects(), "");
       addFrameBackdrop(c, contentWidth, contentHeight);
       c.renderAll();
       isLoadingRef.current = false;

@@ -18,7 +18,7 @@ import {
   type ClipDefLike,
   type ClipPlayback,
 } from "./clip.js";
-import { MapPool } from "./map-render.js";
+import { createTileSourcePool } from "./map-tiles.js";
 import { isAbsolute, join } from "node:path";
 
 function asNumber(v: unknown, fallback: number): number {
@@ -65,7 +65,7 @@ export interface GraphicFrameRenderer {
   /** Render the graphic at composition-local time `localT` (seconds since the
    *  graphic's start) to RGBA. Consecutive identical frames are deduped. */
   renderAt(localT: number): Promise<GraphicFrame>;
-  /** Release the Map pool (GL/jsdom resources). */
+  /** Release the Map tile pool (closes pmtiles file handles). */
   dispose(): Promise<void>;
 }
 
@@ -109,7 +109,7 @@ export async function createGraphicFrameRenderer(
     clipPlaybacks.set(c.id, await precomputeClipPlayback(def));
   }
 
-  const mapPool = new MapPool();
+  const mapPool = createTileSourcePool(mapBasePath);
   const baseContext: Omit<GraphicContext, "outerT"> = {
     outerFrames: frames,
     clipPlaybacks,
@@ -163,7 +163,7 @@ export async function createGraphicFrameRenderer(
       return lastFrame;
     },
     async dispose(): Promise<void> {
-      await mapPool.releaseAll();
+      await mapPool.dispose();
     },
   };
 }
