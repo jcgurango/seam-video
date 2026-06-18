@@ -168,6 +168,7 @@ export class TileMap extends FabricObject {
       },
       header.minZoom,
       header.maxZoom,
+      header,
     );
 
     // Shift to top-left origin so @seam/map's screen coords line up.

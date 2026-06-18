@@ -25,4 +25,5 @@ export {
   TILE_SIZE,
   type MapCamera,
   type TileRange,
+  type DataBounds,
 } from "./view.js";

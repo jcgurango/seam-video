@@ -30,6 +30,21 @@ export interface MapCamera {
   height: number;
 }
 
+/** Geographic extent of an archive's data (pmtiles header). When supplied,
+ *  `tileRange` is clamped to it so a viewport far outside the data (or zoomed
+ *  way below the archive's minZoom) doesn't try to cover the whole world. */
+export interface DataBounds {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+}
+
+/** Hard backstop on tiles per axis, independent of bounds — guards against a
+ *  pathological camera (e.g. zoom far below the archive minZoom) spanning the
+ *  entire world at the source tile zoom. Legit viewports need single digits. */
+const MAX_TILES_PER_AXIS = 64;
+
 export interface TileRange {
   x0: number;
   x1: number;
@@ -49,8 +64,14 @@ export class MapView {
   private readonly scaleTC: number;
   private readonly topLeftX: number;
   private readonly topLeftY: number;
+  private readonly bounds: DataBounds | undefined;
 
-  constructor(camera: MapCamera, minZoom: number, maxZoom: number) {
+  constructor(
+    camera: MapCamera,
+    minZoom: number,
+    maxZoom: number,
+    bounds?: DataBounds,
+  ) {
     this.zoom = camera.zoom;
     this.width = camera.width;
     this.height = camera.height;
@@ -59,6 +80,7 @@ export class MapView {
     const [cx, cy] = lngLatToWorld(camera.longitude, camera.latitude, camera.zoom);
     this.topLeftX = cx - camera.width / 2;
     this.topLeftY = cy - camera.height / 2;
+    this.bounds = bounds;
   }
 
   /** lon/lat → screen pixel (top-left origin). */
@@ -91,19 +113,44 @@ export class MapView {
     return { x, y, w: r - x, h: b - y };
   }
 
-  /** Tiles covering the viewport, as tile-zoom indices. */
+  /** Tiles covering the viewport, as tile-zoom indices — clamped so we never
+   *  iterate/request a runaway number. Bounds: (1) intersect with the archive's
+   *  data extent at tileZoom (a viewport outside/below the data shrinks to the
+   *  few real tiles, or empty); (2) clamp Y to the valid [0,count) row range;
+   *  (3) a hard MAX_TILES_PER_AXIS backstop centered on the viewport. Without
+   *  this, zooming below the archive's minZoom spans the whole world (100k+
+   *  tiles) and freezes/OOMs the host. */
   tileRange(): TileRange {
+    const count = Math.pow(2, this.tileZoom);
     const left = this.topLeftX / this.scaleTC;
     const top = this.topLeftY / this.scaleTC;
     const right = (this.topLeftX + this.width) / this.scaleTC;
     const bottom = (this.topLeftY + this.height) / this.scaleTC;
-    return {
-      x0: Math.floor(left / TILE_SIZE),
-      x1: Math.floor(right / TILE_SIZE),
-      y0: Math.floor(top / TILE_SIZE),
-      y1: Math.floor(bottom / TILE_SIZE),
-      count: Math.pow(2, this.tileZoom),
-    };
+    let x0 = Math.floor(left / TILE_SIZE);
+    let x1 = Math.floor(right / TILE_SIZE);
+    let y0 = Math.floor(top / TILE_SIZE);
+    let y1 = Math.floor(bottom / TILE_SIZE);
+
+    // (1) Intersect with the archive's data extent at this tile zoom.
+    if (this.bounds) {
+      const nw = lngLatToTileXY(this.bounds.minLon, this.bounds.maxLat, this.tileZoom);
+      const se = lngLatToTileXY(this.bounds.maxLon, this.bounds.minLat, this.tileZoom);
+      x0 = Math.max(x0, nw[0]);
+      x1 = Math.min(x1, se[0]);
+      y0 = Math.max(y0, nw[1]);
+      y1 = Math.min(y1, se[1]);
+    }
+
+    // (2) Clamp Y to valid rows (X may wrap, so it's left to the caller's
+    //     modulo, but still bounded by the backstop below).
+    y0 = Math.max(0, y0);
+    y1 = Math.min(count - 1, y1);
+
+    // (3) Hard per-axis backstop, centered on the viewport's center tile.
+    [x0, x1] = capAxis(x0, x1, (left + right) / 2 / TILE_SIZE);
+    [y0, y1] = capAxis(y0, y1, (top + bottom) / 2 / TILE_SIZE);
+
+    return { x0, x1, y0, y1, count };
   }
 
   /** Project a polyline (lon/lat pairs) to screen, then return the point at
@@ -119,6 +166,26 @@ export class MapView {
     if (frac >= 1) return screen[screen.length - 1];
     return truncateToFraction(screen, frac).at(-1) ?? null;
   }
+}
+
+/** lon/lat → integer tile index at zoom `z` (clamped to the valid grid). */
+function lngLatToTileXY(lng: number, lat: number, z: number): [number, number] {
+  const n = Math.pow(2, z);
+  const x = Math.floor(((lng + 180) / 360) * n);
+  const sin = Math.sin((lat * Math.PI) / 180);
+  const yFrac = 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI);
+  const y = Math.floor(yFrac * n);
+  const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
+  return [clamp(x), clamp(y)];
+}
+
+/** Clamp a [lo,hi] tile span to at most MAX_TILES_PER_AXIS, keeping it centered
+ *  on `center` (a fractional tile index). Returns the (possibly) shrunk span. */
+function capAxis(lo: number, hi: number, center: number): [number, number] {
+  if (hi - lo + 1 <= MAX_TILES_PER_AXIS) return [lo, hi];
+  const c = Math.floor(center);
+  const half = Math.floor(MAX_TILES_PER_AXIS / 2);
+  return [Math.max(lo, c - half), Math.min(hi, c - half + MAX_TILES_PER_AXIS - 1)];
 }
 
 /** Polyline truncated to `fraction` (0..1) of its total length, splitting the

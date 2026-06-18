@@ -45,6 +45,15 @@ export function drawBasemap(
   style: any,
   tiles: TileProvider,
 ): void {
+  // Clip to the viewport rect. Per-tile clips use the FULL tile rect (a tile
+  // can be far larger than the viewport when overzoomed), so without this the
+  // tile geometry spills outside (0,0,w,h) — invisible in the renderer (its
+  // canvas IS w×h) but it bled across the shared fabric canvas in the preview.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, view.width, view.height);
+  ctx.clip();
+
   paintBackground(ctx, style, view);
 
   // Collect the decoded tiles covering the viewport (requesting any missing),
@@ -67,6 +76,7 @@ export function drawBasemap(
 
   drawGeometry(ctx, style, view, present, view.zoom);
   drawLabels(ctx, style, view, present, view.zoom);
+  ctx.restore();
 }
 
 /** Draw animated path overlays (the app's route lines) on top of a basemap.
@@ -79,6 +89,11 @@ export function drawPaths(
 ): void {
   if (!paths?.length) return;
   ctx.save();
+  // Clip to the viewport (same reason as drawBasemap) so a path with points
+  // outside the map rect doesn't bleed across the host canvas.
+  ctx.beginPath();
+  ctx.rect(0, 0, view.width, view.height);
+  ctx.clip();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const p of paths) {

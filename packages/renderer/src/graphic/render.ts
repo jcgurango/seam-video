@@ -169,18 +169,29 @@ async function materializeOne(
 
   if (type === "Group" && Array.isArray(filled.objects)) {
     // Recurse into the group's children so their paths/snap entries
-    // resolve correctly.
+    // resolve correctly, then build the Group from the LIVE children — don't
+    // round-trip them through toObject → reviveSpec. Serializing would re-decode
+    // images and discard non-serializable state (e.g. a nested Map's rendered
+    // node-canvas image). No layoutManager → fabric's default FitContent,
+    // matching what enliven did before. Mirrors the preview's GraphicStore.
     const children = await materializeTree(
       filled.objects as FilledTree,
       snap,
       path,
       context,
     );
-    const group = await reviveSpec({
-      ...filled,
-      objects: children.map((c) => c.toObject(["id"])) as Record<string, unknown>[],
-    });
-    return group;
+    return new Group(children, {
+      left: filled.left as number | undefined,
+      top: filled.top as number | undefined,
+      scaleX: filled.scaleX as number | undefined,
+      scaleY: filled.scaleY as number | undefined,
+      angle: filled.angle as number | undefined,
+      opacity: filled.opacity as number | undefined,
+      flipX: filled.flipX === true,
+      flipY: filled.flipY === true,
+      originX: filled.originX as "left" | "center" | "right" | undefined,
+      originY: filled.originY as "top" | "center" | "bottom" | undefined,
+    }) as unknown as FabricObject;
   }
 
   if (type === "Clip") {

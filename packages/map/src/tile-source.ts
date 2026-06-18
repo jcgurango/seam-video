@@ -29,6 +29,11 @@ export interface HeaderInfo {
   minZoom: number;
   maxZoom: number;
   tileType: number;
+  /** Data extent (degrees), used to clamp the covering-tile range. */
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
 }
 
 /** The synchronous tile lookup the draw path needs. */
@@ -67,7 +72,15 @@ export class TileSource implements TileProvider {
         const pm = await this.pmtilesP;
         if (!pm) return null;
         const h = await pm.getHeader();
-        const info = { minZoom: h.minZoom, maxZoom: h.maxZoom, tileType: h.tileType };
+        const info: HeaderInfo = {
+          minZoom: h.minZoom,
+          maxZoom: h.maxZoom,
+          tileType: h.tileType,
+          minLon: h.minLon,
+          minLat: h.minLat,
+          maxLon: h.maxLon,
+          maxLat: h.maxLat,
+        };
         this.headerValue = info;
         return info;
       })();

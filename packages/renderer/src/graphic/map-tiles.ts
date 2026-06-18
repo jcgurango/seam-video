@@ -115,7 +115,12 @@ export async function renderMapView(
   registerNodeCanvasFonts(); // labels resolve to node-canvas-registered families
   const style = await loadStyle();
   const header = await tiles.header();
-  const view = new MapView(input, header?.minZoom ?? 0, header?.maxZoom ?? 22);
+  const view = new MapView(
+    input,
+    header?.minZoom ?? 0,
+    header?.maxZoom ?? 22,
+    header ?? undefined,
+  );
   await tiles.ensure(view.tileZoom, view.tileRange());
 
   const canvas = createCanvas(input.width, input.height);

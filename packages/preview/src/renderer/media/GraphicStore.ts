@@ -331,10 +331,24 @@ export class GraphicStore {
         entry,
         outerT,
       );
-      return reviveSpec({
-        ...filled,
-        objects: children.map((c) => c.toObject(["id"])) as Record<string, unknown>[],
-      });
+      // Build the Group from the LIVE materialized children — don't round-trip
+      // them through toObject → reviveSpec. Serializing would discard each
+      // child's host-set state, notably a Map's pushed overlays
+      // (setOverlayObjects), so a Map nested in a Group rendered without its
+      // embedded objects. No layoutManager → fabric's default FitContent,
+      // matching what enliven did before.
+      return new Group(children, {
+        left: filled.left as number | undefined,
+        top: filled.top as number | undefined,
+        scaleX: filled.scaleX as number | undefined,
+        scaleY: filled.scaleY as number | undefined,
+        angle: filled.angle as number | undefined,
+        opacity: filled.opacity as number | undefined,
+        flipX: filled.flipX === true,
+        flipY: filled.flipY === true,
+        originX: filled.originX as "left" | "center" | "right" | undefined,
+        originY: filled.originY as "top" | "center" | "bottom" | undefined,
+      }) as unknown as FabricObject;
     }
     if (type === "Clip") {
       const clipId = typeof filled.clipId === "string" ? filled.clipId : null;
