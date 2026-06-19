@@ -82,9 +82,24 @@ interface GraphicEntry {
   pendingMapWake: boolean;
 }
 
+/** Baked (t=0) design size: the spatial pass stores it in `intrinsicWidth`
+ *  (default = 100% of parent); `asNumber` only catches hand-built nodes. */
+function bakedGraphicSize(node: ResolvedGraphic): { w: number; h: number } {
+  const w = node.intrinsicWidth ?? asNumber(node.contentWidth, 1080);
+  const h = node.intrinsicHeight ?? asNumber(node.contentHeight, 1920);
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
+
 export class GraphicStore {
   private entries = new Map<ResolvedGraphic, GraphicEntry>();
+  /** Live design size per node, sampled per-frame by the compositor and pushed
+   *  in via {@link setContentSizes}. Absent → the baked size. */
+  private sizes = new Map<ResolvedGraphic, { w: number; h: number }>();
   onFrameAvailable: (() => void) | null = null;
+
+  private sizeFor(node: ResolvedGraphic): { w: number; h: number } {
+    return this.sizes.get(node) ?? bakedGraphicSize(node);
+  }
   /** Base path for resolving relative graphic `Image` `src`s (mirrors the
    *  media layer's `basePath`). Set per-timeline. */
   private basePath = "";
@@ -102,8 +117,7 @@ export class GraphicStore {
     const collected = collectGraphicEntries(timeline.children);
     for (const { node, toLocal } of collected) {
       try {
-        const W = Math.max(1, Math.round(asNumber(node.contentWidth, 1080)));
-        const H = Math.max(1, Math.round(asNumber(node.contentHeight, 1920)));
+        const { w: W, h: H } = this.sizeFor(node);
         const canvas = document.createElement("canvas");
         canvas.width = W;
         canvas.height = H;
@@ -208,6 +222,34 @@ export class GraphicStore {
       // rAF tick, fire-and-forget). scheduleDraw keeps the canvas on its last
       // good frame until the new one is ready, so an async image-enliven draw
       // can't leave the graphic invisible.
+      this.scheduleDraw(entry, t);
+    }
+  }
+
+  /** Push the compositor's per-frame design sizes (from the render list). When
+   *  a graphic's inner canvas changes, resize its canvas + fabric and schedule
+   *  a redraw — covers static graphics on an animating canvas too (they
+   *  short-circuit `update`). Async redraw keeps the prior frame until ready. */
+  setContentSizes(
+    sizes: Map<ResolvedGraphic, { w: number; h: number }>,
+    currentTime: number,
+  ): void {
+    for (const [node, size] of sizes) {
+      const w = Math.max(1, Math.round(size.w));
+      const h = Math.max(1, Math.round(size.h));
+      const prev = this.sizes.get(node);
+      this.sizes.set(node, { w, h });
+      const entry = this.entries.get(node);
+      if (!entry) continue;
+      if (prev && prev.w === w && prev.h === h) continue; // unchanged
+      try {
+        entry.canvas.width = w;
+        entry.canvas.height = h;
+        entry.fabric.setDimensions({ width: w, height: h });
+      } catch (err) {
+        console.error("[graphic] resize failed:", err);
+      }
+      const t = Math.max(0, entry.toLocal(currentTime) - entry.node.timelineStart);
       this.scheduleDraw(entry, t);
     }
   }

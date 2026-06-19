@@ -91,7 +91,7 @@ export function resolveSpatial(
     height: canvasHeight,
     contentWidth: rootInnerW,
     contentHeight: rootInnerH,
-    children: resolveChildren(timeline.children, rootInnerW, rootInnerH, rootObjectFit),
+    children: resolveChildren(timeline.children, rootInnerW, rootInnerH, rootObjectFit, false),
   };
 }
 
@@ -100,8 +100,11 @@ function resolveChildren(
   parentW: number,
   parentH: number,
   parentObjectFit: ObjectFit,
+  parentDimsAnimated: boolean,
 ): ResolvedChild[] {
-  return children.map((c) => resolveNode(c, parentW, parentH, parentObjectFit));
+  return children.map((c) =>
+    resolveNode(c, parentW, parentH, parentObjectFit, parentDimsAnimated),
+  );
 }
 
 function resolveNode(
@@ -109,6 +112,12 @@ function resolveNode(
   parentW: number,
   parentH: number,
   parentObjectFit: ObjectFit,
+  // True when this node's parent inner canvas (contentWidth/Height) animates,
+  // so the parent dims this node lays out against change per-frame. Forces a
+  // per-frame re-eval (keep `spatialInput`) even if this node is otherwise
+  // static, and — when this node's own dims are parent-relative — propagates
+  // to its own children.
+  parentDimsAnimated: boolean,
 ): ResolvedChild {
   if (node.type === "empty" || node.type === "audio" || node.type === "data") {
     return node;
@@ -117,22 +126,50 @@ function resolveNode(
   const input = node.spatialInput;
   const ownObjectFit: ObjectFit = input?.objectFit ?? parentObjectFit;
   const fitForSelf: ObjectFit = parentObjectFit;
-  const animated = hasAnimatedSpatialInput(input);
 
   // Step 1+2: figure out the intrinsic dimensions. Core knows them for
-  // compositions and text; for clip/static it's a renderer concern
-  // (intrinsic media size is probed later), so we treat the parent
-  // dims as a stand-in for the natural size to keep the pipeline simple.
+  // compositions, text, and graphics (contentWidth/Height); for clip/static
+  // it's a renderer concern (intrinsic media size is probed later), so we
+  // treat the parent dims as a stand-in for the natural size. contentWidth
+  // is now an animatable `Keyframed<Length>` — we bake the t=0 value here
+  // (into `intrinsicWidth`) for static consumers; the per-frame renderers
+  // re-sample the preserved authored `contentWidth` against live parent dims.
+  const duration = node.timelineEnd - node.timelineStart;
   let intrinsicW: number | undefined;
   let intrinsicH: number | undefined;
-  if (
+  const hasContentDims =
     node.type === "composition" ||
     node.type === "text" ||
-    node.type === "graphic"
-  ) {
-    intrinsicW = resolveContentDim(node.contentWidth, parentW, parentW);
-    intrinsicH = resolveContentDim(node.contentHeight, parentH, parentH);
+    node.type === "graphic";
+  // `hasContentDims` is a boolean (not a type guard), so read the authored
+  // dims through a cast — they exist exactly on the three content-bearing types.
+  const cw = hasContentDims
+    ? (node as { contentWidth?: Keyframed<Length> }).contentWidth
+    : undefined;
+  const ch = hasContentDims
+    ? (node as { contentHeight?: Keyframed<Length> }).contentHeight
+    : undefined;
+  if (hasContentDims) {
+    intrinsicW = sampleContentDim(cw, 0, duration, parentW);
+    intrinsicH = sampleContentDim(ch, 0, duration, parentH);
   }
+
+  // Does this node's inner canvas animate? Either its own contentWidth/Height
+  // is keyframed, or it's parent-relative (percent / default "100%") and the
+  // parent canvas itself animates. Propagated to children as their
+  // `parentDimsAnimated`.
+  const ownContentKeyframed = isKeyframed(cw) || isKeyframed(ch);
+  const dimsAnimated =
+    hasContentDims &&
+    (ownContentKeyframed ||
+      (parentDimsAnimated &&
+        (contentDimIsRelative(cw) || contentDimIsRelative(ch))));
+
+  // The node re-evaluates per-frame (keep `spatialInput`) if its own spatial
+  // animates, OR its inner content size animates (natural size depends on it),
+  // OR its parent dims animate (translation/size resolve against the parent).
+  const animated =
+    hasAnimatedSpatialInput(input) || parentDimsAnimated || ownContentKeyframed;
 
   // Step 3: post-objectFit natural size (the value of `size: "100%"`).
   const { naturalWidth, naturalHeight } = computeNaturalSize(
@@ -157,32 +194,29 @@ function resolveNode(
   if (node.type === "composition") {
     const displayW = spatial ? spatial.width : naturalWidth;
     const displayH = spatial ? spatial.height : naturalHeight;
-    // Inner-canvas dim — the inside of the composition's window. Used
-    // both as the recursion's parent dims and as the child node's
-    // intrinsic size when this composition is itself nested.
+    // Inner-canvas dim (t=0 bake) — the parent dims used to resolve children's
+    // static spatial. The authored `contentWidth`/`contentHeight` are
+    // preserved on the node (via spread) so the per-frame renderers re-sample
+    // them against live parent dims; the baked value lives in `intrinsicWidth`.
     const innerW = intrinsicW ?? displayW;
     const innerH = intrinsicH ?? displayH;
     return stripIfStatic({
       ...node,
-      contentWidth: innerW,
-      contentHeight: innerH,
       intrinsicWidth: intrinsicW,
       intrinsicHeight: intrinsicH,
       naturalWidth,
       naturalHeight,
       spatial,
       objectFit: fitForSelf,
-      children: resolveChildren(node.children, innerW, innerH, ownObjectFit),
+      children: resolveChildren(node.children, innerW, innerH, ownObjectFit, dimsAnimated),
     });
   }
 
   if (node.type === "text" || node.type === "graphic") {
-    const displayW = spatial ? spatial.width : naturalWidth;
-    const displayH = spatial ? spatial.height : naturalHeight;
+    // Authored `contentWidth`/`contentHeight` preserved (via spread) for
+    // per-frame re-sampling; baked t=0 value in `intrinsicWidth`.
     return stripIfStatic({
       ...node,
-      contentWidth: intrinsicW ?? displayW,
-      contentHeight: intrinsicH ?? displayH,
       intrinsicWidth: intrinsicW,
       intrinsicHeight: intrinsicH,
       naturalWidth,
@@ -211,23 +245,53 @@ function resolveNode(
   };
 }
 
-/** Resolve a Length contentWidth/Height. Pixel default = 0% (i.e. literal
- *  pixels). `parentDim` is the reference for percentages; `fallback` is
- *  returned when the value is absent. `errorContext` is included in the
- *  error when a root-level Length uses a percentage. */
+/** Resolve a root-level contentWidth/Height to a pixel number. The root has
+ *  no parent reference and defines the output canvas, so it must be a static
+ *  pixel number — percentages and keyframes are rejected. `fallback` is
+ *  returned when the value is absent. */
 function resolveContentDim(
-  value: Length | undefined,
+  value: Keyframed<Length> | undefined,
   parentDim: number,
   fallback: number,
-  errorContext?: string,
+  errorContext: string,
 ): number {
   if (value == null) return fallback;
-  if (errorContext && hasPercent(value)) {
+  if (isKeyframed(value)) {
+    throw new Error(
+      `${errorContext} cannot be animated — the root composition defines the output canvas`,
+    );
+  }
+  if (hasPercent(value)) {
     throw new Error(
       `${errorContext} cannot use a percentage — root composition has no parent to resolve against`,
     );
   }
   return resolveLength(value, parentDim, SIZE_DEFAULT_PCT);
+}
+
+/** Sample a (possibly keyframed) contentWidth/Height against the parent dim
+ *  at time `t`. Absent → `"100%"` of the parent (the default inner canvas);
+ *  a bare pixel number → literal pixels; a percentage → fraction of the
+ *  parent. Shared by the spatial pass (t=0 bake) and the per-frame renderers
+ *  (compositor / text / graphic), so preview and render stay in lockstep. */
+export function sampleContentDim(
+  value: Keyframed<Length> | undefined,
+  t: number,
+  duration: number,
+  parentDim: number,
+): number {
+  if (value == null) return parentDim;
+  return sampleLength(value, t, duration, parentDim, SIZE_DEFAULT_PCT);
+}
+
+/** True when a contentWidth/Height depends on the parent dimension — absent
+ *  (defaults to `"100%"`) or any percentage form. A bare pixel value is
+ *  parent-independent. Decides whether an animated parent canvas makes a
+ *  child's inner canvas animate too. */
+function contentDimIsRelative(value: Keyframed<Length> | undefined): boolean {
+  if (value == null) return true; // default "100%"
+  if (isKeyframed(value)) return value.some((kf) => hasPercent(kf[1]));
+  return hasPercent(value);
 }
 
 /** Post-objectFit "100% size" reference: scale the intrinsic content to

@@ -298,8 +298,8 @@ export const TextSchema = z.object({
   textAlign: z.enum(["left", "center", "right"]).optional(),
   verticalAlign: z.enum(["top", "center", "bottom"]).optional(),
   padding: TextPaddingSchema.optional(),
-  contentWidth: LengthSchema.optional(),
-  contentHeight: LengthSchema.optional(),
+  contentWidth: keyframed(LengthSchema).optional(),
+  contentHeight: keyframed(LengthSchema).optional(),
   duration: z.number().positive().optional(),
   filters: FiltersArraySchema,
   ...TextStyleFieldsSchema,
@@ -532,8 +532,8 @@ export const GraphicSchema = z.object({
   type: z.literal("graphic"),
   duration: LengthSchema.optional(),
   loop: z.boolean().optional(),
-  contentWidth: LengthSchema.optional(),
-  contentHeight: LengthSchema.optional(),
+  contentWidth: keyframed(LengthSchema).optional(),
+  contentHeight: keyframed(LengthSchema).optional(),
   clips: z.array(GraphicClipDefSchema).optional(),
   frames: z.array(GraphicFrameSchema).min(1),
   in: z.number().nonnegative().optional(),
@@ -613,8 +613,8 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     /** Any valid SVG/CSS fill value (e.g. "#000", "rgba(...)", "red").
      *  Painted across the composition's container rect under the children. */
     backgroundColor: z.string().optional(),
-    contentWidth: LengthSchema.optional(),
-    contentHeight: LengthSchema.optional(),
+    contentWidth: keyframed(LengthSchema).optional(),
+    contentHeight: keyframed(LengthSchema).optional(),
     // Per-edge inset / crop — composition-only. See InsetSchema above.
     inset: keyframed(InsetSchema).optional(),
     // How the inset window maps within the content box's placement.

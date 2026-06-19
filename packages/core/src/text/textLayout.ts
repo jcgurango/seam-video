@@ -202,12 +202,22 @@ export interface TextLayoutResult {
 /** Produce a backend-agnostic layout for a ResolvedText at node-local
  *  time `t` (seconds since the node became active). The values returned
  *  are in the SVG canvas's coordinate space (origin top-left). */
-export function layoutText(node: ResolvedText, t: number = 0): TextLayoutResult {
-  // contentWidth/Height are widened to Length on the resolved-types so
-  // they can carry the authored value through the resolve pass. The
-  // spatial pass collapses them to pixel numbers before layout runs.
-  const W = node.contentWidth as number;
-  const H = node.contentHeight as number;
+export function layoutText(
+  node: ResolvedText,
+  t: number = 0,
+  contentWidth?: number,
+  contentHeight?: number,
+): TextLayoutResult {
+  // contentWidth/Height are an animatable `Keyframed<Length>` on the resolved
+  // node. The per-frame renderers sample them against live parent dims and
+  // pass the pixel result here; absent an override we use the baked t=0
+  // `intrinsicWidth`/`intrinsicHeight` (static text), then a static-number
+  // `contentWidth` as a last resort (hand-built nodes that skipped the
+  // spatial pass).
+  const staticW = typeof node.contentWidth === "number" ? node.contentWidth : 0;
+  const staticH = typeof node.contentHeight === "number" ? node.contentHeight : 0;
+  const W = contentWidth ?? node.intrinsicWidth ?? staticW;
+  const H = contentHeight ?? node.intrinsicHeight ?? staticH;
   const duration = node.timelineEnd - node.timelineStart;
   const fontSize = sN(node.fontSize, duration, t) ?? DEFAULT_FONT_SIZE;
   const lineHeightSampled = sN(node.lineHeight, duration, t);

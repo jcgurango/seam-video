@@ -138,8 +138,8 @@ export class FrameSource {
    *  each by its own `drawTime` (container-local elapsed). */
   async prepare(jobs: DrawableJob[]): Promise<void> {
     this.cache.clear();
-    for (const { node, drawTime } of jobs) {
-      this.cache.set(node, await this.decode(node, drawTime));
+    for (const { node, drawTime, contentW, contentH } of jobs) {
+      this.cache.set(node, await this.decode(node, drawTime, contentW, contentH));
     }
   }
 
@@ -148,7 +148,12 @@ export class FrameSource {
     return this.cache.get(node) ?? null;
   }
 
-  private async decode(node: Drawable, drawTime: number): Promise<NodeFrame | null> {
+  private async decode(
+    node: Drawable,
+    drawTime: number,
+    contentW?: number,
+    contentH?: number,
+  ): Promise<NodeFrame | null> {
     if (node.type === "clip") {
       return this.decodeClip(node, drawTime);
     }
@@ -163,11 +168,11 @@ export class FrameSource {
     }
 
     if (node.type === "text") {
-      return this.renderText(node, drawTime);
+      return this.renderText(node, drawTime, contentW, contentH);
     }
 
     if (node.type === "graphic") {
-      return this.loadGraphicFrame(node, drawTime);
+      return this.loadGraphicFrame(node, drawTime, contentW, contentH);
     }
 
     throw new Error(
@@ -175,16 +180,20 @@ export class FrameSource {
     );
   }
 
-  /** Render the graphic on demand at its container-local elapsed `drawTime`. */
+  /** Render the graphic on demand at its container-local elapsed `drawTime`,
+   *  at the per-frame inner-canvas size (`contentW`/`contentH`) sampled by the
+   *  compositor. */
   private async loadGraphicFrame(
     node: ResolvedGraphic,
     drawTime: number,
+    contentW?: number,
+    contentH?: number,
   ): Promise<NodeFrame | null> {
     const renderer = this.graphicRenderers.get(node);
     if (!renderer) {
       throw new Error("renderer: no renderer for graphic node");
     }
-    const f = await renderer.renderAt(Math.max(0, drawTime));
+    const f = await renderer.renderAt(Math.max(0, drawTime), contentW, contentH);
     return { data: f.data, width: f.width, height: f.height };
   }
 
@@ -278,19 +287,28 @@ export class FrameSource {
 
   /** Rasterize a text node at output time `t` via the same Skia + Pretext
    *  layout the CLI uses (@seam/renderer's text path), to RGBA. */
-  private renderText(node: ResolvedText, drawTime: number): NodeFrame {
+  private renderText(
+    node: ResolvedText,
+    drawTime: number,
+    contentW?: number,
+    contentH?: number,
+  ): NodeFrame {
     if (!this.textReady) {
       installCanvasShim(); // fonts + OffscreenCanvas polyfill (idempotent)
       this.textReady = true;
     }
-    const W = Math.max(1, Math.round(node.contentWidth as number));
-    const H = Math.max(1, Math.round(node.contentHeight as number));
+    // Inner canvas: the compositor's per-frame sampled size (animatable),
+    // falling back to the resolver's baked t=0 value for static text.
+    const w = contentW ?? node.intrinsicWidth ?? 0;
+    const h = contentH ?? node.intrinsicHeight ?? 0;
+    const W = Math.max(1, Math.round(w));
+    const H = Math.max(1, Math.round(h));
     const localT = Math.max(0, drawTime);
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext("2d") as SKRSContext2D;
     drawTextLayout(
       ctx as unknown as OffscreenCanvasRenderingContext2D,
-      layoutText(node, localT),
+      layoutText(node, localT, W, H),
     );
     const id = ctx.getImageData(0, 0, W, H);
     return { data: id.data, width: W, height: H };
@@ -364,10 +382,14 @@ function rotateRGBA(
   return { data: dst, width: dw, height: dh };
 }
 
-/** A drawable plus its container-local elapsed time, for {@link FrameSource.prepare}. */
+/** A drawable plus its container-local elapsed time, for {@link FrameSource.prepare}.
+ *  `contentW`/`contentH` carry the per-frame inner-canvas size for text/graphic
+ *  (sampled by the compositor against live parent dims). */
 export interface DrawableJob {
   node: Drawable;
   drawTime: number;
+  contentW?: number;
+  contentH?: number;
 }
 
 /** Collect every drawable a render-command tree will draw, with its drawTime
@@ -376,7 +398,13 @@ export function collectDrawables(commands: RenderCommand[]): DrawableJob[] {
   const out: DrawableJob[] = [];
   const walk = (cmds: RenderCommand[]): void => {
     for (const cmd of cmds) {
-      if (cmd.type === "draw") out.push({ node: cmd.clip, drawTime: cmd.drawTime });
+      if (cmd.type === "draw")
+        out.push({
+          node: cmd.clip,
+          drawTime: cmd.drawTime,
+          contentW: cmd.contentW,
+          contentH: cmd.contentH,
+        });
       else if (cmd.type === "group") walk(cmd.children);
     }
   };

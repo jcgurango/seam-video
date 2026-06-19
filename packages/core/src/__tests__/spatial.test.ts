@@ -261,8 +261,53 @@ describe("resolveSpatial — composition / contentWidth", () => {
     };
     const result = resolveSpatial(timeline, 1920, 1080);
     const comp = result.children[0] as ResolvedComposition;
-    expect(comp.contentWidth).toBe(960); // 50% of 1920
-    expect(comp.contentHeight).toBe(270); // 25% of 1080
+    // Authored value is preserved for per-frame re-sampling; the baked t=0
+    // pixel value lives in intrinsicWidth/Height.
+    expect(comp.contentWidth).toBe("50%");
+    expect(comp.contentHeight).toBe("25%");
+    expect(comp.intrinsicWidth).toBe(960); // 50% of 1920
+    expect(comp.intrinsicHeight).toBe(270); // 25% of 1080
+  });
+
+  it("composition contentWidth animatable: keyframes preserved, t=0 baked", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      children: [
+        {
+          type: "composition",
+          timelineStart: 0,
+          timelineEnd: 5,
+          duration: 5,
+          speed: 1,
+          contentWidth: [
+            [0, "100%"],
+            [5, "50%"],
+          ],
+          children: [],
+        } as ResolvedComposition,
+      ],
+    };
+    const result = resolveSpatial(timeline, 1920, 1080);
+    const comp = result.children[0] as ResolvedComposition;
+    expect(comp.contentWidth).toEqual([
+      [0, "100%"],
+      [5, "50%"],
+    ]);
+    expect(comp.intrinsicWidth).toBe(1920); // t=0 → 100% of 1920
+  });
+
+  it("root composition contentWidth cannot be animated", () => {
+    const timeline: ResolvedTimeline = {
+      duration: 5,
+      contentWidth: [
+        [0, 1080],
+        [5, 540],
+      ],
+      children: [],
+    };
+    expect(() => resolveSpatial(timeline, 1920, 1080)).toThrow(
+      /contentWidth.*cannot be animated/,
+    );
   });
 
   it("root composition contentWidth cannot be a percentage", () => {

@@ -25,8 +25,11 @@ export interface FrameEditorTarget {
 }
 
 /** Coerce a graphic content dim to a pixel number for the editor canvas
- *  (frames author plain numbers; a percentage `Length` has no parent here). */
+ *  (frames author plain numbers; a percentage `Length` has no parent here).
+ *  contentWidth is animatable — use the first keyframe's value as the
+ *  design-surface size when keyframed. */
 function dim(value: unknown, fallback: number): number {
+  if (Array.isArray(value) && Array.isArray(value[0])) value = value[0][1];
   return typeof value === "number" && value > 0 ? value : fallback;
 }
 

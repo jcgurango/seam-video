@@ -27,7 +27,13 @@ import type {
   ObjectFit,
   Filter,
 } from "@seam/core";
-import { resolveBoxProps, sampleNumber, type Keyframed } from "@seam/core";
+import {
+  resolveBoxProps,
+  computeNaturalSize,
+  sampleContentDim,
+  sampleNumber,
+  type Keyframed,
+} from "@seam/core";
 
 /** Sample a node's first-class opacity (Keyframed, ejected from filters);
  *  absent means fully opaque. */
@@ -63,6 +69,12 @@ export interface DrawCommand {
    *  host uses this (not the global output time) to address the node's source:
    *  clip `sourceIn + drawTime·speed`, graphic/text local time `drawTime`. */
   drawTime: number;
+  /** Inner-canvas (contentWidth/Height) in pixels for text/graphic nodes,
+   *  sampled per-frame against the live parent dims. The host rasterizer
+   *  renders the texture at this size (text reflows, graphic canvas reveals).
+   *  Absent for clip/static (their texture size is the probed media). */
+  contentW?: number;
+  contentH?: number;
   /** Visible source sub-rect (UV fractions) when the node is `inset`; absent
    *  = full texture. The blit samples this window into the quad. */
   sourceRect?: { u0: number; v0: number; u1: number; v1: number };
@@ -221,6 +233,8 @@ function dynamicSpatial(
 ): SpatialRect {
   const parentW = viewport.contentW;
   const parentH = viewport.contentH;
+  const t = localTime - child.timelineStart;
+  const duration = child.timelineEnd - child.timelineStart;
 
   // Determine the post-objectFit natural rect (size "100%" reference).
   let naturalW = parentW;
@@ -232,15 +246,23 @@ function dynamicSpatial(
       naturalW = n.w;
       naturalH = n.h;
     }
-  } else if (child.naturalWidth != null && child.naturalHeight != null) {
-    // Composition / text — resolver baked the natural dims.
-    naturalW = child.naturalWidth;
-    naturalH = child.naturalHeight;
+  } else if (
+    child.type === "composition" ||
+    child.type === "text" ||
+    child.type === "graphic"
+  ) {
+    // Sample the (animatable) inner canvas against the LIVE parent dims, then
+    // post-objectFit it — mirrors the resolver's t=0 bake but per-frame, so an
+    // animated contentWidth (or an animated parent canvas) reflows the natural
+    // rect here instead of using a stale baked value.
+    const iw = sampleContentDim(child.contentWidth, t, duration, parentW);
+    const ih = sampleContentDim(child.contentHeight, t, duration, parentH);
+    const n = computeNaturalSize(child.objectFit ?? "fit", iw, ih, parentW, parentH);
+    naturalW = n.naturalWidth;
+    naturalH = n.naturalHeight;
   }
 
   if (child.spatialInput) {
-    const t = localTime - child.timelineStart;
-    const duration = child.timelineEnd - child.timelineStart;
     return resolveBoxProps(
       child.spatialInput,
       parentW,
@@ -302,6 +324,16 @@ function walkChildren(
       const drawTime = localTime - child.timelineStart;
       const nodeOpacity = sampleOpacity(child.opacity, drawTime, drawDuration);
 
+      // text/graphic rasterize at their inner canvas — sampled per-frame
+      // against the live parent dims so an animated contentWidth reflows the
+      // texture. clip/static texture size is the probed media (omit).
+      let contentW: number | undefined;
+      let contentH: number | undefined;
+      if (child.type === "text" || child.type === "graphic") {
+        contentW = sampleContentDim(child.contentWidth, drawTime, drawDuration, viewport.contentW);
+        contentH = sampleContentDim(child.contentHeight, drawTime, drawDuration, viewport.contentH);
+      }
+
       commands.push({
         type: "draw",
         clip: child,
@@ -318,6 +350,8 @@ function walkChildren(
         pivotY,
         opacity: opacity * fade * nodeOpacity,
         drawTime,
+        contentW,
+        contentH,
         sourceRect: spatial.sourceRect,
       });
     } else {
@@ -375,11 +409,26 @@ function walkChildren(
         nodeOpacity < 1 ||
         spatial.sourceRect != null;
 
-      // Inner content dim: resolver collapsed contentWidth/Height to a
-      // pixel number, falling back to the display rect when authored
-      // value was absent. Cast to number — see resolved-types.
-      const innerContentW = (child.contentWidth as number | undefined) ?? container.w;
-      const innerContentH = (child.contentHeight as number | undefined) ?? container.h;
+      // Inner content dim — sample the (animatable) inner canvas against the
+      // live parent dims at the comp's OUTPUT-local time (like opacity above,
+      // not the sped inner time `childLocalTime`). This sizes the FBO and the
+      // child viewport, so children re-layout against the live inner canvas.
+      // Default ("100%") tracks the parent; falls back to the display rect only
+      // when there are no parent dims to resolve against.
+      const compT = localTime - child.timelineStart;
+      const compDur = child.timelineEnd - child.timelineStart;
+      const innerContentW = sampleContentDim(
+        child.contentWidth,
+        compT,
+        compDur,
+        viewport.contentW,
+      );
+      const innerContentH = sampleContentDim(
+        child.contentHeight,
+        compT,
+        compDur,
+        viewport.contentH,
+      );
 
       if (needsLayer) {
         const fboW = Math.round(innerContentW);

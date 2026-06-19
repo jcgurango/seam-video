@@ -8,6 +8,7 @@ import type {
   ResolvedTimeline,
 } from "@seam/core";
 import { isKeyframed, sampleNumber } from "@seam/core";
+import type { RenderCommand } from "@seam/compositor";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
@@ -206,6 +207,35 @@ export class FrameCoordinator {
    * cached Map, so async frame arrivals (via onFrameAvailable) immediately
    * become visible on the next gpuRender call without needing a reconcile.
    */
+  /** Push the compositor's per-frame inner-canvas sizes (text/graphic) from a
+   *  freshly-built render list into the text/graphic stores, so an animated
+   *  `contentWidth` reflows/resizes the rasterized texture. Call right before
+   *  `getFrame` in the render pass — text resizes synchronously, graphics
+   *  schedule an async redraw (prior frame held until ready). */
+  applyContentSizes(commands: RenderCommand[], currentTime: number): void {
+    if (!this.ready) return;
+    const textSizes = new Map<ResolvedText, { w: number; h: number }>();
+    const graphicSizes = new Map<ResolvedGraphic, { w: number; h: number }>();
+    const walk = (cmds: RenderCommand[]): void => {
+      for (const c of cmds) {
+        if (c.type === "draw") {
+          if (c.contentW == null || c.contentH == null) continue;
+          const node = c.clip;
+          if (node.type === "text")
+            textSizes.set(node, { w: c.contentW, h: c.contentH });
+          else if (node.type === "graphic")
+            graphicSizes.set(node, { w: c.contentW, h: c.contentH });
+        } else if (c.type === "group") {
+          walk(c.children);
+        }
+      }
+    };
+    walk(commands);
+    if (textSizes.size > 0) this.textStore.setContentSizes(textSizes, currentTime);
+    if (graphicSizes.size > 0)
+      this.graphicStore.setContentSizes(graphicSizes, currentTime);
+  }
+
   getFrame(
     clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedGraphic,
     timelineTime: number

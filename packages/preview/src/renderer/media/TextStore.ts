@@ -31,12 +31,28 @@ interface AnimatedEntry {
  * Each canvas's identity is stable across frames so the TextureManager
  * only allocates one GPU texture per node.
  */
+/** Baked (t=0) inner-canvas size for a resolved text node. The spatial pass
+ *  stores it in `intrinsicWidth`; falls back to a static-number contentWidth
+ *  for hand-built nodes. */
+function bakedSize(node: ResolvedText): { w: number; h: number } {
+  const w = node.intrinsicWidth ?? (typeof node.contentWidth === "number" ? node.contentWidth : 0);
+  const h = node.intrinsicHeight ?? (typeof node.contentHeight === "number" ? node.contentHeight : 0);
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
+
 export class TextStore {
   private bitmaps = new Map<ResolvedText, OffscreenCanvas>();
   private animated = new Map<ResolvedText, AnimatedEntry>();
+  /** Live inner-canvas size per node, sampled per-frame by the compositor and
+   *  pushed in via {@link setContentSizes}. Absent → the baked size. */
+  private sizes = new Map<ResolvedText, { w: number; h: number }>();
   /** Fires when a text node's bitmap has been (re-)drawn so the outer
    *  render loop can repaint while paused. */
   onFrameAvailable: (() => void) | null = null;
+
+  private sizeFor(node: ResolvedText): { w: number; h: number } {
+    return this.sizes.get(node) ?? bakedSize(node);
+  }
 
   setTimeline(timeline: ResolvedTimeline): void {
     this.dispose();
@@ -44,10 +60,8 @@ export class TextStore {
     if (nodes.length === 0) return;
     for (const node of nodes) {
       try {
-        const canvas = new OffscreenCanvas(
-          Math.max(1, Math.round(node.contentWidth)),
-          Math.max(1, Math.round(node.contentHeight))
-        );
+        const { w, h } = this.sizeFor(node);
+        const canvas = new OffscreenCanvas(w, h);
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("OffscreenCanvas 2d context unavailable");
         this.bitmaps.set(node, canvas);
@@ -56,15 +70,46 @@ export class TextStore {
           // Animated: track for per-frame redraw. Seed the canvas at
           // t=0 so the first paint shows something before playback.
           this.animated.set(node, { node, canvas, ctx, lastT: -1 });
-          drawTextLayout(ctx, layoutText(node, 0));
-        } else {
-          drawTextLayout(ctx, layoutText(node, 0));
         }
+        drawTextLayout(ctx, layoutText(node, 0, w, h));
       } catch (err) {
         console.error("Text node rasterization failed:", err);
       }
     }
     this.onFrameAvailable?.();
+  }
+
+  /** Push the compositor's per-frame inner-canvas sizes (from the render list).
+   *  When a node's size changes, resize its bitmap + redraw immediately so the
+   *  texture is correct for the frame about to composite (text reflows). */
+  setContentSizes(
+    sizes: Map<ResolvedText, { w: number; h: number }>,
+    currentTime: number,
+  ): void {
+    let anyRedrew = false;
+    for (const [node, size] of sizes) {
+      const w = Math.max(1, Math.round(size.w));
+      const h = Math.max(1, Math.round(size.h));
+      const prev = this.sizes.get(node);
+      this.sizes.set(node, { w, h });
+      const canvas = this.bitmaps.get(node);
+      if (!canvas) continue;
+      if (prev && prev.w === w && prev.h === h) continue; // unchanged
+      const ctx = canvas.getContext("2d");
+      if (!ctx) continue;
+      const t = Math.max(0, currentTime - node.timelineStart);
+      try {
+        canvas.width = w; // resizing clears the canvas
+        canvas.height = h;
+        drawTextLayout(ctx, layoutText(node, t, w, h));
+        const anim = this.animated.get(node);
+        if (anim) anim.lastT = t;
+        anyRedrew = true;
+      } catch (err) {
+        console.error("Animated text resize failed:", err);
+      }
+    }
+    if (anyRedrew) this.onFrameAvailable?.();
   }
 
   /** Per-frame hook: redraw any animated text whose node-local time has
@@ -83,7 +128,8 @@ export class TextStore {
       if (Math.abs(t - entry.lastT) < 0.001) continue;
       entry.lastT = t;
       try {
-        drawTextLayout(entry.ctx, layoutText(entry.node, t));
+        const { w, h } = this.sizeFor(entry.node);
+        drawTextLayout(entry.ctx, layoutText(entry.node, t, w, h));
         anyRedrew = true;
       } catch (err) {
         console.error("Animated text rasterization failed:", err);
@@ -99,6 +145,7 @@ export class TextStore {
   dispose(): void {
     this.bitmaps.clear();
     this.animated.clear();
+    this.sizes.clear();
   }
 }
 

@@ -303,9 +303,9 @@ export interface Text extends SpatialFields, TextStyleFields {
   padding?: TextPadding;
   /** Intrinsic SVG canvas width. Same shape as composition's
    *  `contentWidth` — number = pixels, percentage = fraction of the
-   *  parent container. */
-  contentWidth?: Length;
-  contentHeight?: Length;
+   *  parent container. Animatable; defaults to `"100%"` of the parent. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   /** Display duration. Required for sequential / single-anchor
    *  attachment use; optional only when both `start` and `end` are
    *  pinned (the anchor span dictates the target). */
@@ -399,11 +399,12 @@ export interface Composition extends ChildTimingFields {
    *  container rect under all children. */
   backgroundColor?: string;
   /** Inner canvas width. Number = pixels; percentage = fraction of the
-   *  parent container's content width. The root composition must use a
-   *  pixel number (no parent reference to resolve against). */
-  contentWidth?: Length;
+   *  parent container's content width; defaults to `"100%"` of the parent.
+   *  Animatable. The root composition must use a static pixel number (no
+   *  parent reference to resolve against). */
+  contentWidth?: Keyframed<Length>;
   /** Inner canvas height. Same shape as `contentWidth`. */
-  contentHeight?: Length;
+  contentHeight?: Keyframed<Length>;
 }
 
 // ── Graphic (animated 2D layer) ────────────────────────────────────
@@ -599,9 +600,10 @@ export interface Graphic extends ChildTimingFields {
    *  the last frame's state animates back into the first. */
   loop?: boolean;
   /** Animation design space dimensions. Authored coordinates inside
-   *  keyframe objects resolve against these. */
-  contentWidth?: Length;
-  contentHeight?: Length;
+   *  keyframe objects resolve against these. Animatable; defaults to
+   *  `"100%"` of the parent container. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   clips?: GraphicClipDef[];
   frames: GraphicFrame[];
   in?: number;

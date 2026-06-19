@@ -4,7 +4,12 @@ import {
   resolveSpatial,
   type Composition,
 } from "@seam/core";
-import { buildRenderList, type RenderCommand, type DrawCommand } from "../RenderList.js";
+import {
+  buildRenderList,
+  type RenderCommand,
+  type DrawCommand,
+  type GroupCommand,
+} from "../RenderList.js";
 
 const W = 1080;
 const H = 1920;
@@ -20,9 +25,24 @@ function draws(commands: RenderCommand[]): DrawCommand[] {
   return out;
 }
 
-function renderAt(root: Composition, t: number): DrawCommand[] {
+function groups(commands: RenderCommand[]): GroupCommand[] {
+  const out: GroupCommand[] = [];
+  for (const c of commands) {
+    if (c.type === "group") {
+      out.push(c);
+      out.push(...groups(c.children));
+    }
+  }
+  return out;
+}
+
+function commandsAt(root: Composition, t: number): RenderCommand[] {
   const timeline = resolveSpatial(resolveComposition(root), W, H);
-  return draws(buildRenderList(timeline, t, W, H, () => ({ w: W, h: H })));
+  return buildRenderList(timeline, t, W, H, () => ({ w: W, h: H }));
+}
+
+function renderAt(root: Composition, t: number): DrawCommand[] {
+  return draws(commandsAt(root, t));
 }
 
 describe("buildRenderList — duration-compressed composition", () => {
@@ -103,5 +123,66 @@ describe("buildRenderList — duration-compressed composition", () => {
     expect(sources).not.toContain("clip1.mov");
     const clip2 = ds.find((d) => (d.clip as { source: string }).source === "clip2.mov")!;
     expect(clip2.drawTime).toBeCloseTo(1.5 * speed - CLIP1_OUT, 4);
+  });
+});
+
+describe("buildRenderList — animatable contentWidth", () => {
+  // A composition whose inner canvas (contentWidth) animates must be sampled
+  // per-frame: the FBO resizes and children re-layout against the live inner
+  // canvas. Root is 1000×1000; the inner comp's contentWidth animates 100%→50%
+  // (1000→500) over its 4s body, opacity 0.5 forces the FBO path so we can read
+  // the group's fboW.
+  function root(): Composition {
+    return {
+      type: "composition",
+      contentWidth: 1000,
+      contentHeight: 1000,
+      children: [
+        {
+          type: "composition",
+          opacity: 0.5,
+          contentWidth: [
+            [0, "100%"],
+            [4, "50%"],
+          ],
+          children: [
+            // Fixed 200px box, centered in the inner canvas — its position
+            // tracks the inner canvas center, so re-layout is observable.
+            {
+              type: "clip",
+              source: "inner.mov",
+              in: 0,
+              out: 4,
+              translation: "50%",
+              size: 200,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("resizes the FBO as contentWidth animates", () => {
+    const g0 = groups(commandsAt(root(), 0))[0];
+    const g2 = groups(commandsAt(root(), 2))[0];
+    const g4 = groups(commandsAt(root(), 3.99))[0];
+    expect(g0.fboW).toBeCloseTo(1000, 0); // 100% of 1000
+    expect(g2.fboW).toBeCloseTo(750, 0); // 75% (half-way 100→50)
+    expect(g4.fboW).toBeLessThan(550); // approaching 50% (500)
+  });
+
+  it("re-lays-out a centered child against the live inner canvas", () => {
+    // Child is a 200px box centered: quadX = innerW/2 - 100 in FBO coords.
+    const c0 = draws(commandsAt(root(), 0)).find(
+      (d) => (d.clip as { source: string }).source === "inner.mov",
+    )!;
+    const c2 = draws(commandsAt(root(), 2)).find(
+      (d) => (d.clip as { source: string }).source === "inner.mov",
+    )!;
+    expect(c0.quadX).toBeCloseTo(1000 / 2 - 100, 0); // 400
+    expect(c2.quadX).toBeCloseTo(750 / 2 - 100, 0); // 275
+    // The box width itself stays fixed (200px) — only its placement reflows.
+    expect(c0.quadW).toBeCloseTo(200, 0);
+    expect(c2.quadW).toBeCloseTo(200, 0);
   });
 });

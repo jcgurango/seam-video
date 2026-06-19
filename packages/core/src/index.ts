@@ -12,6 +12,7 @@ export {
   resolveSpatial,
   resolveBoxProps,
   computeNaturalSize,
+  sampleContentDim,
   hasAnimatedSpatialInput,
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,

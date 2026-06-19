@@ -63,8 +63,10 @@ export interface GraphicFrameRenderer {
   readonly width: number;
   readonly height: number;
   /** Render the graphic at composition-local time `localT` (seconds since the
-   *  graphic's start) to RGBA. Consecutive identical frames are deduped. */
-  renderAt(localT: number): Promise<GraphicFrame>;
+   *  graphic's start) to RGBA. `contentW`/`contentH` override the inner-canvas
+   *  size per-frame (animatable contentWidth); absent → the baked size.
+   *  Consecutive identical frames (same time AND size) are deduped. */
+  renderAt(localT: number, contentW?: number, contentH?: number): Promise<GraphicFrame>;
   /** Release the Map tile pool (closes pmtiles file handles). */
   dispose(): Promise<void>;
 }
@@ -77,8 +79,11 @@ export async function createGraphicFrameRenderer(
   node: ResolvedGraphic,
   opts: { mapBasePath?: string },
 ): Promise<GraphicFrameRenderer> {
-  const width = Math.max(1, Math.round(asNumber(node.contentWidth, 1080)));
-  const height = Math.max(1, Math.round(asNumber(node.contentHeight, 1920)));
+  // Baked design size: the resolver's t=0 intrinsic (default = 100% of parent).
+  // The per-frame `renderAt(contentW, contentH)` overrides this when the inner
+  // canvas animates. `asNumber` only catches pre-resolve / hand-built nodes.
+  const width = Math.max(1, Math.round(node.intrinsicWidth ?? asNumber(node.contentWidth, 1080)));
+  const height = Math.max(1, Math.round(node.intrinsicHeight ?? asNumber(node.contentHeight, 1920)));
   const mapBasePath = opts.mapBasePath;
 
   // Resolve every Image src to a file:// URL up front (fabric/node hangs on
@@ -124,42 +129,64 @@ export async function createGraphicFrameRenderer(
   const staticFast = isStatic(playback) && clipPlaybacks.size === 0;
   let lastSig: string | null = null;
   let lastFrame: GraphicFrame | null = null;
+  let lastW = 0;
+  let lastH = 0;
 
-  const render = async (t: number): Promise<GraphicFrame> => {
+  const renderAtSize = async (
+    t: number,
+    w: number,
+    h: number,
+  ): Promise<GraphicFrame> => {
     const snap = snapshotAt(playback, t);
     const tree = treeAt(playback, t);
     const { data } = await renderSnapshotToRgba(snap, tree, {
-      contentWidth: width,
-      contentHeight: height,
+      contentWidth: w,
+      contentHeight: h,
       context: { ...baseContext, outerT: t },
     });
-    return { data, width, height };
+    return { data, width: w, height: h };
   };
 
   return {
     width,
     height,
-    async renderAt(localT: number): Promise<GraphicFrame> {
+    async renderAt(
+      localT: number,
+      contentW?: number,
+      contentH?: number,
+    ): Promise<GraphicFrame> {
+      // Live inner-canvas size (animatable contentWidth) — falls back to the
+      // baked design size. Size is part of the dedup key so a static scene on
+      // an animating canvas still re-rasterizes.
+      const w = Math.max(1, Math.round(contentW ?? width));
+      const h = Math.max(1, Math.round(contentH ?? height));
       if (staticFast) {
-        if (!lastFrame) lastFrame = await render(0);
+        if (lastFrame && lastW === w && lastH === h) return lastFrame;
+        lastFrame = await renderAtSize(0, w, h);
+        lastW = w;
+        lastH = h;
         return lastFrame;
       }
       const t = Math.max(0, localT);
       if (dedup) {
         const snap = snapshotAt(playback, t);
         const tree = treeAt(playback, t);
-        const sig = JSON.stringify(tree) + " " + JSON.stringify(snap);
+        const sig = `${w}x${h} ` + JSON.stringify(tree) + " " + JSON.stringify(snap);
         if (sig === lastSig && lastFrame) return lastFrame;
         const { data } = await renderSnapshotToRgba(snap, tree, {
-          contentWidth: width,
-          contentHeight: height,
+          contentWidth: w,
+          contentHeight: h,
           context: { ...baseContext, outerT: t },
         });
         lastSig = sig;
-        lastFrame = { data, width, height };
+        lastFrame = { data, width: w, height: h };
+        lastW = w;
+        lastH = h;
         return lastFrame;
       }
-      lastFrame = await render(t);
+      lastFrame = await renderAtSize(t, w, h);
+      lastW = w;
+      lastH = h;
       return lastFrame;
     },
     async dispose(): Promise<void> {

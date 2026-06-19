@@ -147,6 +147,10 @@ export default function Timeline({
         mount.height,
         (clip) => coordinator.getIntrinsicSize(clip),
       );
+      // Push per-frame inner-canvas sizes (animatable contentWidth) into the
+      // text/graphic stores before compositing, so their textures rasterize at
+      // the live size sampled by buildRenderList (single source of truth).
+      coordinator.applyContentSizes(commands, time);
       renderer.render(commands, (clip) => coordinator.getFrame(clip, time));
     },
     [renderer, coordinator],

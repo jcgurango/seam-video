@@ -153,11 +153,12 @@ export interface ResolvedText extends TextStyleFields {
   textAlign?: "left" | "center" | "right";
   verticalAlign?: "top" | "center" | "bottom";
   padding?: TextPadding;
-  /** Intrinsic SVG width. Authored as a `Length` (number or percentage);
-   *  the spatial pass collapses to a pixel number. Consumers run
-   *  post-spatial and may treat it as `number`. */
-  contentWidth: Length;
-  contentHeight: Length;
+  /** Intrinsic SVG canvas, the AUTHORED `Keyframed<Length>` preserved
+   *  through the spatial pass so per-frame consumers can sample it against
+   *  live parent dims (default `"100%"`). The baked t=0 pixel value lives
+   *  in `intrinsicWidth`/`intrinsicHeight` for static consumers. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   timelineStart: number;
   timelineEnd: number;
   filters?: Filter[];
@@ -192,12 +193,12 @@ export interface ResolvedComposition {
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
   backgroundColor?: string;
-  /** Inner canvas dim. Carries the authored `Length` (number or
-   *  percentage string) pre-spatial pass; the spatial pass collapses to
-   *  a pixel number. Consumers run post-spatial and may treat it as
-   *  `number`. */
-  contentWidth?: Length;
-  contentHeight?: Length;
+  /** Inner canvas dim — the AUTHORED `Keyframed<Length>` preserved through
+   *  the spatial pass (default `"100%"` of the parent) so per-frame
+   *  consumers sample it against live parent dims. The baked t=0 pixel
+   *  value lives in `intrinsicWidth`/`intrinsicHeight`. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   intrinsicWidth?: number;
   intrinsicHeight?: number;
   naturalWidth?: number;
@@ -216,10 +217,12 @@ export interface ResolvedGraphic {
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
-  /** Animation design space. Renderers resolve authored Length values
-   *  inside keyframes against this rect. */
-  contentWidth?: Length;
-  contentHeight?: Length;
+  /** Animation design space — the AUTHORED `Keyframed<Length>` preserved
+   *  through the spatial pass (default `"100%"` of the parent). Renderers
+   *  sample it per-frame against live parent dims; the baked t=0 pixel value
+   *  lives in `intrinsicWidth`/`intrinsicHeight`. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   clips?: GraphicClipDef[];
   frames: GraphicFrame[];
   timelineStart: number;
@@ -253,10 +256,12 @@ export interface ResolvedTimeline {
   height?: number;
   objectFit?: ObjectFit;
   backgroundColor?: string;
-  /** Root inner canvas dim. Authored `Length`; `resolveSpatial` collapses
-   *  to a pixel number (and rejects percentage strings on the root, since
-   *  there's no parent reference). */
-  contentWidth?: Length;
-  contentHeight?: Length;
+  /** Root inner canvas dim. Carries the authored value pre-spatial;
+   *  `resolveSpatial` collapses it to a pixel number (and rejects percentage
+   *  strings AND keyframes on the root, since there's no parent reference and
+   *  the root defines the output canvas). Consumers run post-spatial and may
+   *  treat it as `number`. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   children: ResolvedChild[];
 }
