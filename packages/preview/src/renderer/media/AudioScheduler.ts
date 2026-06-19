@@ -84,6 +84,10 @@ export class AudioScheduler {
     speed: number,
     volume: number = 1
   ): void {
+    // Idempotent: re-registering an id (or a stale one that lingers after a
+    // timeline rebuild) must tear the old clip down first, or its GainNode
+    // stays connected to masterGain and the audio graph grows without bound.
+    if (this.clips.has(id)) this.unregisterClip(id);
     const gainNode = this.audioContext.createGain();
     gainNode.gain.value = volume;
     gainNode.connect(this.masterGain);
@@ -122,6 +126,13 @@ export class AudioScheduler {
     this.doStop(state);
     state.gainNode.disconnect();
     this.clips.delete(id);
+  }
+
+  /** Stop + disconnect every registered clip. Called when the timeline is
+   *  rebuilt (e.g. every resize-drag tick) so churned clips don't accumulate
+   *  connected GainNodes/sinks in the audio graph and starve playback. */
+  unregisterAll(): void {
+    for (const id of [...this.clips.keys()]) this.unregisterClip(id);
   }
 
   /** Start playing a clip's audio from the given source time, right now. */

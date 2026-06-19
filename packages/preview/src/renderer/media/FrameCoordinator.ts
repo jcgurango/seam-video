@@ -73,6 +73,11 @@ export class FrameCoordinator {
   private staticStore = new StaticStore();
   private graphicStore = new GraphicStore();
   private ready = false;
+  /** Bumped on each setTimeline. An in-flight (async) setTimeline checks this
+   *  after every await and bails if a newer one started — otherwise its decode
+   *  callbacks land after the next dispose() and leak ClipBuffers / audio
+   *  registrations into the rebuilt coordinator (resize-drag churn). */
+  private generation = 0;
 
   /** Fires when a buffered frame becomes available — used to repaint while paused. */
   onFrameAvailable: (() => void) | null = null;
@@ -84,6 +89,7 @@ export class FrameCoordinator {
     audioScheduler: AudioScheduler,
     initialTime: number = 0
   ): Promise<void> {
+    const gen = ++this.generation;
     this.dispose();
     this.audioScheduler = audioScheduler;
 
@@ -118,7 +124,9 @@ export class FrameCoordinator {
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
       const audioTrack = await mediaStore.getAudioTrack(flat.source);
+      if (gen !== this.generation) return; // superseded by a newer setTimeline
       if (audioTrack && (await audioTrack.canDecode())) {
+        if (gen !== this.generation) return;
         audioScheduler.setSampleRate(audioTrack.sampleRate);
         break;
       }
@@ -134,16 +142,24 @@ export class FrameCoordinator {
       if (flat.clip.type === "clip") {
         const buffer = new ClipBuffer();
         buffer.onFrameAvailable = () => this.onFrameAvailable?.();
+        await buffer.init(mediaStore, flat.source);
+        // Commit the buffer only if we're still the current timeline —
+        // otherwise dispose it locally so its CanvasSink/decoder doesn't leak.
+        if (gen !== this.generation) {
+          buffer.dispose();
+          return;
+        }
         this.buffers.set(flat.clip, buffer);
 
-        await buffer.init(mediaStore, flat.source);
-
         const size = await mediaStore.getIntrinsicSize(flat.source);
+        if (gen !== this.generation) return;
         if (size.w > 0) this.sizes.set(flat.clip, size);
       }
 
       const audioTrack = await mediaStore.getAudioTrack(flat.source);
+      if (gen !== this.generation) return;
       if (audioTrack && (await audioTrack.canDecode())) {
+        if (gen !== this.generation) return;
         const audioId = `${flat.source}:${flat.clip.sourceIn}:${flat.absoluteStart}`;
         flat.audioId = audioId;
         const audioSink = new AudioBufferSink(audioTrack);
@@ -164,6 +180,7 @@ export class FrameCoordinator {
     });
 
     await Promise.all(initAll);
+    if (gen !== this.generation) return; // a newer setTimeline owns state now
     this.ready = true;
 
     // Prime at the actual playhead so the paused frame becomes available
@@ -281,6 +298,11 @@ export class FrameCoordinator {
   }
 
   dispose(): void {
+    // Tear down every audio clip we registered (this coordinator owns them
+    // 1:1). Without this, each setTimeline left the previous timeline's clips
+    // connected in the scheduler — a resize drag (many rebuilds/sec, with
+    // shifting audioIds) piled up GainNodes/sinks until playback choked.
+    this.audioScheduler?.unregisterAll();
     for (const buffer of this.buffers.values()) {
       buffer.dispose();
     }
