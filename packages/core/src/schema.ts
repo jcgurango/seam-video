@@ -613,6 +613,10 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     /** Any valid SVG/CSS fill value (e.g. "#000", "rgba(...)", "red").
      *  Painted across the composition's container rect under the children. */
     backgroundColor: z.string().optional(),
+    /** Uniform volume multiplier (0..4) applied to every audio-bearing
+     *  descendant (clips / audio / nested compositions). Animatable, sampled
+     *  in the composition's output time. Mirrors clip `volume`. */
+    volume: keyframed(z.number().nonnegative().max(4)).optional(),
     contentWidth: keyframed(LengthSchema).optional(),
     contentHeight: keyframed(LengthSchema).optional(),
     // Per-edge inset / crop — composition-only. See InsetSchema above.

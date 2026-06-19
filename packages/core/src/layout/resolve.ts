@@ -274,6 +274,7 @@ function resolveChild(
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
         ...(child.opacity != null ? { opacity: child.opacity } : {}),
+        ...(child.volume != null ? { volume: child.volume } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
@@ -438,6 +439,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     ...(composition.backgroundColor != null
       ? { backgroundColor: composition.backgroundColor }
       : {}),
+    ...(composition.volume != null ? { volume: composition.volume } : {}),
     ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
     ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
   };

@@ -398,6 +398,10 @@ export interface Composition extends ChildTimingFields {
   /** Any valid SVG/CSS fill value. Painted across the composition's
    *  container rect under all children. */
   backgroundColor?: string;
+  /** Uniform volume multiplier (0..4) applied to every audio-bearing
+   *  descendant (clips / audio / nested compositions). Animatable, sampled
+   *  in the composition's output time. Mirrors clip `volume`. */
+  volume?: Keyframed<number>;
   /** Inner canvas width. Number = pixels; percentage = fraction of the
    *  parent container's content width; defaults to `"100%"` of the parent.
    *  Animatable. The root composition must use a static pixel number (no

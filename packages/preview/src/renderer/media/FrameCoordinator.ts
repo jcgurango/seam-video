@@ -34,6 +34,12 @@ interface FlatClip {
   source: string;
   audioId: string | null;
   toSourceTime: (absoluteTime: number) => number;
+  /** Product of every enclosing composition's `volume` at a global output
+   *  time (each comp sampled in its own output time). `1` when none. */
+  compVolumeAt: (globalTime: number) => number;
+  /** True when any enclosing composition (or the root) sets `volume`, so the
+   *  per-tick loop must keep pushing the multiplier even for static clips. */
+  hasCompVolume: boolean;
 }
 
 /** Crossfade gain (0..1) for an audio-bearing clip at `currentTime`: fade in
@@ -81,11 +87,18 @@ export class FrameCoordinator {
     this.dispose();
     this.audioScheduler = audioScheduler;
 
+    // Seed with the root composition's own volume (scales everything).
+    const rootVol = timeline.volume;
+    const rootVolumeAt = rootVol != null
+      ? (t: number) => sampleNumber(rootVol, t, timeline.duration)
+      : () => 1;
     this.flatClips = collectClips(
       timeline.children,
       (t) => t,
       (t) => t,
-      basePath
+      basePath,
+      rootVolumeAt,
+      rootVol != null
     );
 
     // Text nodes rasterize synchronously straight onto OffscreenCanvases
@@ -137,9 +150,10 @@ export class FrameCoordinator {
         // Register with the t=0 sample of volume so static and animated
         // clips both start with the right value. Animated clips get
         // updated each tick via setClipVolume.
-        const initialVolume = flat.clip.volume == null
+        const baseVolume = flat.clip.volume == null
           ? 1
           : sampleNumber(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
+        const initialVolume = baseVolume * flat.compVolumeAt(flat.absoluteStart);
         audioScheduler.registerClip(
           audioId,
           audioSink,
@@ -364,11 +378,14 @@ export class FrameCoordinator {
         if (!flat.audioId) continue;
         const v = flat.clip.volume;
         const fade = audioCrossfadeGain(flat, currentTime);
-        if (!isKeyframed(v) && fade === 1) continue;
+        // Skip only when nothing varies — static clip volume, no crossfade, and
+        // no enclosing composition volume to apply.
+        if (!isKeyframed(v) && fade === 1 && !flat.hasCompVolume) continue;
         const localT = currentTime - flat.absoluteStart;
         const dur = flat.absoluteEnd - flat.absoluteStart;
         const base = isKeyframed(v) ? sampleNumber(v, localT, dur) : (v ?? 1);
-        this.audioScheduler.setClipVolume(flat.audioId, base * fade);
+        const compVol = flat.compVolumeAt(currentTime);
+        this.audioScheduler.setClipVolume(flat.audioId, base * fade * compVol);
       }
     }
 
@@ -383,7 +400,9 @@ function collectClips(
   children: ResolvedChild[],
   toLocalTime: (t: number) => number,
   toAbsoluteTime: (localT: number) => number,
-  basePath: string
+  basePath: string,
+  volumeAt: (globalTime: number) => number,
+  hasVol: boolean
 ): FlatClip[] {
   const result: FlatClip[] = [];
 
@@ -405,11 +424,21 @@ function collectClips(
           const clipLocal = Math.max(0, local - capturedChild.timelineStart);
           return capturedChild.sourceIn + clipLocal * capturedChild.speed;
         },
+        compVolumeAt: volumeAt,
+        hasCompVolume: hasVol,
       });
     } else if (child.type === "composition") {
       const parentToLocal = toLocalTime;
       const parentToAbsolute = toAbsoluteTime;
       const comp = child;
+      // Compose this comp's own volume (sampled in its output time) onto the
+      // enclosing multiplier, for every clip beneath it.
+      const compAbsStart = parentToAbsolute(comp.timelineStart);
+      const compVol = comp.volume;
+      const childVolumeAt = compVol != null
+        ? (t: number) => volumeAt(t) * sampleNumber(compVol, t - compAbsStart, comp.duration)
+        : volumeAt;
+      const childHasVol = hasVol || compVol != null;
 
       const childToLocal = (t: number): number => {
         const parentLocal = parentToLocal(t);
@@ -429,7 +458,14 @@ function collectClips(
       };
 
       result.push(
-        ...collectClips(comp.children, childToLocal, childToAbsolute, basePath)
+        ...collectClips(
+          comp.children,
+          childToLocal,
+          childToAbsolute,
+          basePath,
+          childVolumeAt,
+          childHasVol
+        )
       );
     }
   }

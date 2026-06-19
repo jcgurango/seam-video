@@ -193,6 +193,9 @@ export interface ResolvedComposition {
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
   backgroundColor?: string;
+  /** Uniform volume multiplier applied to every audio-bearing descendant.
+   *  Sampled per-frame by the audio mixers in the comp's output time. */
+  volume?: Keyframed<number>;
   /** Inner canvas dim — the AUTHORED `Keyframed<Length>` preserved through
    *  the spatial pass (default `"100%"` of the parent) so per-frame
    *  consumers sample it against live parent dims. The baked t=0 pixel
@@ -256,6 +259,9 @@ export interface ResolvedTimeline {
   height?: number;
   objectFit?: ObjectFit;
   backgroundColor?: string;
+  /** Root-composition volume multiplier — scales every audio-bearing
+   *  descendant. Sampled in output time against the timeline duration. */
+  volume?: Keyframed<number>;
   /** Root inner canvas dim. Carries the authored value pre-spatial;
    *  `resolveSpatial` collapses it to a pixel number (and rejects percentage
    *  strings AND keyframes on the root, since there's no parent reference and

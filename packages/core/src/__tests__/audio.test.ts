@@ -31,6 +31,34 @@ describe("audio", () => {
     });
   });
 
+  it("carries a composition volume through resolve (nested + root)", () => {
+    const result = resolveComposition(
+      comp({
+        volume: 0.5, // root composition volume
+        children: [
+          comp({
+            volume: [
+              [0, 1],
+              [2, 0],
+            ],
+            children: [{ type: "audio", source: "a.mp3", in: 0, out: 2 }],
+          }),
+        ],
+      })
+    );
+    // Root volume rides on the resolved timeline; nested comp volume on the
+    // resolved composition node. Both are sampled by the audio mixers.
+    expect(result.volume).toBe(0.5);
+    const nested = result.children[0];
+    expect(nested.type).toBe("composition");
+    if (nested.type === "composition") {
+      expect(nested.volume).toEqual([
+        [0, 1],
+        [2, 0],
+      ]);
+    }
+  });
+
   it("places audio sequentially in a composition next to clips", () => {
     const result = resolveComposition(
       comp({

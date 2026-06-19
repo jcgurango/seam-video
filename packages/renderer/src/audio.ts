@@ -14,8 +14,9 @@ import { isAbsolute, join } from "node:path";
 import { registerMediabunnyServer } from "@mediabunny/server";
 import { Input, FilePathSource, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 import { OfflineAudioContext, AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
-import { sampleNumber } from "@seam/core";
+import { sampleNumber, isKeyframed } from "@seam/core";
 import type {
+  Keyframed,
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
@@ -24,31 +25,42 @@ import type {
 
 const SR = 48000;
 
+/** An enclosing composition's volume, with its absolute output start + output
+ *  duration so it can be sampled (in output time) at any absolute moment. */
+interface VolumeEnv {
+  volume: Keyframed<number>;
+  startAbs: number;
+  duration: number;
+}
+
 interface AudioEntry {
   node: ResolvedClip | ResolvedAudio;
   parentSpeed: number; // ancestor speed product (excludes node.speed)
   start: number; // absolute output start (seconds)
+  compVolumes: VolumeEnv[]; // enclosing composition volume multipliers
 }
 
 function collectAudioNodes(
   children: ResolvedChild[],
   parentSpeed: number,
   parentDelay: number,
+  parentVolumes: VolumeEnv[],
   out: AudioEntry[],
 ): void {
   for (const c of children) {
     if (c.type === "composition") {
-      collectAudioNodes(
-        c.children,
-        parentSpeed * c.speed,
-        parentDelay + c.timelineStart / parentSpeed,
-        out,
-      );
+      const compStartAbs = parentDelay + c.timelineStart / parentSpeed;
+      const volumes =
+        c.volume != null
+          ? [...parentVolumes, { volume: c.volume, startAbs: compStartAbs, duration: c.duration }]
+          : parentVolumes;
+      collectAudioNodes(c.children, parentSpeed * c.speed, compStartAbs, volumes, out);
     } else if (c.type === "clip" || c.type === "audio") {
       out.push({
         node: c,
         parentSpeed,
         start: parentDelay + c.timelineStart / parentSpeed,
+        compVolumes: parentVolumes,
       });
     }
   }
@@ -70,7 +82,12 @@ export async function renderAudioMix(
   (globalThis as { AudioBuffer?: unknown }).AudioBuffer = NWAudioBuffer;
 
   const entries: AudioEntry[] = [];
-  collectAudioNodes(timeline.children, 1, 0, entries);
+  // Seed with the root composition's own volume (scales everything).
+  const rootVolumes: VolumeEnv[] =
+    timeline.volume != null
+      ? [{ volume: timeline.volume, startAbs: 0, duration: timeline.duration }]
+      : [];
+  collectAudioNodes(timeline.children, 1, 0, rootVolumes, entries);
   if (entries.length === 0) return null;
 
   // Decode only the [inT, outT) region a node actually uses — decoding whole
@@ -133,7 +150,7 @@ export async function renderAudioMix(
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(durationSec * SR)), SR);
   let any = false;
 
-  for (const { node, parentSpeed, start } of entries) {
+  for (const { node, parentSpeed, start, compVolumes } of entries) {
     const decoded = await decodeRegion(node.source, node.sourceIn, node.sourceOut);
     if (!decoded || decoded.channels.length === 0) continue;
 
@@ -165,16 +182,27 @@ export async function renderAudioMix(
         ? Math.min(node.transitionOut / parentSpeed, audioDuration)
         : 0;
     const vol = node.volume;
-    const staticVol = typeof vol === "number" || vol == null;
+    // Enclosing-composition volume at absolute output time T (product of every
+    // ancestor comp's volume sampled in its own output time). sampleNumber
+    // handles static + keyframed uniformly.
+    const compVolAt = (T: number): number => {
+      let m = 1;
+      for (const cv of compVolumes) m *= sampleNumber(cv.volume, T - cv.startAbs, cv.duration);
+      return m;
+    };
+    const hasAnimatedComp = compVolumes.some((cv) => isKeyframed(cv.volume));
+    const staticVol = (typeof vol === "number" || vol == null) && !hasAnimatedComp;
 
     if (fadeIn === 0 && fadeOut === 0 && staticVol) {
-      gain.gain.value = vol == null ? 1 : (vol as number);
+      // All static: comp volumes are constant, so sample at the clip's start.
+      gain.gain.value = (vol == null ? 1 : (vol as number)) * compVolAt(Math.max(0, start));
     } else {
       const n = Math.max(2, Math.ceil(audioDuration * 100));
       const curve = new Float32Array(n);
       for (let k = 0; k < n; k++) {
         const tau = (k / (n - 1)) * audioDuration;
         let g = vol == null ? 1 : sampleNumber(vol, tau, audioDuration);
+        g *= compVolAt(Math.max(0, start) + tau);
         if (fadeIn > 0) g *= Math.min(1, tau / fadeIn);
         if (fadeOut > 0) g *= Math.min(1, (audioDuration - tau) / fadeOut);
         curve[k] = g;
