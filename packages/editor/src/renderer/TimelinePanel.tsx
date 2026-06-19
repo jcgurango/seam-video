@@ -474,15 +474,8 @@ function TimelineSurface({
             resizeChild(sub, last.index, isAttachment, side, deltaSec),
           ),
         );
-        // Scrub the playhead to the cursor (same audio feedback as
-        // dragging on the timeline) — root blocks only; a nested block's
-        // local px don't map to a global playhead time.
-        const container = scrollRef.current;
-        if (container && parent.length === 0) {
-          const rect = container.getBoundingClientRect();
-          const contentX = me.clientX - rect.left + container.scrollLeft;
-          seek(Math.max(0, Math.min(contentX / pxPerSec, totalDuration)));
-        }
+        // (Resizing a block does not move the playhead — follow-the-cursor was
+        // meaningless. The playhead stays put on whatever frame it was on.)
       };
       const onUp = (ev: Event) => {
         const me = ev as PointerEvent;

@@ -12,11 +12,13 @@ import JsonNodePanel from "./JsonNodePanel.js";
 import ScriptPanel from "./ScriptPanel.js";
 import BinPanel from "./BinPanel.js";
 import MediaBrowser from "./MediaBrowser.js";
+import NewPanel from "./NewPanel.js";
 import { findBinItem } from "./nodeBin.js";
 import type { Platform } from "./platform/index.js";
 import type { WebPlatform } from "./platform/web.js";
 
 type SectionId =
+  | "new"
   | "properties"
   | "filters"
   | "json"
@@ -26,6 +28,7 @@ type SectionId =
   | "media";
 
 const BASE_SECTIONS: { id: SectionId; label: string }[] = [
+  { id: "new", label: "New" },
   { id: "properties", label: "Properties" },
   { id: "filters", label: "Filters" },
   { id: "json", label: "JSON" },
@@ -91,7 +94,7 @@ export default function InspectorAccordion({
   const sections =
     platform.kind === "web" ? [...BASE_SECTIONS, ...WEB_SECTIONS] : BASE_SECTIONS;
   const [open, setOpen] = useState<Set<SectionId>>(
-    () => new Set<SectionId>(["inspector"]),
+    () => new Set<SectionId>(["new"]),
   );
 
   const toggle = (id: SectionId) =>
@@ -111,6 +114,8 @@ export default function InspectorAccordion({
 
   const renderContent = (id: SectionId): React.ReactNode => {
     switch (id) {
+      case "new":
+        return <NewPanel />;
       case "properties":
         return <PaddedTab>Properties panel (placeholder)</PaddedTab>;
       case "filters":
