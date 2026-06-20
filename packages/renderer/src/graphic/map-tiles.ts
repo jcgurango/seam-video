@@ -63,6 +63,8 @@ export interface MapViewInput {
   width: number;
   height: number;
   theme?: MapTheme;
+  /** Basemap-only opacity (0..1, default 1); excludes paths/overlays. */
+  mapOpacity?: number;
   paths?: MapPathInput[];
   /** Anchors to project to viewport pixels (embedded objects). The result's
    *  `anchorPixels` lines up index-for-index. */
@@ -134,7 +136,22 @@ export async function renderMapView(
 
   const canvas = createCanvas(input.width, input.height);
   const ctx = canvas.getContext("2d") as unknown as CanvasRenderingContext2D;
-  drawBasemap(ctx, view, style, tiles);
+  // mapOpacity dims the basemap only. drawBasemap hardcodes per-feature
+  // globalAlpha, so a single globalAlpha on the shared ctx wouldn't stick —
+  // instead rasterize the basemap onto its own layer and composite that whole
+  // layer at mapOpacity. Paths draw at full alpha afterward; embedded objects
+  // are composited separately by render.ts.
+  const mapOpacity = input.mapOpacity ?? 1;
+  if (mapOpacity < 1) {
+    const layer = createCanvas(input.width, input.height);
+    const lctx = layer.getContext("2d") as unknown as CanvasRenderingContext2D;
+    drawBasemap(lctx, view, style, tiles);
+    ctx.globalAlpha = mapOpacity;
+    ctx.drawImage(layer as unknown as CanvasImageSource, 0, 0);
+    ctx.globalAlpha = 1;
+  } else {
+    drawBasemap(ctx, view, style, tiles);
+  }
   drawPaths(ctx, view, input.paths);
 
   const anchorPixels = input.anchors?.map((a) =>

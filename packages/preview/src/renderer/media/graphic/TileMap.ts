@@ -78,6 +78,8 @@ export interface MapOptions extends Partial<FabricObjectProps> {
   latitude?: number;
   longitude?: number;
   zoom?: number;
+  /** Basemap-only opacity (0..1); excludes paths/overlays. */
+  mapOpacity?: number;
   theme?: MapTheme;
   paths?: MapPath[];
   /** Embedded objects (anchor-wrapped specs). Opaque to TileMap — the host
@@ -109,6 +111,7 @@ export class TileMap extends FabricObject {
   latitude = 0;
   longitude = 0;
   zoom = 1;
+  mapOpacity = 1;
   theme: MapTheme = "light";
   paths: MapPath[] = [];
   /** Embedded objects, carried verbatim so serialization round-trips (the
@@ -127,6 +130,7 @@ export class TileMap extends FabricObject {
       latitude,
       longitude,
       zoom,
+      mapOpacity,
       theme,
       paths,
       objects,
@@ -138,6 +142,7 @@ export class TileMap extends FabricObject {
     if (typeof latitude === "number") this.latitude = latitude;
     if (typeof longitude === "number") this.longitude = longitude;
     if (typeof zoom === "number") this.zoom = zoom;
+    if (typeof mapOpacity === "number") this.mapOpacity = mapOpacity;
     if (theme === "dark" || theme === "light") this.theme = theme;
     if (Array.isArray(paths)) this.paths = paths as MapPath[];
     if (Array.isArray(objects)) this.embeddedObjects = objects;
@@ -191,7 +196,26 @@ export class TileMap extends FabricObject {
     // Shift to top-left origin so @seam/map's screen coords line up.
     ctx.save();
     ctx.translate(-w / 2, -h / 2);
-    drawBasemap(ctx, view, styleFor(this.theme), tiles); // requests missing tiles → bubble up
+    // mapOpacity dims the basemap only. drawBasemap hardcodes per-feature
+    // globalAlpha, so we can't just lower the ctx alpha around it — rasterize
+    // the basemap onto its own layer canvas and composite that whole layer at
+    // mapOpacity (folded with the object's own opacity already on ctx). Paths
+    // and overlays draw at full alpha afterward.
+    const baseAlpha = ctx.globalAlpha;
+    if (this.mapOpacity < 1) {
+      const lw = Math.max(1, Math.ceil(w));
+      const lh = Math.max(1, Math.ceil(h));
+      const layer = document.createElement("canvas");
+      layer.width = lw;
+      layer.height = lh;
+      const lctx = layer.getContext("2d")!;
+      drawBasemap(lctx, view, styleFor(this.theme), tiles); // requests missing tiles → bubble up
+      ctx.globalAlpha = baseAlpha * this.mapOpacity;
+      ctx.drawImage(layer, 0, 0);
+      ctx.globalAlpha = baseAlpha;
+    } else {
+      drawBasemap(ctx, view, styleFor(this.theme), tiles); // requests missing tiles → bubble up
+    }
     drawPaths(ctx, view, this.paths);
     this._drawOverlays(ctx, view);
     ctx.restore();
@@ -232,6 +256,7 @@ export class TileMap extends FabricObject {
       "latitude",
       "longitude",
       "zoom",
+      "mapOpacity",
       "theme",
       "paths",
     ];

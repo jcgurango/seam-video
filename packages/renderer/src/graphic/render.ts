@@ -380,6 +380,7 @@ async function renderMapToFabric(
       width,
       height,
       theme: spec.theme === "dark" ? ("dark" as const) : ("light" as const),
+      mapOpacity: typeof spec.mapOpacity === "number" ? spec.mapOpacity : undefined,
       paths,
       anchors: anchors.length ? anchors : undefined,
     };

@@ -20,6 +20,7 @@ export const CUSTOM_PROPS = [
   "latitude",
   "longitude",
   "zoom",
+  "mapOpacity",
   "paths",
   "theme",
   "revolutions",

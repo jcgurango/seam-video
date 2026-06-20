@@ -480,6 +480,10 @@ export const MapElementSchema: z.ZodType<any> = z.lazy(() =>
     latitude: z.number().min(-90).max(90).optional(),
     longitude: z.number().min(-180).max(180).optional(),
     zoom: z.number().nonnegative().optional(),
+    // Opacity of the basemap layers only (tiles: fills/lines/labels), distinct
+    // from the object's `opacity`. Excludes embedded objects/paths. A plain
+    // number — animated across graphic frames like latitude/longitude/zoom.
+    mapOpacity: z.number().min(0).max(1).optional(),
     paths: z.array(MapPathSchema).optional(),
     objects: z.array(MapObjectSchema).optional(),
   }).passthrough()

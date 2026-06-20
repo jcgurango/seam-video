@@ -24,6 +24,7 @@ const CUSTOM_PROPS: string[] = [
   "latitude",
   "longitude",
   "zoom",
+  "mapOpacity",
   "source",
   "theme",
   // Image-source related — preserved verbatim through the round-trip.

@@ -552,6 +552,10 @@ export interface GraphicMap extends GraphicObjectBase, FabricTransform {
   latitude?: number;
   longitude?: number;
   zoom?: number;
+  /** Opacity (0..1) of the basemap layers only — tiles (fills/lines/labels),
+   *  not embedded objects/paths. Distinct from `opacity`; animated across
+   *  graphic frames like latitude/longitude/zoom. */
+  mapOpacity?: number;
   paths?: MapPath[];
   /** Objects anchored to geo coordinates on the map. */
   objects?: MapObject[];
