@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Film, Music, Image as ImageIcon, Map as MapIcon } from "lucide-react";
+import {
+  Film,
+  Music,
+  Image as ImageIcon,
+  Map as MapIcon,
+  Download,
+  Trash2,
+} from "lucide-react";
 import type { SeamFile } from "@seam/core";
 import type { WebPlatform, MediaMeta } from "./platform/web.js";
 import {
@@ -18,8 +25,12 @@ import { collectClipSources } from "./exportHelpers.js";
 
 interface MediaBrowserProps {
   platform: WebPlatform;
-  /** Active document — drives the "In this project" filter. */
-  currentDoc: SeamFile;
+  /** Active document — drives the "In this project" filter (inspector only). */
+  currentDoc?: SeamFile;
+  /** "inspector" (default): draggable tiles that drop onto the timeline.
+   *  "main": the web landing grid — tiles aren't draggable and gain per-item
+   *  Download/Delete actions on hover. */
+  variant?: "inspector" | "main";
 }
 
 type SortKey = "date" | "added" | "used";
@@ -74,11 +85,17 @@ function KindIcon({ kind }: { kind: MediaKind }) {
  * from the `application/x-seam-source` payload). Rendered as a section of the
  * inspector accordion, so the timeline stays visible to drop onto.
  */
-export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps) {
+export default function MediaBrowser({
+  platform,
+  currentDoc,
+  variant = "inspector",
+}: MediaBrowserProps) {
   const [items, setItems] = useState<MediaItem[] | null>(null);
   const [sort, setSort] = useState<SortKey>("added");
   const [inProjectOnly, setInProjectOnly] = useState(false);
   const [query, setQuery] = useState("");
+  // Tile whose action overlay is currently shown (main variant only).
+  const [hovered, setHovered] = useState<string | null>(null);
 
   // Track blob URLs we mint so we can revoke them on unmount.
   const urlsRef = useRef<string[]>([]);
@@ -180,7 +197,7 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
   };
 
   const usedSources = useMemo(
-    () => new Set(collectClipSources(currentDoc)),
+    () => new Set(currentDoc ? collectClipSources(currentDoc) : []),
     [currentDoc],
   );
 
@@ -208,6 +225,14 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
     patchItem(item.name, { lastUsedAt: Date.now() });
   };
 
+  const handleDownload = (item: MediaItem) => {
+    void platform.downloadClip(item.name);
+  };
+
+  // Media delete isn't wired yet — the button is present for parity with the
+  // projects view, but deleting a clip from OPFS is deferred to a later pass.
+  const handleDelete = (_item: MediaItem) => {};
+
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
       <div
@@ -233,16 +258,18 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
               <option value="used">Last Used</option>
             </select>
           </label>
-          <label
-            style={{ display: "flex", alignItems: "center", gap: 6, color: "#aaa", cursor: "pointer" }}
-          >
-            <input
-              type="checkbox"
-              checked={inProjectOnly}
-              onChange={(e) => setInProjectOnly(e.target.checked)}
-            />
-            In this project
-          </label>
+          {variant === "inspector" && (
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 6, color: "#aaa", cursor: "pointer" }}
+            >
+              <input
+                type="checkbox"
+                checked={inProjectOnly}
+                onChange={(e) => setInProjectOnly(e.target.checked)}
+              />
+              In this project
+            </label>
+          )}
         </div>
         <input
           type="search"
@@ -275,14 +302,20 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
             {shown.map((item) => (
               <div
                 key={item.name}
-                draggable
+                draggable={variant === "inspector"}
                 onDragStart={(e) => handleDragStart(item, e)}
                 onDragEnd={(e) => handleDragEnd(item, e)}
+                onMouseEnter={() => setHovered(item.name)}
+                onMouseLeave={() => setHovered((h) => (h === item.name ? null : h))}
                 title={`${item.name}\n${formatDate(sortValue(item, sort))}`}
-                style={{ cursor: "grab", userSelect: "none" }}
+                style={{
+                  cursor: variant === "inspector" ? "grab" : "default",
+                  userSelect: "none",
+                }}
               >
                 <div
                   style={{
+                    position: "relative",
                     aspectRatio: "1 / 1",
                     background: "#161616",
                     border: "1px solid #2e2e2e",
@@ -303,6 +336,31 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
                   ) : (
                     <KindIcon kind={item.kind} />
                   )}
+                  {variant === "main" && hovered === item.name && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 4,
+                        right: 4,
+                        display: "flex",
+                        gap: 4,
+                      }}
+                    >
+                      <TileAction
+                        title="Download"
+                        onClick={() => handleDownload(item)}
+                      >
+                        <Download size={14} />
+                      </TileAction>
+                      <TileAction
+                        title="Delete"
+                        danger
+                        onClick={() => handleDelete(item)}
+                      >
+                        <Trash2 size={14} />
+                      </TileAction>
+                    </div>
+                  )}
                 </div>
                 <div
                   style={{
@@ -322,6 +380,45 @@ export default function MediaBrowser({ platform, currentDoc }: MediaBrowserProps
         )}
       </div>
     </div>
+  );
+}
+
+/** Small overlay button on a media tile (download / delete). */
+function TileAction({
+  title,
+  onClick,
+  danger,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      draggable={false}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={title}
+      style={{
+        background: "rgba(0, 0, 0, 0.65)",
+        border: "none",
+        color: "#ddd",
+        cursor: "pointer",
+        padding: 4,
+        borderRadius: 4,
+        display: "flex",
+      }}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.color = danger ? "#ff6b6b" : "#fff")
+      }
+      onMouseLeave={(e) => (e.currentTarget.style.color = "#ddd")}
+    >
+      {children}
+    </button>
   );
 }
 

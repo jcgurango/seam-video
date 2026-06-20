@@ -1,12 +1,15 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Plus, FileText, Trash2 } from "lucide-react";
+import { Plus, FileText, Trash2, Download } from "lucide-react";
 import type { WebPlatform, ProjectEntry } from "./platform/web.js";
+import MediaBrowser from "./MediaBrowser.js";
 
 interface ProjectBrowserProps {
   platform: WebPlatform;
   onOpen: (filePath: string, json: string) => void;
   onNew: () => void;
 }
+
+type Tab = "projects" | "media";
 
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts;
@@ -30,6 +33,7 @@ export default function ProjectBrowser({
   onOpen,
   onNew,
 }: ProjectBrowserProps) {
+  const [tab, setTab] = useState<Tab>("projects");
   const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
 
   const refresh = useCallback(() => {
@@ -65,6 +69,13 @@ export default function ProjectBrowser({
     [platform, refresh]
   );
 
+  const handleDownload = useCallback(
+    (name: string) => {
+      void platform.downloadProject(name);
+    },
+    [platform]
+  );
+
   return (
     <div
       style={{
@@ -87,122 +98,194 @@ export default function ProjectBrowser({
           borderBottom: "1px solid #2a2a2a",
         }}
       >
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>Projects</h2>
-        <button
-          onClick={onNew}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: "#3a6ea5",
-            border: "1px solid #4a8ed0",
-            color: "#fff",
-            padding: "8px 14px",
-            borderRadius: 6,
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 500,
-          }}
-        >
-          <Plus size={16} />
-          New Project
-        </button>
-      </div>
-
-      <div style={{ flex: 1, overflowY: "auto", padding: "16px 28px" }}>
-        {projects === null ? (
-          <div style={{ color: "#888", padding: 16 }}>Loading…</div>
-        ) : projects.length === 0 ? (
-          <div
+        <div style={{ display: "flex", gap: 4 }}>
+          <TabButton
+            active={tab === "projects"}
+            onClick={() => setTab("projects")}
+          >
+            Projects
+          </TabButton>
+          <TabButton active={tab === "media"} onClick={() => setTab("media")}>
+            Media
+          </TabButton>
+        </div>
+        {tab === "projects" && (
+          <button
+            onClick={onNew}
             style={{
-              padding: 48,
-              textAlign: "center",
-              color: "#888",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "#3a6ea5",
+              border: "1px solid #4a8ed0",
+              color: "#fff",
+              padding: "8px 14px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 500,
             }}
           >
-            <FileText size={36} style={{ opacity: 0.4, marginBottom: 12 }} />
-            <div style={{ fontSize: 14, marginBottom: 4 }}>
-              No projects yet.
-            </div>
-            <div style={{ fontSize: 12 }}>
-              Click "New Project" to get started.
-            </div>
-          </div>
-        ) : (
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {projects.map((p) => (
-              <li key={p.name}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "12px 14px",
-                    borderBottom: "1px solid #252525",
-                    cursor: "pointer",
-                  }}
-                  onClick={() => handleOpen(p.name)}
-                  onMouseEnter={(e) =>
-                    (e.currentTarget.style.background = "#222")
-                  }
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = "transparent")
-                  }
-                >
-                  <FileText size={18} style={{ color: "#6aa8e0" }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 500,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {p.name.replace(/\.seam$/, "")}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: "#888",
-                        marginTop: 2,
-                      }}
-                      title={formatAbsolute(p.lastModified)}
-                    >
-                      Modified {formatRelative(p.lastModified)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(p.name);
-                    }}
-                    title="Delete"
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "#666",
-                      cursor: "pointer",
-                      padding: 6,
-                      borderRadius: 4,
-                      display: "flex",
-                    }}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.color = "#ff6b6b")
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.color = "#666")
-                    }
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+            <Plus size={16} />
+            New Project
+          </button>
         )}
       </div>
+
+      {tab === "media" ? (
+        <MediaBrowser platform={platform} variant="main" />
+      ) : (
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 28px" }}>
+          {projects === null ? (
+            <div style={{ color: "#888", padding: 16 }}>Loading…</div>
+          ) : projects.length === 0 ? (
+            <div
+              style={{
+                padding: 48,
+                textAlign: "center",
+                color: "#888",
+              }}
+            >
+              <FileText size={36} style={{ opacity: 0.4, marginBottom: 12 }} />
+              <div style={{ fontSize: 14, marginBottom: 4 }}>
+                No projects yet.
+              </div>
+              <div style={{ fontSize: 12 }}>
+                Click "New Project" to get started.
+              </div>
+            </div>
+          ) : (
+            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {projects.map((p) => (
+                <li key={p.name}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "12px 14px",
+                      borderBottom: "1px solid #252525",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => handleOpen(p.name)}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background = "#222")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background = "transparent")
+                    }
+                  >
+                    <FileText size={18} style={{ color: "#6aa8e0" }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 500,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {p.name.replace(/\.seam$/, "")}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#888",
+                          marginTop: 2,
+                        }}
+                        title={formatAbsolute(p.lastModified)}
+                      >
+                        Modified {formatRelative(p.lastModified)}
+                      </div>
+                    </div>
+                    <RowAction
+                      title="Download"
+                      onClick={() => handleDownload(p.name)}
+                    >
+                      <Download size={16} />
+                    </RowAction>
+                    <RowAction
+                      title="Delete"
+                      danger
+                      onClick={() => handleDelete(p.name)}
+                    >
+                      <Trash2 size={16} />
+                    </RowAction>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? "#2e2e2e" : "transparent",
+        border: "1px solid",
+        borderColor: active ? "#3a3a3a" : "transparent",
+        color: active ? "#fff" : "#999",
+        padding: "6px 14px",
+        borderRadius: 6,
+        cursor: "pointer",
+        fontSize: 14,
+        fontWeight: 500,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Trailing icon action on a project row (download / delete). */
+function RowAction({
+  title,
+  onClick,
+  danger,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={title}
+      style={{
+        background: "none",
+        border: "none",
+        color: "#666",
+        cursor: "pointer",
+        padding: 6,
+        borderRadius: 4,
+        display: "flex",
+      }}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.color = danger ? "#ff6b6b" : "#fff")
+      }
+      onMouseLeave={(e) => (e.currentTarget.style.color = "#666")}
+    >
+      {children}
+    </button>
   );
 }

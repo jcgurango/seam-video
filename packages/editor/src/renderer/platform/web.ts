@@ -52,6 +52,19 @@ export interface MediaMeta {
 
 export type MediaIndex = Record<string, MediaMeta>;
 
+/** Trigger a browser download of `data` under `filename` via a transient
+ *  `<a download>`. Shared by every export/download path. */
+function triggerDownload(data: Blob, filename: string): void {
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function getRoot(): Promise<FileSystemDirectoryHandle> {
   return await navigator.storage.getDirectory();
 }
@@ -557,14 +570,7 @@ export class WebPlatform implements Platform {
 
     onProgress?.({ phase: "write", progress: 1 });
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${defaultName}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    triggerDownload(blob, `${defaultName}.zip`);
 
     return true;
   }
@@ -573,15 +579,20 @@ export class WebPlatform implements Platform {
    *  `.seam` file. No clips bundled — the user owns the asset side. */
   async exportSeamFile(doc: SeamFile, defaultName: string): Promise<void> {
     const json = JSON.stringify(doc, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${defaultName}.seam`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    triggerDownload(new Blob([json], { type: "application/json" }), `${defaultName}.seam`);
+  }
+
+  /** Download a stored project's `.seam` file verbatim (no clips). Used by the
+   *  landing screen's per-project Download action. */
+  async downloadProject(name: string): Promise<void> {
+    const file = await readFileFromDir(PROJECTS_DIR, name);
+    triggerDownload(file, name);
+  }
+
+  /** Download a stored clip's raw file. Used by the landing screen's media grid. */
+  async downloadClip(name: string): Promise<void> {
+    const file = await readFileFromDir(CLIPS_DIR, name);
+    triggerDownload(file, name);
   }
 
   /** True if `projects/<name>` already exists. Lets the caller warn
