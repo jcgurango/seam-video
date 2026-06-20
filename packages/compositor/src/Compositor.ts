@@ -521,6 +521,12 @@ export class Compositor<F = unknown> {
     targetH: number,
     clear: boolean,
     pipeline: GPURenderPipeline,
+    // FBO layers clear to *transparent* so a composition's unfilled regions
+    // stay see-through when the layer is composited back (esp. at opacity < 1).
+    // The root target clears to opaque black — the final canvas base. Clearing
+    // an FBO opaque-black turned a transparent-bg comp's empty area into black
+    // that bled in during an opacity fade.
+    transparentClear = false,
   ): void {
     // First: recursively encode all group children into their FBOs
     for (const cmd of commands) {
@@ -535,6 +541,7 @@ export class Compositor<F = unknown> {
           Math.round(cmd.fboH),
           true,
           this.fboPipeline,
+          true,
         );
       }
     }
@@ -544,7 +551,7 @@ export class Compositor<F = unknown> {
       colorAttachments: [
         {
           view: targetView,
-          clearValue: { r: 0, g: 0, b: 0, a: clear ? 1 : 0 },
+          clearValue: { r: 0, g: 0, b: 0, a: clear && !transparentClear ? 1 : 0 },
           loadOp: clear ? "clear" : "load",
           storeOp: "store",
         },

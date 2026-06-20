@@ -41,7 +41,8 @@ import {
 import { createGpuDevice } from "./gpu.js";
 import { NodeBackend } from "./NodeBackend.js";
 import { FrameSource, collectDrawables } from "./frameSource.js";
-import { renderAudioMix } from "./audio.js";
+import { renderAudioMix, timelineHasAudio } from "./audio.js";
+import type { AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
 
 export interface RenderOptions {
   fps?: number;
@@ -142,12 +143,26 @@ export async function renderSeamToFile(
   // per-node renderers so we can release their Map pools at the end.
   const graphicRenderers = new Map<ResolvedGraphic, GraphicFrameRenderer>();
   try {
-    // Audio is a standalone pass; mix it before the frame loop. (Maps no
-    // longer install global jsdom DOM shims — the OpenLayers path that
-    // clobbered Event/EventTarget for node-web-audio-api is gone — but keeping
-    // audio up front stays simplest and matches the rest of the pipeline.)
-    const audioMix = await renderAudioMix(timeline, basePath, timeline.duration);
-    mark("audio mix");
+    // Kick off the audio mix concurrently with the frame loop instead of
+    // blocking on it up front. The OpenLayers map path used to install global
+    // jsdom DOM shims (Event/EventTarget) that broke node-web-audio-api's
+    // OfflineAudioContext, which forced audio to run as an isolated pass before
+    // anything else; maps now render via @seam/map with no global shims, so the
+    // offline mix can render on its own thread while the GPU frame loop runs.
+    // We only need the structural presence of audio synchronously (to declare
+    // the muxer's audio track before output.start()); the rendered buffer is
+    // folded in after the frame loop. Settle into an object so a decode error
+    // can't surface as an unhandledRejection during the loop — it's re-thrown
+    // when we await below.
+    const hasAudio = timelineHasAudio(timeline);
+    const audioMixSettled: Promise<
+      { buf: NWAudioBuffer | null } | { err: unknown }
+    > = hasAudio
+      ? renderAudioMix(timeline, basePath, timeline.duration).then(
+          (buf) => ({ buf }),
+          (err) => ({ err }),
+        )
+      : Promise.resolve({ buf: null });
 
     // ── GPU + frame source ──
     const bufferCount = options.bufferCount ?? 3;
@@ -182,12 +197,11 @@ export async function renderSeamToFile(
     });
     const videoSource = new VideoSampleSource({ codec: "avc", bitrate: QUALITY_HIGH });
     output.addVideoTrack(videoSource, { frameRate: fps });
-    const audioSource = audioMix
+    const audioSource = hasAudio
       ? new AudioBufferSource({ codec: "aac", bitrate: QUALITY_HIGH })
       : null;
     if (audioSource) output.addAudioTrack(audioSource);
     await output.start();
-    if (audioSource && audioMix) await audioSource.add(audioMix);
 
     // ── frame loop (triple-buffered readback) ──
     // Each compositor.render() submits the frame's GPU work + starts its
@@ -226,6 +240,14 @@ export async function renderSeamToFile(
     while (backend.inFlightCount > 0) {
       await encodeNext(await backend.drainOldest());
     }
+    mark("frame loop");
+
+    // Fold in the audio mix that rendered alongside the frame loop. The await
+    // here is just the residual — the mix has usually finished mid-loop.
+    const audioResult = await audioMixSettled;
+    if ("err" in audioResult) throw audioResult.err;
+    if (audioSource && audioResult.buf) await audioSource.add(audioResult.buf);
+    mark("audio residual");
 
     await output.finalize();
     frameSource.dispose();

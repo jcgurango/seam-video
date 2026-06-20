@@ -71,6 +71,16 @@ interface DecodedAudio {
   channels: Float32Array[];
 }
 
+/** Cheap structural check: does the timeline contain any audio-bearing node?
+ *  Lets the caller declare the muxer's audio track (which must happen before
+ *  `output.start()`) without awaiting the full mix — so the mix can render
+ *  concurrently with the frame loop. */
+export function timelineHasAudio(timeline: ResolvedTimeline): boolean {
+  const entries: AudioEntry[] = [];
+  collectAudioNodes(timeline.children, 1, 0, [], entries);
+  return entries.length > 0;
+}
+
 /** Mix the timeline's audio offline. `null` if nothing contributes audio. */
 export async function renderAudioMix(
   timeline: ResolvedTimeline,
@@ -148,7 +158,6 @@ export async function renderAudioMix(
   };
 
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(durationSec * SR)), SR);
-  let any = false;
 
   for (const { node, parentSpeed, start, compVolumes } of entries) {
     const decoded = await decodeRegion(node.source, node.sourceIn, node.sourceOut);
@@ -212,9 +221,11 @@ export async function renderAudioMix(
 
     srcNode.connect(gain).connect(ctx.destination);
     srcNode.start(Math.max(0, start), 0);
-    any = true;
   }
 
-  if (!any) return null;
+  // Always emit a buffer when the timeline declared audio (matches
+  // timelineHasAudio): if every region failed to decode it's silent, but the
+  // muxer's audio track — declared up front from timelineHasAudio — still gets
+  // filled rather than left empty.
   return ctx.startRendering();
 }
