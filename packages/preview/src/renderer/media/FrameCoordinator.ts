@@ -407,7 +407,10 @@ export class FrameCoordinator {
         const dur = flat.absoluteEnd - flat.absoluteStart;
         const base = isKeyframed(v) ? sampleNumber(v, localT, dur) : (v ?? 1);
         const compVol = flat.compVolumeAt(currentTime);
-        this.audioScheduler.setClipVolume(flat.audioId, base * fade * compVol);
+        // Pass the crossfade `fade` separately so it stays a transient — the
+        // scheduler keeps `base * compVol` as the steady state it restores to,
+        // otherwise a faded-out clip restarts muted on its next play.
+        this.audioScheduler.setClipVolume(flat.audioId, base * compVol, fade);
       }
     }
 

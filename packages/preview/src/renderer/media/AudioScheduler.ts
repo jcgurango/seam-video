@@ -3,10 +3,16 @@ import type { AudioBufferSink } from "mediabunny";
 interface ClipState {
   sink: AudioBufferSink;
   speed: number;
-  /** Current sampled volume (1 = unity). Tracks animated keyframes when
+  /** Steady-state volume (1 = unity): animated keyframe × composition volume,
+   *  WITHOUT any transient crossfade. Tracks animated keyframes when
    *  `setClipVolume` is called per frame; otherwise holds the static value.
-   *  Used as the steady-state target by scrub/restore automation. */
+   *  Used as the target by scrub/restore automation AND by `startClip` to reset
+   *  the gain — so it must never be polluted by a crossfade ramp, else a clip
+   *  that faded out (transitionOut) would restart muted. */
   volume: number;
+  /** Last value actually written to `gainNode.gain` (= volume × crossfade), so
+   *  per-frame updates can skip redundant param writes. */
+  appliedGain: number;
   gainNode: GainNode;
   // Playback state (null when not playing)
   iterator: AsyncIterator<{ buffer: AudioBuffer; timestamp: number; duration: number }> | null;
@@ -95,6 +101,7 @@ export class AudioScheduler {
       sink,
       speed,
       volume,
+      appliedGain: volume,
       gainNode,
       iterator: null,
       queuedNodes: new Set(),
@@ -102,22 +109,28 @@ export class AudioScheduler {
     });
   }
 
-  /** Update an animated clip's per-frame volume. Skips if a scrub is in
-   *  flight so the scrub's scheduled fade isn't clobbered. */
-  setClipVolume(id: string, volume: number): void {
+  /** Update a clip's per-frame volume. `volume` is the steady-state target
+   *  (animated keyframe × composition volume); `fade` is the transient
+   *  crossfade multiplier (0..1) applied on top. Only `volume` is recorded as
+   *  the steady state — the fade must NOT pollute it, or `startClip` would
+   *  restore a faded-out clip to near-silence on its next play. Skips if a
+   *  scrub is in flight so the scrub's scheduled fade isn't clobbered. */
+  setClipVolume(id: string, volume: number, fade: number = 1): void {
     const state = this.clips.get(id);
     if (!state) return;
     if (this.scrubActiveIds.has(id)) {
-      // The scrub will restore to the (now updated) state.volume itself.
+      // The scrub will restore to the (now updated) steady-state itself.
       state.volume = volume;
       return;
     }
-    if (state.volume === volume) return;
     state.volume = volume;
+    const target = volume * fade;
+    if (state.appliedGain === target) return;
+    state.appliedGain = target;
     const now = this.audioContext.currentTime;
     const g = state.gainNode.gain;
     g.cancelScheduledValues(now);
-    g.setValueAtTime(volume, now);
+    g.setValueAtTime(target, now);
   }
 
   unregisterClip(id: string): void {
@@ -141,11 +154,12 @@ export class AudioScheduler {
     if (!state) return;
     this.doStop(state);
 
-    // Clear any leftover scrub automation so we start at the clip's
-    // configured steady-state volume.
+    // Clear any leftover scrub/crossfade automation so we start at the clip's
+    // configured steady-state volume (not a stale faded-out value).
     const now = this.audioContext.currentTime;
     state.gainNode.gain.cancelScheduledValues(now);
     state.gainNode.gain.setValueAtTime(state.volume, now);
+    state.appliedGain = state.volume;
 
     state.asyncId++;
     const myAsyncId = state.asyncId;
@@ -241,6 +255,7 @@ export class AudioScheduler {
       const g = state.gainNode.gain;
       g.cancelScheduledValues(now);
       g.setValueAtTime(state.volume, now);
+      state.appliedGain = state.volume;
       this.doStop(state);
     }
     this.scrubActiveIds.clear();
@@ -276,6 +291,7 @@ export class AudioScheduler {
       }
       g.linearRampToValueAtTime(0, stopAt);
       g.setValueAtTime(state.volume, stopAt + 0.001);
+      state.appliedGain = state.volume;
       this.doStop(state, stopAt);
     }
     this.scrubActiveIds.clear();
