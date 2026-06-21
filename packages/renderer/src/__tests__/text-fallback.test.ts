@@ -9,10 +9,11 @@ import { installCanvasShim } from "../text/canvasShim.js";
 // same @napi-rs/canvas the renderer uses. Confirms missing-script glyphs
 // fall through to the bundled fonts — and that emoji render in colour.
 
-function textNode(text: string): ResolvedText {
+function textNode(text: string, fontWeight?: string): ResolvedText {
   return {
     type: "text",
     runs: [{ text }],
+    fontWeight,
     contentWidth: 400,
     contentHeight: 120,
     timelineStart: 0,
@@ -20,9 +21,9 @@ function textNode(text: string): ResolvedText {
   } as ResolvedText;
 }
 
-function rasterize(text: string): { ink: number; colored: number } {
+function rasterize(text: string, fontWeight?: string): { ink: number; colored: number } {
   installCanvasShim();
-  const layout = layoutText(textNode(text), 0);
+  const layout = layoutText(textNode(text, fontWeight), 0);
   const canvas = createCanvas(
     Math.max(1, Math.ceil(layout.width)),
     Math.max(1, Math.ceil(layout.height)),
@@ -51,6 +52,19 @@ function rasterize(text: string): { ink: number; colored: number } {
 describe("text node CJK/emoji fallback (renderer)", () => {
   it("renders CJK via the Noto fallback", () => {
     expect(rasterize("日本語").ink).toBeGreaterThan(100);
+  });
+
+  it("honours the CJK variable-font weight axis (not stuck at the Thin master)", () => {
+    // The bundled Noto CJK is a variable font whose default instance is Thin
+    // (100), and Skia ignores the wght axis from `font-weight` alone — so
+    // weights 100..500 all rendered identically (the Thin master) and normal
+    // CJK came out far too light vs the browser. `drawTextLayout` now drives the
+    // axis via `fontVariationSettings`, so heavier weights make heavier glyphs.
+    const thin = rasterize("日本語", "100").ink;
+    const regular = rasterize("日本語", "400").ink;
+    const bold = rasterize("日本語", "700").ink;
+    expect(regular).toBeGreaterThan(thin * 1.1);
+    expect(bold).toBeGreaterThan(regular * 1.1);
   });
 
   it("renders emoji in colour via OpenMoji", () => {

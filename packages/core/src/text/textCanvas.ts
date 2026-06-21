@@ -31,6 +31,14 @@ export function drawTextLayout(
   ctx.textBaseline = "alphabetic";
   for (const g of layout.glyphs) {
     ctx.font = g.font;
+    // Drive the variable-font `wght` axis explicitly. Browsers infer it from
+    // `font-weight`, but @napi-rs/canvas (Skia) ignores the axis and renders our
+    // variable CJK fallback at its Thin (100) default for any non-bold weight —
+    // so normal CJK came out far too light in the renderer. Setting it to match
+    // the font string's weight is a no-op for static faces and for browsers, so
+    // both surfaces stay in sync.
+    (ctx as { fontVariationSettings?: string }).fontVariationSettings =
+      `'wght' ${g.weight}`;
     // `letterHeight` stretches glyphs vertically about the baseline. Scale
     // around `g.y` so the baseline stays put and letters grow up/down.
     const scaled = g.scaleY !== 1;

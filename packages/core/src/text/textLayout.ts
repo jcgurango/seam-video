@@ -101,6 +101,21 @@ function fontStringFromStyle(style: RunStyle): string {
   return parts.join(" ");
 }
 
+/** Numeric weight for the variable-font `wght` axis. The `font` shorthand alone
+ *  is enough for static faces and for browsers (which drive a variable font's
+ *  axis from `font-weight`), but @napi-rs/canvas (Skia) ignores the axis and
+ *  renders our variable CJK fallback at its Thin (100) default for every
+ *  non-bold weight. `drawTextLayout` pairs this with `ctx.fontVariationSettings`
+ *  so the correct master is selected on both surfaces. */
+function weightToNumber(fontWeight: string | null): number {
+  if (!fontWeight || fontWeight === "normal") return 400;
+  if (fontWeight === "bold") return 700;
+  if (fontWeight === "lighter") return 300;
+  if (fontWeight === "bolder") return 700;
+  const n = parseInt(fontWeight, 10);
+  return Number.isFinite(n) ? Math.min(1000, Math.max(1, n)) : 400;
+}
+
 function resolveRunStyle(
   run: TextRun,
   defaults: ResolvedText,
@@ -176,6 +191,10 @@ export interface TextGlyph {
   text: string;
   /** CSS font shorthand suitable for `ctx.font` ("bold 16px sans-serif"). */
   font: string;
+  /** Numeric `wght`-axis weight, paired with `font` so variable fonts pick the
+   *  right master under backends that ignore the axis (Skia). See
+   *  {@link weightToNumber}. */
+  weight: number;
   fill: string;
   /** Stroke is drawn first when present (mimics SVG `paint-order: stroke fill`). */
   stroke: string | null;
@@ -388,6 +407,7 @@ export function layoutText(
         y: baseline,
         text: frag.text,
         font: fontStringFromStyle(style),
+        weight: weightToNumber(style.fontWeight),
         fill: style.color,
         stroke: style.strokeWidth > 0 ? (style.strokeColor ?? "black") : null,
         strokeWidth: style.strokeWidth,
