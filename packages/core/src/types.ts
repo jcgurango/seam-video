@@ -421,8 +421,10 @@ export type AngleDirection = "shortest" | "cw" | "ccw";
  *  positional-index within the parent container. */
 export interface GraphicObjectBase {
   id?: string;
-  /** Easing name (linear / ease / ease-in / ease-out / ease-in-out)
-   *  overriding the frame-level default for this object only. */
+  /** Easing name (linear / ease / ease-in / ease-out / ease-in-out / discrete /
+   *  step-end / step-start / cubic-bezier(...)) overriding the frame-level
+   *  default for this object only. `discrete` holds the value until the next
+   *  keyframe, then snaps (no tween). */
   easing?: string;
   /** Winding count for the `angle` property: 1 = one extra full turn,
    *  -1 = one in the opposite direction, etc. */

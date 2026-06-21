@@ -65,6 +65,26 @@ describe("sampleNumber", () => {
     expect(sampleNumber([[10, 100], [0, 0]], 5, 10)).toBe(50);
   });
 
+  it("holds the previous value across the span with discrete easing", () => {
+    const kf = [[0, 0], [1, 10, "discrete"]] as const;
+    // No tween anywhere in [0, 1): stays at the prev value.
+    expect(sampleNumber(kf as never, 0.01, 1)).toBe(0);
+    expect(sampleNumber(kf as never, 0.5, 1)).toBe(0);
+    expect(sampleNumber(kf as never, 0.999, 1)).toBe(0);
+    // At/after the next keyframe it snaps to the next value.
+    expect(sampleNumber(kf as never, 1, 1)).toBe(10);
+  });
+
+  it("step-end is an alias for discrete", () => {
+    expect(sampleNumber([[0, 0], [1, 10, "step-end"]] as never, 0.5, 1)).toBe(0);
+  });
+
+  it("step-start jumps to the next value immediately", () => {
+    const kf = [[0, 0], [1, 10, "step-start"]] as const;
+    expect(sampleNumber(kf as never, 0.01, 1)).toBe(10);
+    expect(sampleNumber(kf as never, 0.5, 1)).toBe(10);
+  });
+
 });
 
 describe("sampleColor", () => {

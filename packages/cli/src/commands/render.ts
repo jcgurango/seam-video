@@ -1,12 +1,22 @@
 import { resolve } from "node:path";
-import { renderSeamToFile } from "@seam/renderer";
+import { renderSeamToFile, QUALITY_PRESETS, type QualityPreset } from "@seam/renderer";
 
 interface RenderOptions {
   output?: string;
   fps?: string;
   width?: string;
   height?: string;
+  quality?: string;
   proxy?: string[];
+}
+
+/** Validate the `--quality` value against the known presets. */
+function parseQuality(value: string | undefined): QualityPreset | undefined {
+  if (value == null) return undefined;
+  if (value in QUALITY_PRESETS) return value as QualityPreset;
+  throw new Error(
+    `Invalid --quality "${value}": expected one of ${Object.keys(QUALITY_PRESETS).join(", ")}.`,
+  );
 }
 
 /** Parse `--proxy ORIGINAL:REPLACEMENT` strings (split on the first ':')
@@ -32,10 +42,12 @@ export async function renderCommand(file: string, options: RenderOptions) {
 
   try {
     const proxies = parseProxies(options.proxy);
+    const quality = parseQuality(options.quality);
     const res = await renderSeamToFile(filePath, outputPath, {
       fps,
       width: options.width ? parseInt(options.width, 10) : undefined,
       height: options.height ? parseInt(options.height, 10) : undefined,
+      quality,
       proxies,
       onProgress: (f, total) => {
         if (process.stderr.isTTY) {

@@ -12,6 +12,14 @@ import {
 
 export type EasingFn = (t: number) => number;
 
+// Step easings produce no tween: the eased fraction stays pinned to one end of
+// the pair so the value jumps rather than blends. `step-end` (a.k.a.
+// `discrete`) holds the *previous* keyframe's value across the whole span and
+// snaps to the next exactly at the next keyframe — the usual "hold" /
+// "constant" interpolation. `step-start` jumps to the next value immediately.
+const stepEnd: EasingFn = (t) => (t >= 1 ? 1 : 0);
+const stepStart: EasingFn = (t) => (t <= 0 ? 0 : 1);
+
 const KEYWORDS: Record<string, EasingFn> = {
   linear: easeLinear,
   // CSS "ease" is roughly cubic-bezier(0.25, 0.1, 0.25, 1). Close enough to
@@ -21,6 +29,10 @@ const KEYWORDS: Record<string, EasingFn> = {
   "ease-in": easeCubicIn,
   "ease-out": easeCubicOut,
   "ease-in-out": easeCubicInOut,
+  // No interpolation — hold prev, snap at the next keyframe.
+  discrete: stepEnd,
+  "step-end": stepEnd,
+  "step-start": stepStart,
 };
 
 const BEZIER_RE =
@@ -36,7 +48,7 @@ export function resolveEasing(name: string | undefined): EasingFn {
     return cubicBezier(x1, y1, x2, y2);
   }
   throw new Error(
-    `Unknown easing: "${name}" (expected one of linear, ease, ease-in, ease-out, ease-in-out, or cubic-bezier(a,b,c,d))`
+    `Unknown easing: "${name}" (expected one of linear, ease, ease-in, ease-out, ease-in-out, discrete, step-end, step-start, or cubic-bezier(a,b,c,d))`
   );
 }
 

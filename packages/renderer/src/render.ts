@@ -36,7 +36,12 @@ import {
   VideoSampleSource,
   AudioBufferSource,
   VideoSample,
+  QUALITY_VERY_LOW,
+  QUALITY_LOW,
+  QUALITY_MEDIUM,
   QUALITY_HIGH,
+  QUALITY_VERY_HIGH,
+  type Quality,
 } from "mediabunny";
 import { createGpuDevice } from "./gpu.js";
 import { NodeBackend } from "./NodeBackend.js";
@@ -44,10 +49,32 @@ import { FrameSource, collectDrawables } from "./frameSource.js";
 import { renderAudioMix, timelineHasAudio } from "./audio.js";
 import type { AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
 
+/** Encode quality presets (video + audio bitrate). Each maps to a mediabunny
+ *  `Quality` — a subjective tier whose actual bitrate scales with resolution ×
+ *  frame rate, not a fixed kbps. */
+export type QualityPreset =
+  | "very-low"
+  | "low"
+  | "medium"
+  | "high"
+  | "very-high";
+
+export const QUALITY_PRESETS: Record<QualityPreset, Quality> = {
+  "very-low": QUALITY_VERY_LOW,
+  low: QUALITY_LOW,
+  medium: QUALITY_MEDIUM,
+  high: QUALITY_HIGH,
+  "very-high": QUALITY_VERY_HIGH,
+};
+
+export const DEFAULT_QUALITY: QualityPreset = "high";
+
 export interface RenderOptions {
   fps?: number;
   width?: number;
   height?: number;
+  /** Encode quality tier for video + audio (default `"high"`). */
+  quality?: QualityPreset;
   /** Readback ring depth — how many frames' GPU→CPU readbacks stay in flight
    *  at once (default 3 / triple-buffered). Higher keeps the GPU fed but uses
    *  more staging memory. */
@@ -195,10 +222,11 @@ export async function renderSeamToFile(
       format: new Mp4OutputFormat(),
       target: new FilePathTarget(outPath),
     });
-    const videoSource = new VideoSampleSource({ codec: "avc", bitrate: QUALITY_HIGH });
+    const quality = QUALITY_PRESETS[options.quality ?? DEFAULT_QUALITY];
+    const videoSource = new VideoSampleSource({ codec: "avc", bitrate: quality });
     output.addVideoTrack(videoSource, { frameRate: fps });
     const audioSource = hasAudio
-      ? new AudioBufferSource({ codec: "aac", bitrate: QUALITY_HIGH })
+      ? new AudioBufferSource({ codec: "aac", bitrate: quality })
       : null;
     if (audioSource) output.addAudioTrack(audioSource);
     await output.start();

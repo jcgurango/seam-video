@@ -20,6 +20,11 @@ program
   .option("--width <number>", "Output width in pixels")
   .option("--height <number>", "Output height in pixels")
   .option(
+    "--quality <preset>",
+    "Encode quality tier (video + audio): very-low | low | medium | high | very-high. Subjective tier — actual bitrate scales with resolution × fps.",
+    "high",
+  )
+  .option(
     "--proxy <ORIGINAL:REPLACEMENT>",
     "Swap a source path before rendering: any node whose `source` exactly equals ORIGINAL renders REPLACEMENT instead. Matched verbatim (no path resolution); split on the first ':'. Repeatable.",
     (val: string, acc: string[]) => {
