@@ -18,6 +18,7 @@ import {
   Box,
   Split,
   Combine,
+  AudioLines,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
 import type { ResolvedTimeline } from "@seam/core";
@@ -37,6 +38,7 @@ import {
   walkComposeDependencies,
 } from "./composeTool.js";
 import { applyBin, canBin } from "./binTool.js";
+import { normalizeTargets } from "./normalizeTool.js";
 import { sliceAtPlayhead } from "./splitTool.js";
 import { applyAttach } from "./attachTool.js";
 import {
@@ -71,6 +73,10 @@ interface ControlsBarProps {
   onTranscribe: () => void;
   /** True while a transcription job is running — disables the CC button. */
   transcribing: boolean;
+  /** Peak-normalize the selected clip/audio nodes to -1 dBFS. */
+  onNormalize: () => void;
+  /** True while a normalize job is decoding — disables the button. */
+  normalizing: boolean;
   /** CC-cut mode: commit selections and splice into the root doc. */
   onCCCutOk: () => void;
   /** CC-cut mode: discard selections and exit. */
@@ -200,6 +206,8 @@ export default function ControlsBar({
   platform,
   onTranscribe,
   transcribing,
+  onNormalize,
+  normalizing,
   onCCCutOk,
   onCCCutCancel,
   ccCutHasSelections,
@@ -396,6 +404,13 @@ export default function ControlsBar({
     // can see the change in place.
     onSelectionChange([selectedIndices[0]]);
   }, [canBinSelection, doc, selectedIndices, onDocumentChange, onSelectionChange]);
+
+  // ── Normalize ──────────────────────────────────────────────────
+  // Enabled when the path-keyed selection contains at least one clip/audio
+  // node (compositions and other types are ignored by the tool).
+  const canNormalize =
+    !normalizing &&
+    normalizeTargets(doc, selection.map(parsePath)).length > 0;
 
   // ── Word tools ─────────────────────────────────────────────────
   // Separate by word: one or more CC transcription items (with a words
@@ -595,6 +610,18 @@ export default function ControlsBar({
               }
             >
               <Captions size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={onNormalize}
+              disabled={!canNormalize}
+              style={{ ...BTN_STYLE, opacity: canNormalize ? 1 : 0.3 }}
+              title={
+                normalizing
+                  ? "Normalizing…"
+                  : "Normalize the selected clip/audio to -1 dB peak"
+              }
+            >
+              <AudioLines size={ICON_SIZE} />
             </button>
           </>
         ) : (

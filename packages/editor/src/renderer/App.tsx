@@ -19,6 +19,7 @@ import WebTopBar from "./WebTopBar.js";
 import SettingsDialog from "./SettingsDialog.js";
 import { useSettings } from "./useSettings.js";
 import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
+import { useNormalize } from "./useNormalize.js";
 import CompositionAudioDialog from "./CompositionAudioDialog.js";
 import Toast from "./Toast.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
@@ -731,6 +732,24 @@ export default function App({ platform }: AppProps) {
     }
   }, [transcriber.errors]);
 
+  // Peak-normalize: analyze each selected clip/audio's source region and set
+  // its `volume` (dB gain) so the peak lands at -1 dBFS. Commits one undo step.
+  const normalizer = useNormalize({
+    platform,
+    basePath,
+    onDocumentChange: updateDocument,
+  });
+
+  useEffect(() => {
+    if (normalizer.errors.length > 0) setTranscribeNotice(normalizer.errors);
+  }, [normalizer.errors]);
+
+  const handleNormalize = useCallback(() => {
+    if (selection.length === 0) return;
+    setTranscribeNotice([]);
+    void normalizer.run(document, selection);
+  }, [normalizer, document, selection]);
+
   // Root-level selected nodes that are compositions — they need the mix-mode
   // modal before the job runs (clip/audio targets transcribe directly).
   const selectedCompositionCount = useMemo(() => {
@@ -957,6 +976,8 @@ export default function App({ platform }: AppProps) {
               platform={platform}
               onTranscribe={handleTranscribe}
               transcribing={transcriber.progress != null}
+              onNormalize={handleNormalize}
+              normalizing={normalizer.normalizing}
               onCCCutOk={handleCCCutOk}
               onCCCutCancel={handleCCCutCancel}
               ccCutHasSelections={ccSelections.length > 0}

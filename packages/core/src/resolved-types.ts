@@ -70,7 +70,7 @@ export interface ResolvedClip {
    *  in over it). */
   transitionOut?: number;
   /** Audio gain multiplier; absent means unity (1). */
-  volume?: Keyframed<number>;
+  volume?: Keyframed<number | string>;
   filters?: Filter[];
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
@@ -131,7 +131,7 @@ export interface ResolvedAudio {
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
-  volume?: Keyframed<number>;
+  volume?: Keyframed<number | string>;
 }
 
 export interface ResolvedData {
@@ -195,7 +195,7 @@ export interface ResolvedComposition {
   backgroundColor?: string;
   /** Uniform volume multiplier applied to every audio-bearing descendant.
    *  Sampled per-frame by the audio mixers in the comp's output time. */
-  volume?: Keyframed<number>;
+  volume?: Keyframed<number | string>;
   /** Inner canvas dim — the AUTHORED `Keyframed<Length>` preserved through
    *  the spatial pass (default `"100%"` of the parent) so per-frame
    *  consumers sample it against live parent dims. The baked t=0 pixel
@@ -261,7 +261,7 @@ export interface ResolvedTimeline {
   backgroundColor?: string;
   /** Root-composition volume multiplier — scales every audio-bearing
    *  descendant. Sampled in output time against the timeline duration. */
-  volume?: Keyframed<number>;
+  volume?: Keyframed<number | string>;
   /** Root inner canvas dim. Carries the authored value pre-spatial;
    *  `resolveSpatial` collapses it to a pixel number (and rejects percentage
    *  strings AND keyframes on the root, since there's no parent reference and

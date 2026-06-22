@@ -16,6 +16,9 @@ export {
   samplePadding,
   sampleLength,
   sampleInset,
+  sampleVolume,
+  resolveVolume,
+  dbToGain,
 } from "./keyframes.js";
 
 export type { FilledObject, FilledTree, FlatFrame, FilledFrame } from "./interp.js";

@@ -153,8 +153,9 @@ export interface Clip extends ChildTimingFields {
   out: number;
   speed?: number;
   duration?: number;
-  /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
-  volume?: Keyframed<number>;
+  /** Audio-channel gain. Default 1; 0 mutes; >1 amplifies. A linear multiplier
+   *  (0..4) or a decibel string like `"25dB"` / `"-25.5dB"` (uncapped). */
+  volume?: Keyframed<number | string>;
 }
 
 /**
@@ -204,8 +205,9 @@ export interface Audio {
   duration?: number;
   overflow?: Overflow;
   underflow?: Underflow;
-  /** Audio-channel gain multiplier. Default 1; 0 mutes; >1 amplifies. */
-  volume?: Keyframed<number>;
+  /** Audio-channel gain. Default 1; 0 mutes; >1 amplifies. A linear multiplier
+   *  (0..4) or a decibel string like `"25dB"` / `"-25.5dB"` (uncapped). */
+  volume?: Keyframed<number | string>;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
@@ -398,10 +400,11 @@ export interface Composition extends ChildTimingFields {
   /** Any valid SVG/CSS fill value. Painted across the composition's
    *  container rect under all children. */
   backgroundColor?: string;
-  /** Uniform volume multiplier (0..4) applied to every audio-bearing
-   *  descendant (clips / audio / nested compositions). Animatable, sampled
-   *  in the composition's output time. Mirrors clip `volume`. */
-  volume?: Keyframed<number>;
+  /** Uniform volume applied to every audio-bearing descendant (clips / audio /
+   *  nested compositions). Animatable, sampled in the composition's output
+   *  time. Mirrors clip `volume`: a linear multiplier (0..4) or a decibel
+   *  string like `"25dB"` / `"-25.5dB"` (uncapped). */
+  volume?: Keyframed<number | string>;
   /** Inner canvas width. Number = pixels; percentage = fraction of the
    *  parent container's content width; defaults to `"100%"` of the parent.
    *  Animatable. The root composition must use a static pixel number (no

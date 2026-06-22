@@ -5,6 +5,9 @@ import {
   sampleColor,
   samplePadding,
   sampleLength,
+  sampleVolume,
+  resolveVolume,
+  dbToGain,
 } from "../animation/keyframes.js";
 
 describe("isKeyframed", () => {
@@ -85,6 +88,37 @@ describe("sampleNumber", () => {
     expect(sampleNumber(kf as never, 0.5, 1)).toBe(10);
   });
 
+});
+
+describe("sampleVolume (linear + dB)", () => {
+  it("passes through a static linear value", () => {
+    expect(sampleVolume(2, 0, 10)).toBe(2);
+    expect(sampleVolume(0, 5, 10)).toBe(0);
+  });
+
+  it("converts dB strings to linear gain (uncapped)", () => {
+    expect(resolveVolume("0dB")).toBeCloseTo(1, 6);
+    expect(resolveVolume("6dB")).toBeCloseTo(dbToGain(6), 6); // ~1.995
+    expect(resolveVolume("-6dB")).toBeCloseTo(dbToGain(-6), 6); // ~0.501
+    // Exceeds the linear 0..4 cap — allowed for dB.
+    expect(resolveVolume("25dB")).toBeGreaterThan(4);
+    expect(sampleVolume("-25.5dB", 0, 10)).toBeCloseTo(dbToGain(-25.5), 6);
+  });
+
+  it("accepts case/spacing variants", () => {
+    expect(resolveVolume("3 db")).toBeCloseTo(dbToGain(3), 6);
+    expect(resolveVolume("+3dB")).toBeCloseTo(dbToGain(3), 6);
+  });
+
+  it("interpolates in linear gain across mixed linear/dB keyframes", () => {
+    // 0dB (gain 1) → "6dB" (gain ~1.995): midpoint is the linear average.
+    const mid = sampleVolume([[0, "0dB"], [10, "6dB"]] as never, 5, 10);
+    expect(mid).toBeCloseTo((1 + dbToGain(6)) / 2, 6);
+  });
+
+  it("falls back to unity for an unparseable string", () => {
+    expect(resolveVolume("loud")).toBe(1);
+  });
 });
 
 describe("sampleColor", () => {

@@ -72,6 +72,37 @@ export function sampleNumber(
   return sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
 }
 
+// Volume: a linear gain multiplier or a decibel string ("25dB", "-25.5dB").
+// dB is converted to linear gain (10^(dB/20)) before interpolation, so a
+// keyframe set may freely mix linear and dB values and the tween stays linear
+// in gain — matching how plain numeric volumes already interpolate.
+const DB_RE = /^([+-]?\d+(?:\.\d+)?)\s*dB$/i;
+
+/** Decibels → linear gain. 0dB = 1, +6dB ≈ 2×, -∞ → 0. */
+export function dbToGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
+/** Resolve a single volume value (linear number or "<n>dB" string) to linear
+ *  gain. Unrecognized strings fall back to unity so a typo never silences. */
+export function resolveVolume(value: number | string): number {
+  if (typeof value === "number") return value;
+  const m = DB_RE.exec(value.trim());
+  if (m) return dbToGain(parseFloat(m[1]));
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 1;
+}
+
+export function sampleVolume(
+  value: Keyframed<number | string>,
+  t: number,
+  duration: number
+): number {
+  if (!isKeyframed(value)) return resolveVolume(value as number | string);
+  const frames = buildFrames(value, duration, resolveVolume);
+  return sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
+}
+
 export function sampleColor(
   value: Keyframed<string>,
   t: number,

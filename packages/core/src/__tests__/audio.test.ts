@@ -235,4 +235,44 @@ describe("audio", () => {
     );
     expect(result.success).toBe(false);
   });
+
+  it("accepts and preserves dB-string volume (static + keyframed)", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 2, volume: "25dB" },
+          {
+            type: "audio",
+            source: "a.mp3",
+            in: 0,
+            out: 1,
+            volume: [[0, "-25.5dB"], [1, "0dB"]],
+          },
+        ],
+      })
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const r = resolveComposition(result.data);
+      const c = r.children[0];
+      const a = r.children[1];
+      // dB strings ride through resolution verbatim (sampled at playback).
+      if (c.type === "clip") expect(c.volume).toBe("25dB");
+      if (a.type === "audio")
+        expect(a.volume).toEqual([[0, "-25.5dB"], [1, "0dB"]]);
+    }
+  });
+
+  it("rejects a non-dB volume string", () => {
+    const result = parseSeamFile(
+      JSON.stringify({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 1, volume: "loud" },
+        ],
+      })
+    );
+    expect(result.success).toBe(false);
+  });
 });

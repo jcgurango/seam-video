@@ -37,6 +37,18 @@ const TimeExprSchema = z.union([z.number(), TimeExprStringSchema]);
 
 const EasingSchema = z.string();
 
+/** A volume value: either a linear gain multiplier (0..4, 1 = unity) or a
+ *  decibel string like `"25dB"` / `"-25.5dB"` (case-insensitive, optional
+ *  sign). dB is converted to linear gain at sample time and is **not** capped
+ *  — `"25dB"` ≈ 17.8× — so authors can boost past the linear cap when they
+ *  reach for dB explicitly. */
+const VolumeValueSchema = z.union([
+  z.number().nonnegative().max(4),
+  z.string().regex(/^[+-]?\d+(?:\.\d+)?\s*dB$/i, {
+    message: 'Volume string must be a decibel value like "25dB" or "-25.5dB".',
+  }),
+]);
+
 /** Wraps a value schema so it accepts either the static value directly or
  *  an array of `[time, value, easing?]` keyframe tuples. The discriminator
  *  is structural: an array whose first element is itself a tuple is read
@@ -181,7 +193,7 @@ export const ClipSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  volume: keyframed(z.number().nonnegative().max(4)).optional(),
+  volume: keyframed(VolumeValueSchema).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
@@ -222,7 +234,7 @@ export const AudioSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
-  volume: keyframed(z.number().nonnegative().max(4)).optional(),
+  volume: keyframed(VolumeValueSchema).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...TransitionFieldSchema,
@@ -620,7 +632,7 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     /** Uniform volume multiplier (0..4) applied to every audio-bearing
      *  descendant (clips / audio / nested compositions). Animatable, sampled
      *  in the composition's output time. Mirrors clip `volume`. */
-    volume: keyframed(z.number().nonnegative().max(4)).optional(),
+    volume: keyframed(VolumeValueSchema).optional(),
     contentWidth: keyframed(LengthSchema).optional(),
     contentHeight: keyframed(LengthSchema).optional(),
     // Per-edge inset / crop — composition-only. See InsetSchema above.

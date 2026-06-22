@@ -16,7 +16,8 @@ import {
   compileSeamFile,
   resolveComposition,
   flattenResolved,
-  sampleNumber,
+  sampleVolume,
+  isKeyframed,
   type BinEntry,
   type Composition,
   type FlatLeaf,
@@ -175,10 +176,10 @@ function applyGainEnvelope(
   const fadeIn = leaf.transition ?? 0;
   const fadeOut = leaf.transitionOut ?? 0;
   const vol = leaf.volume;
-  const keyframed = vol != null && typeof vol !== "number";
+  const keyframed = isKeyframed(vol);
 
   const gainAt = (local: number): number => {
-    let g = vol == null ? 1 : sampleNumber(vol, local, dur);
+    let g = vol == null ? 1 : sampleVolume(vol, local, dur);
     if (fadeIn > 0 && local < fadeIn) g *= clamp01(local / fadeIn);
     if (fadeOut > 0) {
       const e = dur - local;

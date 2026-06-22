@@ -7,7 +7,7 @@ import type {
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
-import { isKeyframed, sampleNumber } from "@seam/core";
+import { isKeyframed, sampleVolume } from "@seam/core";
 import type { RenderCommand } from "@seam/compositor";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
@@ -96,7 +96,7 @@ export class FrameCoordinator {
     // Seed with the root composition's own volume (scales everything).
     const rootVol = timeline.volume;
     const rootVolumeAt = rootVol != null
-      ? (t: number) => sampleNumber(rootVol, t, timeline.duration)
+      ? (t: number) => sampleVolume(rootVol, t, timeline.duration)
       : () => 1;
     this.flatClips = collectClips(
       timeline.children,
@@ -168,7 +168,7 @@ export class FrameCoordinator {
         // updated each tick via setClipVolume.
         const baseVolume = flat.clip.volume == null
           ? 1
-          : sampleNumber(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
+          : sampleVolume(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
         const initialVolume = baseVolume * flat.compVolumeAt(flat.absoluteStart);
         audioScheduler.registerClip(
           audioId,
@@ -405,7 +405,7 @@ export class FrameCoordinator {
         if (!isKeyframed(v) && fade === 1 && !flat.hasCompVolume) continue;
         const localT = currentTime - flat.absoluteStart;
         const dur = flat.absoluteEnd - flat.absoluteStart;
-        const base = isKeyframed(v) ? sampleNumber(v, localT, dur) : (v ?? 1);
+        const base = sampleVolume(v ?? 1, localT, dur);
         const compVol = flat.compVolumeAt(currentTime);
         // Pass the crossfade `fade` separately so it stays a transient — the
         // scheduler keeps `base * compVol` as the steady state it restores to,
@@ -461,7 +461,7 @@ function collectClips(
       const compAbsStart = parentToAbsolute(comp.timelineStart);
       const compVol = comp.volume;
       const childVolumeAt = compVol != null
-        ? (t: number) => volumeAt(t) * sampleNumber(compVol, t - compAbsStart, comp.duration)
+        ? (t: number) => volumeAt(t) * sampleVolume(compVol, t - compAbsStart, comp.duration)
         : volumeAt;
       const childHasVol = hasVol || compVol != null;
 

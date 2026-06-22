@@ -14,7 +14,7 @@ import { isAbsolute, join } from "node:path";
 import { registerMediabunnyServer } from "@mediabunny/server";
 import { Input, FilePathSource, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 import { OfflineAudioContext, AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
-import { sampleNumber, isKeyframed } from "@seam/core";
+import { sampleVolume, resolveVolume, isKeyframed } from "@seam/core";
 import type {
   Keyframed,
   ResolvedAudio,
@@ -28,7 +28,7 @@ const SR = 48000;
 /** An enclosing composition's volume, with its absolute output start + output
  *  duration so it can be sampled (in output time) at any absolute moment. */
 interface VolumeEnv {
-  volume: Keyframed<number>;
+  volume: Keyframed<number | string>;
   startAbs: number;
   duration: number;
 }
@@ -192,25 +192,25 @@ export async function renderAudioMix(
         : 0;
     const vol = node.volume;
     // Enclosing-composition volume at absolute output time T (product of every
-    // ancestor comp's volume sampled in its own output time). sampleNumber
-    // handles static + keyframed uniformly.
+    // ancestor comp's volume sampled in its own output time). sampleVolume
+    // handles static + keyframed + dB uniformly.
     const compVolAt = (T: number): number => {
       let m = 1;
-      for (const cv of compVolumes) m *= sampleNumber(cv.volume, T - cv.startAbs, cv.duration);
+      for (const cv of compVolumes) m *= sampleVolume(cv.volume, T - cv.startAbs, cv.duration);
       return m;
     };
     const hasAnimatedComp = compVolumes.some((cv) => isKeyframed(cv.volume));
-    const staticVol = (typeof vol === "number" || vol == null) && !hasAnimatedComp;
+    const staticVol = !isKeyframed(vol) && !hasAnimatedComp;
 
     if (fadeIn === 0 && fadeOut === 0 && staticVol) {
       // All static: comp volumes are constant, so sample at the clip's start.
-      gain.gain.value = (vol == null ? 1 : (vol as number)) * compVolAt(Math.max(0, start));
+      gain.gain.value = (vol == null ? 1 : resolveVolume(vol)) * compVolAt(Math.max(0, start));
     } else {
       const n = Math.max(2, Math.ceil(audioDuration * 100));
       const curve = new Float32Array(n);
       for (let k = 0; k < n; k++) {
         const tau = (k / (n - 1)) * audioDuration;
-        let g = vol == null ? 1 : sampleNumber(vol, tau, audioDuration);
+        let g = vol == null ? 1 : sampleVolume(vol, tau, audioDuration);
         g *= compVolAt(Math.max(0, start) + tau);
         if (fadeIn > 0) g *= Math.min(1, tau / fadeIn);
         if (fadeOut > 0) g *= Math.min(1, (audioDuration - tau) / fadeOut);
