@@ -1,0 +1,47 @@
+# Builds both Seam images from the repo root as the shared build context,
+# switching only the Dockerfile per service.
+#
+# Provide config via a .env file beside this file (or the shell environment):
+#   ADMIN_USER=admin@example.com
+#   ADMIN_PASS=change-me
+#   BETTER_AUTH_SECRET=<long random string>
+#   SEAM_CLOUD_URL=https://cloud.example.com   # public URL the browser uses
+#
+#   docker compose up --build
+
+services:
+  cloud:
+    build:
+      context: .
+      dockerfile: packages/cloud/Dockerfile
+    environment:
+      ADMIN_USER: ${ADMIN_USER:?ADMIN_USER is required}
+      ADMIN_PASS: ${ADMIN_PASS:?ADMIN_PASS is required}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      PORT: "8787"
+      DATA_DIR: /data
+    volumes:
+      - cloud-data:/data
+    ports:
+      - "${CLOUD_PORT:-8787}:8787"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    environment:
+      # The PUBLIC base URL the browser uses to reach the cloud — NOT the
+      # internal "cloud" service name (the browser can't resolve it). e.g.
+      # http://localhost:8787 for local testing, or your real domain.
+      SEAM_CLOUD_URL: ${SEAM_CLOUD_URL:-}
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - cloud
+    restart: unless-stopped
+
+volumes:
+  cloud-data:

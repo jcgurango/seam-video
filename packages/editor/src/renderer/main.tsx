@@ -17,9 +17,12 @@ const platform = detectPlatform();
 // Electron), wire the optional cloud connection from VITE_SEAM_CLOUD_URL —
 // same as @seam/web's main.tsx.
 if (platform instanceof WebPlatform) {
-  const cloudUrl = (import.meta as { env?: Record<string, string | undefined> })
-    .env?.VITE_SEAM_CLOUD_URL;
-  const cloud = platform.configureCloud(cloudUrl);
+  const runtimeCloudUrl = (window as unknown as { __SEAM_CLOUD_URL__?: string })
+    .__SEAM_CLOUD_URL__;
+  const buildCloudUrl = (
+    import.meta as { env?: Record<string, string | undefined> }
+  ).env?.VITE_SEAM_CLOUD_URL;
+  const cloud = platform.configureCloud(runtimeCloudUrl || buildCloudUrl);
   if (cloud) void cloud.restore();
 }
 
