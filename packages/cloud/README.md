@@ -83,6 +83,18 @@ are scoped to the calling user. Auth lives at `/api/auth/*`.
 Sort keys mirror the web editor's media browser (`date` = capture date,
 `added` = import time, `used` = last used).
 
+**Duplicate detection (per user).** Each upload is fingerprinted with a
+SHA-256 over `(size ∥ first 64KB ∥ last 64KB)` — the same hash the editor
+computes client-side. Filename and content hash are each unique per user:
+
+- **same filename + same hash** → accept idempotently (`200`, returns the
+  existing record; no new row)
+- **same filename, different content** → `409 { reason: "filename-exists" }`
+- **same content, different filename** → `409 { reason: "content-exists" }`
+
+Conflicts carry the existing record so the editor can drive a manual/
+semi-automated reconciliation. The server never tries to guess.
+
 ### Projects
 
 | Method | Path | Purpose |

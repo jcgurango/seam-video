@@ -12,6 +12,8 @@ export interface MediaRecord {
   kind: MediaKind;
   contentType: string | null;
   size: number;
+  /** SHA-256 over (size ∥ first 64KB ∥ last 64KB) — see media/fingerprint.ts. */
+  contentHash: string | null;
   addedAt: number;
   lastUsedAt: number | null;
   captureDate: number | null;

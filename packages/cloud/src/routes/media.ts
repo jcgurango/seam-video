@@ -12,6 +12,7 @@ import {
   thumbPath,
 } from "../storage.js";
 import { classifyByName, extractMediaInfo } from "../media/extract.js";
+import { fingerprint } from "../media/fingerprint.js";
 import type { MediaKind, MediaRecord, Page } from "../types.js";
 
 const KINDS = ["video", "audio", "image", "pmtiles"] as const;
@@ -51,6 +52,7 @@ interface MediaRow {
   kind: MediaKind;
   contentType: string | null;
   size: number;
+  contentHash: string | null;
   addedAt: number;
   lastUsedAt: number | null;
   captureDate: number | null;
@@ -136,9 +138,48 @@ mediaRoutes.post("/", async (c) => {
     return c.json({ error: `Unsupported media type for "${filename}"` }, 400);
   }
 
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const contentHash = fingerprint(bytes);
+
+  // Duplicate detection (per user). Rule: same filename + same content hash =
+  // the identical file → accept idempotently (return the existing record). If
+  // only one matches — same name with different content, or same content under
+  // a different name — reject with 409. The editor reconciles conflicts later;
+  // the server stays dumb on purpose.
+  const byName = db
+    .prepare("SELECT * FROM media WHERE userId = ? AND filename = ?")
+    .get(userId, filename) as MediaRow | undefined;
+  if (byName) {
+    if (byName.contentHash === contentHash) {
+      return c.json(toRecord(byName), 200); // identical re-upload
+    }
+    return c.json(
+      {
+        error: "conflict",
+        reason: "filename-exists",
+        message: `A different file named "${filename}" already exists.`,
+        existing: toRecord(byName),
+      },
+      409
+    );
+  }
+  const byHash = db
+    .prepare("SELECT * FROM media WHERE userId = ? AND contentHash = ?")
+    .get(userId, contentHash) as MediaRow | undefined;
+  if (byHash) {
+    return c.json(
+      {
+        error: "conflict",
+        reason: "content-exists",
+        message: `This file's content already exists as "${byHash.filename}".`,
+        existing: toRecord(byHash),
+      },
+      409
+    );
+  }
+
   const id = randomUUID();
   const now = Date.now();
-  const bytes = Buffer.from(await file.arrayBuffer());
   await saveMedia(userId, id, bytes);
 
   // Headless extraction (mirrors the editor's mediaThumbs.ts). Best-effort —
@@ -168,6 +209,7 @@ mediaRoutes.post("/", async (c) => {
     kind,
     contentType: file.type || null,
     size: bytes.length,
+    contentHash,
     addedAt: meta.addedAt ?? now,
     lastUsedAt: meta.lastUsedAt ?? null,
     captureDate: extracted?.captureDate ?? meta.captureDate ?? null,
@@ -180,14 +222,24 @@ mediaRoutes.post("/", async (c) => {
     updatedAt: now,
   };
 
-  db.prepare(
-    `INSERT INTO media (id, userId, filename, kind, contentType, size, addedAt,
-       lastUsedAt, captureDate, width, height, duration, probed, hasThumb,
-       createdAt, updatedAt)
-     VALUES (@id, @userId, @filename, @kind, @contentType, @size, @addedAt,
-       @lastUsedAt, @captureDate, @width, @height, @duration, @probed, @hasThumb,
-       @createdAt, @updatedAt)`
-  ).run(row);
+  try {
+    db.prepare(
+      `INSERT INTO media (id, userId, filename, kind, contentType, size, contentHash,
+         addedAt, lastUsedAt, captureDate, width, height, duration, probed, hasThumb,
+         createdAt, updatedAt)
+       VALUES (@id, @userId, @filename, @kind, @contentType, @size, @contentHash,
+         @addedAt, @lastUsedAt, @captureDate, @width, @height, @duration, @probed,
+         @hasThumb, @createdAt, @updatedAt)`
+    ).run(row);
+  } catch (err) {
+    // Backstop for the unique-index race (concurrent identical uploads): the
+    // pre-check passed but another request inserted first. Roll back the bytes.
+    await deleteMedia(userId, id);
+    if (err instanceof Error && /UNIQUE constraint/.test(err.message)) {
+      return c.json({ error: "conflict", reason: "race", message: err.message }, 409);
+    }
+    throw err;
+  }
 
   return c.json(toRecord(row), 201);
 });

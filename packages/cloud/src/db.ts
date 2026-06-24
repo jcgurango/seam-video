@@ -28,6 +28,7 @@ export function createAppTables(): void {
       kind        TEXT NOT NULL,          -- video | audio | image | pmtiles
       contentType TEXT,
       size        INTEGER NOT NULL,
+      contentHash TEXT,                    -- SHA-256(size ∥ head64k ∥ tail64k)
       -- sidecar metadata (mirrors @seam/editor MediaMeta) --
       addedAt     INTEGER NOT NULL,
       lastUsedAt  INTEGER,
@@ -42,7 +43,6 @@ export function createAppTables(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_media_user ON media(userId);
-    CREATE INDEX IF NOT EXISTS idx_media_filename ON media(userId, filename);
 
     CREATE TABLE IF NOT EXISTS project (
       id           TEXT PRIMARY KEY,
@@ -55,5 +55,20 @@ export function createAppTables(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_project_user ON project(userId);
+  `);
+
+  // Migration: add contentHash to a media table created before it existed.
+  const cols = db.prepare("PRAGMA table_info(media)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "contentHash")) {
+    db.exec("ALTER TABLE media ADD COLUMN contentHash TEXT");
+  }
+
+  // Per-user uniqueness on filename and on content hash. Duplicate filenames
+  // and duplicate hashes are both rejected at upload (see routes/media.ts);
+  // these indexes are the backstop. SQLite treats NULLs as distinct, so rows
+  // awaiting a backfilled hash don't collide.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_filename ON media(userId, filename);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_hash ON media(userId, contentHash);
   `);
 }

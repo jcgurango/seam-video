@@ -1,7 +1,10 @@
+import fs from "node:fs";
 import { getMigrations } from "better-auth/db/migration";
 import { auth } from "./auth.js";
 import { createAppTables, db } from "./db.js";
 import { env } from "./env.js";
+import { fingerprint } from "./media/fingerprint.js";
+import { mediaPath } from "./storage.js";
 
 /**
  * One-time startup sequence:
@@ -14,7 +17,31 @@ export async function initDatabase(): Promise<void> {
   const { runMigrations } = await getMigrations(auth.options);
   await runMigrations();
   createAppTables();
+  backfillContentHashes();
   await ensureAdmin();
+}
+
+/**
+ * Compute content hashes for any media rows that predate the contentHash
+ * column (the file bytes are still on disk). One-time per legacy row, so
+ * duplicate detection works for media uploaded before this migration.
+ */
+function backfillContentHashes(): void {
+  const rows = db
+    .prepare("SELECT id, userId FROM media WHERE contentHash IS NULL")
+    .all() as { id: string; userId: string }[];
+  if (rows.length === 0) return;
+
+  console.log(`[seam-cloud] Backfilling content hashes for ${rows.length} media row(s)…`);
+  const update = db.prepare("UPDATE media SET contentHash = ? WHERE id = ?");
+  for (const r of rows) {
+    try {
+      const buf = fs.readFileSync(mediaPath(r.userId, r.id));
+      update.run(fingerprint(buf), r.id);
+    } catch (err) {
+      console.warn(`[seam-cloud] could not hash media ${r.id}:`, err);
+    }
+  }
 }
 
 async function ensureAdmin(): Promise<void> {
