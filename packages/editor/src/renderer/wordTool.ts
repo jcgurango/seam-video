@@ -105,6 +105,18 @@ export function separateByWord(
   for (const idx of selectedIndices) {
     const node = childAtBlockIndex(doc, idx);
     if (!isTranscriptionWords(node)) continue;
+    // Whisper occasionally emits a word whose start == end (or worse). Such a
+    // zero-length word would become a zero-length item the user can't see or
+    // grab — bail and point at the offending word so they can fix the
+    // transcription first.
+    const payload = node.data as TranscriptionPayload;
+    const zero = payload.words.find((w) => !(w.end > w.start));
+    if (zero) {
+      return {
+        ok: false,
+        error: `Cannot group by word: "${zero.text}" has zero length`,
+      };
+    }
     const words = wordsFromData(node);
     if (!words) return { ok: false, error: MALFORMED };
     expansions.set(idx, words);
