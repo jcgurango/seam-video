@@ -2,14 +2,24 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Plus, FileText, Trash2, Download } from "lucide-react";
 import type { WebPlatform, ProjectEntry } from "./platform/web.js";
 import MediaBrowser from "./MediaBrowser.js";
+import { routePath, tabRoute } from "./webRouting.js";
+
+type Tab = "projects" | "media";
 
 interface ProjectBrowserProps {
   platform: WebPlatform;
   onOpen: (filePath: string, json: string) => void;
   onNew: () => void;
+  /** Active landing tab (controlled by App, mirrored to the URL). */
+  tab: Tab;
+  onTabChange: (tab: Tab) => void;
 }
 
-type Tab = "projects" | "media";
+/** A click that should open in a new tab / window — let the browser handle the
+ *  anchor's href instead of doing in-app navigation. */
+function isModifiedClick(e: React.MouseEvent): boolean {
+  return e.metaKey || e.ctrlKey || e.shiftKey || e.altKey;
+}
 
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts;
@@ -32,8 +42,9 @@ export default function ProjectBrowser({
   platform,
   onOpen,
   onNew,
+  tab,
+  onTabChange,
 }: ProjectBrowserProps) {
-  const [tab, setTab] = useState<Tab>("projects");
   const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
 
   const refresh = useCallback(() => {
@@ -101,11 +112,16 @@ export default function ProjectBrowser({
         <div style={{ display: "flex", gap: 4 }}>
           <TabButton
             active={tab === "projects"}
-            onClick={() => setTab("projects")}
+            href={routePath(tabRoute("projects"))}
+            onSelect={() => onTabChange("projects")}
           >
             Projects
           </TabButton>
-          <TabButton active={tab === "media"} onClick={() => setTab("media")}>
+          <TabButton
+            active={tab === "media"}
+            href={routePath(tabRoute("media"))}
+            onSelect={() => onTabChange("media")}
+          >
             Media
           </TabButton>
         </div>
@@ -157,23 +173,40 @@ export default function ProjectBrowser({
           ) : (
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
               {projects.map((p) => (
-                <li key={p.name}>
-                  <div
+                <li
+                  key={p.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    borderBottom: "1px solid #252525",
+                  }}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background = "#222")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "transparent")
+                  }
+                >
+                  {/* Real anchor so Ctrl/⌘/middle-click opens the project in a
+                      new tab; a plain click navigates in-app. */}
+                  <a
+                    href={routePath({ kind: "project", name: p.name })}
+                    onClick={(e) => {
+                      if (isModifiedClick(e)) return;
+                      e.preventDefault();
+                      handleOpen(p.name);
+                    }}
                     style={{
+                      flex: 1,
+                      minWidth: 0,
                       display: "flex",
                       alignItems: "center",
                       gap: 12,
                       padding: "12px 14px",
-                      borderBottom: "1px solid #252525",
+                      color: "inherit",
+                      textDecoration: "none",
                       cursor: "pointer",
                     }}
-                    onClick={() => handleOpen(p.name)}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.background = "#222")
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.background = "transparent")
-                    }
                   >
                     <FileText size={18} style={{ color: "#6aa8e0" }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -189,16 +222,14 @@ export default function ProjectBrowser({
                         {p.name.replace(/\.seam$/, "")}
                       </div>
                       <div
-                        style={{
-                          fontSize: 11,
-                          color: "#888",
-                          marginTop: 2,
-                        }}
+                        style={{ fontSize: 11, color: "#888", marginTop: 2 }}
                         title={formatAbsolute(p.lastModified)}
                       >
                         Modified {formatRelative(p.lastModified)}
                       </div>
                     </div>
+                  </a>
+                  <div style={{ display: "flex", paddingRight: 14 }}>
                     <RowAction
                       title="Download"
                       onClick={() => handleDownload(p.name)}
@@ -225,16 +256,23 @@ export default function ProjectBrowser({
 
 function TabButton({
   active,
-  onClick,
+  href,
+  onSelect,
   children,
 }: {
   active: boolean;
-  onClick: () => void;
+  href: string;
+  onSelect: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
+    <a
+      href={href}
+      onClick={(e) => {
+        if (isModifiedClick(e)) return;
+        e.preventDefault();
+        onSelect();
+      }}
       style={{
         background: active ? "#2e2e2e" : "transparent",
         border: "1px solid",
@@ -245,10 +283,11 @@ function TabButton({
         cursor: "pointer",
         fontSize: 14,
         fontWeight: 500,
+        textDecoration: "none",
       }}
     >
       {children}
-    </button>
+    </a>
   );
 }
 
