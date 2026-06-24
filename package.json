@@ -7,6 +7,6 @@
     "dev": "pnpm -r run dev"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"]
+    "onlyBuiltDependencies": ["electron", "esbuild", "better-sqlite3"]
   }
 }
