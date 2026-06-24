@@ -68,20 +68,80 @@ export async function deleteProject(userId: string, id: string): Promise<void> {
   await fsp.rm(projectPath(userId, id), { force: true });
 }
 
-/** Build a streaming web Response for a file, or null if it doesn't exist. */
+/**
+ * Build a streaming web Response for a file, or null if it doesn't exist.
+ * Honors a `Range` header (returns `206 Partial Content`) so mediabunny's
+ * `UrlSource` can do byte-range reads instead of downloading the whole file —
+ * the foundation of cloud media streaming. Always advertises `Accept-Ranges`.
+ */
 export function fileResponse(
   filePath: string,
-  contentType: string
+  contentType: string,
+  rangeHeader?: string | null
 ): Response | null {
   if (!fs.existsSync(filePath)) return null;
   const size = fs.statSync(filePath).size;
-  const stream = Readable.toWeb(
-    fs.createReadStream(filePath)
-  ) as ReadableStream;
+  const baseHeaders: Record<string, string> = {
+    "content-type": contentType,
+    "accept-ranges": "bytes",
+  };
+
+  const range = rangeHeader ? parseRange(rangeHeader, size) : null;
+  if (range === "invalid") {
+    return new Response(null, {
+      status: 416,
+      headers: { ...baseHeaders, "content-range": `bytes */${size}` },
+    });
+  }
+
+  if (range) {
+    const { start, end } = range;
+    const stream = Readable.toWeb(
+      fs.createReadStream(filePath, { start, end })
+    ) as ReadableStream;
+    return new Response(stream, {
+      status: 206,
+      headers: {
+        ...baseHeaders,
+        "content-range": `bytes ${start}-${end}/${size}`,
+        "content-length": String(end - start + 1),
+      },
+    });
+  }
+
+  const stream = Readable.toWeb(fs.createReadStream(filePath)) as ReadableStream;
   return new Response(stream, {
-    headers: {
-      "content-type": contentType,
-      "content-length": String(size),
-    },
+    headers: { ...baseHeaders, "content-length": String(size) },
   });
+}
+
+/**
+ * Parse a single-range `Range: bytes=…` header against `size`. Returns the
+ * inclusive byte range, `null` for no/unsupported range (caller serves full),
+ * or `"invalid"` for an unsatisfiable range (caller returns 416). Only the
+ * first range of a multi-range request is honored.
+ */
+function parseRange(
+  header: string,
+  size: number
+): { start: number; end: number } | null | "invalid" {
+  const m = /^bytes=(\d*)-(\d*)/.exec(header.trim());
+  if (!m) return null;
+  const [, rawStart, rawEnd] = m;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  let start: number;
+  let end: number;
+  if (rawStart === "") {
+    // Suffix range: last N bytes.
+    const suffix = Number(rawEnd);
+    if (suffix <= 0) return "invalid";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  }
+  if (start > end || start >= size) return "invalid";
+  return { start, end };
 }

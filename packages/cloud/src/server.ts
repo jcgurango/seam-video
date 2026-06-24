@@ -1,9 +1,11 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { auth } from "./auth.js";
+import { env } from "./env.js";
 import { mediaRoutes } from "./routes/media.js";
 import { projectRoutes } from "./routes/projects.js";
 
@@ -13,6 +15,27 @@ const CLIENT_DIR = path.resolve(here, "../web/dist");
 
 export function createApp(): Hono {
   const app = new Hono();
+
+  // The web editor is a separate origin. Auth rides on the Authorization
+  // header (bearer) or a ?token= query — never a cross-site cookie — so CORS
+  // doesn't need credentials. Expose the range headers UrlSource relies on.
+  app.use(
+    "/api/*",
+    cors({
+      origin: env.corsOrigins,
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowHeaders: ["Authorization", "Content-Type"],
+      // set-auth-token: the bearer plugin returns the session token here on
+      // sign-in; the cross-origin editor must be allowed to read it. The rest
+      // are what UrlSource's range reads depend on.
+      exposeHeaders: [
+        "set-auth-token",
+        "Content-Range",
+        "Content-Length",
+        "Accept-Ranges",
+      ],
+    })
+  );
 
   app.get("/api/health", (c) => c.json({ ok: true }));
 

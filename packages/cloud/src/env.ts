@@ -23,6 +23,8 @@ export interface Env {
   authSecret: string;
   /** Public base URL the server is reachable at (cookies, trusted origins). */
   baseURL: string;
+  /** Allowed CORS origins for the API: "*" (default) or an explicit list. */
+  corsOrigins: string | string[];
 }
 
 const DEV_SECRET = "seam-cloud-insecure-dev-secret-change-me";
@@ -62,7 +64,23 @@ export function loadEnv(): Env {
     process.env.BETTER_AUTH_URL?.trim() || `http://localhost:${port}`
   ).replace(/\/$/, "");
 
-  return { port, dataDir, adminUser, adminPass, authSecret, baseURL };
+  // CORS_ORIGIN: unset/"*" → allow any origin (auth is bearer, not cookies, so
+  // a wildcard is safe); otherwise a comma-separated allowlist.
+  const rawCors = process.env.CORS_ORIGIN?.trim();
+  const corsOrigins: string | string[] =
+    !rawCors || rawCors === "*"
+      ? "*"
+      : rawCors.split(",").map((o) => o.trim().replace(/\/$/, ""));
+
+  return {
+    port,
+    dataDir,
+    adminUser,
+    adminPass,
+    authSecret,
+    baseURL,
+    corsOrigins,
+  };
 }
 
 export const env: Env = loadEnv();

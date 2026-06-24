@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { bearer } from "better-auth/plugins";
 import { db } from "./db.js";
 import { env } from "./env.js";
 
@@ -31,6 +32,11 @@ export const auth = betterAuth({
       },
     },
   },
+  // The web editor is a cross-origin SPA — it authenticates with a bearer
+  // token (the session token returned by sign-in) rather than a cookie, so
+  // there's no cross-site cookie / CSRF setup. The cloud's own browse UI is
+  // same-origin and still uses cookies.
+  plugins: [bearer()],
 });
 
 export type Role = "ADMIN" | "USER";

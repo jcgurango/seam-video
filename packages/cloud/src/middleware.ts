@@ -15,7 +15,7 @@ export type AuthVars = {
  * when there's no session.
  */
 export const requireAuth: MiddlewareHandler<AuthVars> = async (c, next) => {
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  const session = await auth.api.getSession({ headers: authHeaders(c) });
   if (!session) {
     return c.json({ error: "Unauthorized" }, 401);
   }
@@ -23,6 +23,22 @@ export const requireAuth: MiddlewareHandler<AuthVars> = async (c, next) => {
   c.set("userRole", ((session.user as { role?: Role }).role ?? "USER") as Role);
   await next();
 };
+
+/**
+ * Request headers to authenticate with. Passes the originals through (cookie
+ * or `Authorization: Bearer …`), but if neither is present and a `?token=`
+ * query param is, synthesizes a bearer header from it. That lets media
+ * stream/thumbnail URLs self-authenticate — `UrlSource`/`<img>` fetch a plain
+ * URL with no way to set headers.
+ */
+function authHeaders(c: Context): Headers {
+  const headers = new Headers(c.req.raw.headers);
+  if (!headers.has("authorization")) {
+    const token = c.req.query("token");
+    if (token) headers.set("authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
 
 /** Gate a route behind ADMIN role. Assumes {@link requireAuth} ran first. */
 export const requireAdmin: MiddlewareHandler<AuthVars> = async (c, next) => {

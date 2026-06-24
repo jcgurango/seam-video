@@ -19,6 +19,8 @@ interface WebTopBarProps {
   onBrowseProjects: () => void;
   onSettings: () => void;
   canSave: boolean; // false if no document loaded
+  /** Right-aligned content (e.g. the Seam Cloud login/status control). */
+  right?: React.ReactNode;
 }
 
 export default function WebTopBar({
@@ -33,6 +35,7 @@ export default function WebTopBar({
   onBrowseProjects,
   onSettings,
   canSave,
+  right,
 }: WebTopBarProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -232,6 +235,11 @@ export default function WebTopBar({
           </div>
         )}
       </div>
+      {right && (
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "stretch" }}>
+          {right}
+        </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,18 @@ import type {
 } from "./types.js";
 import { buildExportPlan } from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
+import { CloudClient, type UploadResult } from "../cloud/CloudClient.js";
+
+/** Summary of a "sync all to cloud" pass. */
+export interface SyncSummary {
+  uploaded: number;
+  /** Already present on the cloud (identical name + hash). */
+  alreadyPresent: number;
+  /** Skipped because the cloud copy is identical (no upload attempted). */
+  skipped: number;
+  /** Files the cloud rejected as conflicts — the user must rename to resolve. */
+  conflicts: { name: string; message: string }[];
+}
 
 const PROJECTS_DIR = "projects";
 const CLIPS_DIR = "clips";
@@ -105,8 +117,16 @@ async function listDir(dirName: string): Promise<string[]> {
   return names.sort();
 }
 
-/** Return a filename inside `dirName` that doesn't yet exist. */
-async function uniqueName(dirName: string, originalName: string): Promise<string> {
+/**
+ * Return a filename inside `dirName` that doesn't yet exist. `extraBlocked`
+ * lets a caller reserve additional names (e.g. Seam Cloud filenames that hold
+ * different content) so an import doesn't pick a name that's bound to collide.
+ */
+async function uniqueName(
+  dirName: string,
+  originalName: string,
+  extraBlocked?: (candidate: string) => boolean
+): Promise<string> {
   const dir = await getDir(dirName);
   const dot = originalName.lastIndexOf(".");
   const base = dot >= 0 ? originalName.slice(0, dot) : originalName;
@@ -115,18 +135,30 @@ async function uniqueName(dirName: string, originalName: string): Promise<string
   let i = 1;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    try {
-      await dir.getFileHandle(candidate);
-      candidate = `${base}-${i}${ext}`;
-      i++;
-    } catch {
-      return candidate;
-    }
+    const localTaken = await fileExists(dir, candidate);
+    if (!localTaken && !extraBlocked?.(candidate)) return candidate;
+    candidate = `${base}-${i}${ext}`;
+    i++;
   }
 }
 
-async function uniqueClipName(originalName: string): Promise<string> {
-  return uniqueName(CLIPS_DIR, originalName);
+async function fileExists(
+  dir: FileSystemDirectoryHandle,
+  name: string
+): Promise<boolean> {
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function uniqueClipName(
+  originalName: string,
+  extraBlocked?: (candidate: string) => boolean
+): Promise<string> {
+  return uniqueName(CLIPS_DIR, originalName, extraBlocked);
 }
 
 async function uniqueProjectName(originalName: string): Promise<string> {
@@ -214,6 +246,11 @@ export class WebPlatform implements Platform {
   private fingerprintIndex: Map<string, string> | null = null;
   private indexBuild: Promise<void> | null = null;
 
+  // Optional Seam Cloud connection (web-editor-only). Configured at boot from
+  // VITE_SEAM_CLOUD_URL. Owns the cloud media list + bearer token; consulted
+  // by resolveSource (cloud fallback) and importClip (collision check).
+  private _cloud: CloudClient | null = null;
+
   // Action callbacks registered by the app
   private actionHandlers = new Map<ActionName, () => void>();
 
@@ -224,6 +261,27 @@ export class WebPlatform implements Platform {
 
   constructor() {
     this.installKeybindings();
+  }
+
+  /** Connect to a Seam Cloud instance (called at boot if a base URL is set).
+   *  Restoring a prior session is the caller's job (await `cloud.restore()`). */
+  configureCloud(baseUrl: string | undefined | null): CloudClient | null {
+    const url = baseUrl?.trim();
+    if (!url) return null;
+    this._cloud = new CloudClient(url);
+    return this._cloud;
+  }
+
+  /** The configured cloud client, or null when cloud isn't set up. */
+  get cloud(): CloudClient | null {
+    return this._cloud;
+  }
+
+  /** A cloud filename is "blocked" for a new import only when it holds
+   *  *different* content (same name + same hash is the same file — keep it). */
+  private cloudBlocksName(name: string, fingerprintHex: string): boolean {
+    const m = this._cloud?.mediaByName(name);
+    return !!m && m.contentHash !== fingerprintHex;
   }
 
   // ── Platform interface ───────────────────────────────────────────
@@ -267,9 +325,11 @@ export class WebPlatform implements Platform {
     // OPFS file. Creating a blob URL would force the entire pmtiles
     // file into memory once for nothing.
     const isPmtiles = file.name.toLowerCase().endsWith(".pmtiles");
+    const fp = await fingerprint(file);
 
     // Check if we already have an identical clip; reuse its filename if so.
-    const existing = await this.findExistingClip(file);
+    const index = await this.ensureFingerprintIndex();
+    const existing = index.get(fp) ?? null;
     if (existing) {
       if (isPmtiles) return existing;
       if (!this.blobUrlCache.has(existing)) {
@@ -283,15 +343,19 @@ export class WebPlatform implements Platform {
       if (this.blobUrlCache.has(existing)) return existing;
     }
 
-    const name = await uniqueClipName(file.name);
+    // Pick a name free both locally and in the Seam Cloud namespace we know
+    // about (no extra request — just the cached list), so a later sync doesn't
+    // immediately collide. A cloud file with the same name AND hash is the
+    // same file, so it doesn't block.
+    const name = await uniqueClipName(file.name, (c) =>
+      this.cloudBlocksName(c, fp)
+    );
     await writeFileToDir(CLIPS_DIR, name, file);
     if (!isPmtiles) {
       this.blobUrlCache.set(name, URL.createObjectURL(file));
     }
 
     // Keep the fingerprint index fresh
-    const fp = await fingerprint(file);
-    const index = await this.ensureFingerprintIndex();
     index.set(fp, name);
 
     // Stamp the media-meta entry's "date added". Kind comes from the name;
@@ -334,13 +398,19 @@ export class WebPlatform implements Platform {
       return source;
     }
     if (source.startsWith("blob:")) return source;
-    // source is a filename inside clips/ — return a pre-created blob URL
+    // source is a filename inside clips/ — return a pre-created blob URL.
+    // Local always wins.
     const cached = this.blobUrlCache.get(source);
     if (cached) return cached;
-    // Not cached; return a placeholder the caller can notice. In practice
-    // the app should call preloadBlobUrls() after opening a project.
+    // Not held locally — fall back to a Seam Cloud stream if a cloud asset has
+    // this filename. The returned URL carries a ?token= and is byte-range
+    // capable, so mediabunny's UrlSource streams it on demand (no download).
+    const cloudUrl = this._cloud?.fileUrlForName(source);
+    if (cloudUrl) return cloudUrl;
+    // Neither local nor cloud. In practice the app should call
+    // preloadBlobUrls() after opening a project for local sources.
     console.warn(
-      `WebPlatform.resolveSource: no cached blob URL for "${source}". ` +
+      `WebPlatform.resolveSource: no local blob URL or cloud asset for "${source}". ` +
         `Did you forget to preloadBlobUrls()?`
     );
     return source;
@@ -519,13 +589,6 @@ export class WebPlatform implements Platform {
     return this.fingerprintIndex!;
   }
 
-  /** Return an existing clip filename with the same fingerprint, or null. */
-  private async findExistingClip(file: Blob): Promise<string | null> {
-    const index = await this.ensureFingerprintIndex();
-    const fp = await fingerprint(file);
-    return index.get(fp) ?? null;
-  }
-
   // ── Export / Import ──────────────────────────────────────────────
 
   async exportProject(
@@ -593,6 +656,148 @@ export class WebPlatform implements Platform {
   async downloadClip(name: string): Promise<void> {
     const file = await readFileFromDir(CLIPS_DIR, name);
     triggerDownload(file, name);
+  }
+
+  // ── Seam Cloud upload / download ─────────────────────────────────
+
+  /** Upload one local clip to Seam Cloud. The server dedups by filename +
+   *  content hash (identical → accepted, conflicting → reported). */
+  async uploadClipToCloud(name: string): Promise<UploadResult> {
+    if (!this._cloud) throw new Error("Seam Cloud is not connected.");
+    const file = await readFileFromDir(CLIPS_DIR, name);
+    return this._cloud.uploadMedia(file);
+  }
+
+  /** Upload every local media file not already on the cloud. Identical copies
+   *  (same name + hash) are skipped; conflicts are collected, not thrown. */
+  async syncAllToCloud(
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<SyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const clips = (await this.listClips()).filter((c) => classifyByName(c.name));
+    const fpIndex = await this.ensureFingerprintIndex();
+    const nameToFp = new Map<string, string>();
+    for (const [fp, name] of fpIndex) nameToFp.set(name, fp);
+
+    const summary: SyncSummary = {
+      uploaded: 0,
+      alreadyPresent: 0,
+      skipped: 0,
+      conflicts: [],
+    };
+
+    for (let i = 0; i < clips.length; i++) {
+      const { name } = clips[i];
+      onProgress?.(i, clips.length, name);
+
+      // Already on the cloud with identical content — don't re-upload bytes.
+      const cm = cloud.mediaByName(name);
+      const localFp = nameToFp.get(name);
+      if (cm && localFp && cm.contentHash === localFp) {
+        summary.skipped++;
+        continue;
+      }
+
+      const file = await readFileFromDir(CLIPS_DIR, name);
+      const res = await cloud.uploadMedia(file);
+      if (res.kind === "created") summary.uploaded++;
+      else if (res.kind === "exists") summary.alreadyPresent++;
+      else summary.conflicts.push({ name, message: res.message });
+    }
+
+    onProgress?.(clips.length, clips.length, "");
+    await cloud.refreshMedia();
+    return summary;
+  }
+
+  /**
+   * Download a cloud asset into local OPFS, enforcing the same dedup rules
+   * locally: refuse if this content already exists locally (under any name) or
+   * if the target filename is taken by *different* content. The user resolves
+   * conflicts by renaming (a later pass).
+   */
+  async downloadClipFromCloud(
+    cloudId: string,
+    filename: string,
+    contentHash: string | null
+  ): Promise<void> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const index = await this.ensureFingerprintIndex();
+
+    // Content already present locally (possibly under a different name)?
+    if (contentHash && index.has(contentHash)) {
+      const existing = index.get(contentHash)!;
+      if (existing === filename) return; // identical file already local — no-op
+      throw new Error(
+        `You already have this content locally as "${existing}". Rename to reconcile.`
+      );
+    }
+
+    // Filename taken locally by different content?
+    if (await this.clipExists(filename)) {
+      const local = await readFileFromDir(CLIPS_DIR, filename);
+      if (contentHash && (await fingerprint(local)) === contentHash) return;
+      throw new Error(
+        `A different local file named "${filename}" already exists. Rename to reconcile.`
+      );
+    }
+
+    const blob = await cloud.downloadMedia(cloudId);
+    await writeFileToDir(CLIPS_DIR, filename, blob);
+    const fp = await fingerprint(blob);
+    index.set(fp, filename);
+    if (!filename.toLowerCase().endsWith(".pmtiles")) {
+      this.blobUrlCache.set(filename, URL.createObjectURL(blob));
+    }
+    const kind = classifyByName(filename);
+    if (kind) await this.updateMediaMeta(filename, { addedAt: Date.now(), kind });
+  }
+
+  private async clipExists(name: string): Promise<boolean> {
+    const dir = await getDir(CLIPS_DIR);
+    return fileExists(dir, name);
+  }
+
+  /**
+   * Delete a clip's local copy: the OPFS file, its cached thumbnail, its
+   * media-meta entry, its fingerprint-index slot, and any live blob URL. This
+   * only touches local storage — a Seam Cloud copy (if any) is untouched, which
+   * is what makes deleting an already-synced clip recoverable.
+   */
+  async deleteClip(name: string): Promise<void> {
+    const clips = await getDir(CLIPS_DIR);
+    await clips.removeEntry(name).catch(() => {});
+
+    const thumbs = await getDir(THUMBS_DIR);
+    await thumbs.removeEntry(`${name}.jpg`).catch(() => {});
+
+    // Drop the media-meta entry (persist through the serialized write chain).
+    const index = await this.getMediaIndex();
+    if (name in index) {
+      delete index[name];
+      const snapshot = JSON.stringify(index);
+      this.indexWriteChain = this.indexWriteChain.then(() =>
+        writeFileToDir(MEDIA_META_DIR, MEDIA_INDEX_FILE, snapshot),
+      );
+      await this.indexWriteChain;
+    }
+
+    // Remove the fingerprint slot pointing at this name.
+    if (this.fingerprintIndex) {
+      for (const [fp, n] of this.fingerprintIndex) {
+        if (n === name) this.fingerprintIndex.delete(fp);
+      }
+    }
+
+    const url = this.blobUrlCache.get(name);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.blobUrlCache.delete(name);
+    }
   }
 
   /** True if `projects/<name>` already exists. Lets the caller warn

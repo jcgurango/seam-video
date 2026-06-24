@@ -264,7 +264,8 @@ mediaRoutes.get("/:id/file", (c) => {
   if (!row) return c.json({ error: "Not found" }, 404);
   const res = fileResponse(
     mediaPath(userId, row.id),
-    row.contentType ?? "application/octet-stream"
+    row.contentType ?? "application/octet-stream",
+    c.req.header("range")
   );
   return res ?? c.json({ error: "File missing" }, 404);
 });

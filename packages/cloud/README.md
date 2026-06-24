@@ -107,6 +107,26 @@ semi-automated reconciliation. The server never tries to guess.
 | `PATCH` | `/api/projects/:id` | Rename / update metadata |
 | `DELETE` | `/api/projects/:id` | Remove row + file |
 
+## Web editor integration
+
+The web editor talks to the cloud cross-origin, so auth is a **bearer token**
+(better-auth's `bearer()` plugin), not a cookie:
+
+- Sign-in returns the session token (response body + `set-auth-token` header).
+- API calls send `Authorization: Bearer <token>`.
+- Media stream/thumbnail URLs carry the token as `?token=…` so mediabunny's
+  `UrlSource` and `<img>` can fetch a plain URL. The media routes accept the
+  token from the query (synthesized into a bearer check).
+- `/api/media/:id/file` honors `Range` (206) for on-demand streaming.
+- CORS is open by default (`CORS_ORIGIN`); safe because auth is a header/token,
+  not an ambient cookie.
+
+Configure the editor with `VITE_SEAM_CLOUD_URL=<this server's base URL>` at
+build time. The editor then shows a Login control, lists cloud assets alongside
+local ones, streams cloud-only sources on demand, and offers per-file +
+sync-all upload / per-file download (all dedup-checked by filename + content
+hash).
+
 ## Not done yet
 
-Editor wiring (the web editor talking to this backend) is the next step.
+Project (.seam) sync — projects mutate, so they'll sync differently from media.

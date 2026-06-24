@@ -8,10 +8,20 @@ import {
   setPmtilesResolver,
 } from "@seam/preview";
 import App from "./App.js";
-import { detectPlatform } from "./platform/index.js";
+import { detectPlatform, WebPlatform } from "./platform/index.js";
 import type { Source } from "pmtiles";
 
 const platform = detectPlatform();
+
+// Seam Cloud is web-editor-only. When this entry runs as a web build (not
+// Electron), wire the optional cloud connection from VITE_SEAM_CLOUD_URL —
+// same as @seam/web's main.tsx.
+if (platform instanceof WebPlatform) {
+  const cloudUrl = (import.meta as { env?: Record<string, string | undefined> })
+    .env?.VITE_SEAM_CLOUD_URL;
+  const cloud = platform.configureCloud(cloudUrl);
+  if (cloud) void cloud.restore();
+}
 
 // Bundle Liberation Sans as the default font so editor and final
 // render agree on glyph metrics. Fire-and-forget — text drawn before

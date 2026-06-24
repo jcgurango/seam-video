@@ -16,6 +16,7 @@ import FrameEditorPane, { type FrameEditorTarget } from "./FrameEditorPane.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
+import CloudStatus from "./cloud/CloudStatus.js";
 import SettingsDialog from "./SettingsDialog.js";
 import { useSettings } from "./useSettings.js";
 import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
@@ -1028,6 +1029,11 @@ export default function App({ platform }: AppProps) {
           onBrowseProjects={topBarBrowseProjects}
           onSettings={() => setSettingsOpen(true)}
           canSave={!showBrowser}
+          right={
+            (platform as WebPlatform).cloud ? (
+              <CloudStatus client={(platform as WebPlatform).cloud!} />
+            ) : undefined
+          }
         />
       )}
 

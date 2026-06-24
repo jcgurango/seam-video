@@ -31,5 +31,13 @@ setPmtilesResolver(async (filename: string) => {
   return (src as Source | null) ?? null;
 });
 
+// Optional Seam Cloud connection — web-editor-only. The base URL is a
+// build-time env var (VITE_SEAM_CLOUD_URL); when set, the platform creates a
+// CloudClient and we restore any prior session before mounting.
+const cloudUrl = (import.meta as { env?: Record<string, string | undefined> })
+  .env?.VITE_SEAM_CLOUD_URL;
+const cloud = platform.configureCloud(cloudUrl);
+if (cloud) void cloud.restore();
+
 const root = createRoot(document.getElementById("root")!);
 root.render(<App platform={platform} />);
