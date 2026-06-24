@@ -25,6 +25,9 @@ export interface Env {
   baseURL: string;
   /** Allowed CORS origins for the API: "*" (default) or an explicit list. */
   corsOrigins: string | string[];
+  /** Origins better-auth accepts (its own CSRF-style Origin check, separate
+   *  from CORS). Derived from corsOrigins plus the base URL + dev origin. */
+  trustedOrigins: string[];
 }
 
 const DEV_SECRET = "seam-cloud-insecure-dev-secret-change-me";
@@ -72,6 +75,16 @@ export function loadEnv(): Env {
       ? "*"
       : rawCors.split(",").map((o) => o.trim().replace(/\/$/, ""));
 
+  // better-auth runs its own Origin allowlist (a CSRF-style check on
+  // /api/auth/*) that's separate from CORS — an untrusted origin gets a
+  // "403 Invalid Origin". Trust the same origins CORS allows, plus the base
+  // URL (cloud's own UI) and the dev origin. "*" trusts any origin.
+  const baseTrusted = [baseURL, "http://localhost:5173"];
+  const trustedOrigins =
+    corsOrigins === "*"
+      ? ["*", ...baseTrusted]
+      : Array.from(new Set([...corsOrigins, ...baseTrusted]));
+
   return {
     port,
     dataDir,
@@ -80,6 +93,7 @@ export function loadEnv(): Env {
     authSecret,
     baseURL,
     corsOrigins,
+    trustedOrigins,
   };
 }
 
