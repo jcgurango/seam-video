@@ -32,6 +32,8 @@ export interface ProjectRecord {
   userId: string;
   name: string;
   size: number;
+  /** Server-computed fingerprint of the .seam bytes — the sync baseline. */
+  contentHash: string | null;
   lastModified: number;
   createdAt: number;
   updatedAt: number;

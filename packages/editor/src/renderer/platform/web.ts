@@ -9,7 +9,11 @@ import type {
 } from "./types.js";
 import { buildExportPlan } from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
-import { CloudClient, type UploadResult } from "../cloud/CloudClient.js";
+import {
+  CloudClient,
+  type CloudProject,
+  type UploadResult,
+} from "../cloud/CloudClient.js";
 
 /** Summary of a "sync all to cloud" pass. */
 export interface SyncSummary {
@@ -22,11 +26,39 @@ export interface SyncSummary {
   conflicts: { name: string; message: string }[];
 }
 
+/** Sync relationship of a single project (local vs cloud, via the hash baseline). */
+export type ProjectSyncStatus =
+  | "local-only" // never uploaded (no cloud copy)
+  | "cloud-only" // exists on cloud, not locally
+  | "in-sync" // local and cloud content match
+  | "local-ahead" // only the local copy changed since last sync → safe upload
+  | "remote-ahead" // only the cloud copy changed → safe download
+  | "out-of-sync"; // both changed since last sync → needs reconciliation
+
+export interface ProjectSyncState {
+  status: ProjectSyncStatus;
+  /** The cloud project id, if this project has ever been synced / exists on cloud. */
+  cloudId: string | null;
+}
+
+/** Outcome of uploading one project. */
+export type ProjectUploadOutcome =
+  | { kind: "uploaded" }
+  | { kind: "name-exists"; message: string };
+
+interface ProjectSyncEntry {
+  cloudId?: string;
+  lastSyncedHash?: string;
+}
+type ProjectSyncIndex = Record<string, ProjectSyncEntry>;
+
 const PROJECTS_DIR = "projects";
 const CLIPS_DIR = "clips";
 const THUMBS_DIR = "thumbnails";
 const MEDIA_META_DIR = "media-meta";
 const MEDIA_INDEX_FILE = "index.json";
+const PROJECT_SYNC_DIR = "project-sync";
+const PROJECT_SYNC_FILE = "index.json";
 
 export interface ProjectEntry {
   name: string;
@@ -245,6 +277,12 @@ export class WebPlatform implements Platform {
   // import-like operation, then kept in sync as we add/remove clips.
   private fingerprintIndex: Map<string, string> | null = null;
   private indexBuild: Promise<void> | null = null;
+
+  // Per-project sync sidecar (project-sync/index.json): filename → { cloudId,
+  // lastSyncedHash }. The baseline for three-way conflict detection.
+  private projectSyncIndex: ProjectSyncIndex | null = null;
+  private projectSyncLoad: Promise<ProjectSyncIndex> | null = null;
+  private projectSyncWriteChain: Promise<void> = Promise.resolve();
 
   // Optional Seam Cloud connection (web-editor-only). Configured at boot from
   // VITE_SEAM_CLOUD_URL. Owns the cloud media list + bearer token; consulted
@@ -760,6 +798,131 @@ export class WebPlatform implements Platform {
   private async clipExists(name: string): Promise<boolean> {
     const dir = await getDir(CLIPS_DIR);
     return fileExists(dir, name);
+  }
+
+  // ── Project sync (cloud) ─────────────────────────────────────────
+
+  private async getProjectSyncIndex(): Promise<ProjectSyncIndex> {
+    if (this.projectSyncIndex) return this.projectSyncIndex;
+    if (!this.projectSyncLoad) {
+      this.projectSyncLoad = (async () => {
+        try {
+          const file = await readFileFromDir(PROJECT_SYNC_DIR, PROJECT_SYNC_FILE);
+          this.projectSyncIndex = JSON.parse(await file.text()) as ProjectSyncIndex;
+        } catch {
+          this.projectSyncIndex = {};
+        }
+        return this.projectSyncIndex;
+      })();
+    }
+    return this.projectSyncLoad;
+  }
+
+  private async setProjectSyncEntry(
+    name: string,
+    entry: ProjectSyncEntry
+  ): Promise<void> {
+    const index = await this.getProjectSyncIndex();
+    index[name] = { ...index[name], ...entry };
+    const snapshot = JSON.stringify(index);
+    this.projectSyncWriteChain = this.projectSyncWriteChain.then(() =>
+      writeFileToDir(PROJECT_SYNC_DIR, PROJECT_SYNC_FILE, snapshot)
+    );
+    return this.projectSyncWriteChain;
+  }
+
+  /** Content fingerprint of a local project file (the same hash the cloud
+   *  computes server-side, so the two are directly comparable). */
+  private async projectHash(name: string): Promise<string | null> {
+    try {
+      const file = await readFileFromDir(PROJECTS_DIR, name);
+      return fingerprint(file);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Classify a project's local↔cloud relationship via the three-way hash
+   * compare (local hash vs cloud hash vs last-synced baseline). `name` is the
+   * project filename as it appears in either list.
+   */
+  async projectSyncState(name: string): Promise<ProjectSyncState> {
+    const cloud = this._cloud?.projectByName(name) ?? null;
+    const localHash = await this.projectHash(name);
+    const localExists = localHash !== null;
+
+    if (!localExists) {
+      return { status: "cloud-only", cloudId: cloud?.id ?? null };
+    }
+    if (!cloud) {
+      const entry = (await this.getProjectSyncIndex())[name];
+      return { status: "local-only", cloudId: entry?.cloudId ?? null };
+    }
+
+    const cloudId = cloud.id;
+    if (localHash === cloud.contentHash) {
+      return { status: "in-sync", cloudId };
+    }
+
+    const base = (await this.getProjectSyncIndex())[name]?.lastSyncedHash ?? null;
+    // No baseline (e.g. a local and cloud project that share a name but were
+    // never synced together) → treat divergence as a conflict.
+    const localChanged = base === null || localHash !== base;
+    const remoteChanged = base === null || cloud.contentHash !== base;
+
+    if (localChanged && remoteChanged) return { status: "out-of-sync", cloudId };
+    if (localChanged) return { status: "local-ahead", cloudId };
+    return { status: "remote-ahead", cloudId };
+  }
+
+  /**
+   * Upload a local project to the cloud. First upload POSTs a new project
+   * (may 409 on a name clash → the user renames); a previously-synced project
+   * PUTs against its stored id (overwrites the cloud copy — also the
+   * "keep local" conflict resolution). Advances the synced baseline on success.
+   */
+  async uploadProjectToCloud(name: string): Promise<ProjectUploadOutcome> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const content = await this.readProject(name);
+    const entry = (await this.getProjectSyncIndex())[name];
+
+    if (entry?.cloudId) {
+      const project = await cloud.updateProject(entry.cloudId, content);
+      await this.setProjectSyncEntry(name, {
+        cloudId: project.id,
+        lastSyncedHash: project.contentHash ?? undefined,
+      });
+    } else {
+      const result = await cloud.uploadProject(name, content);
+      if (result.kind === "conflict") {
+        return { kind: "name-exists", message: result.message };
+      }
+      await this.setProjectSyncEntry(name, {
+        cloudId: result.project.id,
+        lastSyncedHash: result.project.contentHash ?? undefined,
+      });
+    }
+    await cloud.refresh();
+    return { kind: "uploaded" };
+  }
+
+  /**
+   * Download a cloud project into local OPFS, overwriting the local copy (also
+   * the "keep remote" conflict resolution). Advances the synced baseline.
+   */
+  async downloadProjectFromCloud(project: CloudProject): Promise<void> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const content = await cloud.projectText(project.id);
+    await writeFileToDir(PROJECTS_DIR, project.name, content);
+    await this.setProjectSyncEntry(project.name, {
+      cloudId: project.id,
+      lastSyncedHash: project.contentHash ?? undefined,
+    });
   }
 
   /**

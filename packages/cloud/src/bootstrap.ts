@@ -4,7 +4,7 @@ import { auth } from "./auth.js";
 import { createAppTables, db } from "./db.js";
 import { env } from "./env.js";
 import { fingerprint } from "./media/fingerprint.js";
-import { mediaPath } from "./storage.js";
+import { mediaPath, projectPath } from "./storage.js";
 
 /**
  * One-time startup sequence:
@@ -22,24 +22,34 @@ export async function initDatabase(): Promise<void> {
 }
 
 /**
- * Compute content hashes for any media rows that predate the contentHash
- * column (the file bytes are still on disk). One-time per legacy row, so
- * duplicate detection works for media uploaded before this migration.
+ * Compute content hashes for any media/project rows that predate the
+ * contentHash column (the bytes are still on disk). One-time per legacy row,
+ * so dedup (media) and the sync baseline (projects) work for pre-migration data.
  */
 function backfillContentHashes(): void {
+  backfillTable("media", (userId, id) => mediaPath(userId, id));
+  backfillTable("project", (userId, id) => projectPath(userId, id));
+}
+
+function backfillTable(
+  table: "media" | "project",
+  pathFor: (userId: string, id: string) => string
+): void {
   const rows = db
-    .prepare("SELECT id, userId FROM media WHERE contentHash IS NULL")
+    .prepare(`SELECT id, userId FROM ${table} WHERE contentHash IS NULL`)
     .all() as { id: string; userId: string }[];
   if (rows.length === 0) return;
 
-  console.log(`[seam-cloud] Backfilling content hashes for ${rows.length} media row(s)…`);
-  const update = db.prepare("UPDATE media SET contentHash = ? WHERE id = ?");
+  console.log(
+    `[seam-cloud] Backfilling content hashes for ${rows.length} ${table} row(s)…`
+  );
+  const update = db.prepare(`UPDATE ${table} SET contentHash = ? WHERE id = ?`);
   for (const r of rows) {
     try {
-      const buf = fs.readFileSync(mediaPath(r.userId, r.id));
+      const buf = fs.readFileSync(pathFor(r.userId, r.id));
       update.run(fingerprint(buf), r.id);
     } catch (err) {
-      console.warn(`[seam-cloud] could not hash media ${r.id}:`, err);
+      console.warn(`[seam-cloud] could not hash ${table} ${r.id}:`, err);
     }
   }
 }

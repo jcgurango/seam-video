@@ -49,6 +49,7 @@ export function createAppTables(): void {
       userId       TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
       name         TEXT NOT NULL,         -- e.g. "MyProject.seam"
       size         INTEGER NOT NULL,
+      contentHash  TEXT,                  -- server-computed; the sync baseline
       lastModified INTEGER NOT NULL,
       createdAt    INTEGER NOT NULL,
       updatedAt    INTEGER NOT NULL
@@ -57,18 +58,26 @@ export function createAppTables(): void {
     CREATE INDEX IF NOT EXISTS idx_project_user ON project(userId);
   `);
 
-  // Migration: add contentHash to a media table created before it existed.
-  const cols = db.prepare("PRAGMA table_info(media)").all() as { name: string }[];
-  if (!cols.some((c) => c.name === "contentHash")) {
-    db.exec("ALTER TABLE media ADD COLUMN contentHash TEXT");
-  }
+  // Migration: add contentHash to tables created before it existed.
+  addColumnIfMissing("media", "contentHash", "TEXT");
+  addColumnIfMissing("project", "contentHash", "TEXT");
 
-  // Per-user uniqueness on filename and on content hash. Duplicate filenames
-  // and duplicate hashes are both rejected at upload (see routes/media.ts);
-  // these indexes are the backstop. SQLite treats NULLs as distinct, so rows
-  // awaiting a backfilled hash don't collide.
+  // Per-user uniqueness. Media dedups on filename AND content hash; projects
+  // dedup on filename only (content is expected to diverge as they're edited).
+  // SQLite treats NULLs as distinct, so rows awaiting a backfilled hash don't
+  // collide on the hash index.
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_filename ON media(userId, filename);
     CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_hash ON media(userId, contentHash);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_project_user_name ON project(userId, name);
   `);
+}
+
+function addColumnIfMissing(table: string, column: string, type: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }

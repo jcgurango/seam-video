@@ -9,6 +9,7 @@ import {
   projectPath,
   saveProject,
 } from "../storage.js";
+import { fingerprint } from "../media/fingerprint.js";
 import type { Page, ProjectRecord } from "../types.js";
 
 interface ProjectRow {
@@ -16,6 +17,7 @@ interface ProjectRow {
   userId: string;
   name: string;
   size: number;
+  contentHash: string | null;
   lastModified: number;
   createdAt: number;
   updatedAt: number;
@@ -85,11 +87,30 @@ async function readUpload(
   };
 }
 
-/** POST / — create a new project document. */
+/**
+ * POST / — create a NEW project. Projects dedup on filename only: a new
+ * project may not reuse an existing project's name (the editor re-uploads an
+ * already-synced project against its id via PUT, not here).
+ */
 projectRoutes.post("/", async (c) => {
   const userId = c.get("userId");
   const upload = await readUpload(c);
   if (!upload) return c.json({ error: "Missing project file or name" }, 400);
+
+  const existing = db
+    .prepare("SELECT * FROM project WHERE userId = ? AND name = ?")
+    .get(userId, upload.name) as ProjectRow | undefined;
+  if (existing) {
+    return c.json(
+      {
+        error: "conflict",
+        reason: "name-exists",
+        message: `A project named "${upload.name}" already exists. Rename to upload as a new project.`,
+        existing,
+      },
+      409
+    );
+  }
 
   const id = randomUUID();
   const now = Date.now();
@@ -100,14 +121,23 @@ projectRoutes.post("/", async (c) => {
     userId,
     name: upload.name,
     size: upload.bytes.length,
+    contentHash: fingerprint(upload.bytes),
     lastModified: upload.lastModified,
     createdAt: now,
     updatedAt: now,
   };
-  db.prepare(
-    `INSERT INTO project (id, userId, name, size, lastModified, createdAt, updatedAt)
-     VALUES (@id, @userId, @name, @size, @lastModified, @createdAt, @updatedAt)`
-  ).run(row);
+  try {
+    db.prepare(
+      `INSERT INTO project (id, userId, name, size, contentHash, lastModified, createdAt, updatedAt)
+       VALUES (@id, @userId, @name, @size, @contentHash, @lastModified, @createdAt, @updatedAt)`
+    ).run(row);
+  } catch (err) {
+    await deleteProject(userId, id);
+    if (err instanceof Error && /UNIQUE constraint/.test(err.message)) {
+      return c.json({ error: "conflict", reason: "name-exists" }, 409);
+    }
+    throw err;
+  }
 
   return c.json(row, 201);
 });
@@ -146,8 +176,8 @@ projectRoutes.put("/:id", async (c) => {
 
   const now = Date.now();
   db.prepare(
-    "UPDATE project SET size = ?, lastModified = ?, updatedAt = ? WHERE id = ? AND userId = ?"
-  ).run(bytes.length, now, now, row.id, userId);
+    "UPDATE project SET size = ?, contentHash = ?, lastModified = ?, updatedAt = ? WHERE id = ? AND userId = ?"
+  ).run(bytes.length, fingerprint(bytes), now, now, row.id, userId);
 
   return c.json(findRow(userId, row.id)!);
 });
@@ -166,6 +196,19 @@ projectRoutes.patch("/:id", async (c) => {
       { error: "Invalid body", detail: err instanceof Error ? err.message : err },
       400
     );
+  }
+
+  // Renaming onto another project's name would break filename uniqueness.
+  if (patch.name && patch.name !== row.name) {
+    const clash = db
+      .prepare("SELECT id FROM project WHERE userId = ? AND name = ? AND id != ?")
+      .get(userId, patch.name, row.id);
+    if (clash) {
+      return c.json(
+        { error: "conflict", reason: "name-exists", message: `A project named "${patch.name}" already exists.` },
+        409
+      );
+    }
   }
 
   db.prepare(

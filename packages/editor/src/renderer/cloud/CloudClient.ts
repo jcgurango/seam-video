@@ -30,6 +30,17 @@ export interface CloudMedia {
   hasThumb: boolean;
 }
 
+export interface CloudProject {
+  id: string;
+  name: string;
+  size: number;
+  /** Server-computed fingerprint of the .seam bytes — the sync baseline. */
+  contentHash: string | null;
+  lastModified: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CloudUser {
   id: string;
   email: string;
@@ -43,12 +54,13 @@ export interface CloudState {
   status: CloudStatus;
   user: CloudUser | null;
   media: CloudMedia[];
-  /** True while a media-list refresh is in flight. */
+  projects: CloudProject[];
+  /** True while a list refresh is in flight. */
   refreshing: boolean;
   lastError: string | null;
 }
 
-/** Outcome of an upload — mirrors the server's accept / 409 conflict rules. */
+/** Outcome of a media upload — mirrors the server's accept / 409 conflict rules. */
 export type UploadResult =
   | { kind: "created"; media: CloudMedia }
   | { kind: "exists"; media: CloudMedia }
@@ -59,13 +71,25 @@ export type UploadResult =
       existing?: CloudMedia;
     };
 
+/** Outcome of creating a NEW project (POST). Re-uploads go through
+ *  {@link CloudClient.updateProject} against the id and don't hit this. */
+export type ProjectUploadResult =
+  | { kind: "created"; project: CloudProject }
+  | {
+      kind: "conflict";
+      reason: "name-exists";
+      message: string;
+      existing?: CloudProject;
+    };
+
 const POLL_INTERVAL_MS = 60_000;
 const PAGE_SIZE = 200;
 
-/** What we persist between sessions so the list is instant on next page load. */
+/** What we persist between sessions so the lists are instant on next load. */
 interface CloudCache {
   user: CloudUser | null;
   media: CloudMedia[];
+  projects: CloudProject[];
 }
 
 export class CloudClient {
@@ -78,10 +102,12 @@ export class CloudClient {
     status: "idle",
     user: null,
     media: [],
+    projects: [],
     refreshing: false,
     lastError: null,
   };
   private byName = new Map<string, CloudMedia>();
+  private projectByNameMap = new Map<string, CloudProject>();
   private listeners = new Set<(s: CloudState) => void>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -103,11 +129,15 @@ export class CloudClient {
         this.state = {
           status: "authed",
           user: cache.user,
-          media: cache.media,
+          media: cache.media ?? [],
+          projects: cache.projects ?? [],
           refreshing: false,
           lastError: null,
         };
-        this.byName = new Map(cache.media.map((m) => [m.filename, m]));
+        this.byName = new Map((cache.media ?? []).map((m) => [m.filename, m]));
+        this.projectByNameMap = new Map(
+          (cache.projects ?? []).map((p) => [p.name, p])
+        );
       }
     }
   }
@@ -123,6 +153,11 @@ export class CloudClient {
     return this.byName.get(name);
   }
 
+  /** Synchronous name → cloud project lookup (for sync-state checks). */
+  projectByName(name: string): CloudProject | undefined {
+    return this.projectByNameMap.get(name);
+  }
+
   subscribe(cb: (s: CloudState) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -132,6 +167,11 @@ export class CloudClient {
     this.state = { ...this.state, ...patch };
     if ("media" in patch) {
       this.byName = new Map((patch.media ?? []).map((m) => [m.filename, m]));
+    }
+    if ("projects" in patch) {
+      this.projectByNameMap = new Map(
+        (patch.projects ?? []).map((p) => [p.name, p])
+      );
     }
     for (const cb of this.listeners) cb(this.state);
   }
@@ -235,7 +275,7 @@ export class CloudClient {
       /* ignore */
     }
     this.stopPolling();
-    this.setState({ status: "idle", user: null, media: [] });
+    this.setState({ status: "idle", user: null, media: [], projects: [] });
   }
 
   // ── Persistent cache (account + media list) ──────────────────────
@@ -254,6 +294,7 @@ export class CloudClient {
       const cache: CloudCache = {
         user: this.state.user,
         media: this.state.media,
+        projects: this.state.projects,
       };
       localStorage.setItem(this.cacheKey, JSON.stringify(cache));
     } catch {
@@ -261,11 +302,11 @@ export class CloudClient {
     }
   }
 
-  // ── Media list ───────────────────────────────────────────────────
+  // ── Lists ────────────────────────────────────────────────────────
 
   private startPolling(): void {
     if (this.pollTimer != null) return;
-    this.pollTimer = setInterval(() => void this.refreshMedia(), POLL_INTERVAL_MS);
+    this.pollTimer = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
   }
 
   private stopPolling(): void {
@@ -275,30 +316,42 @@ export class CloudClient {
     }
   }
 
-  /** Fetch every page of the caller's cloud media into state. */
-  async refreshMedia(): Promise<void> {
+  /** Refresh both lists (media + projects). */
+  async refresh(): Promise<void> {
     if (this.state.status !== "authed") return;
     this.setState({ refreshing: true });
     try {
-      const all: CloudMedia[] = [];
-      for (let page = 1; ; page++) {
-        const res = await this.authedFetch(
-          `/api/media?page=${page}&pageSize=${PAGE_SIZE}&sort=added`
-        );
-        if (!res.ok) throw new Error(await errorMessage(res, "List failed"));
-        const body = (await res.json()) as {
-          items: CloudMedia[];
-          total: number;
-        };
-        all.push(...body.items);
-        if (all.length >= body.total || body.items.length === 0) break;
-      }
-      this.setState({ media: all, refreshing: false, lastError: null });
+      const [media, projects] = await Promise.all([
+        this.fetchAll<CloudMedia>("/api/media", "sort=added"),
+        this.fetchAll<CloudProject>("/api/projects", "sort=modified"),
+      ]);
+      this.setState({ media, projects, refreshing: false, lastError: null });
       this.persistCache();
     } catch (err) {
-      console.warn("CloudClient.refreshMedia failed", err);
+      console.warn("CloudClient.refresh failed", err);
       this.setState({ refreshing: false, lastError: networkError(err) });
     }
+  }
+
+  /** Back-compat alias — callers that only care about media still trigger a
+   *  full refresh (cheap, and keeps both lists fresh). */
+  async refreshMedia(): Promise<void> {
+    return this.refresh();
+  }
+
+  /** Fetch every page of a paginated list endpoint. */
+  private async fetchAll<T>(path: string, query: string): Promise<T[]> {
+    const all: T[] = [];
+    for (let page = 1; ; page++) {
+      const res = await this.authedFetch(
+        `${path}?page=${page}&pageSize=${PAGE_SIZE}&${query}`
+      );
+      if (!res.ok) throw new Error(await errorMessage(res, "List failed"));
+      const body = (await res.json()) as { items: T[]; total: number };
+      all.push(...body.items);
+      if (all.length >= body.total || body.items.length === 0) break;
+    }
+    return all;
   }
 
   // ── Media URLs (token-bearing, for streaming / thumbnails) ───────
@@ -350,6 +403,48 @@ export class CloudClient {
     const res = await this.authedFetch(`/api/media/${id}/file`);
     if (!res.ok) throw new Error(await errorMessage(res, "Download failed"));
     return res.blob();
+  }
+
+  // ── Projects ─────────────────────────────────────────────────────
+
+  /** Create a NEW cloud project (POST). Conflicts on filename. */
+  async uploadProject(name: string, content: string): Promise<ProjectUploadResult> {
+    const res = await this.authedFetch(
+      `/api/projects?name=${encodeURIComponent(name)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: content,
+      }
+    );
+    if (res.status === 409) {
+      const body = (await res.json()) as {
+        reason: "name-exists";
+        message: string;
+        existing?: CloudProject;
+      };
+      return { kind: "conflict", ...body };
+    }
+    if (!res.ok) throw new Error(await errorMessage(res, "Upload failed"));
+    return { kind: "created", project: (await res.json()) as CloudProject };
+  }
+
+  /** Replace an existing cloud project's content (PUT against its id). */
+  async updateProject(id: string, content: string): Promise<CloudProject> {
+    const res = await this.authedFetch(`/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: content,
+    });
+    if (!res.ok) throw new Error(await errorMessage(res, "Upload failed"));
+    return (await res.json()) as CloudProject;
+  }
+
+  /** Fetch a cloud project's .seam document as text (download / diff). */
+  async projectText(id: string): Promise<string> {
+    const res = await this.authedFetch(`/api/projects/${id}/file`);
+    if (!res.ok) throw new Error(await errorMessage(res, "Download failed"));
+    return res.text();
   }
 
   // ── Internal ─────────────────────────────────────────────────────
