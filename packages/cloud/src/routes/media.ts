@@ -13,6 +13,9 @@ import {
 } from "../storage.js";
 import { classifyByName, extractMediaInfo } from "../media/extract.js";
 import { fingerprint } from "../media/fingerprint.js";
+import { ImmichClient, relayResponse } from "../immich/client.js";
+import { getImmichAccount } from "../immich/account.js";
+import { kickImmichSweep } from "../immich/job.js";
 import type { MediaKind, MediaRecord, Page } from "../types.js";
 
 const KINDS = ["video", "audio", "image", "pmtiles"] as const;
@@ -53,6 +56,7 @@ interface MediaRow {
   contentType: string | null;
   size: number;
   contentHash: string | null;
+  immichAssetId: string | null;
   addedAt: number;
   lastUsedAt: number | null;
   captureDate: number | null;
@@ -66,7 +70,16 @@ interface MediaRow {
 }
 
 function toRecord(r: MediaRow): MediaRecord {
-  return { ...r, probed: !!r.probed, hasThumb: !!r.hasThumb };
+  const { immichAssetId, ...rest } = r;
+  const immichBacked = immichAssetId !== null;
+  return {
+    ...rest,
+    probed: !!r.probed,
+    // Immich-backed assets always have a thumbnail (served pass-through), even
+    // though we keep no local thumb file — so report it as available.
+    hasThumb: immichBacked || !!r.hasThumb,
+    immichBacked,
+  };
 }
 
 const ORDER: Record<string, string> = {
@@ -210,6 +223,7 @@ mediaRoutes.post("/", async (c) => {
     contentType: file.type || null,
     size: bytes.length,
     contentHash,
+    immichAssetId: null, // uploads land in Seam Cloud first; handed off later
     addedAt: meta.addedAt ?? now,
     lastUsedAt: meta.lastUsedAt ?? null,
     captureDate: extracted?.captureDate ?? meta.captureDate ?? null,
@@ -241,6 +255,9 @@ mediaRoutes.post("/", async (c) => {
     throw err;
   }
 
+  // If this user has Immich connected, hand the new asset off in the background.
+  kickImmichSweep(userId);
+
   return c.json(toRecord(row), 201);
 });
 
@@ -257,11 +274,22 @@ mediaRoutes.get("/:id", (c) => {
   return c.json(toRecord(row));
 });
 
-/** GET /:id/file — stream the raw media bytes. */
-mediaRoutes.get("/:id/file", (c) => {
+/** GET /:id/file — stream the raw media bytes (disk, or pass-through Immich). */
+mediaRoutes.get("/:id/file", async (c) => {
   const userId = c.get("userId");
   const row = findRow(userId, c.req.param("id"));
   if (!row) return c.json({ error: "Not found" }, 404);
+
+  if (row.immichAssetId) {
+    const account = getImmichAccount(userId);
+    if (!account) return c.json({ error: "Immich not connected" }, 502);
+    const upstream = await new ImmichClient(account).fetchOriginal(
+      row.immichAssetId,
+      c.req.header("range")
+    );
+    return relayResponse(upstream, row.contentType ?? "application/octet-stream");
+  }
+
   const res = fileResponse(
     mediaPath(userId, row.id),
     row.contentType ?? "application/octet-stream",
@@ -270,11 +298,22 @@ mediaRoutes.get("/:id/file", (c) => {
   return res ?? c.json({ error: "File missing" }, 404);
 });
 
-/** GET /:id/thumb — stream the cached thumbnail. */
-mediaRoutes.get("/:id/thumb", (c) => {
+/** GET /:id/thumb — cached thumbnail (disk, or pass-through Immich). */
+mediaRoutes.get("/:id/thumb", async (c) => {
   const userId = c.get("userId");
   const row = findRow(userId, c.req.param("id"));
-  if (!row || !row.hasThumb) return c.json({ error: "Not found" }, 404);
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  if (row.immichAssetId) {
+    const account = getImmichAccount(userId);
+    if (!account) return c.json({ error: "Immich not connected" }, 502);
+    const upstream = await new ImmichClient(account).fetchThumbnail(
+      row.immichAssetId
+    );
+    return relayResponse(upstream, "image/jpeg");
+  }
+
+  if (!row.hasThumb) return c.json({ error: "Not found" }, 404);
   const res = fileResponse(thumbPath(userId, row.id), "image/jpeg");
   return res ?? c.json({ error: "File missing" }, 404);
 });

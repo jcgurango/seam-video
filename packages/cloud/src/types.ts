@@ -22,6 +22,8 @@ export interface MediaRecord {
   duration: number | null;
   probed: boolean;
   hasThumb: boolean;
+  /** True when Immich is the canonical source (served pass-through). */
+  immichBacked: boolean;
   createdAt: number;
   updatedAt: number;
 }

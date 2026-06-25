@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { env } from "./env.js";
 import { initDatabase } from "./bootstrap.js";
 import { createApp } from "./server.js";
+import { startImmichScheduler } from "./immich/job.js";
 
 async function main(): Promise<void> {
   await initDatabase();
@@ -11,6 +12,9 @@ async function main(): Promise<void> {
     console.log(`[seam-cloud] Listening on http://localhost:${info.port}`);
     console.log(`[seam-cloud] Data directory: ${env.dataDir}`);
   });
+
+  // Background Immich orchestration (pull / handoff / reconcile per user).
+  startImmichScheduler();
 }
 
 main().catch((err) => {

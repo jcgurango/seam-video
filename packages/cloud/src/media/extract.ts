@@ -39,7 +39,9 @@ function ensureServer(): void {
 
 const VIDEO_EXT = ["mp4", "mov", "m4v", "webm", "mkv", "avi"];
 const AUDIO_EXT = ["mp3", "wav", "m4a", "aac", "ogg", "flac"];
-const IMAGE_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"];
+// svg counts as an image (uploadable + storable), but the Immich handoff
+// deliberately excludes it — see isImmichEligible.
+const IMAGE_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg"];
 
 /** Classify a media kind by filename extension (mirrors the editor). */
 export function classifyByName(name: string): MediaKind | null {

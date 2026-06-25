@@ -8,6 +8,7 @@ import { auth } from "./auth.js";
 import { env } from "./env.js";
 import { mediaRoutes } from "./routes/media.js";
 import { projectRoutes } from "./routes/projects.js";
+import { immichRoutes } from "./routes/immich.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // dist/server.js → ../web/dist ; src/server.ts (tsx) → ../web/dist too.
@@ -44,6 +45,7 @@ export function createApp(): Hono {
 
   app.route("/api/media", mediaRoutes);
   app.route("/api/projects", projectRoutes);
+  app.route("/api/immich", immichRoutes);
 
   // Static client (built by Vite into web/dist). Falls back to index.html so
   // the SPA handles its own routing.

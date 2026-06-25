@@ -7,19 +7,48 @@ import { createHash } from "node:crypto";
  * the *same* hash the editor computes client-side, so the two can be compared
  * directly during reconciliation.
  */
-const FINGERPRINT_SAMPLE = 64 * 1024;
+export const FINGERPRINT_SAMPLE = 64 * 1024;
 
 export function fingerprint(bytes: Buffer): string {
   const size = bytes.length;
   const headLen = Math.min(FINGERPRINT_SAMPLE, size);
   const tailStart = Math.max(headLen, size - FINGERPRINT_SAMPLE);
+  const head = bytes.subarray(0, headLen);
+  const tail = tailStart < size ? bytes.subarray(tailStart, size) : Buffer.alloc(0);
+  return fingerprintParts(size, head, tail);
+}
 
+/**
+ * The hash from its parts: total `size`, the first ≤64KB (`head`) and the last
+ * ≤64KB (`tail`). Lets a consumer that only fetched the two sample ranges of a
+ * large remote file (e.g. an Immich asset over HTTP Range) compute the *same*
+ * digest {@link fingerprint} produces over the whole buffer.
+ *
+ * For `size > 2·64KB` head and tail don't overlap (a middle gap is skipped);
+ * for smaller sizes the caller must pass non-overlapping head/tail that
+ * together cover the file, exactly as {@link fingerprint} slices them.
+ */
+export function fingerprintParts(
+  size: number,
+  head: Uint8Array,
+  tail: Uint8Array
+): string {
   const sizeBuf = Buffer.alloc(8);
   sizeBuf.writeBigUInt64LE(BigInt(size), 0);
-
   const h = createHash("sha256");
   h.update(sizeBuf);
-  h.update(bytes.subarray(0, headLen));
-  if (tailStart < size) h.update(bytes.subarray(tailStart, size));
+  h.update(head);
+  if (tail.length > 0) h.update(tail);
   return h.digest("hex");
+}
+
+/** The byte ranges {@link fingerprint} samples for a file of `size` bytes:
+ *  `[0, head)` and `[tailStart, size)`. `tailStart === size` ⇒ no tail. */
+export function fingerprintRanges(size: number): {
+  headLen: number;
+  tailStart: number;
+} {
+  const headLen = Math.min(FINGERPRINT_SAMPLE, size);
+  const tailStart = Math.max(headLen, size - FINGERPRINT_SAMPLE);
+  return { headLen, tailStart };
 }

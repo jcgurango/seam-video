@@ -29,6 +29,9 @@ export function createAppTables(): void {
       contentType TEXT,
       size        INTEGER NOT NULL,
       contentHash TEXT,                    -- SHA-256(size ∥ head64k ∥ tail64k)
+      -- When set, Immich is the canonical source: bytes + thumbnail are served
+      -- pass-through and no local file is kept (NULL = disk-backed).
+      immichAssetId TEXT,
       -- sidecar metadata (mirrors @seam/editor MediaMeta) --
       addedAt     INTEGER NOT NULL,
       lastUsedAt  INTEGER,
@@ -56,19 +59,31 @@ export function createAppTables(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_project_user ON project(userId);
+
+    -- Per-user Immich connection (API-key based). One account per Seam user.
+    CREATE TABLE IF NOT EXISTS immich_account (
+      userId      TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+      instanceUrl TEXT NOT NULL,
+      apiKey      TEXT NOT NULL,
+      albumId     TEXT,            -- the integration-created "Seam Cloud" album
+      createdAt   INTEGER NOT NULL,
+      updatedAt   INTEGER NOT NULL
+    );
   `);
 
-  // Migration: add contentHash to tables created before it existed.
+  // Migration: add columns to tables created before they existed.
   addColumnIfMissing("media", "contentHash", "TEXT");
+  addColumnIfMissing("media", "immichAssetId", "TEXT");
   addColumnIfMissing("project", "contentHash", "TEXT");
 
   // Per-user uniqueness. Media dedups on filename AND content hash; projects
   // dedup on filename only (content is expected to diverge as they're edited).
-  // SQLite treats NULLs as distinct, so rows awaiting a backfilled hash don't
-  // collide on the hash index.
+  // SQLite treats NULLs as distinct, so rows awaiting a backfilled hash (or a
+  // disk-backed row with no Immich link) don't collide.
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_filename ON media(userId, filename);
     CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_hash ON media(userId, contentHash);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_immich ON media(userId, immichAssetId);
     CREATE UNIQUE INDEX IF NOT EXISTS uq_project_user_name ON project(userId, name);
   `);
 }

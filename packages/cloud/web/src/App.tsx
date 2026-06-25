@@ -135,6 +135,7 @@ function Dashboard({ email, role }: { email: string; role: string }) {
         <div className="user">
           <span>{email}</span>
           <span className={`badge ${role === "ADMIN" ? "admin" : ""}`}>{role}</span>
+          <ImmichPanel />
           <button onClick={() => authClient.signOut()}>Sign out</button>
         </div>
       </header>
@@ -244,6 +245,116 @@ function MediaTile({ item, onDelete }: { item: MediaRecord; onDelete: () => void
           {fmtDate(item.captureDate ?? item.addedAt)} · {fmtSize(item.size)}
         </div>
       </div>
+    </div>
+  );
+}
+
+interface ImmichStatus {
+  connected: boolean;
+  instanceUrl?: string;
+  albumId?: string;
+}
+
+/** Header control to attach/detach a per-user Immich account via API key. */
+function ImmichPanel() {
+  const [status, setStatus] = useState<ImmichStatus | null>(null);
+  const [open, setOpen] = useState(false);
+  const [instanceUrl, setInstanceUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/immich", { credentials: "include" });
+      if (res.ok) setStatus((await res.json()) as ImmichStatus);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const connect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/immich", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ instanceUrl, apiKey }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Connect failed");
+      setApiKey("");
+      setOpen(false);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      await fetch("/api/immich", { method: "DELETE", credentials: "include" });
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="immich">
+      <button onClick={() => setOpen((v) => !v)}>
+        {status?.connected ? "Immich ✓" : "Connect Immich"}
+      </button>
+      {open && (
+        <div className="immich-pop">
+          {status?.connected ? (
+            <>
+              <div className="muted" style={{ wordBreak: "break-all" }}>
+                Connected to {status.instanceUrl}
+              </div>
+              <button onClick={disconnect} disabled={busy}>
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <form onSubmit={connect}>
+              <label>
+                Instance URL
+                <input
+                  type="url"
+                  placeholder="https://photos.example.com"
+                  value={instanceUrl}
+                  onChange={(e) => setInstanceUrl(e.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                API key
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  required
+                />
+              </label>
+              {error && <div className="error">{error}</div>}
+              <button type="submit" disabled={busy}>
+                {busy ? "Connecting…" : "Connect"}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
     </div>
   );
 }
