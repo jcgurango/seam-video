@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { env } from "./env.js";
 
 /**
@@ -39,6 +40,21 @@ export async function saveMedia(
   data: Buffer
 ): Promise<void> {
   await writeFile(mediaPath(userId, id), data);
+}
+
+/**
+ * Stream an upload's web ReadableStream straight to disk without buffering it
+ * in memory — for large media. The id-keyed path is unique, so we write to the
+ * final location directly; callers delete it again if dedup rejects the upload.
+ */
+export async function saveMediaStream(
+  userId: string,
+  id: string,
+  body: ReadableStream<Uint8Array>
+): Promise<void> {
+  const dest = mediaPath(userId, id);
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  await pipeline(Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]), fs.createWriteStream(dest));
 }
 
 export async function saveThumb(

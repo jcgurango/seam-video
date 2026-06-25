@@ -417,12 +417,20 @@ export class CloudClient {
 
   // ── Upload / download ────────────────────────────────────────────
 
-  async uploadMedia(file: File): Promise<UploadResult> {
-    const form = new FormData();
-    form.append("file", file);
-    const res = await this.authedFetch("/api/media", {
+  async uploadMedia(file: File, contentHash?: string): Promise<UploadResult> {
+    // Raw body (the browser streams the Blob) + metadata in the query, so the
+    // server never buffers the file in memory. The server infers `kind` from
+    // the filename. A supplied contentHash lets the server reject a known
+    // conflict before the body is streamed (it re-verifies regardless).
+    const q = new URLSearchParams({
+      filename: file.name,
+      addedAt: String(Date.now()),
+    });
+    if (contentHash) q.set("contentHash", contentHash);
+    const res = await this.authedFetch(`/api/media?${q.toString()}`, {
       method: "POST",
-      body: form,
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
     });
     if (res.status === 409) {
       const body = (await res.json()) as {

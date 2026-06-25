@@ -66,14 +66,18 @@ export async function listMedia(
 }
 
 export async function uploadMedia(file: File): Promise<MediaRecord> {
-  const kind = classifyByName(file.name) ?? "image";
-  const form = new FormData();
-  form.append("file", file);
-  form.append("meta", JSON.stringify({ kind, addedAt: Date.now() }));
+  // Raw body streamed to the server (no in-memory buffering); metadata in the
+  // query. The server infers `kind` from the filename.
+  const q = new URLSearchParams({
+    filename: file.name,
+    kind: classifyByName(file.name) ?? "image",
+    addedAt: String(Date.now()),
+  });
   return json(
-    await fetch("/api/media", {
+    await fetch(`/api/media?${q.toString()}`, {
       method: "POST",
-      body: form,
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
       credentials: "include",
     })
   );

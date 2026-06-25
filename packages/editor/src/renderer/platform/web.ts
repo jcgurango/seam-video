@@ -703,7 +703,9 @@ export class WebPlatform implements Platform {
   async uploadClipToCloud(name: string): Promise<UploadResult> {
     if (!this._cloud) throw new Error("Seam Cloud is not connected.");
     const file = await readFileFromDir(CLIPS_DIR, name);
-    return this._cloud.uploadMedia(file);
+    // Send our content hash so the server can reject a conflict before
+    // streaming the bytes.
+    return this._cloud.uploadMedia(file, await fingerprint(file));
   }
 
   /** Upload every local media file not already on the cloud. Identical copies
@@ -739,7 +741,7 @@ export class WebPlatform implements Platform {
       }
 
       const file = await readFileFromDir(CLIPS_DIR, name);
-      const res = await cloud.uploadMedia(file);
+      const res = await cloud.uploadMedia(file, localFp ?? (await fingerprint(file)));
       if (res.kind === "created") summary.uploaded++;
       else if (res.kind === "exists") summary.alreadyPresent++;
       else summary.conflicts.push({ name, message: res.message });

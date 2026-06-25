@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 
 /**
  * Content fingerprint of a file — the headless mirror of the web editor's
@@ -40,6 +41,31 @@ export function fingerprintParts(
   h.update(head);
   if (tail.length > 0) h.update(tail);
   return h.digest("hex");
+}
+
+/**
+ * Fingerprint a file on disk by reading only its head + tail ranges (never the
+ * whole file into memory) — for streamed uploads that were written to disk
+ * before hashing. Matches {@link fingerprint} over the same bytes.
+ */
+export async function fingerprintFile(
+  path: string
+): Promise<{ hash: string; size: number }> {
+  const { size } = await fs.stat(path);
+  const { headLen, tailStart } = fingerprintRanges(size);
+  const fh = await fs.open(path, "r");
+  try {
+    const head = Buffer.alloc(headLen);
+    if (headLen > 0) await fh.read(head, 0, headLen, 0);
+    let tail = Buffer.alloc(0);
+    if (tailStart < size) {
+      tail = Buffer.alloc(size - tailStart);
+      await fh.read(tail, 0, tail.length, tailStart);
+    }
+    return { hash: fingerprintParts(size, head, tail), size };
+  } finally {
+    await fh.close();
+  }
 }
 
 /** The byte ranges {@link fingerprint} samples for a file of `size` bytes:

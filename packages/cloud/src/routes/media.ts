@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db } from "../db.js";
@@ -7,35 +7,18 @@ import {
   deleteMedia,
   fileResponse,
   mediaPath,
-  saveMedia,
+  saveMediaStream,
   saveThumb,
   thumbPath,
 } from "../storage.js";
 import { classifyByName, extractMediaInfo } from "../media/extract.js";
-import { fingerprint } from "../media/fingerprint.js";
+import { fingerprintFile } from "../media/fingerprint.js";
 import { ImmichClient, relayResponse } from "../immich/client.js";
 import { getImmichAccount } from "../immich/account.js";
 import { kickImmichSweep } from "../immich/job.js";
 import type { MediaKind, MediaRecord, Page } from "../types.js";
 
 const KINDS = ["video", "audio", "image", "pmtiles"] as const;
-
-/**
- * Sidecar metadata accepted on upload. The server derives width/height/
- * duration/captureDate/thumbnail itself (see media/extract.ts), so every field
- * here is optional — the editor only needs to send what it already knows
- * (`kind`, `addedAt`, `lastUsedAt`). Client-supplied values seed the row and
- * are overwritten by anything extraction successfully derives.
- */
-const metaSchema = z.object({
-  kind: z.enum(KINDS).optional(),
-  addedAt: z.number().optional(),
-  lastUsedAt: z.number().nullable().optional(),
-  captureDate: z.number().nullable().optional(),
-  width: z.number().nullable().optional(),
-  height: z.number().nullable().optional(),
-  duration: z.number().nullable().optional(),
-});
 
 /** Partial metadata update — every field optional, `kind` immutable. */
 const patchSchema = z.object({
@@ -88,6 +71,62 @@ const ORDER: Record<string, string> = {
   used: "COALESCE(lastUsedAt, 0) DESC",
 };
 
+/**
+ * Per-user duplicate check. Same filename + same hash = identical (idempotent
+ * accept); only one matching = a conflict. Used both as a fail-early gate on a
+ * client-supplied hash AND authoritatively on the real hash after streaming.
+ */
+type DedupResult =
+  | { kind: "ok" }
+  | { kind: "exists"; row: MediaRow }
+  | { kind: "filename"; row: MediaRow }
+  | { kind: "content"; row: MediaRow };
+
+function checkDedup(userId: string, filename: string, hash: string): DedupResult {
+  const byName = db
+    .prepare("SELECT * FROM media WHERE userId = ? AND filename = ?")
+    .get(userId, filename) as MediaRow | undefined;
+  if (byName) {
+    return byName.contentHash === hash
+      ? { kind: "exists", row: byName }
+      : { kind: "filename", row: byName };
+  }
+  const byHash = db
+    .prepare("SELECT * FROM media WHERE userId = ? AND contentHash = ?")
+    .get(userId, hash) as MediaRow | undefined;
+  if (byHash) return { kind: "content", row: byHash };
+  return { kind: "ok" };
+}
+
+/** Hono response for a non-`ok` dedup result (200 idempotent, or 409). */
+function dedupResponse(
+  c: Context,
+  r: Exclude<DedupResult, { kind: "ok" }>,
+  filename: string
+): Response {
+  if (r.kind === "exists") return c.json(toRecord(r.row), 200);
+  if (r.kind === "filename") {
+    return c.json(
+      {
+        error: "conflict",
+        reason: "filename-exists",
+        message: `A different file named "${filename}" already exists.`,
+        existing: toRecord(r.row),
+      },
+      409
+    );
+  }
+  return c.json(
+    {
+      error: "conflict",
+      reason: "content-exists",
+      message: `This file's content already exists as "${r.row.filename}".`,
+      existing: toRecord(r.row),
+    },
+    409
+  );
+}
+
 export const mediaRoutes = new Hono<AuthVars>();
 mediaRoutes.use("*", requireAuth);
 
@@ -120,86 +159,56 @@ mediaRoutes.get("/", (c) => {
 });
 
 /**
- * POST / — upload media bytes. The server extracts the sidecar metadata
- * (thumbnail, dimensions, duration, capture date) itself, mirroring how the
- * web editor extracts it client-side. Client-supplied `meta` seeds the row;
- * anything extraction derives overrides it.
+ * POST /?filename=…&kind=…&addedAt=… — upload media as a RAW body (the file
+ * bytes), streamed straight to disk so large videos never sit in memory.
+ * Metadata travels in the query string; the server derives the rest
+ * (thumbnail, dimensions, duration, capture date) by extraction.
  */
 mediaRoutes.post("/", async (c) => {
   const userId = c.get("userId");
-  const body = await c.req.parseBody();
 
-  const file = body["file"];
-  if (!(file instanceof File)) {
-    return c.json({ error: "Missing 'file'" }, 400);
-  }
-
-  const rawMeta = typeof body["meta"] === "string" ? body["meta"] : "{}";
-  let meta: z.infer<typeof metaSchema>;
-  try {
-    meta = metaSchema.parse(JSON.parse(rawMeta));
-  } catch (err) {
-    return c.json(
-      { error: "Invalid meta", detail: err instanceof Error ? err.message : err },
-      400
-    );
-  }
-
-  const filename = file.name || "untitled";
-  const kind = meta.kind ?? classifyByName(filename);
+  const filename = c.req.query("filename") || "untitled";
+  const kindParam = c.req.query("kind") as MediaKind | undefined;
+  const kind =
+    kindParam && (KINDS as readonly string[]).includes(kindParam)
+      ? kindParam
+      : classifyByName(filename);
   if (!kind) {
     return c.json({ error: `Unsupported media type for "${filename}"` }, 400);
   }
-
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const contentHash = fingerprint(bytes);
-
-  // Duplicate detection (per user). Rule: same filename + same content hash =
-  // the identical file → accept idempotently (return the existing record). If
-  // only one matches — same name with different content, or same content under
-  // a different name — reject with 409. The editor reconciles conflicts later;
-  // the server stays dumb on purpose.
-  const byName = db
-    .prepare("SELECT * FROM media WHERE userId = ? AND filename = ?")
-    .get(userId, filename) as MediaRow | undefined;
-  if (byName) {
-    if (byName.contentHash === contentHash) {
-      return c.json(toRecord(byName), 200); // identical re-upload
-    }
-    return c.json(
-      {
-        error: "conflict",
-        reason: "filename-exists",
-        message: `A different file named "${filename}" already exists.`,
-        existing: toRecord(byName),
-      },
-      409
-    );
+  if (!c.req.raw.body) {
+    return c.json({ error: "Missing request body" }, 400);
   }
-  const byHash = db
-    .prepare("SELECT * FROM media WHERE userId = ? AND contentHash = ?")
-    .get(userId, contentHash) as MediaRow | undefined;
-  if (byHash) {
-    return c.json(
-      {
-        error: "conflict",
-        reason: "content-exists",
-        message: `This file's content already exists as "${byHash.filename}".`,
-        existing: toRecord(byHash),
-      },
-      409
-    );
+
+  // Fail-early: if the client sent its content hash, reject a known conflict
+  // (or accept a known duplicate) *before* streaming the bytes. This is just a
+  // hint — the authoritative check below runs on the hash we compute ourselves.
+  const claimedHash = c.req.query("contentHash");
+  if (claimedHash) {
+    const early = checkDedup(userId, filename, claimedHash);
+    if (early.kind !== "ok") return dedupResponse(c, early, filename);
   }
 
   const id = randomUUID();
   const now = Date.now();
-  await saveMedia(userId, id, bytes);
 
-  // Headless extraction (mirrors the editor's mediaThumbs.ts). Best-effort —
-  // a failure leaves `probed` true with whatever fields were derived, falling
-  // back to client-supplied values.
+  // Stream the body to disk (no in-memory buffering), then hash it from its
+  // head/tail. The id-keyed path is unique; we delete it again if the upload
+  // turns out to be a duplicate/conflict.
+  await saveMediaStream(userId, id, c.req.raw.body);
+  const { hash: contentHash, size } = await fingerprintFile(mediaPath(userId, id));
+
+  // Authoritative duplicate check on the real (server-computed) hash.
+  const dedup = checkDedup(userId, filename, contentHash);
+  if (dedup.kind !== "ok") {
+    await deleteMedia(userId, id); // discard the just-streamed copy
+    return dedupResponse(c, dedup, filename);
+  }
+
+  // Headless extraction (mirrors the editor's mediaThumbs.ts), reading the
+  // file we just wrote. Best-effort.
   let probed = 0;
-  const extracted = await extractMediaInfo(mediaPath(userId, id), kind, bytes).catch(
+  const extracted = await extractMediaInfo(mediaPath(userId, id), kind).catch(
     (err) => {
       console.warn(`[seam-cloud] extraction failed for ${id}:`, err);
       return null;
@@ -215,21 +224,22 @@ mediaRoutes.post("/", async (c) => {
     }
   }
 
+  const addedAtParam = Number(c.req.query("addedAt"));
   const row: MediaRow = {
     id,
     userId,
     filename,
     kind,
-    contentType: file.type || null,
-    size: bytes.length,
+    contentType: c.req.header("content-type") || null,
+    size,
     contentHash,
     immichAssetId: null, // uploads land in Seam Cloud first; handed off later
-    addedAt: meta.addedAt ?? now,
-    lastUsedAt: meta.lastUsedAt ?? null,
-    captureDate: extracted?.captureDate ?? meta.captureDate ?? null,
-    width: extracted?.width ?? meta.width ?? null,
-    height: extracted?.height ?? meta.height ?? null,
-    duration: extracted?.duration ?? meta.duration ?? null,
+    addedAt: Number.isFinite(addedAtParam) ? addedAtParam : now,
+    lastUsedAt: null,
+    captureDate: extracted?.captureDate ?? null,
+    width: extracted?.width ?? null,
+    height: extracted?.height ?? null,
+    duration: extracted?.duration ?? null,
     probed,
     hasThumb,
     createdAt: now,
