@@ -7,7 +7,6 @@
 .git
 .DS_Store
 **/.DS_Store
-*.pmtiles
 packages/cloud/data
 packages/cloud/.env
 **/.env

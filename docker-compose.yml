@@ -6,6 +6,10 @@
 #   ADMIN_PASS=change-me
 #   BETTER_AUTH_SECRET=<long random string>
 #   SEAM_CLOUD_URL=https://cloud.example.com   # public URL the browser uses
+#   GENERATOR_SERVER_URL=                      # override/disable the generator proxy
+#
+# Three services: cloud (API), web (editor SPA), generator (transcription /
+# enhance). The cloud proxies to the generator over the internal network.
 #
 #   docker compose up --build
 
@@ -22,10 +26,15 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       PORT: "8787"
       DATA_DIR: /data
+      # Internal service address (server-to-server, so the docker name resolves
+      # — unlike the browser-facing SEAM_CLOUD_URL). Override to disable.
+      GENERATOR_SERVER_URL: ${GENERATOR_SERVER_URL:-http://generator:8000}
     volumes:
       - cloud-data:/data
     ports:
       - "${CLOUD_PORT:-8787}:8787"
+    depends_on:
+      - generator
     restart: unless-stopped
 
   web:
@@ -43,5 +52,23 @@ services:
       - cloud
     restart: unless-stopped
 
+  # Whisper transcription + Resemble Enhance. CPU baseline — slow but portable;
+  # first request downloads models into the cache volume. For GPU, build from a
+  # CUDA base + GPU torch and add:
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  generator:
+    build:
+      context: ./packages/generator-server
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+    volumes:
+      - generator-cache:/cache
+    restart: unless-stopped
+
 volumes:
   cloud-data:
+  generator-cache:
