@@ -17,8 +17,9 @@ import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
 import CloudStatus from "./cloud/CloudStatus.js";
+import { useCloud } from "./cloud/useCloud.js";
 import SettingsDialog from "./SettingsDialog.js";
-import { useSettings } from "./useSettings.js";
+import { useSettings, DEFAULT_GENERATOR_SERVER_URL } from "./useSettings.js";
 import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
 import { useNormalize } from "./useNormalize.js";
 import CompositionAudioDialog from "./CompositionAudioDialog.js";
@@ -790,10 +791,33 @@ export default function App({ platform }: AppProps) {
 
   const basePath = filePath ? dirname(filePath) : "";
 
+  // Generator server selection (transcription / enhancement). Precedence:
+  //   1. an explicit user setting (direct connection),
+  //   2. the Seam Cloud authenticated proxy when connected + the cloud has a
+  //      generator configured,
+  //   3. the localhost default.
+  const cloud = platform.kind === "web" ? (platform as WebPlatform).cloud : null;
+  const cloudState = useCloud(cloud);
+  const explicitGeneratorUrl = settings.generatorServerUrl.trim();
+  const useGeneratorProxy =
+    !explicitGeneratorUrl &&
+    !!cloud &&
+    cloudState?.status === "authed" &&
+    !!cloudState?.generatorAvailable;
+  const generatorServerUrl = explicitGeneratorUrl
+    ? explicitGeneratorUrl
+    : useGeneratorProxy
+      ? `${cloud!.baseUrl}/api/generator`
+      : DEFAULT_GENERATOR_SERVER_URL;
+  const generatorAuthToken = useGeneratorProxy
+    ? cloud!.authToken ?? undefined
+    : undefined;
+
   // Transcription job: feeds the generator server one clip at a time and
   // appends a `data` attachment per response onto the root document.
   const transcriber = useTranscribe({
-    serverUrl: settings.generatorServerUrl,
+    serverUrl: generatorServerUrl,
+    authToken: generatorAuthToken,
     platform,
     basePath,
     history,

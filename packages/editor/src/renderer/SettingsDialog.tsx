@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { DEFAULT_SETTINGS, type Settings } from "./useSettings.js";
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_GENERATOR_SERVER_URL,
+  type Settings,
+} from "./useSettings.js";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -106,7 +110,7 @@ export default function SettingsDialog({
             onChange={(v) =>
               setDraft((d) => ({ ...d, generatorServerUrl: v }))
             }
-            placeholder="http://localhost:8000"
+            placeholder={DEFAULT_GENERATOR_SERVER_URL}
           />
         </div>
 

@@ -55,6 +55,8 @@ export interface CloudState {
   user: CloudUser | null;
   media: CloudMedia[];
   projects: CloudProject[];
+  /** Whether this cloud exposes an authenticated generator proxy. */
+  generatorAvailable: boolean;
   /** True while a list refresh is in flight. */
   refreshing: boolean;
   lastError: string | null;
@@ -90,6 +92,7 @@ interface CloudCache {
   user: CloudUser | null;
   media: CloudMedia[];
   projects: CloudProject[];
+  generatorAvailable?: boolean;
 }
 
 export class CloudClient {
@@ -103,6 +106,7 @@ export class CloudClient {
     user: null,
     media: [],
     projects: [],
+    generatorAvailable: false,
     refreshing: false,
     lastError: null,
   };
@@ -131,6 +135,7 @@ export class CloudClient {
           user: cache.user,
           media: cache.media ?? [],
           projects: cache.projects ?? [],
+          generatorAvailable: cache.generatorAvailable ?? false,
           refreshing: false,
           lastError: null,
         };
@@ -182,6 +187,33 @@ export class CloudClient {
     return !!this.token;
   }
 
+  /** The bearer token (for the generator proxy, which takes an Authorization
+   *  header rather than a `?token=` query). Null when signed out. */
+  get authToken(): string | null {
+    return this.token;
+  }
+
+  /** Base URL of the authenticated generator proxy, or null when it isn't
+   *  available (not signed in, or the cloud has no generator configured). */
+  generatorProxyUrl(): string | null {
+    return this.state.status === "authed" && this.state.generatorAvailable
+      ? `${this.baseUrl}/api/generator`
+      : null;
+  }
+
+  /** Probe whether this cloud exposes the generator proxy. */
+  private async fetchCapabilities(): Promise<void> {
+    try {
+      const res = await this.authedFetch("/api/generator");
+      if (!res.ok) return;
+      const body = (await res.json()) as { available?: boolean };
+      this.setState({ generatorAvailable: !!body.available });
+      this.persistCache();
+    } catch {
+      /* best-effort — capability defaults to false */
+    }
+  }
+
   /** Restore a prior session on boot: validate the stored token, refresh the
    *  list now, then poll. No-op (idle) if there's no token; a stale token logs
    *  out, but a network error keeps the optimistic (cached) session so a flaky
@@ -211,6 +243,7 @@ export class CloudClient {
     this.persistCache();
     this.startPolling();
     void this.refreshMedia();
+    void this.fetchCapabilities();
   }
 
   async login(email: string, password: string): Promise<void> {
@@ -245,6 +278,7 @@ export class CloudClient {
     this.persistCache();
     this.startPolling();
     void this.refreshMedia();
+    void this.fetchCapabilities();
   }
 
   async logout(): Promise<void> {
@@ -275,7 +309,13 @@ export class CloudClient {
       /* ignore */
     }
     this.stopPolling();
-    this.setState({ status: "idle", user: null, media: [], projects: [] });
+    this.setState({
+      status: "idle",
+      user: null,
+      media: [],
+      projects: [],
+      generatorAvailable: false,
+    });
   }
 
   // ── Persistent cache (account + media list) ──────────────────────
@@ -295,6 +335,7 @@ export class CloudClient {
         user: this.state.user,
         media: this.state.media,
         projects: this.state.projects,
+        generatorAvailable: this.state.generatorAvailable,
       };
       localStorage.setItem(this.cacheKey, JSON.stringify(cache));
     } catch {

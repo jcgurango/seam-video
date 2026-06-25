@@ -28,6 +28,9 @@ export interface Env {
   /** Origins better-auth accepts (its own CSRF-style Origin check, separate
    *  from CORS). Derived from corsOrigins plus the base URL + dev origin. */
   trustedOrigins: string[];
+  /** Generator (transcription/enhance) server to proxy to, gated behind auth.
+   *  Null when unset — the proxy is then disabled. */
+  generatorServerUrl: string | null;
 }
 
 const DEV_SECRET = "seam-cloud-insecure-dev-secret-change-me";
@@ -85,6 +88,9 @@ export function loadEnv(): Env {
       ? ["*", ...baseTrusted]
       : Array.from(new Set([...corsOrigins, ...baseTrusted]));
 
+  const generatorServerUrl =
+    process.env.GENERATOR_SERVER_URL?.trim().replace(/\/+$/, "") || null;
+
   return {
     port,
     dataDir,
@@ -94,6 +100,7 @@ export function loadEnv(): Env {
     baseURL,
     corsOrigins,
     trustedOrigins,
+    generatorServerUrl,
   };
 }
 

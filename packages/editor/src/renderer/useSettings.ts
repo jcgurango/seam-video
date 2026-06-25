@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { z } from "zod";
 
+/** The generator server URL used when the setting is left blank. Kept out of
+ *  the schema default so an unset value persists as "" (the UI shows this as a
+ *  placeholder) rather than baking the literal default into storage. */
+export const DEFAULT_GENERATOR_SERVER_URL = "http://localhost:8000";
+
 // One source of truth for the app's persisted settings shape. New keys
 // just need: a schema entry (with a sensible default), a row in the
 // SettingsDialog form, and any consumer that reads `useSettings()`.
 export const SettingsSchema = z.object({
-  generatorServerUrl: z.string().default("http://localhost:8000"),
+  // Empty = "use the default" — consumers fall back to
+  // DEFAULT_GENERATOR_SERVER_URL so we never persist the default itself.
+  generatorServerUrl: z.string().default(""),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

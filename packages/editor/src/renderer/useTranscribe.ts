@@ -41,6 +41,9 @@ export interface TranscribeProgress {
 
 export interface UseTranscribeOptions {
   serverUrl: string;
+  /** Bearer token to send (when `serverUrl` is the authenticated Seam Cloud
+   *  generator proxy). Omitted for a direct generator connection. */
+  authToken?: string;
   platform: Platform;
   basePath: string;
   history: History<SeamFile>;
@@ -263,9 +266,14 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           });
 
           const form = new FormData();
-          console.log(wav);
           form.append("file", wav, "audio.wav");
-          const res = await fetch(url, { method: "POST", body: form });
+          const res = await fetch(url, {
+            method: "POST",
+            body: form,
+            headers: opts.authToken
+              ? { Authorization: `Bearer ${opts.authToken}` }
+              : undefined,
+          });
           if (!res.ok) {
             const detail = await res.text().catch(() => res.statusText);
             throw new Error(
@@ -338,7 +346,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
       setProgress(null);
       if (accumulatedErrors.length > 0) setErrors(accumulatedErrors);
     },
-    [serverUrl, opts.platform, opts.basePath, history]
+    [serverUrl, opts.authToken, opts.platform, opts.basePath, history]
   );
 
   return { progress, errors, run, cancel };
