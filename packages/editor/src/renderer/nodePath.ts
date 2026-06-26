@@ -223,7 +223,7 @@ export function removeFromComp(
 
   // Seed removed-id set from the explicitly removed children + attachments.
   const removedIds = new Set<string>();
-  comp.children.forEach((c, i) => {
+  (comp.children ?? []).forEach((c, i) => {
     if (childIdx.has(i)) {
       const id = nodeId(c);
       if (id) removedIds.add(id);
@@ -253,7 +253,7 @@ export function removeFromComp(
     });
   }
 
-  const newChildren = comp.children.filter((_, i) => !childIdx.has(i));
+  const newChildren = (comp.children ?? []).filter((_, i) => !childIdx.has(i));
   const newAttachments = attachments.filter((_, i) => !removedAtt.has(i));
   if (newAttachments.length > 0) {
     return { ...comp, children: newChildren, attachments: newAttachments };
@@ -409,7 +409,7 @@ function spliceField(
   fn: (arr: Child[]) => Child[],
 ): Composition {
   if (field === "children") {
-    return { ...comp, children: fn(comp.children) };
+    return { ...comp, children: fn(comp.children ?? []) };
   }
   const next = fn(comp.attachments ?? []);
   if (next.length > 0) return { ...comp, attachments: next };

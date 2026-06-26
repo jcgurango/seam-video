@@ -22,7 +22,13 @@
 
 import { validate } from "./validate.js";
 import { expandMacros, findUnresolvedMacros } from "./macros.js";
-import type { BinEntry, Child, Composition, SeamFile } from "./types.js";
+import type {
+  BaseComposition,
+  BinEntry,
+  Child,
+  Composition,
+  SeamFile,
+} from "./types.js";
 
 export interface CompileError {
   /** Hint at where the error came from. `"bin:<id>"` for a missing bin
@@ -101,7 +107,16 @@ function compileComposition(
   // 1. Bin reference: replace body with the looked-up entry's body.
   //    The reference's own bin/script/spatial/timing fields stay; only
   //    `children` + `attachments` come from the entry.
-  let staged: Composition = comp;
+  //
+  //    `staged` is a working shape that — unlike the authored `Composition`
+  //    union — may transiently hold `binItem` alongside `children`/
+  //    `attachments` (the splice below adds them before step 5 strips
+  //    `binItem`). Cast back to `Composition` at the return.
+  let staged: BaseComposition & {
+    children?: Child[];
+    attachments?: Child[];
+    binItem?: string;
+  } = comp;
   if (staged.binItem != null) {
     const entry = lookupBinEntry(staged.binItem, callerBinStack);
     if (!entry) {
@@ -148,7 +163,7 @@ function compileComposition(
   //    the user's authored body for direct editing.
   if (staged.script != null && runScripts) {
     try {
-      const rawResult = runScript(staged.script, staged);
+      const rawResult = runScript(staged.script, staged as Composition);
       // Macro expansion is a one-shot, pre-validation step on the
       // *source* document. Scripts run after that and emit fresh
       // content; any "$$…" in their output never had a chance to be

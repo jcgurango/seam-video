@@ -85,7 +85,7 @@ export async function mixCompositionAudio(
   for (const err of compiled.errors) {
     opts.onCompileError?.(`${err.source}: ${err.message}`);
   }
-  const compiledTarget = compiled.doc.children[0];
+  const compiledTarget = (compiled.doc.children ?? [])[0];
   if (!compiledTarget || compiledTarget.type !== "composition") return null;
 
   // Strip top-level attachments for "children only" — AFTER compile, so a

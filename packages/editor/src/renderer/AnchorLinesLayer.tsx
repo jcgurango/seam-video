@@ -92,7 +92,7 @@ export default function AnchorLinesLayer({
     // children, reconstructed from the group's blocks.
     const authored = getCompAtPath(docRoot, group.path);
     if (!authored) continue;
-    const childCount = authored.children.length;
+    const childCount = (authored.children ?? []).length;
     const resolvedChildren: ResolvedChild[] = [];
     const rowByIndex = new Map<number, number>();
     for (const b of group.blocks) {

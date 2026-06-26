@@ -350,7 +350,9 @@ export function resolveComposition(composition: Composition): ResolvedTimeline {
 }
 
 function resolveCompositionInner(composition: Composition): ResolvedTimeline {
-  const { children } = composition;
+  // Post-compile, `binItem` references are inflated and `children` is
+  // always populated; `?? []` keeps the now-optional authored type happy.
+  const children = composition.children ?? [];
 
   // Sequential children: each child takes its natural duration. There's no
   // higher-order organizer (no flex, no justify, no container duration) —

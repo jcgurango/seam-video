@@ -36,11 +36,11 @@ export function findBinItem(bin: BinEntry[], id: string): BinEntry | null {
 /** Returns the bin-item id this composition references, or null if it
  *  isn't a bin reference. */
 export function binReferenceId(comp: Composition): string | null {
-  return comp.binItem ?? null;
+  return "binItem" in comp ? comp.binItem : null;
 }
 
 export function isBinReference(comp: Composition): boolean {
-  return comp.binItem != null;
+  return "binItem" in comp;
 }
 
 /** Rename a bin entry's id and rewrite every `binItem` reference in
@@ -69,7 +69,7 @@ function rewriteBinReferences(
   if (binReferenceId(node) === oldId) {
     next = { ...next, binItem: newId };
   }
-  const newChildren = next.children.map((child: Child) =>
+  const newChildren = next.children?.map((child: Child) =>
     child.type === "composition"
       ? rewriteBinReferences(child, oldId, newId)
       : child,
@@ -81,7 +81,7 @@ function rewriteBinReferences(
   );
   return {
     ...next,
-    children: newChildren,
+    ...(newChildren ? { children: newChildren } : {}),
     ...(newAttachments ? { attachments: newAttachments } : {}),
   };
 }

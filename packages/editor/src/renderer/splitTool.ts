@@ -26,7 +26,7 @@ function collectAllIds(doc: SeamFile): Set<string> {
     const id = (child as { id?: string }).id;
     if (id != null) out.add(id);
     if (child.type === "composition") {
-      child.children.forEach(visit);
+      (child.children ?? []).forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
     }
   };
@@ -165,7 +165,7 @@ function rewriteAnchorsInNode(node: Child, ctx: SplitContext): Child {
   }
 
   if (next.type === "composition") {
-    const rewrittenChildren = next.children.map((c) =>
+    const rewrittenChildren = (next.children ?? []).map((c) =>
       rewriteAnchorsInNode(c, ctx),
     );
     const rewrittenAttachments = next.attachments?.map((c) =>
@@ -189,7 +189,7 @@ export function sliceAtPlayhead(
   currentTime: number,
 ): SeamFile | null {
   const resolved = resolveComposition(doc);
-  const children = doc.children;
+  const children = doc.children ?? [];
 
   let targetIdx = -1;
   let timelineStart = 0;

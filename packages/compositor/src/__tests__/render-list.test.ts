@@ -114,7 +114,7 @@ describe("buildRenderList — duration-compressed composition", () => {
       contentWidth: W,
       contentHeight: H,
       children: [
-        { type: "composition", children: [root.children[0]] },
+        { type: "composition", children: [(root.children ?? [])[0]] },
       ],
     };
     const ds = renderAt(wrapped, 1.5);

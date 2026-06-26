@@ -76,15 +76,16 @@ function isTranscribableTarget(c: Child): c is TargetChild {
 }
 
 function selectionTargets(
-  host: { children: Child[]; attachments?: Child[] },
+  host: { children?: Child[]; attachments?: Child[] },
   selectedIndices: number[]
 ): Target[] {
-  const childCount = host.children.length;
+  const hostChildren = host.children ?? [];
+  const childCount = hostChildren.length;
   const out: Target[] = [];
   for (const idx of selectedIndices) {
     const c =
       idx < childCount
-        ? host.children[idx]
+        ? hostChildren[idx]
         : host.attachments?.[idx - childCount];
     if (c && isTranscribableTarget(c)) {
       out.push({ index: idx, child: c });
@@ -104,11 +105,11 @@ function targetLabel(child: TargetChild, i: number): string {
 
 /** Pick a fresh id that doesn't already collide with anything in the host. */
 function freshId(
-  host: { children: Child[]; attachments?: Child[] },
+  host: { children?: Child[]; attachments?: Child[] },
   prefix: string
 ): string {
   const taken = new Set<string>();
-  for (const c of host.children) if (c.id) taken.add(c.id);
+  for (const c of host.children ?? []) if (c.id) taken.add(c.id);
   for (const a of host.attachments ?? []) if (a.id) taken.add(a.id);
   for (let n = 1; ; n++) {
     const candidate = `${prefix}-${n}`;
@@ -126,9 +127,10 @@ function replaceTarget(
   index: number,
   replacement: Child
 ): SeamFile | (Child & { type: "composition" }) {
-  const childCount = host.children.length;
+  const hostChildren = host.children ?? [];
+  const childCount = hostChildren.length;
   if (index < childCount) {
-    const newChildren = host.children.slice();
+    const newChildren = hostChildren.slice();
     newChildren[index] = replacement;
     return { ...host, children: newChildren };
   }

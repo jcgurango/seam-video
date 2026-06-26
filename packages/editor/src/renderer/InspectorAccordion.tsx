@@ -309,7 +309,7 @@ function renderCoveringBlocks({
   rootBin,
 }: {
   resolved: { children: ResolvedChild[] };
-  docComp: { children: Child[]; attachments?: Child[] };
+  docComp: { children?: Child[]; attachments?: Child[] };
   currentTime: number;
   depth: number;
   /** Path of indices from the root, so keys stay unique across sibling
@@ -320,8 +320,8 @@ function renderCoveringBlocks({
    *  `children` are empty — the body lives in the shared bin entry). */
   rootBin: BinEntry[];
 }): React.ReactNode[] {
-  const attachmentStartIndex = docComp.children.length;
-  const docChildren = docComp.children;
+  const docChildren = docComp.children ?? [];
+  const attachmentStartIndex = docChildren.length;
   const docAttachments = docComp.attachments ?? [];
 
   const out: React.ReactNode[] = [];
@@ -352,8 +352,8 @@ function renderCoveringBlocks({
       // children come from the shared bin entry, so descend into that
       // entry's body (mirrors the timeline's `layoutTree`). Regular
       // compositions descend into their own body.
-      const binId = docChild.binItem;
-      const subComp: { children: Child[]; attachments?: Child[] } = binId
+      const binId = "binItem" in docChild ? docChild.binItem : undefined;
+      const subComp: { children?: Child[]; attachments?: Child[] } = binId
         ? findBinItem(rootBin, binId) ?? { children: [] }
         : docChild;
       out.push(

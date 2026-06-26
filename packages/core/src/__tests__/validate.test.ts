@@ -729,6 +729,48 @@ describe("validate — macro expansion runs before schema checks", () => {
       );
     }
   });
+
+  // A `binItem` reference adopts the named entry's body at compile time, so it
+  // carries no `children`/`attachments` of its own — only instance-level
+  // overrides. The schema models this as a discriminated union.
+  it("accepts a bin reference with no children of its own", () => {
+    const result = validate({
+      type: "composition",
+      bin: [
+        { id: "intro", children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }] },
+      ],
+      children: [{ type: "composition", binItem: "intro" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a bin reference that also carries its own children", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "composition",
+          binItem: "intro",
+          children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a bin reference that also carries its own attachments", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        {
+          type: "composition",
+          binItem: "intro",
+          attachments: [{ type: "empty", duration: 1 }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("parseSeamFile", () => {

@@ -6,7 +6,12 @@
 // reference drops its own children/attachments — the compile pass
 // inlines the bin entry's body at render time.
 
-import type { Composition, SeamFile } from "@seam/core";
+import type {
+  BaseComposition,
+  BasicComposition,
+  Composition,
+  SeamFile,
+} from "@seam/core";
 import {
   findBin,
   isBinReference,
@@ -27,7 +32,7 @@ export function pickFreshBinId(existing: readonly BinEntry[]): string {
  *  to the bin: must be a plain composition (no script attached, not
  *  already a bin reference). */
 export function canBin(doc: SeamFile, index: number): boolean {
-  const child = doc.children[index];
+  const child = (doc.children ?? [])[index];
   if (!child || child.type !== "composition") return false;
   if (isBinReference(child)) return false;
   if (hasScript(child)) return false;
@@ -45,12 +50,12 @@ export interface BinResult {
  *  the operation isn't applicable. */
 export function applyBin(doc: SeamFile, index: number): BinResult | null {
   if (!canBin(doc, index)) return null;
-  const child = doc.children[index] as Composition;
+  const child = (doc.children ?? [])[index] as BasicComposition;
 
   const existingBin = findBin(doc as Composition);
   const newId = pickFreshBinId(existingBin);
 
-  const newEntry: BinEntry = { id: newId, children: child.children };
+  const newEntry: BinEntry = { id: newId, children: child.children ?? [] };
   if (child.attachments) newEntry.attachments = child.attachments;
 
   // The reference keeps every authored field except the structural
@@ -58,12 +63,11 @@ export function applyBin(doc: SeamFile, index: number): BinResult | null {
   // time, so storing them on the reference would just go stale.
   const { children: _c, attachments: _a, ...rest } = child;
   const newReference: Composition = {
-    ...(rest as Composition),
-    children: [],
+    ...(rest as BaseComposition),
     binItem: newId,
   };
 
-  const newChildren = doc.children.slice();
+  const newChildren = (doc.children ?? []).slice();
   newChildren[index] = newReference;
 
   const withNewChildren: Composition = { ...doc, children: newChildren };

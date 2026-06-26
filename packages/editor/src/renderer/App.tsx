@@ -521,13 +521,13 @@ export default function App({ platform }: AppProps) {
   // path-key selection projected down to `[0, childCount)` children and
   // `[childCount, …)` attachments, nested keys dropped.
   const rootSelectedIndices = useMemo(
-    () => rootIndicesFromKeys(selection, document.children.length),
+    () => rootIndicesFromKeys(selection, (document.children ?? []).length),
     [selection, document],
   );
   const onRootSelectionChange = useCallback(
     (idxs: number[]) => {
       setSelection(
-        idxs.map((i) => rootKeyFromIndex(i, document.children.length)),
+        idxs.map((i) => rootKeyFromIndex(i, (document.children ?? []).length)),
       );
     },
     [document],
@@ -576,7 +576,7 @@ export default function App({ platform }: AppProps) {
     // against the doc's `bin`.
     const newDoc: SeamFile = {
       ...document,
-      children: [...document.children, ...spliced],
+      children: [...(document.children ?? []), ...spliced],
     };
     void commitDocument(newDoc);
     setCcCut(null);
@@ -908,11 +908,11 @@ export default function App({ platform }: AppProps) {
   // Root-level selected nodes that are compositions — they need the mix-mode
   // modal before the job runs (clip/audio targets transcribe directly).
   const selectedCompositionCount = useMemo(() => {
-    const childCount = document.children.length;
+    const childCount = (document.children ?? []).length;
     return rootSelectedIndices.filter((idx) => {
       const node =
         idx < childCount
-          ? document.children[idx]
+          ? (document.children ?? [])[idx]
           : document.attachments?.[idx - childCount];
       return node?.type === "composition";
     }).length;

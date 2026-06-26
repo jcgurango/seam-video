@@ -128,11 +128,12 @@ export function resolveCCWords(
   // Build an id → resolved-child map covering both sequential children
   // and attachments (the resolver appends attachments to `children`).
   const idToResolved = new Map<string, ResolvedChild>();
+  const compChildren = comp.children ?? [];
   resolved.children.forEach((rc, i) => {
     const orig =
-      i < comp.children.length
-        ? comp.children[i]
-        : (comp.attachments ?? [])[i - comp.children.length];
+      i < compChildren.length
+        ? compChildren[i]
+        : (comp.attachments ?? [])[i - compChildren.length];
     const id = (orig as { id?: string } | undefined)?.id;
     if (id) idToResolved.set(id, rc);
   });
@@ -243,9 +244,10 @@ export function buildCCSpliceChildren(
   selections: CCSelection[],
 ): Child[] {
   return selections.map((sel) => {
+    // A bin reference adopts the named entry's body at compile time, so it
+    // carries no `children` of its own — only the slot's timing overrides.
     const c: Composition = {
       type: "composition",
-      children: [],
       binItem: binId,
       in: sel.start,
       out: sel.end,

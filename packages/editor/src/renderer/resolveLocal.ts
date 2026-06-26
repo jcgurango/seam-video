@@ -24,7 +24,7 @@ interface ResolvedBody {
   children: ResolvedChild[];
 }
 interface AuthoredBody {
-  children: Child[];
+  children?: Child[];
   attachments?: Child[];
 }
 
@@ -52,13 +52,14 @@ export function descendToContainer(
   let aNode: AuthoredBody = doc;
   for (const seg of containerPath) {
     if (seg.field === "bin") return null;
-    const childCount = aNode.children.length;
+    const aChildren = aNode.children ?? [];
+    const childCount = aChildren.length;
     const flat = seg.field === "children" ? seg.index : childCount + seg.index;
     const rChild = rNode.children[flat];
     if (!rChild || rChild.type !== "composition") return null;
     const aChild =
       seg.field === "children"
-        ? aNode.children[seg.index]
+        ? aChildren[seg.index]
         : (aNode.attachments ?? [])[seg.index];
     if (!aChild || aChild.type !== "composition") return null;
     t = (aChild.in ?? 0) + (t - rChild.timelineStart) * rChild.speed;

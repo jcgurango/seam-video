@@ -195,7 +195,7 @@ interface InnerProps {
    * a ref, the attachment-vs-child distinction for layout, etc.
    */
   docRoot?: {
-    children: import("@seam/core").Child[];
+    children?: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
   };
   /**
@@ -302,7 +302,7 @@ interface TimelineSurfaceState {
 function useTimelineSurfaceState(
   timeline: ResolvedTimeline,
   attachmentStartIndex: number | undefined,
-  authored: { children: Child[]; attachments?: Child[] } | undefined,
+  authored: { children?: Child[]; attachments?: Child[] } | undefined,
   expanded: Set<string>,
   rootBin: BinEntry[],
   scrollRef: React.RefObject<HTMLDivElement | null>,
@@ -360,7 +360,7 @@ interface TimelineSurfaceProps {
    *  feedback) to the cursor's content time during a resize drag. */
   scrollRef: React.RefObject<HTMLDivElement | null>;
   docRoot?: {
-    children: import("@seam/core").Child[];
+    children?: import("@seam/core").Child[];
     attachments?: import("@seam/core").Child[];
   };
   selection: string[];
@@ -1940,7 +1940,7 @@ export default function TimelinePanel({
       if (sameContainer && last?.field === "children" && last.index < toIndex) {
         dest = toIndex - 1;
       }
-      const len = getCompAtPath(next, toContainer)?.children.length ?? 0;
+      const len = (getCompAtPath(next, toContainer)?.children ?? []).length;
       dest = Math.max(0, Math.min(dest, len - 1));
       onDocumentChange(next);
       onSelectionChange([
@@ -2125,7 +2125,9 @@ export default function TimelinePanel({
         // blocks. A read-only preview has no doc, so labels fall back to
         // the resolved nodes and editing is disabled.
         const panelDoc = doc;
-        const splitIndex = panelDoc ? panelDoc.children.length : undefined;
+        const splitIndex = panelDoc
+          ? (panelDoc.children ?? []).length
+          : undefined;
         const editHistory = editable ? history : undefined;
         return (
           <DesktopTimeline

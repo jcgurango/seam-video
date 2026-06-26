@@ -97,7 +97,7 @@ function toRelativeSource(absPath: string, baseDir: string): string {
 }
 
 function findInsertionIndex(doc: SeamFile, currentTime: number): number {
-  if (doc.children.length === 0) return 0;
+  if ((doc.children ?? []).length === 0) return 0;
   const resolved = resolveComposition(doc);
   const boundaries = [0, ...resolved.children.map((c) => c.timelineEnd)];
   let bestIdx = 0;
@@ -227,7 +227,7 @@ export function useImport(
       // reorder snap math); the file picker / fallback path falls back
       // to the nearest playhead boundary.
       const insertAt = insertIndex ?? findInsertionIndex(doc, currentTime);
-      const merged = [...doc.children];
+      const merged = [...(doc.children ?? [])];
       merged.splice(insertAt, 0, ...newChildren);
       onDocumentChange({ ...doc, children: merged });
     },

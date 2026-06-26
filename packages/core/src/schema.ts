@@ -604,7 +604,7 @@ export const BinEntrySchema: z.ZodType<any> = z.lazy(() =>
 export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
-    children: z.array(ChildSchema).optional().default([]),
+    children: z.array(ChildSchema).optional(),
     attachments: z.array(ChildSchema).optional(),
     /** Bin entries scoped to this composition's subtree. A descendant
      *  composition with `binItem: "<id>"` resolves to the nearest
@@ -658,6 +658,14 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   }).strict().refine(
     (data) => !(data.speed != null && data.duration != null),
     { message: "Cannot specify both 'speed' and 'duration' on a composition" }
+  ).refine(
+    (data) =>
+      data.binItem == null ||
+      (data.children == null && data.attachments == null),
+    {
+      message:
+        "A 'binItem' reference cannot carry its own 'children'/'attachments' — it adopts the bin entry's body",
+    }
   )
 );
 

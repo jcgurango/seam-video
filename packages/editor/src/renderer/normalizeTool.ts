@@ -59,7 +59,8 @@ export function setNodeVolume(
   if (!split) return doc;
   const { parent, last } = split;
   return updateCompAtPath(doc, parent, (comp) => {
-    const arr = last.field === "children" ? comp.children : comp.attachments ?? [];
+    const arr =
+      last.field === "children" ? comp.children ?? [] : comp.attachments ?? [];
     const node = arr[last.index];
     if (!node || !isNormalizable(node)) return comp;
     const newArr = arr.slice();

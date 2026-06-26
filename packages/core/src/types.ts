@@ -343,9 +343,16 @@ export interface BinEntry {
   attachments?: Child[];
 }
 
-export interface Composition extends ChildTimingFields {
+/**
+ * Fields shared by every composition, whether it's a normal body or a
+ * `binItem` reference. The discriminant — `children`/`attachments` vs
+ * `binItem` — lives on the two concrete variants below; everything else
+ * (spatial / timing / filters / bin scope / script / inset / volume / …)
+ * applies to both, because a bin reference still carries its own
+ * instance-level overrides.
+ */
+export interface BaseComposition extends ChildTimingFields {
   type: "composition";
-  children: Child[];
   /**
    * Per-edge inset (crop) of the composition's content box — composition-only.
    * Clips the children without rescaling and shrinks the comp's output extent
@@ -369,24 +376,12 @@ export interface Composition extends ChildTimingFields {
    */
   duration?: number;
   /**
-   * Anchored children rendered on top of `children`. Each attachment's
-   * `start`/`end` may reference child IDs. Attachments render in array
-   * order, last on top.
-   */
-  attachments?: Child[];
-  /**
    * Bin entries scoped to this composition's subtree. Descendant
    * compositions with `binItem: "<id>"` resolve to the nearest
    * enclosing bin entry with that id — this composition's own entries
    * win over any inherited from ancestors.
    */
   bin?: BinEntry[];
-  /**
-   * Names a bin entry whose body this composition adopts at compile
-   * time. The reference's own `children`/`attachments` are ignored in
-   * favour of the bin entry's; all other fields stay as-authored.
-   */
-  binItem?: string;
   /**
    * JavaScript source — body of an anonymous function `(currentNode) => Composition`.
    * Runs at compile time against this composition (with bins already
@@ -420,6 +415,51 @@ export interface Composition extends ChildTimingFields {
   /** Inner canvas height. Same shape as `contentWidth`. */
   contentHeight?: Keyframed<Length>;
 }
+
+/**
+ * A normal composition: its own `children` body plus optional anchored
+ * `attachments`. Never a bin reference (`binItem?: never` makes the two
+ * variants narrow cleanly on `binItem`).
+ */
+export interface BasicComposition extends BaseComposition {
+  /**
+   * Sequential body. Optional — an empty composition can leave it off;
+   * the compile pass normalizes it to `[]`, so post-compile consumers
+   * always see an array.
+   */
+  children?: Child[];
+  /**
+   * Anchored children rendered on top of `children`. Each attachment's
+   * `start`/`end` may reference child IDs. Attachments render in array
+   * order, last on top.
+   */
+  attachments?: Child[];
+  /**
+   * A normal composition is never a bin reference. The field is omitted
+   * entirely (rather than typed `never`) so the ubiquitous immutable
+   * `{ ...comp, children }` spreads still type-check; narrow with
+   * `"binItem" in comp` to reach a {@link BinItemComposition}. Authoring a
+   * literal with both `binItem` and `children` is still rejected (excess
+   * property on this variant, `never` children on the other).
+   */
+}
+
+/**
+ * A bin reference: adopts the named bin entry's body at compile time, so
+ * it carries no `children`/`attachments` of its own — only instance-level
+ * overrides (from {@link BaseComposition}). Compile splices the entry's
+ * body in and strips `binItem`, so this shape never reaches the resolved
+ * tree.
+ */
+export interface BinItemComposition extends BaseComposition {
+  /** Names a bin entry whose body this composition adopts at compile
+   *  time. Resolved lexically (nearest-enclosing wins). */
+  binItem: string;
+  children?: never;
+  attachments?: never;
+}
+
+export type Composition = BasicComposition | BinItemComposition;
 
 // ── Graphic (animated 2D layer) ────────────────────────────────────
 

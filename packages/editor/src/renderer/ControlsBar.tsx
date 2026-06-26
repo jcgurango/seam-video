@@ -296,7 +296,8 @@ export default function ControlsBar({
   const isSliceableType = (t: string | undefined) =>
     t === "clip" || t === "audio" || t === "composition";
   const canSlice =
-    selection.length > 0 || doc.children.some((c) => isSliceableType(c.type));
+    selection.length > 0 ||
+    (doc.children ?? []).some((c) => isSliceableType(c.type));
 
   // Attach: needs 2+ selected and a resolvable primary (first selection).
   // The primary and secondaries can each be any node type (the file format
@@ -338,7 +339,7 @@ export default function ControlsBar({
   //   • one or more *attachments* (wrap each in a composition that takes
   //     over its slot — see `composeAttachments`).
   // Mixed child/attachment selections are not composable.
-  const childCount = doc.children.length;
+  const childCount = (doc.children ?? []).length;
   const composeChildrenOk =
     selectedIndices.length > 0 &&
     selectedIndices.every((i) => i < childCount) &&
@@ -349,7 +350,7 @@ export default function ControlsBar({
   const canCompose = composeChildrenOk || composeAttachmentsOk;
 
   const handleCompose = useCallback(() => {
-    const cc = doc.children.length;
+    const cc = (doc.children ?? []).length;
     // Attachment compose: wrap each selected attachment in its own
     // composition (lifting start/end/id). No dependency walk / confirm.
     if (

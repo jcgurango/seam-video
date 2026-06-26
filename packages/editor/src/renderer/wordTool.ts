@@ -36,8 +36,9 @@ export function childAtBlockIndex(
   doc: SeamFile,
   index: number,
 ): Child | undefined {
-  const childCount = doc.children.length;
-  if (index < childCount) return doc.children[index];
+  const docChildren = doc.children ?? [];
+  const childCount = docChildren.length;
+  if (index < childCount) return docChildren[index];
   return (doc.attachments ?? [])[index - childCount];
 }
 
@@ -123,9 +124,10 @@ export function separateByWord(
   }
   if (expansions.size === 0) return { ok: false, error: MALFORMED };
 
-  const childCount = doc.children.length;
+  const docChildren = doc.children ?? [];
+  const childCount = docChildren.length;
   const newChildren: Child[] = [];
-  doc.children.forEach((c, i) => {
+  docChildren.forEach((c, i) => {
     const exp = expansions.get(i);
     if (exp) newChildren.push(...exp);
     else newChildren.push(c);
@@ -227,7 +229,8 @@ export function groupWords(
   // the earliest-selected word occupied (preserving children/attachment
   // membership). Inserting before the same index is removed lands it in
   // place.
-  const childCount = doc.children.length;
+  const docChildren = doc.children ?? [];
+  const childCount = docChildren.length;
   const insertAt = Math.min(...selectedIndices);
   const insertInChildren = insertAt < childCount;
   const removeChild = new Set<number>();
@@ -238,7 +241,7 @@ export function groupWords(
   }
 
   const newChildren: Child[] = [];
-  doc.children.forEach((c, i) => {
+  docChildren.forEach((c, i) => {
     if (insertInChildren && i === insertAt) newChildren.push(grouped);
     if (!removeChild.has(i)) newChildren.push(c);
   });

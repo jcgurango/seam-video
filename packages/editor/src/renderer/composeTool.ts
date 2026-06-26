@@ -52,16 +52,17 @@ export function isComposableSelection(
  *  the child range to fill any gap an anchor pulls in. Loops until
  *  stable so attachments-anchoring-attachments cascade correctly. */
 export function walkComposeDependencies(
-  parent: { children: readonly Child[]; attachments?: readonly Child[] },
+  parent: { children?: readonly Child[]; attachments?: readonly Child[] },
   initialChildIndices: number[],
 ): ComposeWalk {
+  const children = parent.children ?? [];
   const attachments = parent.attachments ?? [];
   const initialCount = new Set(initialChildIndices).size;
 
   // id → index lookups, scoped to the parent composition. Anchors can
   // reference either a child or an attachment.
   const childIdToIndex = new Map<string, number>();
-  parent.children.forEach((c, i) => {
+  children.forEach((c, i) => {
     const id = (c as { id?: string }).id;
     if (id != null) childIdToIndex.set(id, i);
   });
@@ -75,7 +76,7 @@ export function walkComposeDependencies(
   const collectedAttachments = new Set<number>();
 
   const idOfChild = (i: number): string | undefined =>
-    (parent.children[i] as { id?: string }).id;
+    (children[i] as { id?: string }).id;
   const idOfAttachment = (i: number): string | undefined =>
     (attachments[i] as { id?: string }).id;
 
@@ -166,7 +167,8 @@ export function applyCompose(
   const start = childIndices[0];
   const end = childIndices[childIndices.length - 1];
 
-  const newCompChildren = childIndices.map((i) => doc.children[i]);
+  const docChildren = doc.children ?? [];
+  const newCompChildren = childIndices.map((i) => docChildren[i]);
   const allAttachments = doc.attachments ?? [];
   const newCompAttachments = attachmentIndices.map((i) => allAttachments[i]);
 
@@ -179,9 +181,9 @@ export function applyCompose(
   }
 
   const newChildren = [
-    ...doc.children.slice(0, start),
+    ...docChildren.slice(0, start),
     newComp,
-    ...doc.children.slice(end + 1),
+    ...docChildren.slice(end + 1),
   ];
 
   const droppedAttachmentSet = new Set(attachmentIndices);

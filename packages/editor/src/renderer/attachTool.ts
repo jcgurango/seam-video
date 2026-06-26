@@ -31,7 +31,7 @@ function collectAllIds(doc: SeamFile): Set<string> {
     const id = (child as { id?: string }).id;
     if (id != null) out.add(id);
     if (child.type === "composition") {
-      child.children.forEach(visit);
+      (child.children ?? []).forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
     }
   };
@@ -150,7 +150,7 @@ export function applyAttach(
   const flat =
     last.field === "children"
       ? last.index
-      : desc.aContainer.children.length + last.index;
+      : (desc.aContainer.children ?? []).length + last.index;
   const resolvedPrimary = desc.rContainer.children[flat];
   if (!resolvedPrimary) return null;
   const anchorSpec = computeAnchorSpec(primary, resolvedPrimary, desc.localTime);
@@ -207,7 +207,7 @@ function setIdAtPath(doc: SeamFile, path: NodePath, id: string): SeamFile {
   if (!sp) return doc;
   return updateCompAtPath(doc, sp.parent, (comp) => {
     const isAtt = sp.last.field === "attachments";
-    const arr = isAtt ? comp.attachments ?? [] : comp.children;
+    const arr = isAtt ? comp.attachments ?? [] : comp.children ?? [];
     const node = arr[sp.last.index];
     if (!node) return comp;
     const next = [...arr];
@@ -229,7 +229,7 @@ function attachRebuild(
   gathered: Child[],
 ): Composition {
   const recurse = (c: Child, childPath: NodePath): Child =>
-    c.type === "composition" && !c.binItem
+    c.type === "composition" && !("binItem" in c)
       ? attachRebuild(c, childPath, dropSet, containerKey, gathered)
       : c;
 
@@ -279,7 +279,7 @@ export function attachNewItems(
 ): SeamFile | null {
   if (newItems.length === 0) return null;
   const sourceArr =
-    primaryField === "children" ? doc.children : doc.attachments ?? [];
+    primaryField === "children" ? doc.children ?? [] : doc.attachments ?? [];
   const primary = sourceArr[primaryIndex];
   if (!primary) return null;
 
@@ -302,7 +302,7 @@ export function attachNewItems(
   const resolvedIndex =
     primaryField === "children"
       ? primaryIndex
-      : doc.children.length + primaryIndex;
+      : (doc.children ?? []).length + primaryIndex;
   const resolvedPrimary = resolved.children[resolvedIndex];
   if (!resolvedPrimary) return null;
 
@@ -338,8 +338,10 @@ export function attachNewItems(
   // after the primary in array order, so they can reference its id.
   const children =
     primaryField === "children"
-      ? doc.children.map((c, i) => (i === primaryIndex ? updatedPrimary : c))
-      : doc.children;
+      ? (doc.children ?? []).map((c, i) =>
+          i === primaryIndex ? updatedPrimary : c,
+        )
+      : doc.children ?? [];
   const baseAttachments =
     primaryField === "attachments"
       ? (doc.attachments ?? []).map((a, i) =>

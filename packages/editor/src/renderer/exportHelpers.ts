@@ -51,14 +51,13 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
       return mapGraphicImageSources(child as Obj, pickExportName) as Child;
     }
     if (child.type === "composition") {
-      const rewritten: Child = {
+      return {
         ...child,
-        children: rewriteChildren(child.children),
+        ...(child.children ? { children: rewriteChildren(child.children) } : {}),
+        ...(child.attachments
+          ? { attachments: rewriteChildren(child.attachments) }
+          : {}),
       };
-      if (child.attachments) {
-        (rewritten as typeof child).attachments = rewriteChildren(child.attachments);
-      }
-      return rewritten;
     }
     return child;
   };
@@ -67,7 +66,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
 
   const document: SeamFile = {
     ...doc,
-    children: rewriteChildren(doc.children),
+    ...(doc.children ? { children: rewriteChildren(doc.children) } : {}),
     ...(doc.attachments ? { attachments: rewriteChildren(doc.attachments) } : {}),
   };
 
@@ -104,7 +103,7 @@ export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile
     if (child.type === "composition") {
       return {
         ...child,
-        children: child.children.map(walk),
+        ...(child.children ? { children: child.children.map(walk) } : {}),
         ...(child.attachments ? { attachments: child.attachments.map(walk) } : {}),
       };
     }
@@ -112,7 +111,7 @@ export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile
   };
   return {
     ...doc,
-    children: doc.children.map(walk),
+    ...(doc.children ? { children: doc.children.map(walk) } : {}),
     ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
   };
 }
@@ -144,11 +143,11 @@ export function collectClipSources(doc: SeamFile, out: string[] = []): string[] 
         return src;
       });
     } else if (child.type === "composition") {
-      child.children.forEach(visit);
+      child.children?.forEach(visit);
       if (child.attachments) child.attachments.forEach(visit);
     }
   };
-  resolved.children.forEach(visit);
+  resolved.children?.forEach(visit);
   if (resolved.attachments) resolved.attachments.forEach(visit);
   return out;
 }

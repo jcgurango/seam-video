@@ -32,7 +32,7 @@ import { pathKey, type NodePath } from "./nodePath.js";
 import { hasAnimatedLanes, lanesForNode, type KeyframeLane } from "./keyframeLanes.js";
 
 interface AuthoredBody {
-  children: Child[];
+  children?: Child[];
   attachments?: Child[];
 }
 
@@ -143,11 +143,12 @@ function buildExpansion(
   // subtree is addressed at a `bin.<id>` root — editing it rewrites the
   // entry and propagates to every reference (Phase 3). A regular
   // composition's children are addressed under the reference's own path.
-  const expansionPath: NodePath = docComp?.binItem
-    ? [{ field: "bin", index: 0, id: docComp.binItem }]
+  const binId = docComp && "binItem" in docComp ? docComp.binItem : undefined;
+  const expansionPath: NodePath = binId
+    ? [{ field: "bin", index: 0, id: binId }]
     : block.path;
-  if (docComp?.binItem) {
-    const entry = findBinItem(rootBin, docComp.binItem);
+  if (binId) {
+    const entry = findBinItem(rootBin, binId);
     body = entry
       ? { children: entry.children, attachments: entry.attachments }
       : undefined;
@@ -165,7 +166,7 @@ function buildExpansion(
   const scale = (block.child as ResolvedComposition).speed || 1;
   return layoutGroup(
     resolved,
-    body.children.length,
+    (body.children ?? []).length,
     body,
     expanded,
     rootBin,
@@ -192,7 +193,7 @@ function layoutGroup(
       ? undefined
       : isAttachment
         ? authored.attachments?.[index - split]
-        : authored.children[index];
+        : (authored.children ?? [])[index];
 
   const blocks: TreeBlock[] = [];
   let cursor = 0;
@@ -224,7 +225,7 @@ function layoutGroup(
         const docChild = docAt(p.index, isAttachment);
         const isComposition = (docChild?.type ?? p.child.type) === "composition";
         const isBinItem =
-          isComposition && !!(docChild as Composition | undefined)?.binItem;
+          isComposition && !!docChild && "binItem" in docChild;
         // Within-field (authored-array) index — attachments start at `split`
         // in the resolved/flat `index`, but at 0 in their own array.
         const fieldIndex = isAttachment ? p.index - split : p.index;

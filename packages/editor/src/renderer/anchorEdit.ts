@@ -80,14 +80,15 @@ export function computePointTime(
 
 export function findAnchorById(
   id: string,
-  docRoot: { children: Child[]; attachments?: Child[] },
+  docRoot: { children?: Child[]; attachments?: Child[] },
   timeline: ResolvedTimeline,
 ): { doc: Child; resolved: ResolvedChild; blockIndex: number } | null {
-  const childCount = docRoot.children.length;
-  for (let i = 0; i < docRoot.children.length; i++) {
-    if ((docRoot.children[i] as { id?: string }).id === id) {
+  const docChildren = docRoot.children ?? [];
+  const childCount = docChildren.length;
+  for (let i = 0; i < docChildren.length; i++) {
+    if ((docChildren[i] as { id?: string }).id === id) {
       return {
-        doc: docRoot.children[i],
+        doc: docChildren[i],
         resolved: timeline.children[i],
         blockIndex: i,
       };

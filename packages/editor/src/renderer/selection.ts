@@ -20,7 +20,7 @@ export function splitSelection(
   doc: SeamFile,
   selectedIndices: number[]
 ): SplitSelection {
-  const childCount = doc.children.length;
+  const childCount = (doc.children ?? []).length;
   const childIndices: number[] = [];
   const attachmentIndices: number[] = [];
   for (const i of selectedIndices) {
