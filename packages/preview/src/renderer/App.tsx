@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import Player from "./components/Player.js";
 import type { ResolvedTimeline } from "@seam/core";
+import { setMapBasePath } from "./mapBasePath.js";
 
 declare global {
   interface Window {
@@ -25,6 +26,9 @@ export default function App() {
   useEffect(() => {
     window.seamApi.getInitialTimeline().then((data) => {
       if (data) {
+        // Update the module-level map basePath before the timeline state so the
+        // boot-registered pmtiles resolver sees it on the first map render.
+        setMapBasePath(data.basePath);
         setTimeline(data.timeline);
         setBasePath(data.basePath);
         setErrors([]);
@@ -32,6 +36,7 @@ export default function App() {
     });
 
     window.seamApi.onTimelineUpdate((data) => {
+      setMapBasePath(data.basePath);
       setTimeline(data.timeline);
       setBasePath(data.basePath);
       setErrors([]);
