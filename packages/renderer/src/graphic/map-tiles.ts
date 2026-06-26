@@ -26,12 +26,15 @@ import { registerNodeCanvasFonts } from "../text/fonts.js";
 // The bundled OSM Bright style lives at the package root (../../osm-bright from
 // src/graphic or dist/graphic). @seam/map reads text-font/paint directly and
 // never fetches glyphs/sprite/source URLs, so the raw JSON is passed as-is.
-const OSM_BRIGHT_DIR = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "..",
-  "osm-bright",
-);
+// `SEAM_RENDERER_ASSETS` overrides the base dir when the renderer is bundled
+// into another package (e.g. the published CLI), where the source-relative
+// `../../` walk no longer lands on the assets. Resolved lazily so the host can
+// set the env var before the first map render.
+function osmBrightDir(): string {
+  const base = process.env.SEAM_RENDERER_ASSETS;
+  if (base) return join(base, "osm-bright");
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "osm-bright");
+}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let baseStylePromise: Promise<any> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -39,7 +42,7 @@ const themedStyles = new Map<MapTheme, any>();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadStyle(theme: MapTheme): Promise<any> {
   if (!baseStylePromise) {
-    baseStylePromise = readFile(join(OSM_BRIGHT_DIR, "style.json"), "utf8").then(
+    baseStylePromise = readFile(join(osmBrightDir(), "style.json"), "utf8").then(
       (s) => JSON.parse(s),
     );
   }

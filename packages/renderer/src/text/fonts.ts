@@ -46,6 +46,11 @@ const FONT_FILES: FontFile[] = [
 ];
 
 function fontsDir(): string {
+  // `SEAM_RENDERER_ASSETS` overrides the base dir when the renderer is bundled
+  // into another package (e.g. the published CLI), where the source-relative
+  // `../../` walk no longer lands on the bundled `fonts/`.
+  const base = process.env.SEAM_RENDERER_ASSETS;
+  if (base) return resolve(base, "fonts");
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "fonts");
 }
 

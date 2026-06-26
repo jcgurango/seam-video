@@ -18,6 +18,7 @@ services:
     build:
       context: .
       dockerfile: packages/cloud/Dockerfile
+      image: jcgurango/seam-cloud
     environment:
       ADMIN_USER: ${ADMIN_USER:?ADMIN_USER is required}
       ADMIN_PASS: ${ADMIN_PASS:?ADMIN_PASS is required}
@@ -41,6 +42,7 @@ services:
     build:
       context: .
       dockerfile: packages/web/Dockerfile
+      image: jcgurango/seam-web
     environment:
       # The PUBLIC base URL the browser uses to reach the cloud — NOT the
       # internal "cloud" service name (the browser can't resolve it). e.g.
@@ -62,6 +64,7 @@ services:
   generator:
     build:
       context: ./packages/generator-server
+      image: jcgurango/seam-generator-server
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"

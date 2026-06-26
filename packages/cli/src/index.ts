@@ -1,9 +1,22 @@
 #!/usr/bin/env node
+import { fileURLToPath } from "node:url";
+import { dirname, resolve as resolvePath } from "node:path";
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { renderCommand } from "./commands/render.js";
 import { previewCommand } from "./commands/preview.js";
 import { resolveCommand } from "./commands/resolve.js";
+
+// In the published CLI, @seam/renderer is bundled into this file, so its
+// source-relative font/style lookups no longer resolve. The build vendors the
+// renderer's `fonts/` and `osm-bright/` next to this bundle; point the renderer
+// at them. In dev (tsx from source) there are no sibling assets, so we leave
+// the env unset and the renderer falls back to its own package-relative paths.
+const selfDir = dirname(fileURLToPath(import.meta.url));
+if (!process.env.SEAM_RENDERER_ASSETS && existsSync(resolvePath(selfDir, "fonts"))) {
+  process.env.SEAM_RENDERER_ASSETS = selfDir;
+}
 
 const program = new Command();
 

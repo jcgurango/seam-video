@@ -1,25 +1,71 @@
 {
-  "name": "@seam/cli",
+  "name": "@seam-media/cli",
   "version": "0.1.0",
+  "description": "Seam Video — a flowing video editor where edits are defined as JSON (.seam files). CLI for rendering .seam files to mp4, previewing, and resolving timelines.",
+  "license": "MIT",
+  "author": "JC Gurango",
+  "homepage": "https://github.com/jcgurango/seam-video#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jcgurango/seam-video.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/jcgurango/seam-video/issues"
+  },
+  "keywords": [
+    "video",
+    "video-editor",
+    "render",
+    "seam",
+    "webgpu",
+    "ffmpeg-free"
+  ],
   "type": "module",
   "bin": {
     "seam": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/index.ts"
+    "build": "node build.mjs",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.6",
+    "@mapbox/vector-tile": "^2.0.3",
+    "@maplibre/maplibre-gl-style-spec": "^24.10.0",
+    "@mediabunny/server": "^1.45.0",
+    "@napi-rs/canvas": "^0.1.100",
+    "canvas": "^3.2.3",
+    "commander": "^12.0.0",
+    "d3-ease": "^3.0.1",
+    "d3-interpolate": "^3.0.1",
+    "electron": "^33.0.0",
+    "fabric": "^7.4.0",
+    "mediabunny": "^1.45.0",
+    "node-web-audio-api": "^1.0.0",
+    "pbf": "^4.0.1",
+    "pmtiles": "^4.4.1",
+    "webgpu": "^0.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
     "@seam/core": "workspace:*",
     "@seam/preview": "workspace:*",
     "@seam/renderer": "workspace:*",
-    "commander": "^12.0.0"
-  },
-  "devDependencies": {
     "@types/node": "^25.3.3",
+    "esbuild": "^0.24.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   }
