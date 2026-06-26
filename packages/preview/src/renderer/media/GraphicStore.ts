@@ -476,9 +476,8 @@ export class GraphicStore {
     snap: FlatFrame,
   ): Promise<MapOverlay[]> {
     const overlays: MapOverlay[] = [];
-
     const mapObjs = Array.isArray(filled.objects) ? filled.objects : [];
-      console.log(filled);
+
     for (let i = 0; i < mapObjs.length; i++) {
       const wrap = mapObjs[i] as Record<string, unknown>;
       const obj = wrap.object as FilledObject | undefined;

@@ -91,6 +91,43 @@ protocol.registerSchemesAsPrivileged([
   { scheme: "file", privileges: { supportFetchAPI: true } },
 ]);
 
+// The custom file handler below replaces Electron's built-in file:// handling,
+// which means it must supply Content-Type itself. Chromium enforces strict MIME
+// checking for module scripts, so the renderer's `<script type="module">` fails
+// to load (empty MIME) unless we set the type by extension here.
+const MIME_BY_EXT: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".wasm": "application/wasm",
+  ".map": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+};
+
+function mimeForPath(filePath: string): string {
+  const dot = filePath.lastIndexOf(".");
+  const ext = dot >= 0 ? filePath.slice(dot).toLowerCase() : "";
+  return MIME_BY_EXT[ext] ?? "application/octet-stream";
+}
+
 app.whenReady().then(() => {
   protocol.handle("file", (request) => {
     const url = new URL(request.url);
@@ -126,6 +163,7 @@ app.whenReady().then(() => {
         status: 206,
         statusText: "Partial Content",
         headers: {
+          "Content-Type": mimeForPath(filePath),
           "Content-Range": `bytes ${start}-${end}/${size}`,
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
@@ -148,6 +186,7 @@ app.whenReady().then(() => {
     return new Response(body, {
       status: 200,
       headers: {
+        "Content-Type": mimeForPath(filePath),
         "Content-Length": String(size),
         "Accept-Ranges": "bytes",
       },
