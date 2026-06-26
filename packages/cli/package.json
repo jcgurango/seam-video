@@ -1,6 +1,6 @@
 {
   "name": "@seam-media/cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Seam Video — a flowing video editor where edits are defined as JSON (.seam files). CLI for rendering .seam files to mp4, previewing, and resolving timelines.",
   "license": "MIT",
   "author": "JC Gurango",
