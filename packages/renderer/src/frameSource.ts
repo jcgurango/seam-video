@@ -131,7 +131,11 @@ export class FrameSource {
   intrinsicSize(node: ResolvedClip | ResolvedStatic): { w: number; h: number } | null {
     if (node.type === "static") return this.staticDims.get(node) ?? null;
     const entry = this.sources.get(node.source);
-    return entry ? { w: entry.width, h: entry.height } : null;
+    if (!entry) return null;
+    // A 90/270 pre-transform orientation swaps the display dims objectFit sees.
+    return node.orientation === 90 || node.orientation === 270
+      ? { w: entry.height, h: entry.width }
+      : { w: entry.width, h: entry.height };
   }
 
   /** Async-decode every active drawable into the per-tick cache, addressing
@@ -214,7 +218,9 @@ export class FrameSource {
         pending: null,
         frame: null,
         lastTime: sourceTime,
-        rotation: entry.rotation,
+        // Fold the authored pre-transform orientation onto the container's
+        // metadata rotation — both bake into the decoded pixels.
+        rotation: addRotation(entry.rotation, node.orientation),
       };
       this.clipCursors.set(node, cursor);
     }
@@ -325,6 +331,11 @@ async function sampleToFrame(
   const coded = new Uint8Array(sample.allocationSize({ format: "RGBA" }));
   await sample.copyTo(coded, { format: "RGBA" });
   return rotateRGBA(coded, cw, ch, rotation);
+}
+
+/** Sum two clockwise quarter-turn rotations, wrapping to 0/90/180/270. */
+function addRotation(a: Rotation, b: Rotation = 0): Rotation {
+  return (((a + b) % 360 + 360) % 360) as Rotation;
 }
 
 /** Close any samples and the iterator held by a clip cursor. */

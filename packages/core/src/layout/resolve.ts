@@ -335,6 +335,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(leaf.orientation != null ? { orientation: leaf.orientation } : {}),
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),

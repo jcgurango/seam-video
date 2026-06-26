@@ -8,6 +8,7 @@ import type {
   Filter,
   GraphicClipDef,
   GraphicFrame,
+  Orientation,
   TextPadding,
   TextRun,
   TextStyleFields,
@@ -59,6 +60,10 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Pre-transform source orientation (clockwise degrees). Renderers bake it
+   *  into the decoded frame (composing with container-metadata rotation)
+   *  before the spatial transform. Absent means 0. */
+  orientation?: Orientation;
   /** Effective crossfade overlap (s) with the previous sequential sibling,
    *  clamped to what fits. Present (>0) only on a non-first child that set
    *  `transition`. Renderers fade this element in over its first

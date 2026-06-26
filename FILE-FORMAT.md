@@ -54,6 +54,7 @@ A clip references a segment of a source video file.
 | `out` | number | yes | End point in the source file (seconds, > 0) |
 | `speed` | number | no | Playback speed multiplier (e.g. `2` for 2x speed). Mutually exclusive with `duration` |
 | `duration` | number | no | Explicit duration in seconds — stretches the clip to fit. Mutually exclusive with `speed` |
+| `orientation` | `0` \| `90` \| `180` \| `270` | no | Pre-transform source rotation (clockwise degrees, default `0`). Baked into the decoded frame before the spatial transform — to the compositor the clip looks as if it arrived already rotated by this amount (a `90`/`270` orientation swaps its width/height). Composes with any rotation declared in the file's container metadata. Not animatable; distinct from the spatial `rotation` field below. |
 | `volume` | number | no | Audio gain multiplier (default `1`). `0` mutes; values up to `4` are accepted for amplification. |
 | `overflow` | string | no | Strategy when the clip is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |

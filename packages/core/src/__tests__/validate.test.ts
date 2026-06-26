@@ -253,6 +253,28 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts clip with a valid orientation", () => {
+    for (const orientation of [0, 90, 180, 270]) {
+      const result = validate({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5, orientation },
+        ],
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("rejects clip with a non-quarter-turn orientation", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "clip", source: "v.mp4", in: 0, out: 5, orientation: 45 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects clip with both speed and duration", () => {
     const result = validate({
       type: "composition",

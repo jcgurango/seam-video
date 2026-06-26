@@ -172,6 +172,17 @@ const TransitionFieldSchema = {
   transition: z.number().nonnegative().optional(),
 };
 
+/** Pre-transform source orientation (clockwise degrees). Bakes into the
+ *  decoded pixels before the spatial transform — to the compositor the clip
+ *  looks as if it had arrived already rotated by this amount. Composes with
+ *  any rotation the container metadata declares. Not animatable. */
+export const OrientationSchema = z.union([
+  z.literal(0),
+  z.literal(90),
+  z.literal(180),
+  z.literal(270),
+]);
+
 export const OverflowSchema = z.enum([
   "trim-end",
   "trim-start",
@@ -193,6 +204,7 @@ export const ClipSchema = z.object({
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
+  orientation: OrientationSchema.optional(),
   volume: keyframed(VolumeValueSchema).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),

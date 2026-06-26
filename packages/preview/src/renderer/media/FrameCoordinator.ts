@@ -142,7 +142,7 @@ export class FrameCoordinator {
       if (flat.clip.type === "clip") {
         const buffer = new ClipBuffer();
         buffer.onFrameAvailable = () => this.onFrameAvailable?.();
-        await buffer.init(mediaStore, flat.source);
+        await buffer.init(mediaStore, flat.source, flat.clip.orientation ?? 0);
         // Commit the buffer only if we're still the current timeline —
         // otherwise dispose it locally so its CanvasSink/decoder doesn't leak.
         if (gen !== this.generation) {
@@ -153,7 +153,15 @@ export class FrameCoordinator {
 
         const size = await mediaStore.getIntrinsicSize(flat.source);
         if (gen !== this.generation) return;
-        if (size.w > 0) this.sizes.set(flat.clip, size);
+        if (size.w > 0) {
+          // A 90/270 pre-transform orientation swaps the display dims
+          // objectFit sees (mirrors the renderer's intrinsicSize).
+          const o = flat.clip.orientation ?? 0;
+          this.sizes.set(
+            flat.clip,
+            o === 90 || o === 270 ? { w: size.h, h: size.w } : size,
+          );
+        }
       }
 
       const audioTrack = await mediaStore.getAudioTrack(flat.source);

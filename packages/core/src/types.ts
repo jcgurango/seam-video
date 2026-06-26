@@ -146,6 +146,9 @@ export interface ChildTimingFields extends SpatialFields {
   metadata?: Metadata;
 }
 
+/** Pre-transform source rotation, clockwise degrees. */
+export type Orientation = 0 | 90 | 180 | 270;
+
 export interface Clip extends ChildTimingFields {
   type: "clip";
   source: string;
@@ -153,6 +156,10 @@ export interface Clip extends ChildTimingFields {
   out: number;
   speed?: number;
   duration?: number;
+  /** Pre-transform source orientation (clockwise degrees). Baked into the
+   *  decoded pixels before the spatial transform, composing with any rotation
+   *  the container metadata declares. Not animatable. */
+  orientation?: Orientation;
   /** Audio-channel gain. Default 1; 0 mutes; >1 amplifies. A linear multiplier
    *  (0..4) or a decibel string like `"25dB"` / `"-25.5dB"` (uncapped). */
   volume?: Keyframed<number | string>;

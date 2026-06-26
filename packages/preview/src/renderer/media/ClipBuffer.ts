@@ -39,6 +39,9 @@ export class ClipBuffer {
   private draining = false;
   private asyncId = 0;
   private disposed = false;
+  // Authored pre-transform orientation, baked into each buffered frame on top
+  // of the container rotation mediabunny already applied.
+  private orientation: 0 | 90 | 180 | 270 = 0;
 
   private wantedStart = 0;
   private wantedEnd = 0;
@@ -47,7 +50,12 @@ export class ClipBuffer {
   /** Called when new frames arrive. Useful for triggering re-render when paused. */
   onFrameAvailable: (() => void) | null = null;
 
-  async init(mediaStore: MediaStore, sourceUrl: string): Promise<void> {
+  async init(
+    mediaStore: MediaStore,
+    sourceUrl: string,
+    orientation: 0 | 90 | 180 | 270 = 0,
+  ): Promise<void> {
+    this.orientation = orientation;
     const videoTrack = await mediaStore.getVideoTrack(sourceUrl);
     if (!videoTrack || !(await videoTrack.canDecode())) {
       this.canvasSink = null;
@@ -188,7 +196,10 @@ export class ClipBuffer {
           continue;
         }
 
-        insertSorted(this.frames, { timestamp, canvas: copyCanvas(canvas) });
+        insertSorted(this.frames, {
+          timestamp,
+          canvas: orientCanvas(canvas, this.orientation),
+        });
         this.evictOutOfRange();
         this.onFrameAvailable?.();
       }
@@ -206,6 +217,26 @@ function copyCanvas(src: HTMLCanvasElement | OffscreenCanvas): HTMLCanvasElement
   dst.height = src.height;
   const ctx = dst.getContext("2d");
   if (ctx) ctx.drawImage(src as CanvasImageSource, 0, 0);
+  return dst;
+}
+
+/** Copy a frame into a fresh canvas, baking a clockwise 0/90/180/270 rotation
+ *  (90/270 swap dims). Matches the renderer's `rotateRGBA` convention so the
+ *  preview and headless renderer orient identically. */
+function orientCanvas(
+  src: HTMLCanvasElement | OffscreenCanvas,
+  orientation: 0 | 90 | 180 | 270,
+): HTMLCanvasElement {
+  if (orientation === 0) return copyCanvas(src);
+  const swap = orientation === 90 || orientation === 270;
+  const dst = document.createElement("canvas");
+  dst.width = swap ? src.height : src.width;
+  dst.height = swap ? src.width : src.height;
+  const ctx = dst.getContext("2d");
+  if (!ctx) return copyCanvas(src);
+  ctx.translate(dst.width / 2, dst.height / 2);
+  ctx.rotate((orientation * Math.PI) / 180);
+  ctx.drawImage(src as CanvasImageSource, -src.width / 2, -src.height / 2);
   return dst;
 }
 
