@@ -17,6 +17,10 @@ import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
 import CloudStatus from "./cloud/CloudStatus.js";
+import CloudMenu from "./cloud/CloudMenu.js";
+import MediaSyncOverlay, {
+  type MediaSyncProgressState,
+} from "./MediaSyncOverlay.js";
 import { useCloud } from "./cloud/useCloud.js";
 import SettingsDialog from "./SettingsDialog.js";
 import { useSettings, DEFAULT_GENERATOR_SERVER_URL } from "./useSettings.js";
@@ -147,6 +151,10 @@ export default function App({ platform }: AppProps) {
   const [browserTab, setBrowserTab] = useState<"projects" | "media">("projects");
   const [exportProgress, setExportProgress] =
     useState<ExportProgress | null>(null);
+  // Bulk cloud media transfer triggered from the export path (the Cloud menu
+  // owns its own instance of this overlay).
+  const [mediaSyncProgress, setMediaSyncProgress] =
+    useState<MediaSyncProgressState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [compAudioPromptOpen, setCompAudioPromptOpen] = useState(false);
   // Transient transcription feedback (empty selection, server/decoding
@@ -341,6 +349,13 @@ export default function App({ platform }: AppProps) {
       console.warn(`openProjectByName: cannot open "${name}"`, err);
       return false;
     }
+  });
+
+  /** Re-read the currently open project from disk and load it (after a cloud
+   *  pull overwrote the local .seam). No-op if nothing is open. */
+  const reloadCurrentProject = useEvent(async () => {
+    if (platform.kind !== "web" || !filePath) return;
+    await openProjectByName(basename(filePath));
   });
 
   /** Bring app state in line with a route, WITHOUT touching history (used for
@@ -669,6 +684,49 @@ export default function App({ platform }: AppProps) {
   const handleExport = useEvent(async () => {
     const defaultName = filePath ? basenameWithoutExt(filePath) : "untitled";
     const basePath = filePath ? dirname(filePath) : "";
+
+    // Web + cloud: some media may live only on the cloud, so it wouldn't be
+    // bundled into the zip. Offer to pull it down first.
+    if (platform.kind === "web") {
+      const wp = platform as WebPlatform;
+      if (wp.cloud) {
+        let cloudOnly: string[] = [];
+        try {
+          cloudOnly = await wp.cloudOnlyMediaSources(history.current);
+        } catch (err) {
+          console.warn("handleExport: cloud-only check failed", err);
+        }
+        if (cloudOnly.length > 0) {
+          const ok = window.confirm(
+            "Some of this project's media is located remotely and will not be " +
+              "exported. Do you want to download them now?"
+          );
+          if (ok) {
+            setMediaSyncProgress({
+              title: "Downloading media",
+              done: 0,
+              total: 0,
+              detail: "",
+            });
+            try {
+              await wp.downloadProjectMedia(history.current, (done, total, name) =>
+                setMediaSyncProgress({
+                  title: "Downloading media",
+                  done,
+                  total,
+                  detail: name,
+                })
+              );
+            } catch (err) {
+              setErrors([String(err)]);
+            } finally {
+              setMediaSyncProgress(null);
+            }
+          }
+        }
+      }
+    }
+
     setExportProgress({ phase: "read", progress: 0 });
     try {
       await platform.exportProject(
@@ -1133,6 +1191,17 @@ export default function App({ platform }: AppProps) {
           onBrowseProjects={topBarBrowseProjects}
           onSettings={() => setSettingsOpen(true)}
           canSave={!showBrowser}
+          menus={
+            (platform as WebPlatform).cloud && !showBrowser ? (
+              <CloudMenu
+                platform={platform as WebPlatform}
+                client={(platform as WebPlatform).cloud!}
+                projectName={filePath ? basename(filePath) : null}
+                getDoc={() => history.current}
+                onProjectDownloaded={reloadCurrentProject}
+              />
+            ) : undefined
+          }
           right={
             (platform as WebPlatform).cloud ? (
               <CloudStatus client={(platform as WebPlatform).cloud!} />
@@ -1178,6 +1247,8 @@ export default function App({ platform }: AppProps) {
           }}
         />
       )}
+
+      {mediaSyncProgress && <MediaSyncOverlay progress={mediaSyncProgress} />}
 
       {exportProgress && <ExportProgressOverlay progress={exportProgress} />}
 

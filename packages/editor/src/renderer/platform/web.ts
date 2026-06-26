@@ -7,7 +7,7 @@ import type {
   OpenResult,
   Platform,
 } from "./types.js";
-import { buildExportPlan } from "../exportHelpers.js";
+import { buildExportPlan, collectClipSources } from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
 import {
   CloudClient,
@@ -23,6 +23,14 @@ export interface SyncSummary {
   /** Skipped because the cloud copy is identical (no upload attempted). */
   skipped: number;
   /** Files the cloud rejected as conflicts — the user must rename to resolve. */
+  conflicts: { name: string; message: string }[];
+}
+
+/** Summary of a per-project media upload/download pass (the Cloud menu's
+ *  Upload/Download All Media). `done` counts files transferred (or already
+ *  present); `conflicts` are the ones the dedup rules rejected. */
+export interface MediaSyncSummary {
+  done: number;
   conflicts: { name: string; message: string }[];
 }
 
@@ -752,6 +760,105 @@ export class WebPlatform implements Platform {
     return summary;
   }
 
+  /** Names of every file currently in OPFS clips/. */
+  private async localClipNames(): Promise<Set<string>> {
+    const dir = await getDir(CLIPS_DIR);
+    const names = new Set<string>();
+    // @ts-expect-error: values() is supported in all target browsers
+    for await (const entry of dir.values()) {
+      if (entry.kind === "file") names.add(entry.name);
+    }
+    return names;
+  }
+
+  /**
+   * Categorize a document's media sources by where they live. `localOnly` are
+   * held locally but not on the cloud (upload candidates); `cloudOnly` are on
+   * the cloud but absent locally (download candidates). Remote (http) and blob
+   * sources are ignored — they aren't cloud-syncable assets.
+   */
+  async classifyProjectMedia(
+    doc: SeamFile
+  ): Promise<{ localOnly: string[]; cloudOnly: string[] }> {
+    const sources = Array.from(new Set(collectClipSources(doc))).filter(
+      (s) =>
+        !s.startsWith("http://") &&
+        !s.startsWith("https://") &&
+        !s.startsWith("blob:")
+    );
+    const local = await this.localClipNames();
+    const localOnly: string[] = [];
+    const cloudOnly: string[] = [];
+    for (const s of sources) {
+      const isLocal = local.has(s);
+      const onCloud = !!this._cloud?.mediaByName(s);
+      if (isLocal && !onCloud) localOnly.push(s);
+      else if (!isLocal && onCloud) cloudOnly.push(s);
+    }
+    return { localOnly, cloudOnly };
+  }
+
+  /** The document's media sources that live only on the cloud — i.e. wouldn't
+   *  be bundled by an Export Zip. Used to warn before exporting. */
+  async cloudOnlyMediaSources(doc: SeamFile): Promise<string[]> {
+    return (await this.classifyProjectMedia(doc)).cloudOnly;
+  }
+
+  /** Upload every media source this project references that the cloud doesn't
+   *  already have. Conflicts (a different file with the same name on the cloud)
+   *  are collected, not thrown — the user renames to resolve. */
+  async uploadProjectMedia(
+    doc: SeamFile,
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<MediaSyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const { localOnly } = await this.classifyProjectMedia(doc);
+    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
+    for (let i = 0; i < localOnly.length; i++) {
+      onProgress?.(i, localOnly.length, localOnly[i]);
+      try {
+        const res = await this.uploadClipToCloud(localOnly[i]);
+        if (res.kind === "conflict") {
+          summary.conflicts.push({ name: localOnly[i], message: res.message });
+        } else {
+          summary.done++;
+        }
+      } catch (err) {
+        summary.conflicts.push({ name: localOnly[i], message: errMessage(err) });
+      }
+    }
+    onProgress?.(localOnly.length, localOnly.length, "");
+    await cloud.refreshMedia();
+    return summary;
+  }
+
+  /** Download every media source this project references that exists on the
+   *  cloud but not locally. Local dedup conflicts are collected, not thrown. */
+  async downloadProjectMedia(
+    doc: SeamFile,
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<MediaSyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const { cloudOnly } = await this.classifyProjectMedia(doc);
+    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
+    for (let i = 0; i < cloudOnly.length; i++) {
+      const name = cloudOnly[i];
+      onProgress?.(i, cloudOnly.length, name);
+      const m = cloud.mediaByName(name);
+      if (!m) continue;
+      try {
+        await this.downloadClipFromCloud(m.id, m.filename, m.contentHash);
+        summary.done++;
+      } catch (err) {
+        summary.conflicts.push({ name, message: errMessage(err) });
+      }
+    }
+    onProgress?.(cloudOnly.length, cloudOnly.length, "");
+    return summary;
+  }
+
   /**
    * Download a cloud asset into local OPFS, enforcing the same dedup rules
    * locally: refuse if this content already exists locally (under any name) or
@@ -1097,4 +1204,8 @@ export class WebPlatform implements Platform {
     });
   }
 
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

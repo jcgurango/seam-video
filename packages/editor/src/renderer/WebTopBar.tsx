@@ -19,6 +19,8 @@ interface WebTopBarProps {
   onBrowseProjects: () => void;
   onSettings: () => void;
   canSave: boolean; // false if no document loaded
+  /** Extra top-bar menus rendered after the File menu (e.g. the Cloud menu). */
+  menus?: React.ReactNode;
   /** Right-aligned content (e.g. the Seam Cloud login/status control). */
   right?: React.ReactNode;
 }
@@ -35,6 +37,7 @@ export default function WebTopBar({
   onBrowseProjects,
   onSettings,
   canSave,
+  menus,
   right,
 }: WebTopBarProps) {
   const [open, setOpen] = useState(false);
@@ -235,6 +238,7 @@ export default function WebTopBar({
           </div>
         )}
       </div>
+      {menus}
       {right && (
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "stretch" }}>
           {right}

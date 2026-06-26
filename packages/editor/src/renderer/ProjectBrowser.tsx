@@ -311,6 +311,8 @@ export default function ProjectBrowser({
           localModified={outOfSync.lastModified}
           onClose={() => setOutOfSync(null)}
           onResolved={() => {
+            // Landing screen — no open document to reload, so the kept side
+            // doesn't matter here.
             setOutOfSync(null);
             setReloadKey((k) => k + 1);
           }}
@@ -485,8 +487,10 @@ function ProjectRowItem({
 
 /** Reconcile an out-of-sync project: side-by-side Monaco diff of cloud vs
  *  local, with Keep Remote (pull cloud) / Keep Local (push local). Surfaces
- *  each side's modification date to inform the choice. No manual merge. */
-function OutOfSyncDialog({
+ *  each side's modification date to inform the choice. No manual merge.
+ *  `onResolved` reports which side was kept so a caller editing the open
+ *  project can reload it when the local copy was overwritten ("remote"). */
+export function OutOfSyncDialog({
   platform,
   cloud,
   name,
@@ -501,7 +505,7 @@ function OutOfSyncDialog({
   project: CloudProject;
   localModified: number;
   onClose: () => void;
-  onResolved: () => void;
+  onResolved: (side: "local" | "remote") => void;
 }) {
   const [local, setLocal] = useState<string | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
@@ -529,12 +533,15 @@ function OutOfSyncDialog({
     };
   }, [platform, cloud, name, project.id]);
 
-  const resolve = async (fn: () => Promise<unknown>) => {
+  const resolve = async (
+    side: "local" | "remote",
+    fn: () => Promise<unknown>
+  ) => {
     setBusy(true);
     setError(null);
     try {
       await fn();
-      onResolved();
+      onResolved(side);
     } catch (err) {
       setError(errMessage(err));
       setBusy(false);
@@ -641,14 +648,18 @@ function OutOfSyncDialog({
             Cancel
           </button>
           <button
-            onClick={() => resolve(() => platform.downloadProjectFromCloud(project))}
+            onClick={() =>
+              resolve("remote", () => platform.downloadProjectFromCloud(project))
+            }
             disabled={busy || !loaded}
             style={dialogBtn(false)}
           >
             Keep Remote
           </button>
           <button
-            onClick={() => resolve(() => platform.uploadProjectToCloud(name))}
+            onClick={() =>
+              resolve("local", () => platform.uploadProjectToCloud(name))
+            }
             disabled={busy || !loaded}
             style={dialogBtn(true)}
           >
