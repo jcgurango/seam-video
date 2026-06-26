@@ -1,0 +1,12 @@
+# Keep the build context small — node_modules and build output are regenerated
+# inside the image, and the large sample asset isn't needed to build.
+**/node_modules
+**/dist
+**/out
+**/*.tsbuildinfo
+.git
+.DS_Store
+**/.DS_Store
+packages/cloud/data
+packages/cloud/.env
+**/.env

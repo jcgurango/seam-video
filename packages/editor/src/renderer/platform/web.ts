@@ -7,14 +7,66 @@ import type {
   OpenResult,
   Platform,
 } from "./types.js";
-import { buildExportPlan } from "../exportHelpers.js";
+import { buildExportPlan, collectClipSources } from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
+import {
+  CloudClient,
+  type CloudProject,
+  type UploadResult,
+} from "../cloud/CloudClient.js";
+
+/** Summary of a "sync all to cloud" pass. */
+export interface SyncSummary {
+  uploaded: number;
+  /** Already present on the cloud (identical name + hash). */
+  alreadyPresent: number;
+  /** Skipped because the cloud copy is identical (no upload attempted). */
+  skipped: number;
+  /** Files the cloud rejected as conflicts — the user must rename to resolve. */
+  conflicts: { name: string; message: string }[];
+}
+
+/** Summary of a per-project media upload/download pass (the Cloud menu's
+ *  Upload/Download All Media). `done` counts files transferred (or already
+ *  present); `conflicts` are the ones the dedup rules rejected. */
+export interface MediaSyncSummary {
+  done: number;
+  conflicts: { name: string; message: string }[];
+}
+
+/** Sync relationship of a single project (local vs cloud, via the hash baseline). */
+export type ProjectSyncStatus =
+  | "local-only" // never uploaded (no cloud copy)
+  | "cloud-only" // exists on cloud, not locally
+  | "in-sync" // local and cloud content match
+  | "local-ahead" // only the local copy changed since last sync → safe upload
+  | "remote-ahead" // only the cloud copy changed → safe download
+  | "out-of-sync"; // both changed since last sync → needs reconciliation
+
+export interface ProjectSyncState {
+  status: ProjectSyncStatus;
+  /** The cloud project id, if this project has ever been synced / exists on cloud. */
+  cloudId: string | null;
+}
+
+/** Outcome of uploading one project. */
+export type ProjectUploadOutcome =
+  | { kind: "uploaded" }
+  | { kind: "name-exists"; message: string };
+
+interface ProjectSyncEntry {
+  cloudId?: string;
+  lastSyncedHash?: string;
+}
+type ProjectSyncIndex = Record<string, ProjectSyncEntry>;
 
 const PROJECTS_DIR = "projects";
 const CLIPS_DIR = "clips";
 const THUMBS_DIR = "thumbnails";
 const MEDIA_META_DIR = "media-meta";
 const MEDIA_INDEX_FILE = "index.json";
+const PROJECT_SYNC_DIR = "project-sync";
+const PROJECT_SYNC_FILE = "index.json";
 
 export interface ProjectEntry {
   name: string;
@@ -105,8 +157,16 @@ async function listDir(dirName: string): Promise<string[]> {
   return names.sort();
 }
 
-/** Return a filename inside `dirName` that doesn't yet exist. */
-async function uniqueName(dirName: string, originalName: string): Promise<string> {
+/**
+ * Return a filename inside `dirName` that doesn't yet exist. `extraBlocked`
+ * lets a caller reserve additional names (e.g. Seam Cloud filenames that hold
+ * different content) so an import doesn't pick a name that's bound to collide.
+ */
+async function uniqueName(
+  dirName: string,
+  originalName: string,
+  extraBlocked?: (candidate: string) => boolean
+): Promise<string> {
   const dir = await getDir(dirName);
   const dot = originalName.lastIndexOf(".");
   const base = dot >= 0 ? originalName.slice(0, dot) : originalName;
@@ -115,18 +175,30 @@ async function uniqueName(dirName: string, originalName: string): Promise<string
   let i = 1;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    try {
-      await dir.getFileHandle(candidate);
-      candidate = `${base}-${i}${ext}`;
-      i++;
-    } catch {
-      return candidate;
-    }
+    const localTaken = await fileExists(dir, candidate);
+    if (!localTaken && !extraBlocked?.(candidate)) return candidate;
+    candidate = `${base}-${i}${ext}`;
+    i++;
   }
 }
 
-async function uniqueClipName(originalName: string): Promise<string> {
-  return uniqueName(CLIPS_DIR, originalName);
+async function fileExists(
+  dir: FileSystemDirectoryHandle,
+  name: string
+): Promise<boolean> {
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function uniqueClipName(
+  originalName: string,
+  extraBlocked?: (candidate: string) => boolean
+): Promise<string> {
+  return uniqueName(CLIPS_DIR, originalName, extraBlocked);
 }
 
 async function uniqueProjectName(originalName: string): Promise<string> {
@@ -214,6 +286,17 @@ export class WebPlatform implements Platform {
   private fingerprintIndex: Map<string, string> | null = null;
   private indexBuild: Promise<void> | null = null;
 
+  // Per-project sync sidecar (project-sync/index.json): filename → { cloudId,
+  // lastSyncedHash }. The baseline for three-way conflict detection.
+  private projectSyncIndex: ProjectSyncIndex | null = null;
+  private projectSyncLoad: Promise<ProjectSyncIndex> | null = null;
+  private projectSyncWriteChain: Promise<void> = Promise.resolve();
+
+  // Optional Seam Cloud connection (web-editor-only). Configured at boot from
+  // VITE_SEAM_CLOUD_URL. Owns the cloud media list + bearer token; consulted
+  // by resolveSource (cloud fallback) and importClip (collision check).
+  private _cloud: CloudClient | null = null;
+
   // Action callbacks registered by the app
   private actionHandlers = new Map<ActionName, () => void>();
 
@@ -224,6 +307,27 @@ export class WebPlatform implements Platform {
 
   constructor() {
     this.installKeybindings();
+  }
+
+  /** Connect to a Seam Cloud instance (called at boot if a base URL is set).
+   *  Restoring a prior session is the caller's job (await `cloud.restore()`). */
+  configureCloud(baseUrl: string | undefined | null): CloudClient | null {
+    const url = baseUrl?.trim();
+    if (!url) return null;
+    this._cloud = new CloudClient(url);
+    return this._cloud;
+  }
+
+  /** The configured cloud client, or null when cloud isn't set up. */
+  get cloud(): CloudClient | null {
+    return this._cloud;
+  }
+
+  /** A cloud filename is "blocked" for a new import only when it holds
+   *  *different* content (same name + same hash is the same file — keep it). */
+  private cloudBlocksName(name: string, fingerprintHex: string): boolean {
+    const m = this._cloud?.mediaByName(name);
+    return !!m && m.contentHash !== fingerprintHex;
   }
 
   // ── Platform interface ───────────────────────────────────────────
@@ -267,9 +371,11 @@ export class WebPlatform implements Platform {
     // OPFS file. Creating a blob URL would force the entire pmtiles
     // file into memory once for nothing.
     const isPmtiles = file.name.toLowerCase().endsWith(".pmtiles");
+    const fp = await fingerprint(file);
 
     // Check if we already have an identical clip; reuse its filename if so.
-    const existing = await this.findExistingClip(file);
+    const index = await this.ensureFingerprintIndex();
+    const existing = index.get(fp) ?? null;
     if (existing) {
       if (isPmtiles) return existing;
       if (!this.blobUrlCache.has(existing)) {
@@ -283,15 +389,19 @@ export class WebPlatform implements Platform {
       if (this.blobUrlCache.has(existing)) return existing;
     }
 
-    const name = await uniqueClipName(file.name);
+    // Pick a name free both locally and in the Seam Cloud namespace we know
+    // about (no extra request — just the cached list), so a later sync doesn't
+    // immediately collide. A cloud file with the same name AND hash is the
+    // same file, so it doesn't block.
+    const name = await uniqueClipName(file.name, (c) =>
+      this.cloudBlocksName(c, fp)
+    );
     await writeFileToDir(CLIPS_DIR, name, file);
     if (!isPmtiles) {
       this.blobUrlCache.set(name, URL.createObjectURL(file));
     }
 
     // Keep the fingerprint index fresh
-    const fp = await fingerprint(file);
-    const index = await this.ensureFingerprintIndex();
     index.set(fp, name);
 
     // Stamp the media-meta entry's "date added". Kind comes from the name;
@@ -334,13 +444,19 @@ export class WebPlatform implements Platform {
       return source;
     }
     if (source.startsWith("blob:")) return source;
-    // source is a filename inside clips/ — return a pre-created blob URL
+    // source is a filename inside clips/ — return a pre-created blob URL.
+    // Local always wins.
     const cached = this.blobUrlCache.get(source);
     if (cached) return cached;
-    // Not cached; return a placeholder the caller can notice. In practice
-    // the app should call preloadBlobUrls() after opening a project.
+    // Not held locally — fall back to a Seam Cloud stream if a cloud asset has
+    // this filename. The returned URL carries a ?token= and is byte-range
+    // capable, so mediabunny's UrlSource streams it on demand (no download).
+    const cloudUrl = this._cloud?.fileUrlForName(source);
+    if (cloudUrl) return cloudUrl;
+    // Neither local nor cloud. In practice the app should call
+    // preloadBlobUrls() after opening a project for local sources.
     console.warn(
-      `WebPlatform.resolveSource: no cached blob URL for "${source}". ` +
+      `WebPlatform.resolveSource: no local blob URL or cloud asset for "${source}". ` +
         `Did you forget to preloadBlobUrls()?`
     );
     return source;
@@ -519,13 +635,6 @@ export class WebPlatform implements Platform {
     return this.fingerprintIndex!;
   }
 
-  /** Return an existing clip filename with the same fingerprint, or null. */
-  private async findExistingClip(file: Blob): Promise<string | null> {
-    const index = await this.ensureFingerprintIndex();
-    const fp = await fingerprint(file);
-    return index.get(fp) ?? null;
-  }
-
   // ── Export / Import ──────────────────────────────────────────────
 
   async exportProject(
@@ -593,6 +702,374 @@ export class WebPlatform implements Platform {
   async downloadClip(name: string): Promise<void> {
     const file = await readFileFromDir(CLIPS_DIR, name);
     triggerDownload(file, name);
+  }
+
+  // ── Seam Cloud upload / download ─────────────────────────────────
+
+  /** Upload one local clip to Seam Cloud. The server dedups by filename +
+   *  content hash (identical → accepted, conflicting → reported). */
+  async uploadClipToCloud(name: string): Promise<UploadResult> {
+    if (!this._cloud) throw new Error("Seam Cloud is not connected.");
+    const file = await readFileFromDir(CLIPS_DIR, name);
+    // Send our content hash so the server can reject a conflict before
+    // streaming the bytes.
+    return this._cloud.uploadMedia(file, await fingerprint(file));
+  }
+
+  /** Upload every local media file not already on the cloud. Identical copies
+   *  (same name + hash) are skipped; conflicts are collected, not thrown. */
+  async syncAllToCloud(
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<SyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const clips = (await this.listClips()).filter((c) => classifyByName(c.name));
+    const fpIndex = await this.ensureFingerprintIndex();
+    const nameToFp = new Map<string, string>();
+    for (const [fp, name] of fpIndex) nameToFp.set(name, fp);
+
+    const summary: SyncSummary = {
+      uploaded: 0,
+      alreadyPresent: 0,
+      skipped: 0,
+      conflicts: [],
+    };
+
+    for (let i = 0; i < clips.length; i++) {
+      const { name } = clips[i];
+      onProgress?.(i, clips.length, name);
+
+      // Already on the cloud with identical content — don't re-upload bytes.
+      const cm = cloud.mediaByName(name);
+      const localFp = nameToFp.get(name);
+      if (cm && localFp && cm.contentHash === localFp) {
+        summary.skipped++;
+        continue;
+      }
+
+      const file = await readFileFromDir(CLIPS_DIR, name);
+      const res = await cloud.uploadMedia(file, localFp ?? (await fingerprint(file)));
+      if (res.kind === "created") summary.uploaded++;
+      else if (res.kind === "exists") summary.alreadyPresent++;
+      else summary.conflicts.push({ name, message: res.message });
+    }
+
+    onProgress?.(clips.length, clips.length, "");
+    await cloud.refreshMedia();
+    return summary;
+  }
+
+  /** Names of every file currently in OPFS clips/. */
+  private async localClipNames(): Promise<Set<string>> {
+    const dir = await getDir(CLIPS_DIR);
+    const names = new Set<string>();
+    // @ts-expect-error: values() is supported in all target browsers
+    for await (const entry of dir.values()) {
+      if (entry.kind === "file") names.add(entry.name);
+    }
+    return names;
+  }
+
+  /**
+   * Categorize a document's media sources by where they live. `localOnly` are
+   * held locally but not on the cloud (upload candidates); `cloudOnly` are on
+   * the cloud but absent locally (download candidates). Remote (http) and blob
+   * sources are ignored — they aren't cloud-syncable assets.
+   */
+  async classifyProjectMedia(
+    doc: SeamFile
+  ): Promise<{ localOnly: string[]; cloudOnly: string[] }> {
+    const sources = Array.from(new Set(collectClipSources(doc))).filter(
+      (s) =>
+        !s.startsWith("http://") &&
+        !s.startsWith("https://") &&
+        !s.startsWith("blob:")
+    );
+    const local = await this.localClipNames();
+    const localOnly: string[] = [];
+    const cloudOnly: string[] = [];
+    for (const s of sources) {
+      const isLocal = local.has(s);
+      const onCloud = !!this._cloud?.mediaByName(s);
+      if (isLocal && !onCloud) localOnly.push(s);
+      else if (!isLocal && onCloud) cloudOnly.push(s);
+    }
+    return { localOnly, cloudOnly };
+  }
+
+  /** The document's media sources that live only on the cloud — i.e. wouldn't
+   *  be bundled by an Export Zip. Used to warn before exporting. */
+  async cloudOnlyMediaSources(doc: SeamFile): Promise<string[]> {
+    return (await this.classifyProjectMedia(doc)).cloudOnly;
+  }
+
+  /** Upload every media source this project references that the cloud doesn't
+   *  already have. Conflicts (a different file with the same name on the cloud)
+   *  are collected, not thrown — the user renames to resolve. */
+  async uploadProjectMedia(
+    doc: SeamFile,
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<MediaSyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const { localOnly } = await this.classifyProjectMedia(doc);
+    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
+    for (let i = 0; i < localOnly.length; i++) {
+      onProgress?.(i, localOnly.length, localOnly[i]);
+      try {
+        const res = await this.uploadClipToCloud(localOnly[i]);
+        if (res.kind === "conflict") {
+          summary.conflicts.push({ name: localOnly[i], message: res.message });
+        } else {
+          summary.done++;
+        }
+      } catch (err) {
+        summary.conflicts.push({ name: localOnly[i], message: errMessage(err) });
+      }
+    }
+    onProgress?.(localOnly.length, localOnly.length, "");
+    await cloud.refreshMedia();
+    return summary;
+  }
+
+  /** Download every media source this project references that exists on the
+   *  cloud but not locally. Local dedup conflicts are collected, not thrown. */
+  async downloadProjectMedia(
+    doc: SeamFile,
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<MediaSyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const { cloudOnly } = await this.classifyProjectMedia(doc);
+    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
+    for (let i = 0; i < cloudOnly.length; i++) {
+      const name = cloudOnly[i];
+      onProgress?.(i, cloudOnly.length, name);
+      const m = cloud.mediaByName(name);
+      if (!m) continue;
+      try {
+        await this.downloadClipFromCloud(m.id, m.filename, m.contentHash);
+        summary.done++;
+      } catch (err) {
+        summary.conflicts.push({ name, message: errMessage(err) });
+      }
+    }
+    onProgress?.(cloudOnly.length, cloudOnly.length, "");
+    return summary;
+  }
+
+  /**
+   * Download a cloud asset into local OPFS, enforcing the same dedup rules
+   * locally: refuse if this content already exists locally (under any name) or
+   * if the target filename is taken by *different* content. The user resolves
+   * conflicts by renaming (a later pass).
+   */
+  async downloadClipFromCloud(
+    cloudId: string,
+    filename: string,
+    contentHash: string | null
+  ): Promise<void> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const index = await this.ensureFingerprintIndex();
+
+    // Content already present locally (possibly under a different name)?
+    if (contentHash && index.has(contentHash)) {
+      const existing = index.get(contentHash)!;
+      if (existing === filename) return; // identical file already local — no-op
+      throw new Error(
+        `You already have this content locally as "${existing}". Rename to reconcile.`
+      );
+    }
+
+    // Filename taken locally by different content?
+    if (await this.clipExists(filename)) {
+      const local = await readFileFromDir(CLIPS_DIR, filename);
+      if (contentHash && (await fingerprint(local)) === contentHash) return;
+      throw new Error(
+        `A different local file named "${filename}" already exists. Rename to reconcile.`
+      );
+    }
+
+    const blob = await cloud.downloadMedia(cloudId);
+    await writeFileToDir(CLIPS_DIR, filename, blob);
+    const fp = await fingerprint(blob);
+    index.set(fp, filename);
+    if (!filename.toLowerCase().endsWith(".pmtiles")) {
+      this.blobUrlCache.set(filename, URL.createObjectURL(blob));
+    }
+    const kind = classifyByName(filename);
+    if (kind) await this.updateMediaMeta(filename, { addedAt: Date.now(), kind });
+  }
+
+  private async clipExists(name: string): Promise<boolean> {
+    const dir = await getDir(CLIPS_DIR);
+    return fileExists(dir, name);
+  }
+
+  // ── Project sync (cloud) ─────────────────────────────────────────
+
+  private async getProjectSyncIndex(): Promise<ProjectSyncIndex> {
+    if (this.projectSyncIndex) return this.projectSyncIndex;
+    if (!this.projectSyncLoad) {
+      this.projectSyncLoad = (async () => {
+        try {
+          const file = await readFileFromDir(PROJECT_SYNC_DIR, PROJECT_SYNC_FILE);
+          this.projectSyncIndex = JSON.parse(await file.text()) as ProjectSyncIndex;
+        } catch {
+          this.projectSyncIndex = {};
+        }
+        return this.projectSyncIndex;
+      })();
+    }
+    return this.projectSyncLoad;
+  }
+
+  private async setProjectSyncEntry(
+    name: string,
+    entry: ProjectSyncEntry
+  ): Promise<void> {
+    const index = await this.getProjectSyncIndex();
+    index[name] = { ...index[name], ...entry };
+    const snapshot = JSON.stringify(index);
+    this.projectSyncWriteChain = this.projectSyncWriteChain.then(() =>
+      writeFileToDir(PROJECT_SYNC_DIR, PROJECT_SYNC_FILE, snapshot)
+    );
+    return this.projectSyncWriteChain;
+  }
+
+  /** Content fingerprint of a local project file (the same hash the cloud
+   *  computes server-side, so the two are directly comparable). */
+  private async projectHash(name: string): Promise<string | null> {
+    try {
+      const file = await readFileFromDir(PROJECTS_DIR, name);
+      return fingerprint(file);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Classify a project's local↔cloud relationship via the three-way hash
+   * compare (local hash vs cloud hash vs last-synced baseline). `name` is the
+   * project filename as it appears in either list.
+   */
+  async projectSyncState(name: string): Promise<ProjectSyncState> {
+    const cloud = this._cloud?.projectByName(name) ?? null;
+    const localHash = await this.projectHash(name);
+    const localExists = localHash !== null;
+
+    if (!localExists) {
+      return { status: "cloud-only", cloudId: cloud?.id ?? null };
+    }
+    if (!cloud) {
+      const entry = (await this.getProjectSyncIndex())[name];
+      return { status: "local-only", cloudId: entry?.cloudId ?? null };
+    }
+
+    const cloudId = cloud.id;
+    if (localHash === cloud.contentHash) {
+      return { status: "in-sync", cloudId };
+    }
+
+    const base = (await this.getProjectSyncIndex())[name]?.lastSyncedHash ?? null;
+    // No baseline (e.g. a local and cloud project that share a name but were
+    // never synced together) → treat divergence as a conflict.
+    const localChanged = base === null || localHash !== base;
+    const remoteChanged = base === null || cloud.contentHash !== base;
+
+    if (localChanged && remoteChanged) return { status: "out-of-sync", cloudId };
+    if (localChanged) return { status: "local-ahead", cloudId };
+    return { status: "remote-ahead", cloudId };
+  }
+
+  /**
+   * Upload a local project to the cloud. First upload POSTs a new project
+   * (may 409 on a name clash → the user renames); a previously-synced project
+   * PUTs against its stored id (overwrites the cloud copy — also the
+   * "keep local" conflict resolution). Advances the synced baseline on success.
+   */
+  async uploadProjectToCloud(name: string): Promise<ProjectUploadOutcome> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const content = await this.readProject(name);
+    const entry = (await this.getProjectSyncIndex())[name];
+
+    if (entry?.cloudId) {
+      const project = await cloud.updateProject(entry.cloudId, content);
+      await this.setProjectSyncEntry(name, {
+        cloudId: project.id,
+        lastSyncedHash: project.contentHash ?? undefined,
+      });
+    } else {
+      const result = await cloud.uploadProject(name, content);
+      if (result.kind === "conflict") {
+        return { kind: "name-exists", message: result.message };
+      }
+      await this.setProjectSyncEntry(name, {
+        cloudId: result.project.id,
+        lastSyncedHash: result.project.contentHash ?? undefined,
+      });
+    }
+    await cloud.refresh();
+    return { kind: "uploaded" };
+  }
+
+  /**
+   * Download a cloud project into local OPFS, overwriting the local copy (also
+   * the "keep remote" conflict resolution). Advances the synced baseline.
+   */
+  async downloadProjectFromCloud(project: CloudProject): Promise<void> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+
+    const content = await cloud.projectText(project.id);
+    await writeFileToDir(PROJECTS_DIR, project.name, content);
+    await this.setProjectSyncEntry(project.name, {
+      cloudId: project.id,
+      lastSyncedHash: project.contentHash ?? undefined,
+    });
+  }
+
+  /**
+   * Delete a clip's local copy: the OPFS file, its cached thumbnail, its
+   * media-meta entry, its fingerprint-index slot, and any live blob URL. This
+   * only touches local storage — a Seam Cloud copy (if any) is untouched, which
+   * is what makes deleting an already-synced clip recoverable.
+   */
+  async deleteClip(name: string): Promise<void> {
+    const clips = await getDir(CLIPS_DIR);
+    await clips.removeEntry(name).catch(() => {});
+
+    const thumbs = await getDir(THUMBS_DIR);
+    await thumbs.removeEntry(`${name}.jpg`).catch(() => {});
+
+    // Drop the media-meta entry (persist through the serialized write chain).
+    const index = await this.getMediaIndex();
+    if (name in index) {
+      delete index[name];
+      const snapshot = JSON.stringify(index);
+      this.indexWriteChain = this.indexWriteChain.then(() =>
+        writeFileToDir(MEDIA_META_DIR, MEDIA_INDEX_FILE, snapshot),
+      );
+      await this.indexWriteChain;
+    }
+
+    // Remove the fingerprint slot pointing at this name.
+    if (this.fingerprintIndex) {
+      for (const [fp, n] of this.fingerprintIndex) {
+        if (n === name) this.fingerprintIndex.delete(fp);
+      }
+    }
+
+    const url = this.blobUrlCache.get(name);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.blobUrlCache.delete(name);
+    }
   }
 
   /** True if `projects/<name>` already exists. Lets the caller warn
@@ -727,4 +1204,8 @@ export class WebPlatform implements Platform {
     });
   }
 
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

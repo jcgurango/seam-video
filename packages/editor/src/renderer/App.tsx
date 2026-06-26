@@ -16,8 +16,14 @@ import FrameEditorPane, { type FrameEditorTarget } from "./FrameEditorPane.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
 import WebTopBar from "./WebTopBar.js";
+import CloudStatus from "./cloud/CloudStatus.js";
+import CloudMenu from "./cloud/CloudMenu.js";
+import MediaSyncOverlay, {
+  type MediaSyncProgressState,
+} from "./MediaSyncOverlay.js";
+import { useCloud } from "./cloud/useCloud.js";
 import SettingsDialog from "./SettingsDialog.js";
-import { useSettings } from "./useSettings.js";
+import { useSettings, DEFAULT_GENERATOR_SERVER_URL } from "./useSettings.js";
 import { useTranscribe, type CompositionAudioMode } from "./useTranscribe.js";
 import { useNormalize } from "./useNormalize.js";
 import CompositionAudioDialog from "./CompositionAudioDialog.js";
@@ -36,7 +42,13 @@ import {
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
-import { basenameWithoutExt, dirname } from "./pathUtils.js";
+import { basename, basenameWithoutExt, dirname } from "./pathUtils.js";
+import {
+  parsePath,
+  routePath,
+  tabRoute,
+  type Route,
+} from "./webRouting.js";
 import {
   collectClipSources,
   remapSourcesToRelative,
@@ -135,8 +147,14 @@ export default function App({ platform }: AppProps) {
   // On web we start on the project browser; a project must be picked/created
   // before the editor is shown. On Electron we always show the editor.
   const [showBrowser, setShowBrowser] = useState(platform.kind === "web");
+  // Which landing tab is active (mirrors the URL on web).
+  const [browserTab, setBrowserTab] = useState<"projects" | "media">("projects");
   const [exportProgress, setExportProgress] =
     useState<ExportProgress | null>(null);
+  // Bulk cloud media transfer triggered from the export path (the Cloud menu
+  // owns its own instance of this overlay).
+  const [mediaSyncProgress, setMediaSyncProgress] =
+    useState<MediaSyncProgressState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [compAudioPromptOpen, setCompAudioPromptOpen] = useState(false);
   // Transient transcription feedback (empty selection, server/decoding
@@ -305,6 +323,60 @@ export default function App({ platform }: AppProps) {
       return;
     }
     await loadDocument(result.data, fp);
+  });
+
+  // ── Web URL routing ──────────────────────────────────────────────
+  // Push the URL for a navigation the user initiated (so Back/Forward and
+  // new-tab work). Replace when we're just normalizing the current entry.
+  const pushRoute = useEvent((route: Route, replace = false) => {
+    if (platform.kind !== "web") return;
+    const path = routePath(route);
+    if (path === window.location.pathname) return;
+    if (replace) window.history.replaceState(null, "", path);
+    else window.history.pushState(null, "", path);
+  });
+
+  /** Open a stored project by filename (no URL push). Returns false if it
+   *  can't be read (e.g. a stale/hand-typed URL). */
+  const openProjectByName = useEvent(async (name: string): Promise<boolean> => {
+    if (platform.kind !== "web") return false;
+    try {
+      const json = await (platform as WebPlatform).readProject(name);
+      await openFromJson(json, `projects/${name}`);
+      setShowBrowser(false);
+      return true;
+    } catch (err) {
+      console.warn(`openProjectByName: cannot open "${name}"`, err);
+      return false;
+    }
+  });
+
+  /** Re-read the currently open project from disk and load it (after a cloud
+   *  pull overwrote the local .seam). No-op if nothing is open. */
+  const reloadCurrentProject = useEvent(async () => {
+    if (platform.kind !== "web" || !filePath) return;
+    await openProjectByName(basename(filePath));
+  });
+
+  /** Bring app state in line with a route, WITHOUT touching history (used for
+   *  the initial load and Back/Forward). */
+  const applyRoute = useEvent(async (route: Route) => {
+    if (route.kind === "project") {
+      const ok = await openProjectByName(route.name);
+      if (ok) return;
+      // Missing project → fall back to the projects landing + fix the URL.
+      window.history.replaceState(null, "", routePath({ kind: "projects" }));
+      setBrowserTab("projects");
+      setShowBrowser(true);
+      return;
+    }
+    setBrowserTab(route.kind === "media" ? "media" : "projects");
+    setShowBrowser(true);
+  });
+
+  const handleTabChange = useEvent((tab: "projects" | "media") => {
+    setBrowserTab(tab);
+    pushRoute(tabRoute(tab));
   });
 
   // Commit an edited document to history. On web, warm the blob URL cache for
@@ -588,8 +660,11 @@ export default function App({ platform }: AppProps) {
       await platform.writeFile(fp, json);
       setFilePath(fp);
       updateTitle(fp);
+      // Reflect the (possibly new) project name in the URL — replace, so saving
+      // doesn't litter the Back history.
+      pushRoute({ kind: "project", name: basename(fp) }, /* replace */ true);
     },
-    [history, updateTitle, platform]
+    [history, updateTitle, platform, pushRoute]
   );
 
   const handleSave = useEvent(async () => {
@@ -609,6 +684,49 @@ export default function App({ platform }: AppProps) {
   const handleExport = useEvent(async () => {
     const defaultName = filePath ? basenameWithoutExt(filePath) : "untitled";
     const basePath = filePath ? dirname(filePath) : "";
+
+    // Web + cloud: some media may live only on the cloud, so it wouldn't be
+    // bundled into the zip. Offer to pull it down first.
+    if (platform.kind === "web") {
+      const wp = platform as WebPlatform;
+      if (wp.cloud) {
+        let cloudOnly: string[] = [];
+        try {
+          cloudOnly = await wp.cloudOnlyMediaSources(history.current);
+        } catch (err) {
+          console.warn("handleExport: cloud-only check failed", err);
+        }
+        if (cloudOnly.length > 0) {
+          const ok = window.confirm(
+            "Some of this project's media is located remotely and will not be " +
+              "exported. Do you want to download them now?"
+          );
+          if (ok) {
+            setMediaSyncProgress({
+              title: "Downloading media",
+              done: 0,
+              total: 0,
+              detail: "",
+            });
+            try {
+              await wp.downloadProjectMedia(history.current, (done, total, name) =>
+                setMediaSyncProgress({
+                  title: "Downloading media",
+                  done,
+                  total,
+                  detail: name,
+                })
+              );
+            } catch (err) {
+              setErrors([String(err)]);
+            } finally {
+              setMediaSyncProgress(null);
+            }
+          }
+        }
+      }
+    }
+
     setExportProgress({ phase: "read", progress: 0 });
     try {
       await platform.exportProject(
@@ -679,6 +797,9 @@ export default function App({ platform }: AppProps) {
     platform.getInitial().then((data) => {
       if (data) {
         void openFromJson(data.json, data.filePath);
+      } else if (platform.kind === "web") {
+        // The URL drives the initial view (projects / media / a project).
+        void applyRoute(parsePath(window.location.pathname));
       } else {
         void loadDocument(EMPTY_DOCUMENT, null);
       }
@@ -687,6 +808,7 @@ export default function App({ platform }: AppProps) {
     platform.onAction("new", () => {
       void loadDocument({ type: "composition", children: [] }, null);
       setShowBrowser(false);
+      pushRoute({ kind: "projects" }, /* replace */ true);
     });
 
     platform.onAction("open", async () => {
@@ -698,12 +820,20 @@ export default function App({ platform }: AppProps) {
       }
       await openFromJson(result.json, result.filePath);
       setShowBrowser(false);
+      pushRoute({ kind: "project", name: basename(result.filePath) });
     });
 
     platform.onAction("save", () => void handleSave());
     platform.onAction("save-as", () => void handleSaveAs());
     platform.onAction("export", () => void handleExport());
     platform.onAction("settings", () => setSettingsOpen(true));
+
+    // Back/Forward (and direct loads / new tabs) re-derive state from the URL.
+    if (platform.kind === "web") {
+      const onPop = () => void applyRoute(parsePath(window.location.pathname));
+      window.addEventListener("popstate", onPop);
+      return () => window.removeEventListener("popstate", onPop);
+    }
     // useEvent-wrapped handlers have stable identity — listing them as
     // deps is honest and won't re-fire this effect.
   }, [
@@ -713,14 +843,39 @@ export default function App({ platform }: AppProps) {
     handleSave,
     handleSaveAs,
     handleExport,
+    applyRoute,
+    pushRoute,
   ]);
 
   const basePath = filePath ? dirname(filePath) : "";
 
+  // Generator server selection (transcription / enhancement). Precedence:
+  //   1. an explicit user setting (direct connection),
+  //   2. the Seam Cloud authenticated proxy when connected + the cloud has a
+  //      generator configured,
+  //   3. the localhost default.
+  const cloud = platform.kind === "web" ? (platform as WebPlatform).cloud : null;
+  const cloudState = useCloud(cloud);
+  const explicitGeneratorUrl = settings.generatorServerUrl.trim();
+  const useGeneratorProxy =
+    !explicitGeneratorUrl &&
+    !!cloud &&
+    cloudState?.status === "authed" &&
+    !!cloudState?.generatorAvailable;
+  const generatorServerUrl = explicitGeneratorUrl
+    ? explicitGeneratorUrl
+    : useGeneratorProxy
+      ? `${cloud!.baseUrl}/api/generator`
+      : DEFAULT_GENERATOR_SERVER_URL;
+  const generatorAuthToken = useGeneratorProxy
+    ? cloud!.authToken ?? undefined
+    : undefined;
+
   // Transcription job: feeds the generator server one clip at a time and
   // appends a `data` attachment per response onto the root document.
   const transcriber = useTranscribe({
-    serverUrl: settings.generatorServerUrl,
+    serverUrl: generatorServerUrl,
+    authToken: generatorAuthToken,
     platform,
     basePath,
     history,
@@ -795,11 +950,15 @@ export default function App({ platform }: AppProps) {
   const handleOpenFromBrowser = useEvent((fp: string, json: string) => {
     void openFromJson(json, fp);
     setShowBrowser(false);
+    pushRoute({ kind: "project", name: basename(fp) });
   });
 
   const handleNewProject = useEvent(() => {
     void loadDocument({ type: "composition", children: [] }, null);
     setShowBrowser(false);
+    // A new, unsaved project isn't URL-addressable yet — sit at the root until
+    // it's saved (Save As updates the URL to /projects/<name>).
+    pushRoute({ kind: "projects" }, /* replace */ true);
   });
 
   const topBarOpen = useEvent(async () => {
@@ -811,10 +970,12 @@ export default function App({ platform }: AppProps) {
     }
     await openFromJson(result.json, result.filePath);
     setShowBrowser(false);
+    pushRoute({ kind: "project", name: basename(result.filePath) });
   });
 
   const topBarBrowseProjects = useEvent(() => {
     setShowBrowser(true);
+    pushRoute(tabRoute(browserTab));
   });
 
   const renderMain = () => {
@@ -837,6 +998,8 @@ export default function App({ platform }: AppProps) {
           platform={platform as WebPlatform}
           onOpen={handleOpenFromBrowser}
           onNew={handleNewProject}
+          tab={browserTab}
+          onTabChange={handleTabChange}
         />
       );
     }
@@ -1028,6 +1191,22 @@ export default function App({ platform }: AppProps) {
           onBrowseProjects={topBarBrowseProjects}
           onSettings={() => setSettingsOpen(true)}
           canSave={!showBrowser}
+          menus={
+            (platform as WebPlatform).cloud && !showBrowser ? (
+              <CloudMenu
+                platform={platform as WebPlatform}
+                client={(platform as WebPlatform).cloud!}
+                projectName={filePath ? basename(filePath) : null}
+                getDoc={() => history.current}
+                onProjectDownloaded={reloadCurrentProject}
+              />
+            ) : undefined
+          }
+          right={
+            (platform as WebPlatform).cloud ? (
+              <CloudStatus client={(platform as WebPlatform).cloud!} />
+            ) : undefined
+          }
         />
       )}
 
@@ -1068,6 +1247,8 @@ export default function App({ platform }: AppProps) {
           }}
         />
       )}
+
+      {mediaSyncProgress && <MediaSyncOverlay progress={mediaSyncProgress} />}
 
       {exportProgress && <ExportProgressOverlay progress={exportProgress} />}
 

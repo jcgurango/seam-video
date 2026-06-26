@@ -31,5 +31,18 @@ setPmtilesResolver(async (filename: string) => {
   return (src as Source | null) ?? null;
 });
 
+// Optional Seam Cloud connection — web-editor-only. The base URL comes from a
+// runtime-injected global (window.__SEAM_CLOUD_URL__, written by the container
+// entrypoint from $SEAM_CLOUD_URL) and falls back to the build-time
+// VITE_SEAM_CLOUD_URL for local dev. When set, the platform creates a
+// CloudClient and we restore any prior session before mounting.
+const runtimeCloudUrl = (window as unknown as { __SEAM_CLOUD_URL__?: string })
+  .__SEAM_CLOUD_URL__;
+const buildCloudUrl = (
+  import.meta as { env?: Record<string, string | undefined> }
+).env?.VITE_SEAM_CLOUD_URL;
+const cloud = platform.configureCloud(runtimeCloudUrl || buildCloudUrl);
+if (cloud) void cloud.restore();
+
 const root = createRoot(document.getElementById("root")!);
 root.render(<App platform={platform} />);

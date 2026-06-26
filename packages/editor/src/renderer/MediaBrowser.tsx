@@ -6,9 +6,15 @@ import {
   Map as MapIcon,
   Download,
   Trash2,
+  Cloud,
+  UploadCloud,
+  DownloadCloud,
+  RefreshCw,
 } from "lucide-react";
 import type { SeamFile } from "@seam/core";
 import type { WebPlatform, MediaMeta } from "./platform/web.js";
+import type { CloudMedia } from "./cloud/CloudClient.js";
+import { useCloud } from "./cloud/useCloud.js";
 import {
   buildItemFromSource,
   classifyByName,
@@ -35,6 +41,9 @@ interface MediaBrowserProps {
 
 type SortKey = "date" | "added" | "used";
 
+/** Where a media item lives relative to the user's local OPFS + Seam Cloud. */
+type Location = "local" | "cloud" | "both";
+
 interface MediaItem {
   name: string;
   kind: MediaKind;
@@ -44,6 +53,13 @@ interface MediaItem {
   duration?: number;
   /** null = no thumbnail (audio/pmtiles or not generated yet → icon). */
   thumbUrl: string | null;
+  /** local: OPFS only · cloud: Seam Cloud only · both: present in each. */
+  location: Location;
+  /** Seam Cloud id (set when location is cloud/both) — for thumb/stream/download. */
+  cloudId?: string;
+  /** Cloud content hash (for download dedup checks). */
+  contentHash?: string | null;
+  size?: number;
 }
 
 /** Default fallback duration (s) for a drag when probing didn't yield one. */
@@ -61,12 +77,57 @@ function sortValue(item: MediaItem, key: SortKey): number {
   return item.captureDate ?? item.addedAt; // "date"
 }
 
+/** Build a (thumbnail-only) media item from a cloud record not held locally. */
+function cloudMediaToItem(
+  cm: CloudMedia,
+  cloud: { mediaThumbUrl(id: string): string } | null,
+): MediaItem {
+  return {
+    name: cm.filename,
+    kind: cm.kind,
+    addedAt: cm.addedAt,
+    lastUsedAt: cm.lastUsedAt ?? undefined,
+    captureDate: cm.captureDate ?? undefined,
+    duration: cm.duration ?? undefined,
+    thumbUrl: cm.hasThumb && cloud ? cloud.mediaThumbUrl(cm.id) : null,
+    location: "cloud",
+    cloudId: cm.id,
+    contentHash: cm.contentHash,
+    size: cm.size,
+  };
+}
+
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
   });
+}
+
+/** Top-left badge marking a tile's relationship to Seam Cloud. */
+function LocationBadge({ location }: { location: Location }) {
+  const cloudOnly = location === "cloud";
+  return (
+    <div
+      title={cloudOnly ? "In Seam Cloud (not downloaded)" : "Synced with Seam Cloud"}
+      style={{
+        position: "absolute",
+        top: 4,
+        left: 4,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 18,
+        height: 18,
+        borderRadius: 4,
+        background: "rgba(0,0,0,0.6)",
+        color: cloudOnly ? "#6aa8e0" : "#5ec98a",
+      }}
+    >
+      <Cloud size={12} />
+    </div>
+  );
 }
 
 function KindIcon({ kind }: { kind: MediaKind }) {
@@ -97,6 +158,12 @@ export default function MediaBrowser({
   // Tile whose action overlay is currently shown (main variant only).
   const [hovered, setHovered] = useState<string | null>(null);
 
+  // Cloud upload/download bookkeeping (main variant).
+  const [reloadKey, setReloadKey] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState<{ done: number; total: number } | null>(null);
+  const [busyName, setBusyName] = useState<string | null>(null);
+
   // Track blob URLs we mint so we can revoke them on unmount.
   const urlsRef = useRef<string[]>([]);
 
@@ -124,6 +191,7 @@ export default function MediaBrowser({
           captureDate: meta?.captureDate,
           duration: meta?.duration,
           thumbUrl: null,
+          location: "local",
         });
       }
       if (cancelled) return;
@@ -185,8 +253,9 @@ export default function MediaBrowser({
     };
     // Rebuild only when the platform changes (i.e. essentially never). New
     // imports while open aren't auto-reflected — acceptable for this pass.
+    // reloadKey re-scans local clips after a cloud download adds one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform]);
+  }, [platform, reloadKey]);
 
   const patchItem = (name: string, patch: Partial<MediaItem>) => {
     setItems((prev) =>
@@ -201,16 +270,41 @@ export default function MediaBrowser({
     [currentDoc],
   );
 
-  const shown = useMemo(() => {
+  // Seam Cloud assets (if connected) shown side-by-side with local media.
+  const cloud = (platform as WebPlatform).cloud ?? null;
+  const cloudState = useCloud(cloud);
+
+  // Merge local + cloud by filename. Local always wins (its tile is the
+  // draggable, fully-probed one), gaining a "both" marker when the cloud also
+  // has it; cloud-only files become thumbnail-only tiles flagged "cloud".
+  const merged = useMemo(() => {
     if (!items) return null;
+    const cloudMedia = cloudState?.media ?? [];
+    const cloudByName = new Map(cloudMedia.map((m) => [m.filename, m]));
+    const out: MediaItem[] = items.map((it) => {
+      const cm = cloudByName.get(it.name);
+      return cm
+        ? { ...it, location: "both", cloudId: cm.id, contentHash: cm.contentHash }
+        : { ...it, location: "local" };
+    });
+    const localNames = new Set(items.map((i) => i.name));
+    for (const cm of cloudMedia) {
+      if (localNames.has(cm.filename)) continue;
+      out.push(cloudMediaToItem(cm, cloud));
+    }
+    return out;
+  }, [items, cloudState, cloud]);
+
+  const shown = useMemo(() => {
+    if (!merged) return null;
     const q = query.trim().toLowerCase();
-    const filtered = items.filter(
+    const filtered = merged.filter(
       (it) =>
         (!inProjectOnly || usedSources.has(it.name)) &&
         (q === "" || it.name.toLowerCase().includes(q)),
     );
     return [...filtered].sort((a, b) => sortValue(b, sort) - sortValue(a, sort));
-  }, [items, inProjectOnly, usedSources, sort, query]);
+  }, [merged, inProjectOnly, usedSources, sort, query]);
 
   const handleDragStart = (item: MediaItem, e: React.DragEvent) => {
     const child = buildItemFromSource(item.kind, item.name, dragDuration(item));
@@ -221,6 +315,9 @@ export default function MediaBrowser({
   const handleDragEnd = (item: MediaItem, e: React.DragEvent) => {
     // Landed on a valid drop target (the timeline) → bump "last used".
     if (e.dataTransfer.dropEffect === "none") return;
+    // Cloud-only items have no local meta to stamp (they stream from the
+    // cloud via resolveSource's fallback); skip the local bookkeeping.
+    if (item.location === "cloud") return;
     void platform.markClipUsed(item.name);
     patchItem(item.name, { lastUsedAt: Date.now() });
   };
@@ -229,9 +326,83 @@ export default function MediaBrowser({
     void platform.downloadClip(item.name);
   };
 
-  // Media delete isn't wired yet — the button is present for parity with the
-  // projects view, but deleting a clip from OPFS is deferred to a later pass.
-  const handleDelete = (_item: MediaItem) => {};
+  const wp = platform as WebPlatform;
+
+  // Deleting a local copy that's also in Seam Cloud is safe(ish) — the cloud
+  // keeps the file, so it just reverts to a cloud-only tile (re-downloadable).
+  // Deleting a local-only file gets its own flow later, so it's disabled here.
+  const handleDelete = async (item: MediaItem) => {
+    if (item.location !== "both") return;
+    setBusyName(item.name);
+    setNotice(null);
+    try {
+      await wp.deleteClip(item.name);
+      setReloadKey((k) => k + 1); // re-scan local → tile becomes cloud-only
+    } catch (err) {
+      setNotice(`Delete failed for "${item.name}": ${errMessage(err)}`);
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const cloudAuthed = !!cloud && cloudState?.status === "authed";
+
+  const handleUpload = async (item: MediaItem) => {
+    if (!cloud) return;
+    setBusyName(item.name);
+    setNotice(null);
+    try {
+      const res = await wp.uploadClipToCloud(item.name);
+      if (res.kind === "conflict") {
+        setNotice(`Couldn't upload "${item.name}": ${res.message}`);
+      }
+      await cloud.refreshMedia();
+    } catch (err) {
+      setNotice(`Upload failed for "${item.name}": ${errMessage(err)}`);
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const handleCloudDownload = async (item: MediaItem) => {
+    if (!cloud || !item.cloudId) return;
+    setBusyName(item.name);
+    setNotice(null);
+    try {
+      await wp.downloadClipFromCloud(item.cloudId, item.name, item.contentHash ?? null);
+      setReloadKey((k) => k + 1); // re-scan local clips so the new file appears
+    } catch (err) {
+      setNotice(`Download failed for "${item.name}": ${errMessage(err)}`);
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const handleSyncAll = async () => {
+    if (!cloud) return;
+    setNotice(null);
+    setSyncing({ done: 0, total: 0 });
+    try {
+      const summary = await wp.syncAllToCloud((done, total) =>
+        setSyncing({ done, total })
+      );
+      const parts: string[] = [];
+      if (summary.uploaded) parts.push(`${summary.uploaded} uploaded`);
+      const present = summary.alreadyPresent + summary.skipped;
+      if (present) parts.push(`${present} already synced`);
+      let msg = parts.join(", ") || "Nothing to upload.";
+      if (summary.conflicts.length) {
+        msg += ` · ${summary.conflicts.length} need renaming: ${summary.conflicts
+          .map((c) => c.name)
+          .join(", ")}`;
+      }
+      setNotice(msg);
+    } catch (err) {
+      setNotice(`Sync failed: ${errMessage(err)}`);
+    } finally {
+      setSyncing(null);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
@@ -270,6 +441,53 @@ export default function MediaBrowser({
               In this project
             </label>
           )}
+          {variant === "main" && cloudAuthed && (
+            <div
+              style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <button
+                onClick={() => void cloud!.refreshMedia()}
+                disabled={cloudState?.refreshing}
+                title="Refresh cloud list"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  background: "#2e2e2e",
+                  border: "1px solid #3a3a3a",
+                  color: "#e0e0e0",
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  cursor: cloudState?.refreshing ? "default" : "pointer",
+                  opacity: cloudState?.refreshing ? 0.6 : 1,
+                }}
+              >
+                <RefreshCw size={15} />
+              </button>
+              <button
+                onClick={handleSyncAll}
+                disabled={!!syncing}
+                title="Upload all local media to Seam Cloud"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: "#2e2e2e",
+                  border: "1px solid #3a3a3a",
+                  color: "#e0e0e0",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  cursor: syncing ? "default" : "pointer",
+                  fontSize: 13,
+                  opacity: syncing ? 0.6 : 1,
+                }}
+              >
+                <UploadCloud size={15} />
+                {syncing
+                  ? `Syncing ${syncing.done}/${syncing.total}…`
+                  : "Sync to Cloud"}
+              </button>
+            </div>
+          )}
         </div>
         <input
           type="search"
@@ -278,6 +496,37 @@ export default function MediaBrowser({
           placeholder="Filter by name…"
           style={{ ...selectStyle, width: "100%", boxSizing: "border-box" }}
         />
+        {notice && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              fontSize: 12,
+              color: "#ddd",
+              background: "#222",
+              border: "1px solid #3a3a3a",
+              borderRadius: 6,
+              padding: "6px 10px",
+            }}
+          >
+            <span style={{ flex: 1 }}>{notice}</span>
+            <button
+              onClick={() => setNotice(null)}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#888",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: 14,
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 10 }}>
@@ -336,6 +585,9 @@ export default function MediaBrowser({
                   ) : (
                     <KindIcon kind={item.kind} />
                   )}
+                  {item.location !== "local" && (
+                    <LocationBadge location={item.location} />
+                  )}
                   {variant === "main" && hovered === item.name && (
                     <div
                       style={{
@@ -346,19 +598,48 @@ export default function MediaBrowser({
                         gap: 4,
                       }}
                     >
-                      <TileAction
-                        title="Download"
-                        onClick={() => handleDownload(item)}
-                      >
-                        <Download size={14} />
-                      </TileAction>
-                      <TileAction
-                        title="Delete"
-                        danger
-                        onClick={() => handleDelete(item)}
-                      >
-                        <Trash2 size={14} />
-                      </TileAction>
+                      {cloudAuthed && item.location === "local" && (
+                        <TileAction
+                          title="Upload to Seam Cloud"
+                          onClick={() => handleUpload(item)}
+                          disabled={busyName === item.name}
+                        >
+                          <UploadCloud size={14} />
+                        </TileAction>
+                      )}
+                      {cloudAuthed && item.location === "cloud" && (
+                        <TileAction
+                          title="Download from Seam Cloud"
+                          onClick={() => handleCloudDownload(item)}
+                          disabled={busyName === item.name}
+                        >
+                          <DownloadCloud size={14} />
+                        </TileAction>
+                      )}
+                      {item.location !== "cloud" && (
+                        <>
+                          <TileAction
+                            title="Download"
+                            onClick={() => handleDownload(item)}
+                          >
+                            <Download size={14} />
+                          </TileAction>
+                          <TileAction
+                            title={
+                              item.location === "both"
+                                ? "Delete local copy (kept in Seam Cloud)"
+                                : "Local-only delete coming soon"
+                            }
+                            danger
+                            disabled={
+                              item.location !== "both" || busyName === item.name
+                            }
+                            onClick={() => void handleDelete(item)}
+                          >
+                            <Trash2 size={14} />
+                          </TileAction>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -383,21 +664,24 @@ export default function MediaBrowser({
   );
 }
 
-/** Small overlay button on a media tile (download / delete). */
+/** Small overlay button on a media tile (upload / download / delete). */
 function TileAction({
   title,
   onClick,
   danger,
+  disabled,
   children,
 }: {
   title: string;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
       draggable={false}
+      disabled={disabled}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -407,7 +691,8 @@ function TileAction({
         background: "rgba(0, 0, 0, 0.65)",
         border: "none",
         color: "#ddd",
-        cursor: "pointer",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.5 : 1,
         padding: 4,
         borderRadius: 4,
         display: "flex",
@@ -420,6 +705,10 @@ function TileAction({
       {children}
     </button>
   );
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 const selectStyle: React.CSSProperties = {

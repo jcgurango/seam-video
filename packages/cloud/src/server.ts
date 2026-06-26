@@ -1,0 +1,71 @@
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { serveStatic } from "@hono/node-server/serve-static";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { auth } from "./auth.js";
+import { env } from "./env.js";
+import { mediaRoutes } from "./routes/media.js";
+import { projectRoutes } from "./routes/projects.js";
+import { immichRoutes } from "./routes/immich.js";
+import { generatorRoutes } from "./routes/generator.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+// dist/server.js → ../web/dist ; src/server.ts (tsx) → ../web/dist too.
+const CLIENT_DIR = path.resolve(here, "../web/dist");
+
+export function createApp(): Hono {
+  const app = new Hono();
+
+  // The web editor is a separate origin. Auth rides on the Authorization
+  // header (bearer) or a ?token= query — never a cross-site cookie — so CORS
+  // doesn't need credentials. Expose the range headers UrlSource relies on.
+  app.use(
+    "/api/*",
+    cors({
+      origin: env.corsOrigins,
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowHeaders: ["Authorization", "Content-Type"],
+      // set-auth-token: the bearer plugin returns the session token here on
+      // sign-in; the cross-origin editor must be allowed to read it. The rest
+      // are what UrlSource's range reads depend on.
+      exposeHeaders: [
+        "set-auth-token",
+        "Content-Range",
+        "Content-Length",
+        "Accept-Ranges",
+      ],
+    })
+  );
+
+  app.get("/api/health", (c) => c.json({ ok: true }));
+
+  // better-auth owns everything under /api/auth/*.
+  app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+
+  app.route("/api/media", mediaRoutes);
+  app.route("/api/projects", projectRoutes);
+  app.route("/api/immich", immichRoutes);
+  app.route("/api/generator", generatorRoutes);
+
+  // Static client (built by Vite into web/dist). Falls back to index.html so
+  // the SPA handles its own routing.
+  if (fs.existsSync(CLIENT_DIR)) {
+    const root = path.relative(process.cwd(), CLIENT_DIR) || ".";
+    app.use("/*", serveStatic({ root }));
+    const indexHtml = path.join(CLIENT_DIR, "index.html");
+    app.get("*", (c) => {
+      if (c.req.path.startsWith("/api/")) return c.notFound();
+      return c.html(fs.readFileSync(indexHtml, "utf8"));
+    });
+  } else {
+    app.get("/", (c) =>
+      c.text(
+        "Seam Cloud API is running. Build the client with `pnpm --filter @seam/cloud build`."
+      )
+    );
+  }
+
+  return app;
+}

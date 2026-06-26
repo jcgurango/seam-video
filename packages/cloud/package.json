@@ -1,0 +1,36 @@
+{
+  "name": "@seam/cloud",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc && vite build --config web/vite.config.ts",
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "dev:client": "vite --config web/vite.config.ts",
+    "start": "node --env-file=.env dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@mediabunny/server": "^1.45.0",
+    "@napi-rs/canvas": "^0.1.100",
+    "better-auth": "^1.2.0",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.6.0",
+    "mediabunny": "^1.45.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.21",
+    "vitest": "^2.0.0"
+  }
+}
