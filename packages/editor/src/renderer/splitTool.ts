@@ -6,7 +6,7 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { resolveComposition } from "@seam/core";
+import { compileSeamFile, resolveComposition } from "@seam/core";
 import type { Child, Composition, SeamFile, TimeAnchor } from "@seam/core";
 
 function clipBaseSpeed(clip: {
@@ -188,7 +188,14 @@ export function sliceAtPlayhead(
   doc: SeamFile,
   currentTime: number,
 ): SeamFile | null {
-  const resolved = resolveComposition(doc);
+  // Resolve the COMPILED doc (bins inflated, scripts skipped) so `binItem`
+  // references have their real body + duration — otherwise they resolve as
+  // empty zero-width compositions and the playhead hit-test below never
+  // matches them. `runScripts: false` keeps children 1:1 with the authored
+  // tree, so `targetIdx` still indexes `doc.children` (the array we mutate).
+  const resolved = resolveComposition(
+    compileSeamFile(doc, { runScripts: false }).doc,
+  );
   const children = doc.children ?? [];
 
   let targetIdx = -1;
@@ -251,16 +258,18 @@ export function sliceAtPlayhead(
       };
     }
   } else {
-    // Composition: both halves share the same body (children +
-    // attachments + spatial fields + metadata + filters + script/bin
-    // payload). They differ only in the inner-timeline window — first
-    // keeps [compIn..innerSplit], second takes [innerSplit..compOut].
-    // Child compositions always run at unit speed (overflow/underflow
-    // stretching only kicks in for anchored attachments), so the
-    // output-offset translates 1:1 to inner-timeline coordinates.
+    // Composition (incl. a `binItem` reference, whose body comes from the
+    // bin entry): both halves share the same node (children/attachments or
+    // the `binItem` ref + spatial/metadata/filters/script/bin), differing
+    // only in the inner-timeline window — first keeps [compIn..innerSplit],
+    // second takes [innerSplit..compOut]. A reference with no authored
+    // `in`/`out` windows the whole adopted body ([0..origLen]). Child
+    // compositions always run at unit speed (overflow/underflow stretching
+    // only kicks in for anchored attachments), so the output-offset
+    // translates 1:1 to inner-timeline coordinates and `origLen` (the
+    // resolved output span) is the inner end.
     const compIn = child.in ?? 0;
-    const resolvedComp = resolved.children[targetIdx];
-    const compOut = child.out ?? compIn + resolvedComp.duration;
+    const compOut = child.out ?? compIn + origLen;
     const innerSplit = compIn + offset;
     first = { ...child, in: compIn, out: innerSplit };
     second = { ...child, in: innerSplit, out: compOut };

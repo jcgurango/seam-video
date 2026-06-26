@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
-import type { SeamFile } from "@seam/core";
+import type { Child, SeamFile } from "@seam/core";
 import { findBin, renameBinItemId } from "./nodeBin.js";
+import { SOURCE_DRAG_MIME } from "./useImport.js";
 
 export interface BinPanelProps {
   /** Editor-surface root. The bin lives in its metadata. */
@@ -66,6 +67,7 @@ interface BinRowProps {
 
 function BinRow({ id, takenIds, onRename, onCCCut }: BinRowProps) {
   const [editing, setEditing] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState(id);
 
   const trimmed = draft.trim();
@@ -121,7 +123,22 @@ function BinRow({ id, takenIds, onRename, onCCCut }: BinRowProps) {
   }
 
   return (
-    <div style={ROW_STYLE}>
+    <div
+      // Drag a bin entry onto the timeline like any media source: the payload
+      // is the same `Child[]` JSON blob the media browser / New panel emit, but
+      // the node is a `binItem` reference. The timeline drop handler inserts it
+      // at the snapped slot; the compile pass resolves the body at render time.
+      draggable={!editing}
+      onDragStart={(e) => {
+        const ref: Child = { type: "composition", binItem: id };
+        e.dataTransfer.setData(SOURCE_DRAG_MIME, JSON.stringify([ref]));
+        e.dataTransfer.effectAllowed = "copy";
+        setDragging(true);
+      }}
+      onDragEnd={() => setDragging(false)}
+      style={{ ...ROW_STYLE, cursor: "grab", opacity: dragging ? 0.6 : 1 }}
+      title="Drag onto the timeline to insert a reference to this bin entry"
+    >
       <code style={ID_STYLE}>{id}</code>
       <button
         onClick={onCCCut}
