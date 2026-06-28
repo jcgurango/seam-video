@@ -1,0 +1,2 @@
+# Seam Video
+Open source JSON-based video creation suite utilizing WebGPU and WebCodecs. [You can try out the editor in your browser](https://video.seam.jcgurango.com/) to see how it works. The CLI is available at [@seam-media/cli](http://npmjs.com/package/@seam-media/cli) on NPM for local rendering of your .seam files. Standalone editor works, you can build it and run it, but release builds coming soon.
