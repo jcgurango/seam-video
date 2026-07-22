@@ -27,6 +27,8 @@ export type Point2D = Length | { x?: Length; y?: Length };
 // SpatialFields.)
 export interface AdjustFilter {
   type: "adjust";
+  /** When true, the compositor skips this filter entirely (UI on/off toggle). */
+  bypass?: boolean;
   brightness?: number;
   contrast?: number;
   saturation?: number;
@@ -35,6 +37,7 @@ export interface AdjustFilter {
 
 export interface ColorBalanceFilter {
   type: "colorbalance";
+  bypass?: boolean;
   rs?: number; gs?: number; bs?: number;
   rm?: number; gm?: number; bm?: number;
   rh?: number; gh?: number; bh?: number;
@@ -42,6 +45,7 @@ export interface ColorBalanceFilter {
 
 export interface ColorTemperatureFilter {
   type: "colortemperature";
+  bypass?: boolean;
   temperature?: number;
 }
 

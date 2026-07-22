@@ -589,9 +589,19 @@ Use it for editor concerns that should round-trip through saves — review state
 
 ## Filters
 
-Filters apply visual effects to clips, static, text, graphic, and compositions. They are specified as an ordered array — each filter is applied in sequence.
+Filters apply visual effects to clips, static, text, graphic, and compositions. They are specified as an array on the node.
+
+**Array order does not determine application order.** Filters of the same type are *combined* (multiple `adjust` filters add their brightness and multiply their contrast/saturation/gamma; `colorbalance` offsets add; `colortemperature` scales multiply), and the combined result is applied in a fixed pipeline order:
+
+```
+adjust → colorbalance → colortemperature
+```
+
+regardless of where each filter sits in the array. So `[colortemperature, adjust]` and `[adjust, colortemperature]` render identically. (A future revision may add true per-filter ordering; today the array is a set, not a sequence.)
 
 **Filters are not animatable** — every parameter is a static number. (The one effect anyone ever keyframed was opacity, which is now the first-class [`opacity`](#opacity) field instead.) To vary a look over time, animate `opacity` or author distinct compositions.
+
+Every filter accepts an optional **`bypass`** boolean. When `true`, the compositor skips that filter entirely — it stays in the array (keeping its parameters) but contributes nothing to the render. This is the on/off toggle an editor UI would use; leaving the entry in place means flipping it back on restores the exact settings.
 
 ```json
 {

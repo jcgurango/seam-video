@@ -37,3 +37,34 @@ export interface TimelineCanvasContextValue {
 
 export const TimelineCanvasContext =
   createContext<TimelineCanvasContextValue | null>(null);
+
+// Composited-frame pixel subscription. Lets read-side consumers (e.g. the
+// editor's Scopes panel) tap the composited RGBA after each render without
+// owning the canvas or the GPU pipeline. The producer (Timeline) downscales
+// the swapchain canvas and pushes pixels to every subscriber; subscribing
+// while paused primes an immediate frame. The seam is deliberately small so a
+// future true-offscreen-readback producer can replace it transparently.
+export interface TimelineFramePixels {
+  /** Tightly packed RGBA, row-major, `width*height*4` bytes. */
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
+export type TimelineFrameCallback = (frame: TimelineFramePixels) => void;
+
+export interface TimelineFrameContextValue {
+  /** Register `cb` for composited frames. Returns an unsubscribe fn. */
+  subscribeFrame: (cb: TimelineFrameCallback) => () => void;
+}
+
+export const TimelineFrameContext =
+  createContext<TimelineFrameContextValue | null>(null);
+
+export function useTimelineFrame(): TimelineFrameContextValue {
+  const ctx = useContext(TimelineFrameContext);
+  if (!ctx) {
+    throw new Error("useTimelineFrame must be used within a <Timeline>");
+  }
+  return ctx;
+}

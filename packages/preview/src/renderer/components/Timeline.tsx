@@ -3,7 +3,10 @@ import type { ResolvedTimeline } from "@seam/core";
 import {
   TimelineContext,
   TimelineCanvasContext,
+  TimelineFrameContext,
   type TimelineCanvasContextValue,
+  type TimelineFrameContextValue,
+  type TimelineFrameCallback,
 } from "./TimelineContext.js";
 import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
@@ -123,6 +126,65 @@ export default function Timeline({
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
 
+  // ── Composited-frame subscription (read-side taps, e.g. Scopes) ──
+  // Subscribers registered via the frame context. We only do readback work
+  // when at least one is present, so the cost is opt-in.
+  const frameSubsRef = useRef<Set<TimelineFrameCallback>>(new Set());
+  // Lazily-created 2D scratch canvas the swapchain is downscaled onto for
+  // readback. Downscaling keeps the per-frame drawImage+getImageData cheap;
+  // scopes don't need full resolution.
+  const readbackRef = useRef<{
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+  } | null>(null);
+  const lastEmitRef = useRef(0);
+
+  // Read the composited canvas back (downscaled) and push to subscribers.
+  // No-op when nobody's listening. Throttled only during playback so paused
+  // single renders (seek / panel open) always deliver.
+  const emitFrame = useCallback((srcCanvas: HTMLCanvasElement) => {
+    const subs = frameSubsRef.current;
+    if (subs.size === 0) return;
+    const sw = srcCanvas.width;
+    const sh = srcCanvas.height;
+    if (sw === 0 || sh === 0) return;
+
+    if (isPlayingRef.current) {
+      const now = performance.now();
+      if (now - lastEmitRef.current < 33) return; // ~30fps during playback
+      lastEmitRef.current = now;
+    }
+
+    // Downscale so the longest edge is <= 256px.
+    const maxEdge = 256;
+    const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+    const dw = Math.max(1, Math.round(sw * scale));
+    const dh = Math.max(1, Math.round(sh * scale));
+
+    let rb = readbackRef.current;
+    if (!rb) {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      rb = { canvas, ctx };
+      readbackRef.current = rb;
+    }
+    if (rb.canvas.width !== dw || rb.canvas.height !== dh) {
+      rb.canvas.width = dw;
+      rb.canvas.height = dh;
+    }
+    rb.ctx.drawImage(srcCanvas, 0, 0, dw, dh);
+    const img = rb.ctx.getImageData(0, 0, dw, dh);
+    const frame = { data: img.data, width: dw, height: dh };
+    for (const cb of subs) {
+      try {
+        cb(frame);
+      } catch (err) {
+        console.error("[gpu] frame subscriber threw:", err);
+      }
+    }
+  }, []);
+
   // GPU render function (called imperatively, not dependent on React)
   const gpuRender = useCallback(
     (time: number) => {
@@ -152,8 +214,12 @@ export default function Timeline({
       // the live size sampled by buildRenderList (single source of truth).
       coordinator.applyContentSizes(commands, time);
       renderer.render(commands, (clip) => coordinator.getFrame(clip, time));
+      // Tap the freshly-composited canvas for read-side consumers (scopes).
+      // Runs in the same task as the GPU submit, so the swapchain image is
+      // still valid for drawImage.
+      emitFrame(mount.canvas);
     },
-    [renderer, coordinator],
+    [renderer, coordinator, emitFrame],
   );
 
   // Wire up frame-available callback for re-renders on async seek / reload
@@ -261,6 +327,24 @@ export default function Timeline({
     setLoop,
   };
 
+  const subscribeFrame = useCallback(
+    (cb: TimelineFrameCallback) => {
+      frameSubsRef.current.add(cb);
+      // Prime an immediate frame so the consumer shows something while paused.
+      // During playback the rAF loop delivers frames, so don't force one here.
+      if (!isPlayingRef.current) gpuRender(currentTimeRef.current);
+      return () => {
+        frameSubsRef.current.delete(cb);
+      };
+    },
+    [gpuRender],
+  );
+
+  const frameCtx = useMemo<TimelineFrameContextValue>(
+    () => ({ subscribeFrame }),
+    [subscribeFrame],
+  );
+
   const canvasCtx = useMemo<TimelineCanvasContextValue>(
     () => ({
       registerCanvas: (canvas, width, height) => {
@@ -275,9 +359,11 @@ export default function Timeline({
 
   return (
     <TimelineContext.Provider value={ctx}>
-      <TimelineCanvasContext.Provider value={canvasCtx}>
-        {children}
-      </TimelineCanvasContext.Provider>
+      <TimelineFrameContext.Provider value={frameCtx}>
+        <TimelineCanvasContext.Provider value={canvasCtx}>
+          {children}
+        </TimelineCanvasContext.Provider>
+      </TimelineFrameContext.Provider>
     </TimelineContext.Provider>
   );
 }

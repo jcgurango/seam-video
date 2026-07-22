@@ -167,6 +167,54 @@ export function updateCompAtPath(
     : { ...root, attachments: newArr };
 }
 
+/** Immutably replace the node at `path` with `fn`'s result. Unlike
+ *  {@link updateCompAtPath} the *target* can be any node type (filters live on
+ *  clips/static/text/graphic/composition); intermediate segments must still be
+ *  compositions. A leading `bin` segment edits inside the named bin entry. */
+export function updateNodeAtPath(
+  root: SeamFile,
+  path: NodePath,
+  fn: (node: Child) => Child,
+): SeamFile {
+  if (path.length === 0) {
+    return fn(root as unknown as Child) as unknown as SeamFile;
+  }
+  const [seg, ...rest] = path;
+  if (seg.field === "bin") {
+    if (rest.length === 0) return root; // a bin entry isn't an editable Child here
+    const bin = root.bin ?? [];
+    const idx = bin.findIndex((e) => e.id === seg.id);
+    if (idx < 0) return root;
+    const asComp = { type: "composition", ...bin[idx] } as unknown as SeamFile;
+    const newComp = updateNodeAtPath(asComp, rest, fn);
+    if (newComp === (asComp as unknown)) return root;
+    const { type: _t, bin: _b, ...entryFields } = newComp as unknown as Composition;
+    const newBin = [...bin];
+    newBin[idx] = entryFields as unknown as BinEntry;
+    return { ...root, bin: newBin };
+  }
+  const arr = childArray(root, seg.field);
+  const child = arr[seg.index];
+  if (!child) return root;
+  let newChild: Child;
+  if (rest.length === 0) {
+    newChild = fn(child);
+  } else {
+    if (child.type !== "composition") return root;
+    newChild = updateNodeAtPath(
+      child as unknown as SeamFile,
+      rest,
+      fn,
+    ) as unknown as Child;
+  }
+  if (newChild === child) return root;
+  const newArr = [...arr];
+  newArr[seg.index] = newChild;
+  return seg.field === "children"
+    ? { ...root, children: newArr }
+    : { ...root, attachments: newArr };
+}
+
 /** Run a pure composition tool against the composition at `containerPath`,
  *  injecting `rootBin` first so nested `binItem`s resolve, and stripping it
  *  back out on write-back (unless the container already had its own bin).

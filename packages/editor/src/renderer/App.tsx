@@ -12,6 +12,7 @@ import type { ResolvedTimeline, SeamFile } from "@seam/core";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import InspectorAccordion from "./InspectorAccordion.js";
+import PreviewStage from "./PreviewStage.js";
 import FrameEditorPane, { type FrameEditorTarget } from "./FrameEditorPane.js";
 import ProjectPicker from "./ProjectPicker.js";
 import ProjectBrowser from "./ProjectBrowser.js";
@@ -1117,10 +1118,9 @@ export default function App({ platform }: AppProps) {
                 />
               </div>
             ) : (
-              <VideoCanvas
-                width={playerTimeline.contentWidth}
-                height={playerTimeline.contentHeight}
-                style={{ background: "#111" }}
+              <PreviewStage
+                contentWidth={playerTimeline.contentWidth}
+                contentHeight={playerTimeline.contentHeight}
               />
             )}
             <ControlsBar

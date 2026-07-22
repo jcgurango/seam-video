@@ -767,6 +767,7 @@ function extractFilterParams(filters: Filter[] | undefined): FilterParams {
   const p = { ...IDENTITY_PARAMS };
 
   for (const f of filters) {
+    if (f.bypass) continue; // UI toggle — skip this filter entirely
     switch (f.type) {
       case "adjust":
         p.brightness += f.brightness ?? 0;

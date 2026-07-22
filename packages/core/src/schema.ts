@@ -68,6 +68,8 @@ export function keyframed<T extends z.ZodTypeAny>(staticSchema: T): z.ZodType<an
 // SpatialFieldsSchema below.)
 export const AdjustFilterSchema = z.object({
   type: z.literal("adjust"),
+  // When true, the compositor skips this filter entirely (UI on/off toggle).
+  bypass: z.boolean().optional(),
   brightness: z.number().min(-1).max(1).default(0),
   contrast: z.number().min(-1000).max(1000).default(1),
   saturation: z.number().min(0).max(3).default(1),
@@ -76,6 +78,7 @@ export const AdjustFilterSchema = z.object({
 
 export const ColorBalanceFilterSchema = z.object({
   type: z.literal("colorbalance"),
+  bypass: z.boolean().optional(),
   rs: z.number().min(-1).max(1).default(0),
   gs: z.number().min(-1).max(1).default(0),
   bs: z.number().min(-1).max(1).default(0),
@@ -89,6 +92,7 @@ export const ColorBalanceFilterSchema = z.object({
 
 export const ColorTemperatureFilterSchema = z.object({
   type: z.literal("colortemperature"),
+  bypass: z.boolean().optional(),
   temperature: z.number().min(1000).max(40000).default(6500),
 });
 
