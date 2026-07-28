@@ -14,21 +14,11 @@ import {
   type CloudProject,
   type UploadResult,
 } from "../cloud/CloudClient.js";
+import { TransferQueue } from "../cloud/TransferQueue.js";
 
-/** Summary of a "sync all to cloud" pass. */
-export interface SyncSummary {
-  uploaded: number;
-  /** Already present on the cloud (identical name + hash). */
-  alreadyPresent: number;
-  /** Skipped because the cloud copy is identical (no upload attempted). */
-  skipped: number;
-  /** Files the cloud rejected as conflicts — the user must rename to resolve. */
-  conflicts: { name: string; message: string }[];
-}
-
-/** Summary of a per-project media upload/download pass (the Cloud menu's
- *  Upload/Download All Media). `done` counts files transferred (or already
- *  present); `conflicts` are the ones the dedup rules rejected. */
+/** Summary of the blocking pre-export media download pass. `done` counts files
+ *  transferred (or already present); `conflicts` are the ones the dedup rules
+ *  rejected. (Interactive transfers go through the TransferQueue instead.) */
 export interface MediaSyncSummary {
   done: number;
   conflicts: { name: string; message: string }[];
@@ -297,6 +287,15 @@ export class WebPlatform implements Platform {
   // by resolveSource (cloud fallback) and importClip (collision check).
   private _cloud: CloudClient | null = null;
 
+  // Persistent cloud transfer queue (created alongside the cloud client).
+  private _transferQueue: TransferQueue | null = null;
+
+  // Fired when the set of locally-held media changes underneath an open
+  // document (cloud download landed / local copy deleted) — the app uses it
+  // to re-resolve sources so the player switches stream ↔ local blob without
+  // a refresh.
+  private mediaChangedListeners = new Set<() => void>();
+
   // Action callbacks registered by the app
   private actionHandlers = new Map<ActionName, () => void>();
 
@@ -315,12 +314,44 @@ export class WebPlatform implements Platform {
     const url = baseUrl?.trim();
     if (!url) return null;
     this._cloud = new CloudClient(url);
+    this._transferQueue = new TransferQueue(
+      this._cloud,
+      `seam-cloud-queue:${this._cloud.baseUrl}`,
+      {
+        upload: async (filename, signal) => {
+          const res = await this.uploadClipToCloud(filename, signal);
+          if (res.kind === "conflict") throw new Error(res.message);
+        },
+        download: (job, signal) =>
+          this.downloadClipFromCloud(
+            job.cloudId!,
+            job.filename,
+            job.contentHash ?? null,
+            signal
+          ),
+      }
+    );
     return this._cloud;
   }
 
   /** The configured cloud client, or null when cloud isn't set up. */
   get cloud(): CloudClient | null {
     return this._cloud;
+  }
+
+  /** The cloud transfer queue, or null when cloud isn't set up. */
+  get transferQueue(): TransferQueue | null {
+    return this._transferQueue;
+  }
+
+  /** Subscribe to local-media changes (download landed / local copy deleted). */
+  onLocalMediaChanged(cb: () => void): () => void {
+    this.mediaChangedListeners.add(cb);
+    return () => this.mediaChangedListeners.delete(cb);
+  }
+
+  private notifyLocalMediaChanged(): void {
+    for (const cb of this.mediaChangedListeners) cb();
   }
 
   /** A cloud filename is "blocked" for a new import only when it holds
@@ -708,56 +739,39 @@ export class WebPlatform implements Platform {
 
   /** Upload one local clip to Seam Cloud. The server dedups by filename +
    *  content hash (identical → accepted, conflicting → reported). */
-  async uploadClipToCloud(name: string): Promise<UploadResult> {
+  async uploadClipToCloud(
+    name: string,
+    signal?: AbortSignal
+  ): Promise<UploadResult> {
     if (!this._cloud) throw new Error("Seam Cloud is not connected.");
     const file = await readFileFromDir(CLIPS_DIR, name);
     // Send our content hash so the server can reject a conflict before
     // streaming the bytes.
-    return this._cloud.uploadMedia(file, await fingerprint(file));
+    return this._cloud.uploadMedia(file, await fingerprint(file), signal);
   }
 
-  /** Upload every local media file not already on the cloud. Identical copies
-   *  (same name + hash) are skipped; conflicts are collected, not thrown. */
-  async syncAllToCloud(
-    onProgress?: (done: number, total: number, name: string) => void
-  ): Promise<SyncSummary> {
+  /** Queue an upload for every local media file whose content isn't already on
+   *  the cloud. Returns the number of jobs queued. */
+  async enqueueSyncAllToCloud(): Promise<number> {
     const cloud = this._cloud;
-    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const queue = this._transferQueue;
+    if (!cloud || !queue) throw new Error("Seam Cloud is not connected.");
 
     const clips = (await this.listClips()).filter((c) => classifyByName(c.name));
     const fpIndex = await this.ensureFingerprintIndex();
     const nameToFp = new Map<string, string>();
     for (const [fp, name] of fpIndex) nameToFp.set(name, fp);
 
-    const summary: SyncSummary = {
-      uploaded: 0,
-      alreadyPresent: 0,
-      skipped: 0,
-      conflicts: [],
-    };
-
-    for (let i = 0; i < clips.length; i++) {
-      const { name } = clips[i];
-      onProgress?.(i, clips.length, name);
-
-      // Already on the cloud with identical content — don't re-upload bytes.
+    let queued = 0;
+    for (const { name } of clips) {
+      // Already on the cloud with identical content — nothing to move.
       const cm = cloud.mediaByName(name);
       const localFp = nameToFp.get(name);
-      if (cm && localFp && cm.contentHash === localFp) {
-        summary.skipped++;
-        continue;
-      }
-
-      const file = await readFileFromDir(CLIPS_DIR, name);
-      const res = await cloud.uploadMedia(file, localFp ?? (await fingerprint(file)));
-      if (res.kind === "created") summary.uploaded++;
-      else if (res.kind === "exists") summary.alreadyPresent++;
-      else summary.conflicts.push({ name, message: res.message });
+      if (cm && localFp && cm.contentHash === localFp) continue;
+      queue.enqueue({ kind: "upload", filename: name });
+      queued++;
     }
-
-    onProgress?.(clips.length, clips.length, "");
-    await cloud.refreshMedia();
-    return summary;
+    return queued;
   }
 
   /** Names of every file currently in OPFS clips/. */
@@ -804,37 +818,44 @@ export class WebPlatform implements Platform {
     return (await this.classifyProjectMedia(doc)).cloudOnly;
   }
 
-  /** Upload every media source this project references that the cloud doesn't
-   *  already have. Conflicts (a different file with the same name on the cloud)
-   *  are collected, not thrown — the user renames to resolve. */
-  async uploadProjectMedia(
-    doc: SeamFile,
-    onProgress?: (done: number, total: number, name: string) => void
-  ): Promise<MediaSyncSummary> {
-    const cloud = this._cloud;
-    if (!cloud) throw new Error("Seam Cloud is not connected.");
+  /** Queue an upload for every media source this project references that the
+   *  cloud doesn't already have. Returns the number of jobs queued. */
+  async enqueueUploadProjectMedia(doc: SeamFile): Promise<number> {
+    const queue = this._transferQueue;
+    if (!this._cloud || !queue) throw new Error("Seam Cloud is not connected.");
     const { localOnly } = await this.classifyProjectMedia(doc);
-    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
-    for (let i = 0; i < localOnly.length; i++) {
-      onProgress?.(i, localOnly.length, localOnly[i]);
-      try {
-        const res = await this.uploadClipToCloud(localOnly[i]);
-        if (res.kind === "conflict") {
-          summary.conflicts.push({ name: localOnly[i], message: res.message });
-        } else {
-          summary.done++;
-        }
-      } catch (err) {
-        summary.conflicts.push({ name: localOnly[i], message: errMessage(err) });
-      }
+    for (const name of localOnly) {
+      queue.enqueue({ kind: "upload", filename: name });
     }
-    onProgress?.(localOnly.length, localOnly.length, "");
-    await cloud.refreshMedia();
-    return summary;
+    return localOnly.length;
+  }
+
+  /** Queue a download for every media source this project references that
+   *  exists on the cloud but not locally. Returns the number of jobs queued. */
+  async enqueueDownloadProjectMedia(doc: SeamFile): Promise<number> {
+    const cloud = this._cloud;
+    const queue = this._transferQueue;
+    if (!cloud || !queue) throw new Error("Seam Cloud is not connected.");
+    const { cloudOnly } = await this.classifyProjectMedia(doc);
+    let queued = 0;
+    for (const name of cloudOnly) {
+      const m = cloud.mediaByName(name);
+      if (!m) continue;
+      queue.enqueue({
+        kind: "download",
+        filename: m.filename,
+        cloudId: m.id,
+        contentHash: m.contentHash,
+      });
+      queued++;
+    }
+    return queued;
   }
 
   /** Download every media source this project references that exists on the
-   *  cloud but not locally. Local dedup conflicts are collected, not thrown. */
+   *  cloud but not locally, blocking until done (the pre-export flow, which
+   *  must finish before the zip is built). Local dedup conflicts are
+   *  collected, not thrown. Interactive downloads use the TransferQueue. */
   async downloadProjectMedia(
     doc: SeamFile,
     onProgress?: (done: number, total: number, name: string) => void
@@ -868,7 +889,8 @@ export class WebPlatform implements Platform {
   async downloadClipFromCloud(
     cloudId: string,
     filename: string,
-    contentHash: string | null
+    contentHash: string | null,
+    signal?: AbortSignal
   ): Promise<void> {
     const cloud = this._cloud;
     if (!cloud) throw new Error("Seam Cloud is not connected.");
@@ -893,7 +915,7 @@ export class WebPlatform implements Platform {
       );
     }
 
-    const blob = await cloud.downloadMedia(cloudId);
+    const blob = await cloud.downloadMedia(cloudId, signal);
     await writeFileToDir(CLIPS_DIR, filename, blob);
     const fp = await fingerprint(blob);
     index.set(fp, filename);
@@ -902,6 +924,9 @@ export class WebPlatform implements Platform {
     }
     const kind = classifyByName(filename);
     if (kind) await this.updateMediaMeta(filename, { addedAt: Date.now(), kind });
+    // The file is now local (and its blob URL minted) — let the app re-resolve
+    // sources so an open document switches off the cloud stream immediately.
+    this.notifyLocalMediaChanged();
   }
 
   private async clipExists(name: string): Promise<boolean> {
@@ -1070,6 +1095,10 @@ export class WebPlatform implements Platform {
       URL.revokeObjectURL(url);
       this.blobUrlCache.delete(name);
     }
+
+    // The local copy is gone — an open document that references it must
+    // re-resolve (falling back to the cloud stream) or its blob URL is dead.
+    this.notifyLocalMediaChanged();
   }
 
   /** True if `projects/<name>` already exists. Lets the caller warn

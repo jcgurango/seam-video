@@ -229,9 +229,30 @@ export default function App({ platform }: AppProps) {
   //     replace those authored children with the script's output and
   //     edits would map onto compiled nodes that don't exist in the
   //     authored doc.
+  // Bumped when local media availability changes underneath the open document
+  // (a queued cloud download landed, or a local copy was deleted). Forcing the
+  // resolved timeline to re-memoize makes the player re-run resolveSource, so
+  // it switches between the cloud stream and the local blob URL without a
+  // refresh. Bursts (Download All Media) coalesce into one rebuild.
+  const [mediaEpoch, setMediaEpoch] = useState(0);
+  useEffect(() => {
+    if (platform.kind !== "web") return;
+    const wp = platform as WebPlatform;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = wp.onLocalMediaChanged(() => {
+      if (timer != null) clearTimeout(timer);
+      timer = setTimeout(() => setMediaEpoch((e) => e + 1), 300);
+    });
+    return () => {
+      unsub();
+      if (timer != null) clearTimeout(timer);
+    };
+  }, [platform]);
+
   // `rootTimeline` is the resolved root document; it drives the canvas in
   // normal editing and is where compile/resolve errors are published.
   const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
+    void mediaEpoch; // re-resolve when local media availability changes
     try {
       const { doc: compiled, errors: compileErrors } = compileDocument(document);
       setScriptError(
@@ -247,7 +268,7 @@ export default function App({ platform }: AppProps) {
       setErrors([String(err)]);
       return null;
     }
-  }, [document]);
+  }, [document, mediaEpoch]);
 
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
     if (!ccCut) return rootTimeline;

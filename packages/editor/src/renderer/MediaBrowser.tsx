@@ -15,6 +15,9 @@ import type { SeamFile } from "@seam/core";
 import type { WebPlatform, MediaMeta } from "./platform/web.js";
 import type { CloudMedia } from "./cloud/CloudClient.js";
 import { useCloud } from "./cloud/useCloud.js";
+import TransferQueuePanel, {
+  useTransferQueue,
+} from "./cloud/TransferQueuePanel.js";
 import {
   buildItemFromSource,
   classifyByName,
@@ -161,7 +164,6 @@ export default function MediaBrowser({
   // Cloud upload/download bookkeeping (main variant).
   const [reloadKey, setReloadKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState<{ done: number; total: number } | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
 
   // Track blob URLs we mint so we can revoke them on unmount.
@@ -273,6 +275,25 @@ export default function MediaBrowser({
   // Seam Cloud assets (if connected) shown side-by-side with local media.
   const cloud = (platform as WebPlatform).cloud ?? null;
   const cloudState = useCloud(cloud);
+  const queue = (platform as WebPlatform).transferQueue ?? null;
+  const queueState = useTransferQueue(queue);
+
+  // Names with a transfer still queued/running — their tile actions disable.
+  const inFlight = useMemo(() => {
+    const s = new Set<string>();
+    for (const j of queueState?.jobs ?? []) {
+      if (j.status === "queued" || j.status === "active") s.add(j.filename);
+    }
+    return s;
+  }, [queueState]);
+
+  // Re-scan the local grid whenever local media changes underneath us (a
+  // queued download landed, a local copy was deleted, …).
+  useEffect(() => {
+    const wp = platform as WebPlatform;
+    if (typeof wp.onLocalMediaChanged !== "function") return;
+    return wp.onLocalMediaChanged(() => setReloadKey((k) => k + 1));
+  }, [platform]);
 
   // Merge local + cloud by filename. Local always wins (its tile is the
   // draggable, fully-probed one), gaining a "both" marker when the cloud also
@@ -336,8 +357,9 @@ export default function MediaBrowser({
     setBusyName(item.name);
     setNotice(null);
     try {
+      // deleteClip fires onLocalMediaChanged → the grid re-scans via the
+      // subscription, so no explicit reload bump here.
       await wp.deleteClip(item.name);
-      setReloadKey((k) => k + 1); // re-scan local → tile becomes cloud-only
     } catch (err) {
       setNotice(`Delete failed for "${item.name}": ${errMessage(err)}`);
     } finally {
@@ -347,60 +369,32 @@ export default function MediaBrowser({
 
   const cloudAuthed = !!cloud && cloudState?.status === "authed";
 
-  const handleUpload = async (item: MediaItem) => {
-    if (!cloud) return;
-    setBusyName(item.name);
-    setNotice(null);
-    try {
-      const res = await wp.uploadClipToCloud(item.name);
-      if (res.kind === "conflict") {
-        setNotice(`Couldn't upload "${item.name}": ${res.message}`);
-      }
-      await cloud.refreshMedia();
-    } catch (err) {
-      setNotice(`Upload failed for "${item.name}": ${errMessage(err)}`);
-    } finally {
-      setBusyName(null);
-    }
+  const handleUpload = (item: MediaItem) => {
+    queue?.enqueue({ kind: "upload", filename: item.name });
   };
 
-  const handleCloudDownload = async (item: MediaItem) => {
-    if (!cloud || !item.cloudId) return;
-    setBusyName(item.name);
-    setNotice(null);
-    try {
-      await wp.downloadClipFromCloud(item.cloudId, item.name, item.contentHash ?? null);
-      setReloadKey((k) => k + 1); // re-scan local clips so the new file appears
-    } catch (err) {
-      setNotice(`Download failed for "${item.name}": ${errMessage(err)}`);
-    } finally {
-      setBusyName(null);
-    }
+  const handleCloudDownload = (item: MediaItem) => {
+    if (!item.cloudId) return;
+    queue?.enqueue({
+      kind: "download",
+      filename: item.name,
+      cloudId: item.cloudId,
+      contentHash: item.contentHash ?? null,
+    });
   };
 
   const handleSyncAll = async () => {
     if (!cloud) return;
     setNotice(null);
-    setSyncing({ done: 0, total: 0 });
     try {
-      const summary = await wp.syncAllToCloud((done, total) =>
-        setSyncing({ done, total })
+      const queued = await wp.enqueueSyncAllToCloud();
+      setNotice(
+        queued === 0
+          ? "Everything is already synced."
+          : `Queued ${queued} upload${queued === 1 ? "" : "s"}.`
       );
-      const parts: string[] = [];
-      if (summary.uploaded) parts.push(`${summary.uploaded} uploaded`);
-      const present = summary.alreadyPresent + summary.skipped;
-      if (present) parts.push(`${present} already synced`);
-      let msg = parts.join(", ") || "Nothing to upload.";
-      if (summary.conflicts.length) {
-        msg += ` · ${summary.conflicts.length} need renaming: ${summary.conflicts
-          .map((c) => c.name)
-          .join(", ")}`;
-      }
-      setNotice(msg);
     } catch (err) {
       setNotice(`Sync failed: ${errMessage(err)}`);
-    } finally {
-      setSyncing(null);
     }
   };
 
@@ -465,8 +459,7 @@ export default function MediaBrowser({
               </button>
               <button
                 onClick={handleSyncAll}
-                disabled={!!syncing}
-                title="Upload all local media to Seam Cloud"
+                title="Queue uploads for all local media not yet in Seam Cloud"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -476,15 +469,12 @@ export default function MediaBrowser({
                   color: "#e0e0e0",
                   padding: "6px 12px",
                   borderRadius: 6,
-                  cursor: syncing ? "default" : "pointer",
+                  cursor: "pointer",
                   fontSize: 13,
-                  opacity: syncing ? 0.6 : 1,
                 }}
               >
                 <UploadCloud size={15} />
-                {syncing
-                  ? `Syncing ${syncing.done}/${syncing.total}…`
-                  : "Sync to Cloud"}
+                Sync to Cloud
               </button>
             </div>
           )}
@@ -528,6 +518,8 @@ export default function MediaBrowser({
           </div>
         )}
       </div>
+
+      <TransferQueuePanel queue={queue} />
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 10 }}>
         {shown === null ? (
@@ -600,18 +592,26 @@ export default function MediaBrowser({
                     >
                       {cloudAuthed && item.location === "local" && (
                         <TileAction
-                          title="Upload to Seam Cloud"
+                          title={
+                            inFlight.has(item.name)
+                              ? "Transfer queued"
+                              : "Upload to Seam Cloud"
+                          }
                           onClick={() => handleUpload(item)}
-                          disabled={busyName === item.name}
+                          disabled={inFlight.has(item.name)}
                         >
                           <UploadCloud size={14} />
                         </TileAction>
                       )}
                       {cloudAuthed && item.location === "cloud" && (
                         <TileAction
-                          title="Download from Seam Cloud"
+                          title={
+                            inFlight.has(item.name)
+                              ? "Transfer queued"
+                              : "Download from Seam Cloud"
+                          }
                           onClick={() => handleCloudDownload(item)}
-                          disabled={busyName === item.name}
+                          disabled={inFlight.has(item.name)}
                         >
                           <DownloadCloud size={14} />
                         </TileAction>

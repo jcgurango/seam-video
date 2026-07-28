@@ -417,7 +417,11 @@ export class CloudClient {
 
   // ── Upload / download ────────────────────────────────────────────
 
-  async uploadMedia(file: File, contentHash?: string): Promise<UploadResult> {
+  async uploadMedia(
+    file: File,
+    contentHash?: string,
+    signal?: AbortSignal
+  ): Promise<UploadResult> {
     // Raw body (the browser streams the Blob) + metadata in the query, so the
     // server never buffers the file in memory. The server infers `kind` from
     // the filename. A supplied contentHash lets the server reject a known
@@ -431,6 +435,7 @@ export class CloudClient {
       method: "POST",
       headers: { "content-type": file.type || "application/octet-stream" },
       body: file,
+      signal,
     });
     if (res.status === 409) {
       const body = (await res.json()) as {
@@ -448,8 +453,8 @@ export class CloudClient {
   }
 
   /** Fetch a cloud media file's raw bytes (for download-to-local). */
-  async downloadMedia(id: string): Promise<Blob> {
-    const res = await this.authedFetch(`/api/media/${id}/file`);
+  async downloadMedia(id: string, signal?: AbortSignal): Promise<Blob> {
+    const res = await this.authedFetch(`/api/media/${id}/file`, { signal });
     if (!res.ok) throw new Error(await errorMessage(res, "Download failed"));
     return res.blob();
   }

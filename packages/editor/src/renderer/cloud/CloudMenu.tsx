@@ -7,16 +7,9 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { SeamFile } from "@seam/core";
-import type {
-  WebPlatform,
-  ProjectSyncStatus,
-  MediaSyncSummary,
-} from "../platform/web.js";
+import type { WebPlatform, ProjectSyncStatus } from "../platform/web.js";
 import type { CloudClient, CloudProject } from "./CloudClient.js";
 import { useCloud } from "./useCloud.js";
-import MediaSyncOverlay, {
-  type MediaSyncProgressState,
-} from "../MediaSyncOverlay.js";
 import { OutOfSyncDialog } from "../ProjectBrowser.js";
 
 interface CloudMenuProps {
@@ -74,7 +67,6 @@ export default function CloudMenu({
   const [status, setStatus] = useState<ProjectSyncStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [progress, setProgress] = useState<MediaSyncProgressState | null>(null);
   const [reconcile, setReconcile] = useState<ReconcileTarget | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -164,27 +156,24 @@ export default function CloudMenu({
     }
   };
 
-  const runMediaSync = async (
-    title: string,
-    op: (
-      doc: SeamFile,
-      onProgress: (done: number, total: number, name: string) => void
-    ) => Promise<MediaSyncSummary>,
-    verb: string
+  // Media transfers go through the platform's persistent transfer queue —
+  // the Media panel shows progress and offers cancel/retry.
+  const queueMedia = async (
+    op: (doc: SeamFile) => Promise<number>,
+    noun: string,
+    noneMessage: string
   ) => {
     close();
     setNotice(null);
-    setProgress({ title, done: 0, total: 0, detail: "" });
     try {
-      const summary = await op(getDoc(), (done, total, name) =>
-        setProgress({ title, done, total, detail: name })
+      const queued = await op(getDoc());
+      setNotice(
+        queued === 0
+          ? noneMessage
+          : `Queued ${queued} ${noun}${queued === 1 ? "" : "s"} — see the Media panel for progress.`
       );
-      setNotice(summaryNotice(verb, summary));
-      await refreshStatus();
     } catch (err) {
       setNotice(errMessage(err));
-    } finally {
-      setProgress(null);
     }
   };
 
@@ -204,10 +193,10 @@ export default function CloudMenu({
       label: "Download All Media",
       icon: <DownloadCloud size={14} />,
       onClick: () =>
-        runMediaSync(
-          "Downloading media",
-          (doc, p) => platform.downloadProjectMedia(doc, p),
-          "Downloaded"
+        queueMedia(
+          (doc) => platform.enqueueDownloadProjectMedia(doc),
+          "download",
+          "All project media is already local."
         ),
       disabled: busy || !authed,
     },
@@ -215,10 +204,10 @@ export default function CloudMenu({
       label: "Upload All Media",
       icon: <UploadCloud size={14} />,
       onClick: () =>
-        runMediaSync(
-          "Uploading media",
-          (doc, p) => platform.uploadProjectMedia(doc, p),
-          "Uploaded"
+        queueMedia(
+          (doc) => platform.enqueueUploadProjectMedia(doc),
+          "upload",
+          "All project media is already on the cloud."
         ),
       disabled: busy || !authed,
     },
@@ -325,8 +314,6 @@ export default function CloudMenu({
         )}
       </div>
 
-      {progress && <MediaSyncOverlay progress={progress} />}
-
       {reconcile && (
         <OutOfSyncDialog
           platform={platform}
@@ -360,21 +347,6 @@ interface MenuItem {
   disabled?: boolean;
   separator?: boolean;
   badge?: { text: string; color: string };
-}
-
-/** Build the result message after a bulk media pass. */
-function summaryNotice(verb: string, s: MediaSyncSummary): string {
-  if (s.done === 0 && s.conflicts.length === 0) {
-    return `Nothing to ${verb.toLowerCase().replace(/ed$/, "")} — already in sync.`;
-  }
-  const parts = [`${verb} ${s.done} file${s.done === 1 ? "" : "s"}.`];
-  if (s.conflicts.length > 0) {
-    parts.push(
-      `${s.conflicts.length} skipped due to a name conflict — rename to resolve: ` +
-        s.conflicts.map((c) => c.name).join(", ")
-    );
-  }
-  return parts.join(" ");
 }
 
 /** Bottom toast for a Cloud-menu result. Auto-dismisses after a while. */
