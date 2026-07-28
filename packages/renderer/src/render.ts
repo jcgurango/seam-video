@@ -252,18 +252,31 @@ export async function renderSeamToFile(
       options.onProgress?.(encoded, total);
     };
 
+    let tPrep = 0;
+    let tRender = 0;
+    let tDrain = 0;
     for (let i = 0; i < total; i++) {
       // Keep a free ring slot before submitting the next frame.
       while (backend.inFlightCount >= bufferCount) {
+        const d0 = performance.now();
         await encodeNext(await backend.drainOldest());
+        tDrain += performance.now() - d0;
       }
       const t = i / fps;
       const commands = buildRenderList(timeline, t, width, height, (clip) =>
         frameSource.intrinsicSize(clip),
       );
+      const p0 = performance.now();
       await frameSource.prepare(collectDrawables(commands));
+      const p1 = performance.now();
       await compositor.render(commands, (clip) => frameSource.get(clip));
+      tRender += performance.now() - p1;
+      tPrep += p1 - p0;
     }
+    if (process.env.SEAM_NEXT_TIMING)
+      process.stderr.write(
+        `[timing] loop split: prepare ${(tPrep / 1000).toFixed(1)}s, render ${(tRender / 1000).toFixed(1)}s, drain+encode ${(tDrain / 1000).toFixed(1)}s\n`,
+      );
     // Drain the tail.
     while (backend.inFlightCount > 0) {
       await encodeNext(await backend.drainOldest());

@@ -16,6 +16,7 @@ import {
   Input,
   FilePathSource,
   ALL_FORMATS,
+  EncodedPacketSink,
   VideoSampleSink,
   type InputVideoTrack,
   type Rotation,
@@ -47,6 +48,9 @@ type Drawable = DrawCommand["clip"];
 interface SourceEntry {
   track: InputVideoTrack;
   sink: VideoSampleSink;
+  // Packet metadata access (no decode) — used to decide whether a forward
+  // jump crosses a keyframe, i.e. whether re-seeking beats advancing.
+  packetSink: EncodedPacketSink;
   // Display dims (rotation-adjusted) — the orientation we bake into the
   // uploaded texture, and the intrinsic size objectFit sees.
   width: number;
@@ -66,6 +70,11 @@ interface ClipCursor {
 }
 
 const EPS = 1e-4;
+
+/** Forward jumps shorter than this always advance sequentially, skipping the
+ *  keyframe lookup — at 1× playback the per-tick jump is a single frame and
+ *  the cursor's drain loop is already optimal. */
+const SEEK_CHECK_MIN_JUMP = 0.25;
 
 export class FrameSource {
   private readonly basePath: string;
@@ -110,6 +119,7 @@ export class FrameSource {
       entry = {
         track,
         sink,
+        packetSink: new EncodedPacketSink(track),
         width: track.displayWidth,
         height: track.displayHeight,
         rotation: track.rotation,
@@ -209,6 +219,24 @@ export class FrameSource {
     const sourceTime = node.sourceIn + Math.max(0, drawTime) * node.speed;
 
     let cursor = this.clipCursors.get(node);
+    // A large forward jump (high `speed` / short `duration`) crossing a
+    // keyframe: re-seeking decodes only from that keyframe, while advancing
+    // would decode every skipped sample (at 100× that's the entire source).
+    // Same-GOP jumps keep advancing — a re-seek there would re-decode from
+    // the keyframe *behind* the cursor. The keyframe lookup is metadata-only.
+    if (cursor && sourceTime >= cursor.lastTime - EPS) {
+      const pos = cursor.current?.timestamp ?? cursor.lastTime;
+      if (sourceTime - pos >= SEEK_CHECK_MIN_JUMP) {
+        const key = await entry.packetSink.getKeyPacket(sourceTime, {
+          metadataOnly: true,
+        });
+        if (key !== null && key.timestamp > pos + EPS) {
+          closeCursor(cursor);
+          this.clipCursors.delete(node);
+          cursor = undefined;
+        }
+      }
+    }
     // Create, or restart on a backward jump (the forward iterator can't rewind).
     if (!cursor || sourceTime < cursor.lastTime - EPS) {
       if (cursor) closeCursor(cursor);
