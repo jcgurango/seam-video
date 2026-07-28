@@ -5,7 +5,6 @@ import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { renderCommand } from "./commands/render.js";
-import { previewCommand } from "./commands/preview.js";
 import { resolveCommand } from "./commands/resolve.js";
 
 // In the published CLI, @seam/renderer is bundled into this file, so its
@@ -47,11 +46,6 @@ program
     [] as string[],
   )
   .action(renderCommand);
-
-program
-  .command("preview <file>")
-  .description("Open an Electron preview of a .seam file")
-  .action(previewCommand);
 
 program
   .command("resolve <file>")

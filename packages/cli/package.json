@@ -1,7 +1,7 @@
 {
   "name": "@seam-media/cli",
-  "version": "0.2.2",
-  "description": "Seam Video — a flowing video editor where edits are defined as JSON (.seam files). CLI for rendering .seam files to mp4, previewing, and resolving timelines.",
+  "version": "0.3.0",
+  "description": "Seam Video — a flowing video editor where edits are defined as JSON (.seam files). CLI for rendering .seam files to mp4 and resolving timelines.",
   "license": "MIT",
   "author": "JC Gurango",
   "homepage": "https://github.com/jcgurango/seam-video#readme",
@@ -53,7 +53,6 @@
     "commander": "^12.0.0",
     "d3-ease": "^3.0.1",
     "d3-interpolate": "^3.0.1",
-    "electron": "^33.0.0",
     "fabric": "^7.4.0",
     "mediabunny": "^1.45.0",
     "node-web-audio-api": "^1.0.0",
@@ -64,7 +63,6 @@
   },
   "devDependencies": {
     "@seam/core": "workspace:*",
-    "@seam/preview": "workspace:*",
     "@seam/renderer": "workspace:*",
     "@types/node": "^25.3.3",
     "esbuild": "^0.24.0",

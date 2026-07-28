@@ -37,9 +37,6 @@ importers:
       d3-interpolate:
         specifier: ^3.0.1
         version: 3.0.1
-      electron:
-        specifier: ^33.0.0
-        version: 33.4.11
       fabric:
         specifier: ^7.4.0
         version: 7.4.0
@@ -65,9 +62,6 @@ importers:
       '@seam/core':
         specifier: workspace:*
         version: link:../core
-      '@seam/preview':
-        specifier: workspace:*
-        version: link:../preview
       '@seam/renderer':
         specifier: workspace:*
         version: link:../renderer
