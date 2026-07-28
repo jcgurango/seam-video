@@ -47,7 +47,9 @@ const STATUS_COLOR: Record<TransferJob["status"], string> = {
 /**
  * Transfer-queue section of the Media panel: every queued/running/finished
  * cloud transfer, with per-job cancel/retry and a clear button. Renders
- * nothing while the queue is empty.
+ * nothing while the queue is empty. Sits inside the media grid's scroll
+ * container, so it scrolls away with the content rather than pinning to the
+ * top of the panel.
  */
 export default function TransferQueuePanel({
   queue,
@@ -67,11 +69,11 @@ export default function TransferQueuePanel({
     <div
       style={{
         borderBottom: "1px solid #2a2a2a",
-        padding: "8px 12px",
+        paddingBottom: 8,
+        marginBottom: 10,
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        flexShrink: 0,
       }}
     >
       <style>{"@keyframes seam-transfer-spin { to { transform: rotate(360deg); } }"}</style>
@@ -91,15 +93,7 @@ export default function TransferQueuePanel({
           </HeaderButton>
         )}
       </div>
-      <div
-        style={{
-          maxHeight: 180,
-          overflowY: "auto",
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {jobs.map((job) => (
           <JobRow key={job.id} job={job} queue={queue} />
         ))}

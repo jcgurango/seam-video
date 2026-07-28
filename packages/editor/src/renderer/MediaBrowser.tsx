@@ -398,6 +398,37 @@ export default function MediaBrowser({
     }
   };
 
+  // Bulk-delete local copies of fully-synced files (same name + content hash
+  // on the cloud). The cloud keeps the bytes, so tiles revert to cloud-only
+  // and stream / re-download on demand.
+  const [deletingSynced, setDeletingSynced] = useState(false);
+  const handleDeleteSynced = async () => {
+    if (!cloud) return;
+    setNotice(null);
+    setDeletingSynced(true);
+    try {
+      const names = await wp.syncedClipNames();
+      if (names.length === 0) {
+        setNotice("No local files are synced with Seam Cloud.");
+        return;
+      }
+      const ok = window.confirm(
+        `Delete ${names.length} local file${names.length === 1 ? "" : "s"} ` +
+          `already synced with Seam Cloud? The cloud copies are kept, and ` +
+          `files stream or re-download on demand.`
+      );
+      if (!ok) return;
+      for (const name of names) await wp.deleteClip(name);
+      setNotice(
+        `Deleted ${names.length} local file${names.length === 1 ? "" : "s"}.`
+      );
+    } catch (err) {
+      setNotice(`Delete failed: ${errMessage(err)}`);
+    } finally {
+      setDeletingSynced(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
       <div
@@ -476,6 +507,27 @@ export default function MediaBrowser({
                 <UploadCloud size={15} />
                 Sync to Cloud
               </button>
+              <button
+                onClick={() => void handleDeleteSynced()}
+                disabled={deletingSynced}
+                title="Delete local copies of files already synced with Seam Cloud"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: "#2e2e2e",
+                  border: "1px solid #3a3a3a",
+                  color: "#e0e0e0",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  cursor: deletingSynced ? "default" : "pointer",
+                  fontSize: 13,
+                  opacity: deletingSynced ? 0.6 : 1,
+                }}
+              >
+                <Trash2 size={15} />
+                Delete Synced Files
+              </button>
             </div>
           )}
         </div>
@@ -519,9 +571,8 @@ export default function MediaBrowser({
         )}
       </div>
 
-      <TransferQueuePanel queue={queue} />
-
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 10 }}>
+        <TransferQueuePanel queue={queue} />
         {shown === null ? (
           <div style={{ color: "#888", padding: 12 }}>Loading…</div>
         ) : shown.length === 0 ? (

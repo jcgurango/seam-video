@@ -818,6 +818,25 @@ export class WebPlatform implements Platform {
     return (await this.classifyProjectMedia(doc)).cloudOnly;
   }
 
+  /** Names of local clips fully synced with Seam Cloud — same filename AND
+   *  identical content hash. These are the ones whose local copy is safe to
+   *  delete (the cloud keeps the bytes). */
+  async syncedClipNames(): Promise<string[]> {
+    const cloud = this._cloud;
+    if (!cloud) return [];
+    const clips = (await this.listClips()).filter((c) => classifyByName(c.name));
+    const fpIndex = await this.ensureFingerprintIndex();
+    const nameToFp = new Map<string, string>();
+    for (const [fp, name] of fpIndex) nameToFp.set(name, fp);
+    const out: string[] = [];
+    for (const { name } of clips) {
+      const cm = cloud.mediaByName(name);
+      const fp = nameToFp.get(name);
+      if (cm && fp && cm.contentHash === fp) out.push(name);
+    }
+    return out;
+  }
+
   /** Queue an upload for every media source this project references that the
    *  cloud doesn't already have. Returns the number of jobs queued. */
   async enqueueUploadProjectMedia(doc: SeamFile): Promise<number> {
