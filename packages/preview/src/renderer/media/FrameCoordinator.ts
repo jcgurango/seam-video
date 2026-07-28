@@ -22,6 +22,17 @@ import { resolveSource } from "../components/resolveSource.js";
 const LOOKAHEAD = 1.0;
 /** Seconds of source time to keep buffered behind the playhead per clip. */
 const LOOKBEHIND = 1.0;
+/** When the dense wanted window would span more than this many *source*
+ *  seconds (the ±(LOOKAHEAD/LOOKBEHIND) output window × effective speed,
+ *  i.e. effective speed > 4), switch the clip's buffer to sparse mode:
+ *  buffer only the discrete source times the display will sample, filled by
+ *  a keyframe-aware cursor. Dense fill at that rate decodes ~100× more
+ *  frames than are ever shown and retains an unbounded canvas window. */
+const SPARSE_SOURCE_SPAN = 8;
+/** Sparse targets per output second — the display samples at most one frame
+ *  per rAF tick; 30/s halves the decode of a 60Hz display for jumps the eye
+ *  can't track anyway. */
+const SPARSE_FPS = 30;
 
 /**
  * One flattened leaf — a video clip OR an audio-only clip — with its
@@ -34,6 +45,9 @@ interface FlatClip {
   source: string;
   audioId: string | null;
   toSourceTime: (absoluteTime: number) => number;
+  /** d(sourceTime)/d(outputTime): clip `speed` × enclosing comp speeds.
+   *  Static per clip (speeds aren't animatable), so buffer mode is too. */
+  sourceRate: number;
   /** Product of every enclosing composition's `volume` at a global output
    *  time (each comp sampled in its own output time). `1` when none. */
   compVolumeAt: (globalTime: number) => number;
@@ -178,10 +192,14 @@ export class FrameCoordinator {
           ? 1
           : sampleVolume(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
         const initialVolume = baseVolume * flat.compVolumeAt(flat.absoluteStart);
+        // Composed rate (clip speed × enclosing comp speeds), NOT clip.speed:
+        // the scheduler uses it both as playbackRate and to map source-time
+        // offsets to output time, so a clip nested in a speeded comp needs
+        // the product (mirrors the renderer's `effectiveSpeed` in audio.ts).
         audioScheduler.registerClip(
           audioId,
           audioSink,
-          flat.clip.speed,
+          flat.sourceRate,
           initialVolume
         );
       }
@@ -367,11 +385,25 @@ export class FrameCoordinator {
           Math.min(flat.absoluteEnd, currentTime)
         );
         const pivotSource = flat.toSourceTime(pivotTimeline);
-        buffer.setWantedRange(
-          Math.min(sourceStart, sourceEnd),
-          Math.max(sourceStart, sourceEnd),
-          pivotSource
-        );
+        const rate = Math.abs(flat.sourceRate);
+        if (rate * (LOOKAHEAD + LOOKBEHIND) > SPARSE_SOURCE_SPAN) {
+          // High effective speed: buffer only the source times the display
+          // will sample, on a stable quantized grid.
+          buffer.setWantedTimes(
+            sparseTargetGrid(
+              pivotSource,
+              Math.max(sourceStart, sourceEnd),
+              rate
+            ),
+            pivotSource
+          );
+        } else {
+          buffer.setWantedRange(
+            Math.min(sourceStart, sourceEnd),
+            Math.max(sourceStart, sourceEnd),
+            pivotSource
+          );
+        }
       }
 
       const isActive =
@@ -429,13 +461,34 @@ export class FrameCoordinator {
   }
 }
 
+/** Sparse-mode wanted times: a quantized source-time grid from just behind
+ *  the pivot through the end of the wanted window. Grid values are stable as
+ *  the window slides (they're multiples of the spacing, not offsets from the
+ *  continuous playhead), which is what lets ClipBuffer's high-water mark
+ *  recognize already-filled targets across ticks. */
+function sparseTargetGrid(
+  pivotSource: number,
+  sourceEnd: number,
+  rate: number
+): number[] {
+  const spacing = rate / SPARSE_FPS;
+  const first = Math.max(0, Math.floor((pivotSource - 2 * spacing) / spacing));
+  const out: number[] = [];
+  // ~SPARSE_FPS × LOOKAHEAD targets; hard cap as a defensive bound.
+  for (let n = first; n * spacing <= sourceEnd && out.length < 90; n++) {
+    out.push(n * spacing);
+  }
+  return out;
+}
+
 function collectClips(
   children: ResolvedChild[],
   toLocalTime: (t: number) => number,
   toAbsoluteTime: (localT: number) => number,
   basePath: string,
   volumeAt: (globalTime: number) => number,
-  hasVol: boolean
+  hasVol: boolean,
+  parentRate: number = 1
 ): FlatClip[] {
   const result: FlatClip[] = [];
 
@@ -457,6 +510,7 @@ function collectClips(
           const clipLocal = Math.max(0, local - capturedChild.timelineStart);
           return capturedChild.sourceIn + clipLocal * capturedChild.speed;
         },
+        sourceRate: parentRate * child.speed,
         compVolumeAt: volumeAt,
         hasCompVolume: hasVol,
       });
@@ -497,7 +551,8 @@ function collectClips(
           childToAbsolute,
           basePath,
           childVolumeAt,
-          childHasVol
+          childHasVol,
+          parentRate * comp.speed
         )
       );
     }
