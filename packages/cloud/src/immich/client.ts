@@ -28,7 +28,13 @@ export interface ImmichAsset {
   checksum: string;
   fileCreatedAt?: string;
   fileModifiedAt?: string;
-  exifInfo?: { fileSizeInByte?: number | null } | null;
+  /** "H:MM:SS.mmmmm" — populated for videos, zero/absent for images. */
+  duration?: string | null;
+  exifInfo?: {
+    fileSizeInByte?: number | null;
+    exifImageWidth?: number | null;
+    exifImageHeight?: number | null;
+  } | null;
 }
 
 export interface ImmichAlbum {
@@ -205,6 +211,16 @@ export function relayResponse(
     if (v) headers.set(h, v);
   }
   return new Response(upstream.body, { status: upstream.status, headers });
+}
+
+/** Parse Immich's "H:MM:SS.mmmmm" duration string to seconds (null when
+ *  absent, unparseable, or zero — images report a zero duration). */
+export function parseImmichDuration(s: string | null | undefined): number | null {
+  if (!s) return null;
+  const m = /^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/.exec(s);
+  if (!m) return null;
+  const secs = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  return Number.isFinite(secs) && secs > 0 ? secs : null;
 }
 
 /** Map an Immich asset type to our media kind (audio/other are non-canonical). */

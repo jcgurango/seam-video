@@ -5,6 +5,7 @@ import { deleteMedia, mediaPath } from "../storage.js";
 import {
   ImmichClient,
   immichTypeToKind,
+  parseImmichDuration,
   type ImmichAsset,
 } from "./client.js";
 import {
@@ -130,15 +131,19 @@ async function pull(
   assets: ImmichAsset[]
 ): Promise<void> {
   const userId = account.userId;
-  const existingImmich = new Set(
-    (
-      db
-        .prepare(
-          "SELECT immichAssetId FROM media WHERE userId = ? AND immichAssetId IS NOT NULL"
-        )
-        .all(userId) as { immichAssetId: string }[]
-    ).map((r) => r.immichAssetId)
-  );
+  const existingRows = db
+    .prepare(
+      "SELECT id, immichAssetId, kind, duration, width, height FROM media WHERE userId = ? AND immichAssetId IS NOT NULL"
+    )
+    .all(userId) as {
+    id: string;
+    immichAssetId: string;
+    kind: string;
+    duration: number | null;
+    width: number | null;
+    height: number | null;
+  }[];
+  const existingImmich = new Map(existingRows.map((r) => [r.immichAssetId, r]));
   const names = new Set(
     (
       db.prepare("SELECT filename FROM media WHERE userId = ?").all(userId) as {
@@ -148,7 +153,13 @@ async function pull(
   );
 
   for (const asset of assets) {
-    if (existingImmich.has(asset.id)) continue;
+    const existing = existingImmich.get(asset.id);
+    if (existing) {
+      // Rows imported before we read Immich's duration/dimensions (or whose
+      // album payload lacked them at the time) get patched as data appears.
+      backfillAssetInfo(existing, asset);
+      continue;
+    }
     const kind = immichTypeToKind(asset.type);
     if (kind !== "image" && kind !== "video") continue; // canonical kinds only
 
@@ -163,8 +174,19 @@ async function pull(
 
     // Same content already in our DB?
     const byHash = db
-      .prepare("SELECT id, immichAssetId FROM media WHERE userId = ? AND contentHash = ?")
-      .get(userId, hash) as { id: string; immichAssetId: string | null } | undefined;
+      .prepare(
+        "SELECT id, immichAssetId, kind, duration, width, height FROM media WHERE userId = ? AND contentHash = ?"
+      )
+      .get(userId, hash) as
+      | {
+          id: string;
+          immichAssetId: string | null;
+          kind: string;
+          duration: number | null;
+          width: number | null;
+          height: number | null;
+        }
+      | undefined;
     if (byHash) {
       // A disk-backed local copy of this content → link it + free the bytes.
       if (!byHash.immichAssetId) {
@@ -172,7 +194,7 @@ async function pull(
           "UPDATE media SET immichAssetId = ?, hasThumb = 0, updatedAt = ? WHERE id = ?"
         ).run(asset.id, Date.now(), byHash.id);
         await deleteMedia(userId, byHash.id);
-        existingImmich.add(asset.id);
+        existingImmich.set(asset.id, { ...byHash, immichAssetId: asset.id });
       }
       continue; // already-linked or duplicate content → don't import twice
     }
@@ -182,15 +204,17 @@ async function pull(
     names.add(filename);
     const now = Date.now();
     const captureDate = asset.fileCreatedAt ? Date.parse(asset.fileCreatedAt) : null;
+    const info = await assetInfo(client, asset, kind);
+    const id = randomUUID();
     db.prepare(
       `INSERT INTO media (id, userId, filename, kind, contentType, size, contentHash,
          immichAssetId, addedAt, lastUsedAt, captureDate, width, height, duration,
          probed, hasThumb, createdAt, updatedAt)
        VALUES (@id, @userId, @filename, @kind, NULL, @size, @contentHash,
-         @immichAssetId, @now, NULL, @captureDate, NULL, NULL, NULL,
+         @immichAssetId, @now, NULL, @captureDate, @width, @height, @duration,
          1, 0, @now, @now)`
     ).run({
-      id: randomUUID(),
+      id,
       userId,
       filename,
       kind,
@@ -198,10 +222,65 @@ async function pull(
       contentHash: hash,
       immichAssetId: asset.id,
       captureDate: Number.isFinite(captureDate) ? captureDate : null,
+      ...info,
       now,
     });
-    existingImmich.add(asset.id);
+    existingImmich.set(asset.id, { id, immichAssetId: asset.id, kind, ...info });
   }
+}
+
+/** Duration (s) + dimensions from an Immich asset payload. Album listings can
+ *  omit a video's duration, so fall back to fetching the full asset once. */
+async function assetInfo(
+  client: ImmichClient,
+  asset: ImmichAsset,
+  kind: "image" | "video"
+): Promise<{ duration: number | null; width: number | null; height: number | null }> {
+  let src = asset;
+  if (kind === "video" && parseImmichDuration(src.duration) == null) {
+    try {
+      src = await client.getAsset(asset.id);
+    } catch (err) {
+      console.warn(`[seam-cloud] fetching immich asset ${asset.id} failed:`, err);
+    }
+  }
+  return {
+    duration: parseImmichDuration(src.duration),
+    width: src.exifInfo?.exifImageWidth ?? null,
+    height: src.exifInfo?.exifImageHeight ?? null,
+  };
+}
+
+/** Patch NULL duration/width/height on an existing Immich-backed row when the
+ *  album payload has the data (rows imported before this metadata was read). */
+function backfillAssetInfo(
+  row: {
+    id: string;
+    kind: string;
+    duration: number | null;
+    width: number | null;
+    height: number | null;
+  },
+  asset: ImmichAsset
+): void {
+  const patch: Record<string, number> = {};
+  const duration = parseImmichDuration(asset.duration);
+  if (row.duration == null && duration != null) patch.duration = duration;
+  const width = asset.exifInfo?.exifImageWidth;
+  const height = asset.exifInfo?.exifImageHeight;
+  if (row.width == null && width != null) patch.width = width;
+  if (row.height == null && height != null) patch.height = height;
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = @${k}`).join(", ");
+  db.prepare(`UPDATE media SET ${sets}, updatedAt = @updatedAt WHERE id = @id`).run({
+    ...patch,
+    updatedAt: Date.now(),
+    id: row.id,
+  });
+  row.duration = patch.duration ?? row.duration;
+  row.width = patch.width ?? row.width;
+  row.height = patch.height ?? row.height;
 }
 
 /** A name not in `taken` — appends `-1`, `-2`, … before the extension. */
