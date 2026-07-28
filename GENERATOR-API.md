@@ -1,7 +1,7 @@
 # Generator Server API
 
 HTTP contract for the optional Python backend that runs Whisper
-transcription and Resemble Enhance denoise. Source lives in
+transcription and Resemble Enhance denoise/enhance. Source lives in
 [`packages/generator-server/`](packages/generator-server/).
 
 The server is a FastAPI app, so an OpenAPI schema is always available at
@@ -94,11 +94,10 @@ curl -X POST http://127.0.0.1:8000/transcribe \
 
 ---
 
-## `POST /enhance`
+## `POST /denoise`
 
-Run Resemble Enhance's **denoise** stage on the uploaded audio. The
-full enhancement (`enhance`) stage is deliberately not exposed — only
-denoise.
+Run Resemble Enhance's **denoise** stage only on the uploaded audio.
+For the full denoise + enhance pipeline, use `/enhance`.
 
 **Request**
 
@@ -121,9 +120,42 @@ Raw WAV bytes (mono). The sample rate matches Resemble Enhance's output
 **curl example**
 
 ```bash
-curl -X POST http://127.0.0.1:8000/enhance \
+curl -X POST http://127.0.0.1:8000/denoise \
   -F file=@noisy-vo.wav \
   -o denoised.wav
+```
+
+---
+
+## `POST /enhance`
+
+Run Resemble Enhance's full **denoise and enhance** pipeline on the
+uploaded audio.
+
+**Request**
+
+`multipart/form-data`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | audio file | yes | The audio to enhance |
+
+**Response 200** — `audio/wav`
+
+Raw WAV bytes (mono). The sample rate matches Resemble Enhance's output
+(typically 44.1 kHz). The body is the audio file itself, not JSON.
+
+**Errors**
+
+- `422` — missing `file` field.
+- `500` — enhance model failure; body is `{ "detail": "<message>" }`.
+
+**curl example**
+
+```bash
+curl -X POST http://127.0.0.1:8000/enhance \
+  -F file=@noisy-vo.wav \
+  -o enhanced.wav
 ```
 
 ---

@@ -1,4 +1,4 @@
-"""FastAPI application: two endpoints (transcribe, enhance) plus a
+"""FastAPI application: transcribe, denoise, and enhance endpoints plus a
 healthcheck. Models are loaded once at startup via the lifespan hook."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import AsyncIterator, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from .enhance import denoise_audio, setup_enhancer
+from .enhance import denoise_audio, enhance_audio, setup_enhancer
 from .schemas import TranscriptionResponse
 from .transcribe import setup_whisper, transcribe_audio
 
@@ -29,7 +29,7 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Backend for offloaded media generation tasks: Whisper "
-        "transcription and Resemble Enhance denoise."
+        "transcription and Resemble Enhance denoise/enhance."
     ),
     lifespan=lifespan,
 )
@@ -102,12 +102,38 @@ async def transcribe(
 
 
 @app.post(
-    "/enhance",
-    summary="Denoise audio with Resemble Enhance",
+    "/denoise",
+    summary="Denoise audio with Resemble Enhance (denoise stage only)",
     responses={
         200: {
             "content": {"audio/wav": {}},
             "description": "Denoised mono WAV.",
+        }
+    },
+)
+async def denoise(
+    file: UploadFile = File(..., description="Audio file (wav/mp3/m4a/flac/...)."),
+) -> Response:
+    path = await _spool_upload(file)
+    try:
+        wav_bytes = denoise_audio(path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@app.post(
+    "/enhance",
+    summary="Enhance audio with Resemble Enhance (denoise + enhance stages)",
+    responses={
+        200: {
+            "content": {"audio/wav": {}},
+            "description": "Enhanced mono WAV.",
         }
     },
 )
@@ -116,7 +142,7 @@ async def enhance(
 ) -> Response:
     path = await _spool_upload(file)
     try:
-        wav_bytes = denoise_audio(path)
+        wav_bytes = enhance_audio(path)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:

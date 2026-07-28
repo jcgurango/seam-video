@@ -1,8 +1,9 @@
-"""Audio denoise via resemble-enhance (denoise stage only).
+"""Audio cleanup via resemble-enhance.
 
-resemble-enhance lazy-loads its model on first call, so there's no eager
-init here — the first request will be slower than subsequent ones. The
-`enhance` step is intentionally not exposed: the user wants only denoise.
+Two stages are exposed: `denoise_audio` runs the denoiser only, while
+`enhance_audio` runs the full enhancer (denoise + enhance). resemble-enhance
+lazy-loads its model on first call, so there's no eager init here — the first
+request will be slower than subsequent ones.
 """
 
 from __future__ import annotations
@@ -50,23 +51,41 @@ def get_device() -> str:
     return _device
 
 
-def denoise_audio(input_path: str) -> bytes:
-    """Read audio from `input_path`, run resemble-enhance's `denoise`
-    stage, and return WAV bytes. Always emits mono — denoise is a
-    waveform-level operation that doesn't preserve channels."""
-    from resemble_enhance.enhancer.inference import denoise
-
+def _load_mono(input_path: str) -> tuple[torch.Tensor, int]:
+    """Load audio as a 1D (mono) tensor — resemble-enhance expects that.
+    Denoise/enhance are waveform-level operations that don't preserve
+    channels, so we collapse to mono up front."""
     dwav, sr = torchaudio.load(input_path)
-    # Collapse to mono — resemble-enhance expects a 1D tensor.
     if dwav.dim() == 2 and dwav.size(0) > 1:
         dwav = dwav.mean(dim=0)
     else:
         dwav = dwav.squeeze(0)
+    return dwav, sr
 
-    out_wav, out_sr = denoise(dwav, sr, device=get_device())
 
-    # Encode back to WAV in memory. torchaudio.save needs a 2D tensor
-    # (channels, samples), so unsqueeze the mono channel back in.
+def _to_wav_bytes(out_wav: torch.Tensor, out_sr: int) -> bytes:
+    """Encode a mono waveform to WAV bytes in memory. torchaudio.save needs
+    a 2D tensor (channels, samples), so unsqueeze the mono channel back in."""
     buf = io.BytesIO()
     torchaudio.save(buf, out_wav.unsqueeze(0).cpu(), out_sr, format="wav")
     return buf.getvalue()
+
+
+def denoise_audio(input_path: str) -> bytes:
+    """Read audio from `input_path`, run resemble-enhance's `denoise`
+    stage, and return WAV bytes (mono)."""
+    from resemble_enhance.enhancer.inference import denoise
+
+    dwav, sr = _load_mono(input_path)
+    out_wav, out_sr = denoise(dwav, sr, device=get_device())
+    return _to_wav_bytes(out_wav, out_sr)
+
+
+def enhance_audio(input_path: str) -> bytes:
+    """Read audio from `input_path`, run resemble-enhance's full `enhance`
+    stage (denoise + enhance), and return WAV bytes (mono)."""
+    from resemble_enhance.enhancer.inference import enhance
+
+    dwav, sr = _load_mono(input_path)
+    out_wav, out_sr = enhance(dwav, sr, device=get_device())
+    return _to_wav_bytes(out_wav, out_sr)
