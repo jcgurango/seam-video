@@ -32,8 +32,9 @@ export interface AnchorEditCtx {
 const SEC_DECIMALS = 1000;
 const PCT_DECIMALS = 10000;
 
-const fmtSec = (s: number) => Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
-const fmtPct = (frac: number) =>
+export const fmtSec = (s: number) =>
+  Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
+export const fmtPct = (frac: number) =>
   `${Math.round(frac * 100 * PCT_DECIMALS) / PCT_DECIMALS}%`;
 
 export function parsePct(s: string): number {

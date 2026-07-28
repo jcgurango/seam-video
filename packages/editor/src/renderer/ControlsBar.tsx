@@ -13,6 +13,8 @@ import {
   Redo2,
   AlignStartVertical,
   AlignEndVertical,
+  ArrowLeftToLine,
+  ArrowRightToLine,
   Captions,
   Group,
   Box,
@@ -41,6 +43,7 @@ import { applyBin, canBin } from "./binTool.js";
 import { normalizeTargets } from "./normalizeTool.js";
 import { sliceAtPlayhead } from "./splitTool.js";
 import { applyAttach } from "./attachTool.js";
+import { applyBracket } from "./bracketTool.js";
 import {
   separateByWord,
   groupWords,
@@ -332,6 +335,35 @@ export default function ControlsBar({
     [doc, timeline, currentTime, selection, onDocumentChange, onSelectionChange]
   );
 
+  // ── Bracket ────────────────────────────────────────────────────
+  // Selection shape mirrors attach (primary + secondaries, any level,
+  // non-bin primary), but a lone primary also works — it brackets the
+  // primary itself against the playhead. Bracket edits nodes in place
+  // (nothing moves), so the selection is kept.
+  const canBracket = (() => {
+    if (selection.length < 1) return false;
+    const pp = parsePath(selection[0]);
+    if (pp.length === 0 || pp.some((s) => s.field === "bin")) return false;
+    return getNodeAtPath(doc, pp) != null;
+  })();
+
+  const handleBracket = useCallback(
+    (side: "start" | "end") => {
+      if (selection.length < 1) return;
+      const [primaryKey, ...secondaryKeys] = selection;
+      const next = applyBracket(
+        doc,
+        timeline,
+        currentTime,
+        primaryKey,
+        secondaryKeys,
+        side,
+      );
+      if (next) onDocumentChange(next);
+    },
+    [doc, timeline, currentTime, selection, onDocumentChange]
+  );
+
   // ── Compose ────────────────────────────────────────────────────
   // Two distinct selections enable Compose:
   //   • a non-empty, contiguous run of *children* (the original tool —
@@ -547,6 +579,22 @@ export default function ControlsBar({
               title="Attach end of secondaries to the primary at the playhead"
             >
               <AlignEndVertical size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={() => handleBracket("start")}
+              style={{ ...BTN_STYLE, opacity: canBracket ? 1 : 0.3 }}
+              disabled={!canBracket}
+              title="Bracket start: align each secondary's start to the primary (its start if attached to it, else its end); with only a primary, align its start to the playhead"
+            >
+              <ArrowLeftToLine size={ICON_SIZE} />
+            </button>
+            <button
+              onClick={() => handleBracket("end")}
+              style={{ ...BTN_STYLE, opacity: canBracket ? 1 : 0.3 }}
+              disabled={!canBracket}
+              title="Bracket end: align each secondary's end to the primary (its end if attached to it, else its start); with only a primary, align its end to the playhead"
+            >
+              <ArrowRightToLine size={ICON_SIZE} />
             </button>
             <button
               onClick={handleCompose}

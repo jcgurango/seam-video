@@ -1,10 +1,16 @@
-// Drag-resize a child via its left/right edge handle. Naive
-// translation: cursor pixel delta / pxPerSec → seconds → directly mutate
-// `in` / `out` / `duration`. No speed or duration-override math.
+// Drag-resize a child via its left/right edge handle. Cursor pixel delta /
+// pxPerSec → output seconds → mutate `in` / `out` / `duration`.
 //
 //   clip / audio                      → `in` (left)  / `out` (right)
 //   composition (with `in` & `out`)   → `in` (left)  / `out` (right)
 //   static / text / empty / data      → `duration` (left shrinks, right grows)
+//
+// `in`/`out` are SOURCE seconds while the cursor delta is OUTPUT seconds, so
+// nodes with a `speed` (or a `duration` override, whose rate is derived as
+// `(out - in) / duration`) scale the delta by that rate — one second of
+// cursor travel consumes `rate` seconds of source. A `duration` override is
+// also adjusted by the applied output delta so the edge tracks the cursor at
+// a constant playback rate.
 //
 // Clamped at 0 lower bound; the upper bound (source media length) isn't
 // known during a timeline drag, so it's left to the schema validator
@@ -70,15 +76,33 @@ function innerDuration(comp: Composition): number {
   }
 }
 
-function resizeInOut<T extends { in: number; out: number }>(
-  child: T,
-  side: "left" | "right",
-  deltaSec: number,
-): T {
+function resizeInOut<
+  T extends { in: number; out: number; speed?: number; duration?: number },
+>(child: T, side: "left" | "right", deltaSec: number): T {
+  // Source seconds consumed per output second. With a `duration` override
+  // the rate is implied by the window; otherwise it's `speed` (default 1).
+  const rawRate =
+    child.duration != null && child.duration > 0
+      ? (child.out - child.in) / child.duration
+      : child.speed ?? 1;
+  const rate = rawRate > 0 ? rawRate : 1;
+  const sourceDelta = deltaSec * rate;
   if (side === "left") {
-    const newIn = Math.max(0, Math.min(child.out, child.in + deltaSec));
-    return { ...child, in: newIn };
+    const newIn = Math.max(0, Math.min(child.out, child.in + sourceDelta));
+    // Applied output delta after clamping — keeps `duration` consistent when
+    // the drag ran out of source headroom.
+    const applied = (newIn - child.in) / rate;
+    const next = { ...child, in: newIn };
+    if (child.duration != null) {
+      next.duration = Math.max(0, child.duration - applied);
+    }
+    return next;
   }
-  const newOut = Math.max(child.in, child.out + deltaSec);
-  return { ...child, out: newOut };
+  const newOut = Math.max(child.in, child.out + sourceDelta);
+  const applied = (newOut - child.out) / rate;
+  const next = { ...child, out: newOut };
+  if (child.duration != null) {
+    next.duration = Math.max(0, child.duration + applied);
+  }
+  return next;
 }
