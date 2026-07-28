@@ -9,12 +9,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .enhance import denoise_audio, enhance_audio, setup_enhancer
 from .schemas import TranscriptionResponse
 from .transcribe import setup_whisper, transcribe_audio
+from .voicefix import fix_audio
 
 
 @asynccontextmanager
@@ -143,6 +144,41 @@ async def enhance(
     path = await _spool_upload(file)
     try:
         wav_bytes = enhance_audio(path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@app.post(
+    "/fix",
+    summary="Restore speech with VoiceFixer",
+    responses={
+        200: {
+            "content": {"audio/wav": {}},
+            "description": "Restored mono 44.1 kHz WAV.",
+        }
+    },
+)
+async def fix(
+    file: UploadFile = File(..., description="Audio file (wav/mp3/m4a/flac/...)."),
+    mode: int = Query(
+        0,
+        ge=0,
+        le=2,
+        description=(
+            "VoiceFixer mode: 0 = original model, 1 = with preprocessing, "
+            "2 = train mode (for severely degraded speech)."
+        ),
+    ),
+) -> Response:
+    path = await _spool_upload(file)
+    try:
+        wav_bytes = fix_audio(path, mode=mode)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
