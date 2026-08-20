@@ -15,7 +15,9 @@ import type {
   WebPlatform,
   ProjectEntry,
   ProjectSyncStatus,
+  ImportFilesResult,
 } from "./platform/web.js";
+import { describeImportResult } from "./platform/web.js";
 import type { CloudClient, CloudProject } from "./cloud/CloudClient.js";
 import { useCloud } from "./cloud/useCloud.js";
 import MediaBrowser from "./MediaBrowser.js";
@@ -63,6 +65,49 @@ function formatAbsolute(ts: number): string {
   return new Date(ts).toLocaleString();
 }
 
+/**
+ * Files from a drop, expanding dropped folders. Entries must be grabbed
+ * synchronously (DataTransferItems die when the event returns); the
+ * directory traversal itself is async. `readEntries` hands back batches of
+ * ≤100, so drain until an empty batch.
+ */
+async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
+  const entries: FileSystemEntry[] = [];
+  const plain: File[] = [];
+  for (const item of Array.from(dt.items)) {
+    if (item.kind !== "file") continue;
+    const entry = item.webkitGetAsEntry?.() ?? null;
+    if (entry) entries.push(entry);
+    else {
+      const f = item.getAsFile();
+      if (f) plain.push(f);
+    }
+  }
+  if (entries.length === 0) {
+    return plain.length > 0 ? plain : Array.from(dt.files);
+  }
+  const out: File[] = [...plain];
+  const walk = async (entry: FileSystemEntry): Promise<void> => {
+    if (entry.isFile) {
+      const f = await new Promise<File | null>((res) =>
+        (entry as FileSystemFileEntry).file(res, () => res(null))
+      );
+      if (f) out.push(f);
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((res) =>
+          reader.readEntries(res, () => res([]))
+        );
+        if (batch.length === 0) break;
+        for (const e of batch) await walk(e);
+      }
+    }
+  };
+  for (const e of entries) await walk(e);
+  return out;
+}
+
 export default function ProjectBrowser({
   platform,
   onOpen,
@@ -80,6 +125,40 @@ export default function ProjectBrowser({
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [outOfSync, setOutOfSync] = useState<ProjectRow | null>(null);
+
+  // Page-wide file drop (both tabs): media lands in clips/, .seam files
+  // become projects (batch-aware rename rewriting — see importFiles).
+  const [dropDepth, setDropDepth] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [mediaReloadKey, setMediaReloadKey] = useState(0);
+
+  const handleImported = useCallback((res: ImportFilesResult) => {
+    // Media-tab uploads can contain .seam files too — refresh both lists.
+    if (res.projects.length > 0) setReloadKey((k) => k + 1);
+  }, []);
+
+  const runImport = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || importing) return;
+      setImporting(true);
+      setImportNotice(null);
+      try {
+        const res = await platform.importFiles(files);
+        setReloadKey((k) => k + 1);
+        setMediaReloadKey((k) => k + 1);
+        setImportNotice(describeImportResult(res));
+      } catch (err) {
+        setImportNotice(`Import failed: ${errMessage(err)}`);
+      } finally {
+        setImporting(false);
+      }
+    },
+    [platform, importing]
+  );
+
+  const dragHasFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
 
   useEffect(() => {
     void platform.listProjects().then(setProjects);
@@ -184,6 +263,26 @@ export default function ProjectBrowser({
 
   return (
     <div
+      onDragEnter={(e) => {
+        if (!dragHasFiles(e)) return;
+        e.preventDefault();
+        setDropDepth((d) => d + 1);
+      }}
+      onDragOver={(e) => {
+        if (!dragHasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!dragHasFiles(e)) return;
+        setDropDepth((d) => Math.max(0, d - 1));
+      }}
+      onDrop={(e) => {
+        if (!dragHasFiles(e)) return;
+        e.preventDefault();
+        setDropDepth(0);
+        void filesFromDataTransfer(e.dataTransfer).then(runImport);
+      }}
       style={{
         flex: 1,
         minHeight: 0,
@@ -193,8 +292,32 @@ export default function ProjectBrowser({
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
+        position: "relative",
       }}
     >
+      {(dropDepth > 0 || importing) && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(26,26,26,0.85)",
+            border: "2px dashed #4a8ed0",
+            borderRadius: 8,
+            margin: 8,
+            pointerEvents: "none",
+            fontSize: 15,
+            color: "#cfe3f7",
+          }}
+        >
+          {importing
+            ? "Importing…"
+            : "Drop media and .seam files to add them to Seam"}
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -243,8 +366,46 @@ export default function ProjectBrowser({
         )}
       </div>
 
+      {importNotice && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            margin: "10px 28px 0",
+            padding: "8px 12px",
+            fontSize: 12,
+            color: "#ddd",
+            background: "#222",
+            border: "1px solid #3a3a3a",
+            borderRadius: 6,
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ flex: 1 }}>{importNotice}</span>
+          <button
+            onClick={() => setImportNotice(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#888",
+              cursor: "pointer",
+              padding: 0,
+              fontSize: 14,
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {tab === "media" ? (
-        <MediaBrowser platform={platform} variant="main" />
+        <MediaBrowser
+          platform={platform}
+          variant="main"
+          externalReloadKey={mediaReloadKey}
+          onImported={handleImported}
+        />
       ) : (
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 28px" }}>
           {notice && (

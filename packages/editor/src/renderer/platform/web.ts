@@ -1,4 +1,3 @@
-import JSZip from "jszip";
 import { basename } from "../pathUtils.js";
 import type { SeamFile } from "@seam/core";
 import type {
@@ -7,7 +6,11 @@ import type {
   OpenResult,
   Platform,
 } from "./types.js";
-import { buildExportPlan, collectClipSources } from "../exportHelpers.js";
+import {
+  buildExportPlan,
+  collectClipSources,
+  mapDocumentSources,
+} from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
 import {
   CloudClient,
@@ -15,6 +18,16 @@ import {
   type UploadResult,
 } from "../cloud/CloudClient.js";
 import { TransferQueue } from "../cloud/TransferQueue.js";
+
+/** WICG File System Access directory picker — Chromium-only, not in lib.dom. */
+declare global {
+  interface Window {
+    showDirectoryPicker?: (options?: {
+      mode?: "read" | "readwrite";
+      id?: string;
+    }) => Promise<FileSystemDirectoryHandle>;
+  }
+}
 
 /** Summary of the blocking pre-export media download pass. `done` counts files
  *  transferred (or already present); `conflicts` are the ones the dedup rules
@@ -227,25 +240,33 @@ async function fingerprint(file: Blob): Promise<string> {
 }
 
 /** Recursively walk a parsed .seam document and rewrite clip.source fields. */
-function rewriteClipSources(
-  node: unknown,
-  map: Map<string, string>
-): void {
-  if (!node || typeof node !== "object") return;
-  const n = node as Record<string, unknown>;
-  if (
-    (n.type === "clip" || n.type === "audio") &&
-    typeof n.source === "string"
-  ) {
-    const replaced = map.get(n.source);
-    if (replaced) n.source = replaced;
+/** Outcome of a batch `importFiles` call, for the UI's summary notice. */
+export interface ImportFilesResult {
+  /** Media files imported (new writes + fingerprint-dedup reuses). */
+  media: number;
+  /** How many of those ended up under a different name than dropped
+   *  (collision rename or dedup onto an existing identical clip). */
+  renamed: number;
+  /** Project (.seam) file names added under projects/, post-unique-rename. */
+  projects: string[];
+  /** Dropped files that were neither media nor .seam. */
+  skipped: string[];
+}
+
+/** One-line summary of a batch import, for the UI notice bars. */
+export function describeImportResult(r: ImportFilesResult): string {
+  const parts: string[] = [];
+  if (r.media > 0) parts.push(`${r.media} media file${r.media === 1 ? "" : "s"}`);
+  for (const p of r.projects) parts.push(`project "${p}"`);
+  let msg = parts.length > 0 ? `Imported ${parts.join(", ")}.` : "Nothing to import.";
+  if (r.renamed > 0) {
+    msg += ` ${r.renamed} matched or renamed to existing media (references updated).`;
   }
-  if (Array.isArray(n.children)) {
-    for (const child of n.children) rewriteClipSources(child, map);
+  if (r.skipped.length > 0) {
+    const shown = r.skipped.slice(0, 3).join(", ");
+    msg += ` Skipped ${r.skipped.length} unrecognized: ${shown}${r.skipped.length > 3 ? "…" : ""}`;
   }
-  if (Array.isArray(n.attachments)) {
-    for (const att of n.attachments) rewriteClipSources(att, map);
-  }
+  return msg;
 }
 
 /**
@@ -677,20 +698,21 @@ export class WebPlatform implements Platform {
     const plan = buildExportPlan(doc);
     const seamName = `${defaultName}.seam`;
 
-    const zip = new JSZip();
-    zip.file(seamName, JSON.stringify(plan.document, null, 2));
-
-    const total = plan.entries.length;
+    // Stat pass: entry sizes for byte-accurate progress, and drop missing
+    // clips up front. Metadata only — the File snapshots are re-acquired one
+    // by one during the streaming pass, so none of them can go stale while
+    // earlier entries are being written.
+    const entries: Array<{ originalSource: string; exportName: string; size: number }> = [];
     for (let i = 0; i < plan.entries.length; i++) {
       const entry = plan.entries[i];
       onProgress?.({
         phase: "read",
-        progress: total === 0 ? 1 : i / total,
+        progress: plan.entries.length === 0 ? 1 : i / plan.entries.length,
         detail: entry.exportName,
       });
       try {
         const file = await readFileFromDir(CLIPS_DIR, entry.originalSource);
-        zip.file(entry.exportName, file);
+        entries.push({ ...entry, size: file.size });
       } catch (err) {
         console.warn(
           `exportProject: skipping missing clip "${entry.originalSource}"`,
@@ -700,19 +722,91 @@ export class WebPlatform implements Platform {
     }
     onProgress?.({ phase: "read", progress: 1 });
 
-    const blob = await zip.generateAsync({ type: "blob" }, (metadata) => {
+    const json = JSON.stringify(plan.document, null, 2);
+    const totalBytes = entries.reduce((sum, e) => sum + e.size, 0) || 1;
+    let doneBytes = 0;
+    let lastEmit = 0;
+    const emitCopyProgress = (detail: string, force = false): void => {
+      const now = performance.now();
+      if (!force && now - lastEmit < 100) return;
+      lastEmit = now;
       onProgress?.({
         phase: "zip",
-        progress: metadata.percent / 100,
-        detail: metadata.currentFile ?? undefined,
+        progress: Math.min(1, doneBytes / totalBytes),
+        detail,
       });
-    });
+    };
 
+    // Copy the bundle into a user-picked folder. A `.seam` next to its media
+    // IS the project layout (what the desktop app and the CLI open directly),
+    // so there's nothing to archive — the copy runs at disk speed.
+    if (!window.showDirectoryPicker) {
+      throw new Error(
+        "Export Project needs a Chromium-based browser (Chrome / Edge): it " +
+          "copies the .seam and its media into a folder you pick. " +
+          "Alternatively, use Export .seam or Seam Cloud sync."
+      );
+    }
+    let dir: FileSystemDirectoryHandle;
+    try {
+      dir = await window.showDirectoryPicker({ mode: "readwrite", id: "seam-export" });
+    } catch (err) {
+      if ((err as DOMException)?.name === "AbortError") return false; // user canceled
+      throw err;
+    }
+
+    const seamWritable = await (
+      await dir.getFileHandle(seamName, { create: true })
+    ).createWritable();
+    await seamWritable.write(json);
+    await seamWritable.close();
+
+    for (const entry of entries) {
+      const file = await this.acquireExportFile(entry.originalSource);
+      if (!file) {
+        doneBytes += entry.size;
+        continue;
+      }
+      const target = await (
+        await dir.getFileHandle(entry.exportName, { create: true })
+      ).createWritable();
+      // pipeTo closes the writable on success and aborts it on failure —
+      // an abort discards the swap file, so no partial file is committed.
+      await file
+        .stream()
+        .pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform: (chunk, controller) => {
+              doneBytes += chunk.byteLength;
+              emitCopyProgress(entry.exportName);
+              controller.enqueue(chunk);
+            },
+          })
+        )
+        .pipeTo(target);
+    }
     onProgress?.({ phase: "write", progress: 1 });
-
-    triggerDownload(blob, `${defaultName}.zip`);
-
     return true;
+  }
+
+  /** (Re-)acquire an OPFS clip File immediately before reading it. A File is
+   *  a snapshot — reads throw NotReadableError if the underlying file was
+   *  rewritten after the reference was acquired (e.g. a cloud transfer
+   *  landing) — so preflight one byte and re-acquire once if it's already
+   *  stale. `null` when the clip is missing entirely (caller skips it). */
+  private async acquireExportFile(name: string): Promise<File | null> {
+    try {
+      let file = await readFileFromDir(CLIPS_DIR, name);
+      try {
+        await file.slice(0, 1).arrayBuffer();
+      } catch {
+        file = await readFileFromDir(CLIPS_DIR, name);
+      }
+      return file;
+    } catch (err) {
+      console.warn(`exportProject: skipping missing clip "${name}"`, err);
+      return null;
+    }
   }
 
   /** Trigger a browser download of just the document's JSON as a
@@ -1145,74 +1239,60 @@ export class WebPlatform implements Platform {
     return { filePath: `projects/${name}`, json };
   }
 
-  async importProject(
-    file: File
-  ): Promise<{ filePath: string; json: string } | null> {
-    const zip = await JSZip.loadAsync(file);
-
-    // Find the (one expected) .seam entry
-    let seamEntryName: string | null = null;
-    for (const name of Object.keys(zip.files)) {
-      if (zip.files[name].dir) continue;
-      if (name.toLowerCase().endsWith(".seam")) {
-        if (seamEntryName) {
-          throw new Error(
-            "Zip contains multiple .seam files; expected exactly one."
-          );
-        }
-        seamEntryName = name;
-      }
+  /**
+   * Batch importer behind the browse page's drop zone and the Upload Media /
+   * Upload Folder buttons. Media files go through `importClip` (fingerprint
+   * dedup + unique naming); `.seam` files become projects. Media is imported
+   * FIRST so each `.seam` in the batch can be rewritten against the batch's
+   * final names: every source is flattened to its basename, then mapped
+   * through the rename map (dedup hit on an existing clip, or a collision
+   * rename). Anything unrecognized is skipped and reported.
+   */
+  async importFiles(files: File[]): Promise<ImportFilesResult> {
+    const seams: File[] = [];
+    const media: File[] = [];
+    const skipped: string[] = [];
+    for (const f of files) {
+      if (f.name.startsWith(".")) continue; // .DS_Store etc. — silent
+      if (f.name.toLowerCase().endsWith(".seam")) seams.push(f);
+      else if (classifyByName(f.name)) media.push(f);
+      else skipped.push(f.name);
     }
-    if (!seamEntryName) throw new Error("Zip contains no .seam file.");
 
-    // Write each non-seam file into OPFS clips/. Track renames (for when we
-    // had to disambiguate or when a fingerprint match found an existing
-    // clip with a different name) so we can rewrite references in the .seam.
+    // Original reference name (basename — how a .seam would cite it) → final
+    // OPFS clips/ name, when they differ.
     const renameMap = new Map<string, string>();
-    const index = await this.ensureFingerprintIndex();
-    for (const name of Object.keys(zip.files)) {
-      const entry = zip.files[name];
-      if (entry.dir) continue;
-      if (name === seamEntryName) continue;
-      const clipName = basename(name);
-      const blob = await entry.async("blob");
-
-      // If an identical clip already exists, reuse it (skip the write)
-      const fp = await fingerprint(blob);
-      const existing = index.get(fp);
-      if (existing) {
-        if (existing !== clipName) renameMap.set(clipName, existing);
-        continue;
-      }
-
-      const uniqueClip = await uniqueClipName(clipName);
-      await writeFileToDir(CLIPS_DIR, uniqueClip, blob);
-      index.set(fp, uniqueClip);
-      if (uniqueClip !== clipName) renameMap.set(clipName, uniqueClip);
+    for (const f of media) {
+      const finalName = await this.importClip(f);
+      const ref = basename(f.name);
+      if (finalName !== ref) renameMap.set(ref, finalName);
     }
 
-    // Read + maybe rewrite the seam file
-    const seamText = await zip.files[seamEntryName].async("string");
-    let finalJson = seamText;
-    if (renameMap.size > 0) {
+    const projects: string[] = [];
+    for (const f of seams) {
+      const text = await f.text();
+      let finalJson = text;
       try {
-        const parsed = JSON.parse(seamText);
-        rewriteClipSources(parsed, renameMap);
-        finalJson = JSON.stringify(parsed, null, 2);
+        const parsed = JSON.parse(text) as SeamFile;
+        const rewritten = mapDocumentSources(parsed, (src) => {
+          if (/^(https?:|blob:|data:)/.test(src)) return src;
+          const flat = basename(src);
+          return renameMap.get(flat) ?? flat;
+        });
+        finalJson = JSON.stringify(rewritten, null, 2);
       } catch (err) {
         console.warn(
-          "importProject: seam file did not parse; storing as-is",
+          `importFiles: "${f.name}" did not parse as JSON; storing as-is`,
           err
         );
       }
+      const finalSeamName = await uniqueProjectName(basename(f.name));
+      await writeFileToDir(PROJECTS_DIR, finalSeamName, finalJson);
+      projects.push(finalSeamName);
     }
 
-    // Write the seam file into OPFS projects/, using a unique name
-    const rawSeamName = basename(seamEntryName);
-    const finalSeamName = await uniqueProjectName(rawSeamName);
-    await writeFileToDir(PROJECTS_DIR, finalSeamName, finalJson);
-
-    return { filePath: `projects/${finalSeamName}`, json: finalJson };
+    if (media.length > 0) this.notifyLocalMediaChanged();
+    return { media: media.length, renamed: renameMap.size, projects, skipped };
   }
 
   /** Free blob URLs we're no longer using (called when loading a new project). */

@@ -1,24 +1,66 @@
 import { compileSeamFile } from "@seam/core";
-import type { SeamFile, Child } from "@seam/core";
+import type { SeamFile, Child, Composition } from "@seam/core";
 import { basename, isAbsolute, relative } from "./pathUtils.js";
 import { isMediaSource } from "./mediaSource.js";
 import { mapGraphicImageSources } from "./graphicSources.js";
 
 type Obj = Record<string, unknown>;
 
+/**
+ * Immutably map every media-source path in a document — clip/audio/static
+ * `source` fields and graphic `Image` `src`s — through `fn`. Recurses
+ * compositions' `children`, `attachments`, AND `bin` entry bodies (a clip
+ * living only inside a bin entry is media too). The single walk behind
+ * export planning, relative remapping, and import-time source rewriting.
+ */
+export function mapDocumentSources(
+  doc: SeamFile,
+  fn: (src: string) => string
+): SeamFile {
+  const walkChild = (child: Child): Child => {
+    if (isMediaSource(child)) {
+      return { ...child, source: fn(child.source) };
+    }
+    if (child.type === "graphic") {
+      return mapGraphicImageSources(child as Obj, fn) as Child;
+    }
+    if (child.type === "composition") {
+      return walkComp(child) as Child;
+    }
+    return child;
+  };
+  const walkComp = <T extends Composition>(comp: T): T => ({
+    ...comp,
+    ...(comp.children ? { children: comp.children.map(walkChild) } : {}),
+    ...(comp.attachments ? { attachments: comp.attachments.map(walkChild) } : {}),
+    ...(comp.bin
+      ? {
+          bin: comp.bin.map((entry) => ({
+            ...entry,
+            children: entry.children.map(walkChild),
+            ...(entry.attachments
+              ? { attachments: entry.attachments.map(walkChild) }
+              : {}),
+          })),
+        }
+      : {}),
+  });
+  return walkComp(doc);
+}
+
 export interface ExportPlan {
   /** Rewritten document: media-source fields are flat basenames. */
   document: SeamFile;
   /**
    * Map from the *original* source (as it appeared in the input document)
-   * to the name it should have inside the exported zip. Unique.
+   * to the name it should have in the exported bundle. Unique.
    */
   entries: Array<{ originalSource: string; exportName: string }>;
 }
 
 /**
  * Walk the document and flatten every media-source field to a basename
- * suitable for a flat zip, renaming on basename collisions.
+ * suitable for a flat export folder, renaming on basename collisions.
  */
 export function buildExportPlan(doc: SeamFile): ExportPlan {
   const sourceToExport = new Map<string, string>();
@@ -43,32 +85,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     return candidate;
   };
 
-  const rewriteChild = (child: Child): Child => {
-    if (isMediaSource(child)) {
-      return { ...child, source: pickExportName(child.source) };
-    }
-    if (child.type === "graphic") {
-      return mapGraphicImageSources(child as Obj, pickExportName) as Child;
-    }
-    if (child.type === "composition") {
-      return {
-        ...child,
-        ...(child.children ? { children: rewriteChildren(child.children) } : {}),
-        ...(child.attachments
-          ? { attachments: rewriteChildren(child.attachments) }
-          : {}),
-      };
-    }
-    return child;
-  };
-
-  const rewriteChildren = (children: Child[]): Child[] => children.map(rewriteChild);
-
-  const document: SeamFile = {
-    ...doc,
-    ...(doc.children ? { children: rewriteChildren(doc.children) } : {}),
-    ...(doc.attachments ? { attachments: rewriteChildren(doc.attachments) } : {}),
-  };
+  const document = mapDocumentSources(doc, pickExportName);
 
   const entries: Array<{ originalSource: string; exportName: string }> = [];
   for (const [originalSource, exportName] of sourceToExport) {
@@ -91,29 +108,9 @@ export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile
     return absPath;
   };
 
-  const walk = (child: Child): Child => {
-    if (isMediaSource(child) && isAbsolute(child.source)) {
-      return { ...child, source: toRelative(child.source) };
-    }
-    if (child.type === "graphic") {
-      return mapGraphicImageSources(child as Obj, (src) =>
-        isAbsolute(src) ? toRelative(src) : src,
-      ) as Child;
-    }
-    if (child.type === "composition") {
-      return {
-        ...child,
-        ...(child.children ? { children: child.children.map(walk) } : {}),
-        ...(child.attachments ? { attachments: child.attachments.map(walk) } : {}),
-      };
-    }
-    return child;
-  };
-  return {
-    ...doc,
-    ...(doc.children ? { children: doc.children.map(walk) } : {}),
-    ...(doc.attachments ? { attachments: doc.attachments.map(walk) } : {}),
-  };
+  return mapDocumentSources(doc, (src) =>
+    isAbsolute(src) ? toRelative(src) : src
+  );
 }
 
 /**
@@ -132,22 +129,9 @@ export function collectClipSources(doc: SeamFile, out: string[] = []): string[] 
     resolved = doc;
   }
 
-  const visit = (child: Child) => {
-    if (isMediaSource(child)) {
-      out.push(child.source);
-    } else if (child.type === "graphic") {
-      // Graphic Image `src`s are file-backed media too — collect them (for
-      // blob-URL preload / export bundling) without altering the node.
-      mapGraphicImageSources(child as Obj, (src) => {
-        out.push(src);
-        return src;
-      });
-    } else if (child.type === "composition") {
-      child.children?.forEach(visit);
-      if (child.attachments) child.attachments.forEach(visit);
-    }
-  };
-  resolved.children?.forEach(visit);
-  if (resolved.attachments) resolved.attachments.forEach(visit);
+  mapDocumentSources(resolved, (src) => {
+    out.push(src);
+    return src;
+  });
   return out;
 }

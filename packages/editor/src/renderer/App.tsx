@@ -764,19 +764,6 @@ export default function App({ platform }: AppProps) {
     }
   });
 
-  const handleImport = useEvent(async (file: File) => {
-    if (!platform.importProject) return;
-    try {
-      const result = await platform.importProject(file);
-      if (result) {
-        await openFromJson(result.json, result.filePath);
-        setShowBrowser(false);
-      }
-    } catch (err) {
-      setErrors([String(err)]);
-    }
-  });
-
   // Web-only: bare .seam JSON import (no clip bundle). Confirms with
   // the user before overwriting an existing project of the same name.
   const handleImportSeam = useEvent(async (file: File) => {
@@ -1206,7 +1193,6 @@ export default function App({ platform }: AppProps) {
           onSave={handleSave}
           onSaveAs={handleSaveAs}
           onExport={handleExport}
-          onImport={handleImport}
           onExportSeam={handleExportSeam}
           onImportSeam={handleImportSeam}
           onBrowseProjects={topBarBrowseProjects}

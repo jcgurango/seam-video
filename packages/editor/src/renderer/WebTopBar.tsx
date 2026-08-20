@@ -13,7 +13,6 @@ interface WebTopBarProps {
   onSave: () => void;
   onSaveAs: () => void;
   onExport: () => void;
-  onImport: (file: File) => void;
   onExportSeam: () => void;
   onImportSeam: (file: File) => void;
   onBrowseProjects: () => void;
@@ -31,7 +30,6 @@ export default function WebTopBar({
   onSave,
   onSaveAs,
   onExport,
-  onImport,
   onExportSeam,
   onImportSeam,
   onBrowseProjects,
@@ -42,17 +40,9 @@ export default function WebTopBar({
 }: WebTopBarProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const importInputRef = useRef<HTMLInputElement>(null);
   const importSeamInputRef = useRef<HTMLInputElement>(null);
 
-  const triggerImport = () => importInputRef.current?.click();
   const triggerImportSeam = () => importSeamInputRef.current?.click();
-
-  const handleImportChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onImport(file);
-    e.target.value = "";
-  };
 
   const handleImportSeamChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -106,9 +96,10 @@ export default function WebTopBar({
       disabled: !canSave,
     },
     { label: "—", onClick: () => {} },
-    { label: "Import Zip…", onClick: triggerImport },
     {
-      label: "Export Zip…",
+      // Copies .seam + media into a picked folder (Chromium
+      // showDirectoryPicker; the flat folder is the native project layout).
+      label: "Export Project…",
       shortcut: `${mod}E`,
       onClick: onExport,
       disabled: !canSave,
@@ -140,13 +131,6 @@ export default function WebTopBar({
         flexShrink: 0,
       }}
     >
-      <input
-        ref={importInputRef}
-        type="file"
-        accept=".zip,application/zip"
-        onChange={handleImportChange}
-        style={{ display: "none" }}
-      />
       <input
         ref={importSeamInputRef}
         type="file"

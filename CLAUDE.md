@@ -92,7 +92,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/binTool.ts` | `applyBin` — promote a composition to `doc.bin`, leave a `binItem` reference behind |
 | `src/renderer/ccCutTool.ts` | CC-cut math (transcription → composition-time, splice as bin references) |
 | `src/renderer/anchorEdit.ts` | Anchor-line math (computePointTime, dragAnchorPoint, dragOffset, toggle{AnchorPoint,Offset}, setAttachmentSpec) |
-| `src/renderer/exportHelpers.ts` | `buildExportPlan` (zip), `remapSourcesToRelative` (Save As), `collectClipSources` (compile-then-walk). All three also descend into `graphic` nodes via `graphicSources.ts` so graphic `Image` `src`s are collected/rewritten alongside clip/audio/static `source` |
+| `src/renderer/exportHelpers.ts` | **`mapDocumentSources(doc, fn)`** — the single immutable walk over every media source (clip/audio/static `source` + graphic `Image` `src`s via `graphicSources.ts`, recursing `children`/`attachments`/**`bin` entry bodies**). `buildExportPlan` (flat folder bundle: basename-flatten + collision rename), `remapSourcesToRelative` (Save As), `collectClipSources` (compile-then-walk) are all thin wrappers over it. Also used by web's `importFiles` for import-time source rewriting |
 | `src/renderer/mediaSource.ts` | `isMediaSource(child): child is Clip | Audio | Static` — single canonical predicate |
 | `src/renderer/graphicSources.ts` | `mapGraphicImageSources` — recursive walk of a graphic node's frames + clip defs (through Groups + Map anchor wrappers) mapping every `Image` `src`; `isBundleableImageSrc` skips `data:`/`http(s)`/`blob:`. Used by exportHelpers for collect/bundle/relative-remap |
 | `src/renderer/useImport.ts` | File-drop importer. `.pmtiles` → graphic node with a Map element (no blob URL, OPFS-direct byte-range reads). Standard media kinds route to `clip`/`audio`/`static` |
@@ -119,7 +119,7 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 | `src/renderer/BinPanel.tsx` | Lists bin entries; supports rename + entry into CC Cut view |
 | `src/renderer/ScriptPanel.tsx` | Monaco script editor; enable/disable/bake |
 | `src/renderer/CCCutView.tsx` | Word ribbon + selection model for CC Cut |
-| `src/renderer/WebTopBar.tsx` | Web's File menu (New / Open / Save / Import/Export .seam / Import/Export Zip / Browse) |
+| `src/renderer/WebTopBar.tsx` | Web's File menu (New / Open / Save / Import/Export .seam / Export Project / Browse). No zip import — batch file/folder import lives on the browse page (drop zone + Upload buttons) |
 | `src/renderer/ProjectBrowser.tsx` | Web project listing |
 | `src/renderer/ProjectPicker.tsx`, `SettingsDialog.tsx` | UI dialogs |
 | `src/renderer/platform/{electron,web}.ts` | `Platform` implementations; `onAction` covers `"new" | "open" | "save" | "save-as" | "export" | "settings"`. `openPmtilesSource(filename)` → byte-range pmtiles `Source` (Web: `FileSource(OPFS File)`. Electron: `FetchSource(file://)`). Wired in `main.tsx` via `setPmtilesResolver` |
@@ -185,4 +185,4 @@ npx tsx packages/cli/src/index.ts render <file.seam>                   # render 
 - `@seam/map` (DIY: pmtiles + `@mapbox/vector-tile` + `pbf` + `@maplibre/maplibre-gl-style-spec` + Canvas2D) for Map elements — browser preview and headless renderer alike, no OpenLayers/jsdom/WebGL
 - pmtiles for byte-range vector/raster tile reads (OPFS on web, fs on node)
 - node-web-audio-api (OfflineAudioContext) for the renderer's audio mix
-- JSZip for web import/export
+- **No zip anywhere.** "Export Project…" copies `.seam` + media into a picked **folder** — the flat folder IS the project layout the desktop app/CLI open. Web: `showDirectoryPicker` + `stream().pipeTo` (Chromium-only; others get a descriptive error — Export .seam / Seam Cloud are the alternatives), with per-entry lazy OPFS `File` acquisition (`acquireExportFile`; OPFS Files are snapshots — holding them across a long export causes `NotReadableError`). Electron: main-process `showOpenDialog(openDirectory)` + `copyFile`. **Web import** = `WebPlatform.importFiles(File[])`: batch importer behind the browse page's page-wide drop zone (both tabs, folder-drop aware) and MediaBrowser's Upload Media / Upload Folder buttons — media → `importClip` (fingerprint dedup + unique rename) first, then `.seam` files become projects with sources basename-flattened and mapped through the batch's rename map (`mapDocumentSources`)

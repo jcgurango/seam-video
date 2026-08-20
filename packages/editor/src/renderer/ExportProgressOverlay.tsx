@@ -19,7 +19,7 @@ const PHASE_SPAN: Record<ExportProgress["phase"], number> = {
 
 const PHASE_LABEL: Record<ExportProgress["phase"], string> = {
   read: "Reading clips",
-  zip: "Building archive",
+  zip: "Bundling media",
   write: "Writing file",
 };
 

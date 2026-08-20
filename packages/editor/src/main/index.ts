@@ -1,8 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol } from "electron";
 import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import JSZip from "jszip";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -37,7 +36,7 @@ function buildMenu() {
         },
         { type: "separator" },
         {
-          label: "Export…",
+          label: "Export Project…",
           accelerator: "CmdOrCtrl+E",
           click: () => mainWindow?.webContents.send("menu-export"),
         },
@@ -213,12 +212,15 @@ app.whenReady().then(() => {
       }
     ): Promise<{ success: true } | { canceled: true } | { error: string }> => {
       if (!mainWindow) return { error: "No active window." };
-      const result = await dialog.showSaveDialog(mainWindow, {
+      // Copy the bundle into a picked folder — the flat `.seam`-next-to-media
+      // layout is the native project format, so there's nothing to archive.
+      const result = await dialog.showOpenDialog(mainWindow, {
         title: "Export Project",
-        defaultPath: `${payload.defaultName}.zip`,
-        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+        buttonLabel: "Export Here",
+        properties: ["openDirectory", "createDirectory"],
       });
-      if (result.canceled || !result.filePath) return { canceled: true };
+      if (result.canceled || !result.filePaths[0]) return { canceled: true };
+      const dir = result.filePaths[0];
 
       const send = (
         phase: "read" | "zip" | "write",
@@ -233,16 +235,14 @@ app.whenReady().then(() => {
       };
 
       try {
-        const zip = new JSZip();
-        zip.file(payload.seamFileName, payload.docJson);
+        await writeFile(join(dir, payload.seamFileName), payload.docJson);
 
         const total = payload.clips.length;
         for (let i = 0; i < payload.clips.length; i++) {
           const clip = payload.clips[i];
-          send("read", total === 0 ? 1 : i / total, clip.exportName);
+          send("zip", total === 0 ? 1 : i / total, clip.exportName);
           try {
-            const bytes = await readFile(clip.sourcePath);
-            zip.file(clip.exportName, bytes);
+            await copyFile(clip.sourcePath, join(dir, clip.exportName));
           } catch (err) {
             console.warn(
               `export-project: skipping missing clip "${clip.sourcePath}":`,
@@ -250,21 +250,6 @@ app.whenReady().then(() => {
             );
           }
         }
-        send("read", 1);
-
-        const buf = await zip.generateAsync(
-          { type: "nodebuffer" },
-          (metadata) => {
-            send(
-              "zip",
-              metadata.percent / 100,
-              metadata.currentFile ?? undefined
-            );
-          }
-        );
-
-        send("write", 0.5);
-        writeFileSync(result.filePath, buf);
         send("write", 1);
 
         return { success: true };

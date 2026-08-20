@@ -10,9 +10,16 @@ import {
   UploadCloud,
   DownloadCloud,
   RefreshCw,
+  Upload,
+  FolderUp,
 } from "lucide-react";
 import type { SeamFile } from "@seam/core";
-import type { WebPlatform, MediaMeta } from "./platform/web.js";
+import type {
+  WebPlatform,
+  MediaMeta,
+  ImportFilesResult,
+} from "./platform/web.js";
+import { describeImportResult } from "./platform/web.js";
 import type { CloudMedia } from "./cloud/CloudClient.js";
 import { useCloud } from "./cloud/useCloud.js";
 import TransferQueuePanel, {
@@ -40,6 +47,12 @@ interface MediaBrowserProps {
    *  "main": the web landing grid — tiles aren't draggable and gain per-item
    *  Download/Delete actions on hover. */
   variant?: "inspector" | "main";
+  /** Bumped by the host when it imported media itself (e.g. the browse
+   *  page's drop zone) so the grid re-scans OPFS. */
+  externalReloadKey?: number;
+  /** Fired after this panel's own Upload Media / Upload Folder imports, so
+   *  the host can refresh other lists (a folder can contain .seam files). */
+  onImported?: (res: ImportFilesResult) => void;
 }
 
 type SortKey = "date" | "added" | "used";
@@ -153,6 +166,8 @@ export default function MediaBrowser({
   platform,
   currentDoc,
   variant = "inspector",
+  externalReloadKey = 0,
+  onImported,
 }: MediaBrowserProps) {
   const [items, setItems] = useState<MediaItem[] | null>(null);
   const [sort, setSort] = useState<SortKey>("added");
@@ -165,6 +180,30 @@ export default function MediaBrowser({
   const [reloadKey, setReloadKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
+
+  // Local batch import (main variant): Upload Media / Upload Folder buttons.
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const uploadFolderRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleUploadFiles = async (list: FileList | null) => {
+    const files = Array.from(list ?? []);
+    if (files.length === 0 || uploading) return;
+    setUploading(true);
+    setNotice(null);
+    try {
+      const res = await platform.importFiles(files);
+      setReloadKey((k) => k + 1);
+      setNotice(describeImportResult(res));
+      onImported?.(res);
+    } catch (err) {
+      setNotice(
+        `Import failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
 
   // Track blob URLs we mint so we can revoke them on unmount.
   const urlsRef = useRef<string[]>([]);
@@ -253,11 +292,12 @@ export default function MediaBrowser({
       cancelled = true;
       for (const u of mintedUrls) URL.revokeObjectURL(u);
     };
-    // Rebuild only when the platform changes (i.e. essentially never). New
-    // imports while open aren't auto-reflected — acceptable for this pass.
-    // reloadKey re-scans local clips after a cloud download adds one.
+    // Rebuild only when the platform changes (i.e. essentially never).
+    // reloadKey re-scans local clips after a cloud download or an Upload
+    // Media/Folder import; externalReloadKey after the browse page's drop
+    // zone imported files while this grid was mounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform, reloadKey]);
+  }, [platform, reloadKey, externalReloadKey]);
 
   const patchItem = (name: string, patch: Partial<MediaItem>) => {
     setItems((prev) =>
@@ -466,10 +506,54 @@ export default function MediaBrowser({
               In this project
             </label>
           )}
-          {variant === "main" && cloudAuthed && (
+          {variant === "main" && (
             <div
               style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}
             >
+              <button
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={uploading}
+                title="Add media or .seam project files to Seam"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: "#2e2e2e",
+                  border: "1px solid #3a3a3a",
+                  color: "#e0e0e0",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  cursor: uploading ? "default" : "pointer",
+                  fontSize: 13,
+                  opacity: uploading ? 0.6 : 1,
+                }}
+              >
+                <Upload size={15} />
+                Upload Media
+              </button>
+              <button
+                onClick={() => uploadFolderRef.current?.click()}
+                disabled={uploading}
+                title="Add a whole folder — media plus any .seam projects, with references kept in sync"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: "#2e2e2e",
+                  border: "1px solid #3a3a3a",
+                  color: "#e0e0e0",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  cursor: uploading ? "default" : "pointer",
+                  fontSize: 13,
+                  opacity: uploading ? 0.6 : 1,
+                }}
+              >
+                <FolderUp size={15} />
+                Upload Folder
+              </button>
+              {cloudAuthed && (
+              <>
               <button
                 onClick={() => void cloud!.refreshMedia()}
                 disabled={cloudState?.refreshing}
@@ -528,9 +612,32 @@ export default function MediaBrowser({
                 <Trash2 size={15} />
                 Delete Synced Files
               </button>
+              </>
+              )}
             </div>
           )}
         </div>
+        <input
+          ref={uploadInputRef}
+          type="file"
+          multiple
+          onChange={(e) => {
+            void handleUploadFiles(e.target.files);
+            e.target.value = "";
+          }}
+          style={{ display: "none" }}
+        />
+        <input
+          ref={uploadFolderRef}
+          type="file"
+          multiple
+          onChange={(e) => {
+            void handleUploadFiles(e.target.files);
+            e.target.value = "";
+          }}
+          style={{ display: "none" }}
+          {...({ webkitdirectory: "" } as object)}
+        />
         <input
           type="search"
           value={query}

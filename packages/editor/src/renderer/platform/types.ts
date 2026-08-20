@@ -107,14 +107,4 @@ export interface Platform {
     defaultName: string,
     onProgress?: (p: ExportProgress) => void
   ): Promise<boolean>;
-
-  /**
-   * Import a flat zip (produced by exportProject) into the platform's
-   * storage. Returns the imported project's `filePath` + `json` so the app
-   * can open it immediately. Web-only for now (Desktop just opens files
-   * directly).
-   */
-  importProject?: (
-    file: File
-  ) => Promise<{ filePath: string; json: string } | null>;
 }
