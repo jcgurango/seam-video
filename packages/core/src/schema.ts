@@ -210,6 +210,10 @@ export const ClipSchema = z.object({
   duration: z.number().positive().optional(),
   orientation: OrientationSchema.optional(),
   volume: keyframed(VolumeValueSchema).optional(),
+  /** Length-preserving audio pitch shift in semitones (fractional ok,
+   *  ± = up/down). Independent of `speed` (which shifts pitch naturally);
+   *  adds with enclosing compositions' `pitch`. Not animatable. */
+  pitch: z.number().gte(-48).lte(48).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
@@ -251,6 +255,8 @@ export const AudioSchema = z.object({
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
   volume: keyframed(VolumeValueSchema).optional(),
+  /** Length-preserving pitch shift in semitones — see clip `pitch`. */
+  pitch: z.number().gte(-48).lte(48).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
   ...TransitionFieldSchema,
@@ -649,6 +655,10 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
      *  descendant (clips / audio / nested compositions). Animatable, sampled
      *  in the composition's output time. Mirrors clip `volume`. */
     volume: keyframed(VolumeValueSchema).optional(),
+    /** Length-preserving pitch shift in semitones applied to every
+     *  audio-bearing descendant; adds through nesting and with each clip's
+     *  own `pitch`. Not animatable. */
+    pitch: z.number().gte(-48).lte(48).optional(),
     contentWidth: keyframed(LengthSchema).optional(),
     contentHeight: keyframed(LengthSchema).optional(),
     // Per-edge inset / crop — composition-only. See InsetSchema above.

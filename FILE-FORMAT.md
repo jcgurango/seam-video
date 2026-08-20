@@ -56,6 +56,7 @@ A clip references a segment of a source video file.
 | `duration` | number | no | Explicit duration in seconds — stretches the clip to fit. Mutually exclusive with `speed` |
 | `orientation` | `0` \| `90` \| `180` \| `270` | no | Pre-transform source rotation (clockwise degrees, default `0`). Baked into the decoded frame before the spatial transform — to the compositor the clip looks as if it arrived already rotated by this amount (a `90`/`270` orientation swaps its width/height). Composes with any rotation declared in the file's container metadata. Not animatable; distinct from the spatial `rotation` field below. |
 | `volume` | number | no | Audio gain multiplier (default `1`). `0` mutes; values up to `4` are accepted for amplification. |
+| `pitch` | number | no | Length-preserving pitch shift in semitones (default `0`; fractional ok, clamped ±48). Independent of `speed`; adds with enclosing compositions' `pitch`. Not animatable (see [Pitch](#pitch)) |
 | `overflow` | string | no | Strategy when the clip is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
@@ -90,6 +91,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `in`, `out` | number | yes | Source-time window (same shape as on a clip) |
 | `speed`, `duration`, `overflow`, `underflow` | — | no | Same shape as on a clip |
 | `volume` | number | no | Audio gain multiplier (default `1`). Same shape as on a clip. |
+| `pitch` | number | no | Length-preserving pitch shift in semitones. Same shape as on a clip (see [Pitch](#pitch)) |
 | `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -348,8 +350,12 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `script` | string | no | JavaScript source. The compile pass runs it against this composition; the return value replaces it in the rendered tree. See [Bin & Scripts](#bin--scripts) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
+| `speed` | number | no | Playback rate of the inner window (the `[in, out]` slice); `>1` plays faster, shortening the output. Mutually exclusive with `duration`. Mirrors clip `speed` |
+| `duration` | number | no | Explicit output duration of the inner window (plays at the derived rate `windowSpan / duration`). Mutually exclusive with `speed`. Mirrors clip `duration` |
 | `overflow` | string | no | Strategy when the composition is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
 | `underflow` | string | no | Strategy when the composition is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
+| `volume` | number \| keyframes | no | Uniform gain applied to every audio-bearing descendant; multiplies through nesting and with each clip's own `volume`. Animatable, sampled in the composition's output time |
+| `pitch` | number | no | Length-preserving pitch shift in semitones applied to every audio-bearing descendant; adds through nesting and with each clip's own `pitch`. Not animatable (see [Pitch](#pitch)) |
 | `contentWidth` | `Length` | no | Inner canvas width (default: parent's content width). Percentages resolve against the parent; the **root composition** must use a pixel number. See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
 | `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
@@ -363,7 +369,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-A composition's natural duration is the sum of its children's natural durations. There's no `duration` field, no flex, no justify, no gap — those are higher-order layout concerns that belong in the editor, not the spec. The resolved duration is whatever the children add up to (or `out − in` if a window is set).
+A composition's natural duration is the sum of its children's natural durations (its inner timeline). `speed` and `duration` rescale the inner window exactly like a clip's — `duration: 10` plays the window at `windowSpan / 10`. There's no flex, no justify, no gap — those are higher-order layout concerns that belong in the editor, not the spec. The resolved output length is the windowed span (`out − in`, defaulting to the whole inner timeline) divided by the effective speed.
 
 #### Nested Compositions and Windowing
 
@@ -671,6 +677,18 @@ Filters can also be applied to compositions, affecting all children as a group:
 ```
 
 On a composition, `opacity` applies to the whole group as a unit (the children composite first, then the group fades), so overlapping children don't double-expose through each other. (Earlier formats expressed this as an `{ "type": "opacity", "value": … }` filter; that filter no longer exists.)
+
+## Pitch
+
+`pitch` is a **length-preserving** audio pitch shift in semitones, available on the audio-bearing nodes (`clip`, `audio`, `composition`). Fractional values are fine, the schema clamps to ±48, and — unlike `volume` — it is **not animatable**:
+
+```json
+{ "type": "audio", "source": "voice.mp3", "in": 0, "out": 10, "pitch": -3 }
+```
+
+- **Independent of `speed`.** `speed` changes duration *and* pitch together (varispeed); `pitch` changes pitch alone. They compose: `"speed": 2, "pitch": -12` plays double-time at the original register.
+- **On a composition**, `pitch` applies to every audio-bearing descendant, and semitones **add** through nesting — a clip with `pitch: 5` inside a composition with `pitch: 7` shifts +12 total.
+- Implemented as a granular (dual delay-line) shifter using the **same audio graph in the live preview and the headless render**, so the two sound identical. Expect a subtle granular character on large shifts and ~50 ms of latency at ±1 octave.
 
 ## Inset
 

@@ -4,6 +4,8 @@
  * recursing compositions) it mirrors the same operations:
  *   atrim  → slice [sourceIn, sourceOut] from the decoded source
  *   speed  → AudioBufferSourceNode.playbackRate (pitch-shifted, like asetrate)
+ *   pitch  → length-preserving semitone shift (@seam/core's createPitchShifter,
+ *            clip pitch + enclosing comp pitches summed)
  *   volume → GainNode (static value or a sampled envelope curve)
  *   afade  → crossfade ramps folded into the gain curve (both ends, since audio sums)
  *   amix   → every node connects to destination (summation)
@@ -14,7 +16,7 @@ import { isAbsolute, join } from "node:path";
 import { registerMediabunnyServer } from "@mediabunny/server";
 import { Input, FilePathSource, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 import { OfflineAudioContext, AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
-import { sampleVolume, resolveVolume, isKeyframed } from "@seam/core";
+import { sampleVolume, resolveVolume, isKeyframed, createPitchShifter } from "@seam/core";
 import type {
   Keyframed,
   ResolvedAudio,
@@ -38,6 +40,7 @@ interface AudioEntry {
   parentSpeed: number; // ancestor speed product (excludes node.speed)
   start: number; // absolute output start (seconds)
   compVolumes: VolumeEnv[]; // enclosing composition volume multipliers
+  pitch: number; // net semitone shift (node pitch + enclosing comp pitches)
 }
 
 function collectAudioNodes(
@@ -45,6 +48,7 @@ function collectAudioNodes(
   parentSpeed: number,
   parentDelay: number,
   parentVolumes: VolumeEnv[],
+  parentPitch: number,
   out: AudioEntry[],
 ): void {
   for (const c of children) {
@@ -54,13 +58,21 @@ function collectAudioNodes(
         c.volume != null
           ? [...parentVolumes, { volume: c.volume, startAbs: compStartAbs, duration: c.duration }]
           : parentVolumes;
-      collectAudioNodes(c.children, parentSpeed * c.speed, compStartAbs, volumes, out);
+      collectAudioNodes(
+        c.children,
+        parentSpeed * c.speed,
+        compStartAbs,
+        volumes,
+        parentPitch + (c.pitch ?? 0),
+        out,
+      );
     } else if (c.type === "clip" || c.type === "audio") {
       out.push({
         node: c,
         parentSpeed,
         start: parentDelay + c.timelineStart / parentSpeed,
         compVolumes: parentVolumes,
+        pitch: parentPitch + (c.pitch ?? 0),
       });
     }
   }
@@ -77,7 +89,7 @@ interface DecodedAudio {
  *  concurrently with the frame loop. */
 export function timelineHasAudio(timeline: ResolvedTimeline): boolean {
   const entries: AudioEntry[] = [];
-  collectAudioNodes(timeline.children, 1, 0, [], entries);
+  collectAudioNodes(timeline.children, 1, 0, [], 0, entries);
   return entries.length > 0;
 }
 
@@ -97,7 +109,7 @@ export async function renderAudioMix(
     timeline.volume != null
       ? [{ volume: timeline.volume, startAbs: 0, duration: timeline.duration }]
       : [];
-  collectAudioNodes(timeline.children, 1, 0, rootVolumes, entries);
+  collectAudioNodes(timeline.children, 1, 0, rootVolumes, timeline.pitch ?? 0, entries);
   if (entries.length === 0) return null;
 
   // Decode only the [inT, outT) region a node actually uses — decoding whole
@@ -159,7 +171,7 @@ export async function renderAudioMix(
 
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(durationSec * SR)), SR);
 
-  for (const { node, parentSpeed, start, compVolumes } of entries) {
+  for (const { node, parentSpeed, start, compVolumes, pitch } of entries) {
     const decoded = await decodeRegion(node.source, node.sourceIn, node.sourceOut);
     if (!decoded || decoded.channels.length === 0) continue;
 
@@ -219,7 +231,19 @@ export async function renderAudioMix(
       gain.gain.setValueCurveAtTime(curve, Math.max(0, start), audioDuration);
     }
 
-    srcNode.connect(gain).connect(ctx.destination);
+    if (pitch !== 0) {
+      // Length-preserving semitone shift between source and gain. The looped
+      // modulation sources start at t=0 and run for the whole offline render;
+      // the input is silent outside the clip's span so that's free. Casts:
+      // node-web-audio-api's node types mirror the DOM's but aren't declared
+      // compatible; the graph is spec-identical (same as sharing AudioBuffer).
+      const shifter = createPitchShifter(ctx as unknown as BaseAudioContext, pitch, 0);
+      srcNode.connect(shifter.input as never);
+      shifter.output.connect(gain as never);
+      gain.connect(ctx.destination);
+    } else {
+      srcNode.connect(gain).connect(ctx.destination);
+    }
     srcNode.start(Math.max(0, start), 0);
   }
 

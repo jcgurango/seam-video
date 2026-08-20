@@ -27,6 +27,7 @@ export {
 export { flattenResolved } from "./flatten.js";
 export type { FlatLeaf } from "./flatten.js";
 export * from "./animation/index.js";
+export { createPitchShifter, type PitchShifter } from "./audio/pitchShifter.js";
 export {
   layoutText,
   textHasAnimatedStyle,

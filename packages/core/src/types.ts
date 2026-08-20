@@ -167,6 +167,10 @@ export interface Clip extends ChildTimingFields {
   /** Audio-channel gain. Default 1; 0 mutes; >1 amplifies. A linear multiplier
    *  (0..4) or a decibel string like `"25dB"` / `"-25.5dB"` (uncapped). */
   volume?: Keyframed<number | string>;
+  /** Length-preserving audio pitch shift in semitones (fractional ok,
+   *  ± = up/down, clamped ±48). Independent of `speed` (which shifts pitch
+   *  naturally); adds with enclosing compositions' `pitch`. Not animatable. */
+  pitch?: number;
 }
 
 /**
@@ -219,6 +223,8 @@ export interface Audio {
   /** Audio-channel gain. Default 1; 0 mutes; >1 amplifies. A linear multiplier
    *  (0..4) or a decibel string like `"25dB"` / `"-25.5dB"` (uncapped). */
   volume?: Keyframed<number | string>;
+  /** Length-preserving pitch shift in semitones — see {@link Clip.pitch}. */
+  pitch?: number;
   id?: string;
   start?: TimeAnchor;
   end?: TimeAnchor;
@@ -411,6 +417,10 @@ export interface BaseComposition extends ChildTimingFields {
    *  time. Mirrors clip `volume`: a linear multiplier (0..4) or a decibel
    *  string like `"25dB"` / `"-25.5dB"` (uncapped). */
   volume?: Keyframed<number | string>;
+  /** Length-preserving pitch shift in semitones applied to every
+   *  audio-bearing descendant; adds through nesting and with each clip's
+   *  own `pitch`. Not animatable. */
+  pitch?: number;
   /** Inner canvas width. Number = pixels; percentage = fraction of the
    *  parent container's content width; defaults to `"100%"` of the parent.
    *  Animatable. The root composition must use a static pixel number (no

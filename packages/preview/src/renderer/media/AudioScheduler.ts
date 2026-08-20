@@ -1,8 +1,16 @@
 import type { AudioBufferSink } from "mediabunny";
+import { createPitchShifter, type PitchShifter } from "@seam/core";
 
 interface ClipState {
   sink: AudioBufferSink;
   speed: number;
+  /** Length-preserving semitone shifter between the buffer sources and the
+   *  gain node, present when the clip's net `pitch` ≠ 0. Its looped
+   *  modulation sources run until dispose. */
+  pitchShifter: PitchShifter | null;
+  /** Where pump() connects buffer sources: the shifter's input when pitched,
+   *  else the gain node directly. */
+  sourceTarget: AudioNode;
   /** Steady-state volume (1 = unity): animated keyframe × composition volume,
    *  WITHOUT any transient crossfade. Tracks animated keyframes when
    *  `setClipVolume` is called per frame; otherwise holds the static value.
@@ -88,7 +96,8 @@ export class AudioScheduler {
     id: string,
     sink: AudioBufferSink,
     speed: number,
-    volume: number = 1
+    volume: number = 1,
+    pitch: number = 0
   ): void {
     // Idempotent: re-registering an id (or a stale one that lingers after a
     // timeline rebuild) must tear the old clip down first, or its GainNode
@@ -97,9 +106,13 @@ export class AudioScheduler {
     const gainNode = this.audioContext.createGain();
     gainNode.gain.value = volume;
     gainNode.connect(this.masterGain);
+    const pitchShifter = pitch !== 0 ? createPitchShifter(this.audioContext, pitch) : null;
+    if (pitchShifter) pitchShifter.output.connect(gainNode);
     this.clips.set(id, {
       sink,
       speed,
+      pitchShifter,
+      sourceTarget: pitchShifter ? pitchShifter.input : gainNode,
       volume,
       appliedGain: volume,
       gainNode,
@@ -137,6 +150,7 @@ export class AudioScheduler {
     const state = this.clips.get(id);
     if (!state) return;
     this.doStop(state);
+    state.pitchShifter?.dispose();
     state.gainNode.disconnect();
     this.clips.delete(id);
   }
@@ -333,7 +347,7 @@ export class AudioScheduler {
       const node = this.audioContext.createBufferSource();
       node.buffer = buffer;
       node.playbackRate.value = state.speed;
-      node.connect(state.gainNode);
+      node.connect(state.sourceTarget);
 
       let started = false;
       if (audioCtxTime >= this.audioContext.currentTime) {

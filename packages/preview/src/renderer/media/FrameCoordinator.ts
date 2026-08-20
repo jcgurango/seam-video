@@ -54,6 +54,10 @@ interface FlatClip {
   /** True when any enclosing composition (or the root) sets `volume`, so the
    *  per-tick loop must keep pushing the multiplier even for static clips. */
   hasCompVolume: boolean;
+  /** Net length-preserving pitch shift in semitones: clip `pitch` + every
+   *  enclosing composition's `pitch` (semitones add through nesting).
+   *  Static — pitch isn't animatable. */
+  pitch: number;
 }
 
 /** Crossfade gain (0..1) for an audio-bearing clip at `currentTime`: fade in
@@ -118,7 +122,9 @@ export class FrameCoordinator {
       (t) => t,
       basePath,
       rootVolumeAt,
-      rootVol != null
+      rootVol != null,
+      1,
+      timeline.pitch ?? 0
     );
 
     // Text nodes rasterize synchronously straight onto OffscreenCanvases
@@ -200,7 +206,8 @@ export class FrameCoordinator {
           audioId,
           audioSink,
           flat.sourceRate,
-          initialVolume
+          initialVolume,
+          flat.pitch
         );
       }
     });
@@ -488,7 +495,8 @@ function collectClips(
   basePath: string,
   volumeAt: (globalTime: number) => number,
   hasVol: boolean,
-  parentRate: number = 1
+  parentRate: number = 1,
+  parentPitch: number = 0
 ): FlatClip[] {
   const result: FlatClip[] = [];
 
@@ -513,6 +521,7 @@ function collectClips(
         sourceRate: parentRate * child.speed,
         compVolumeAt: volumeAt,
         hasCompVolume: hasVol,
+        pitch: parentPitch + (child.pitch ?? 0),
       });
     } else if (child.type === "composition") {
       const parentToLocal = toLocalTime;
@@ -552,7 +561,8 @@ function collectClips(
           basePath,
           childVolumeAt,
           childHasVol,
-          parentRate * comp.speed
+          parentRate * comp.speed,
+          parentPitch + (comp.pitch ?? 0)
         )
       );
     }

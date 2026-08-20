@@ -31,6 +31,39 @@ describe("audio", () => {
     });
   });
 
+  it("carries pitch through resolve (clip, audio, nested comp, root)", () => {
+    const result = resolveComposition(
+      comp({
+        pitch: -2, // root composition pitch
+        children: [
+          comp({
+            pitch: 3,
+            children: [
+              { type: "audio", source: "a.mp3", in: 0, out: 2, pitch: 5 },
+              { type: "clip", source: "v.mp4", in: 0, out: 2, pitch: -7.5 },
+            ],
+          }),
+        ],
+      })
+    );
+    expect(result.pitch).toBe(-2);
+    const nested = result.children[0];
+    expect(nested.type).toBe("composition");
+    if (nested.type === "composition") {
+      expect(nested.pitch).toBe(3);
+      expect(nested.children[0]).toMatchObject({ type: "audio", pitch: 5 });
+      expect(nested.children[1]).toMatchObject({ type: "clip", pitch: -7.5 });
+    }
+  });
+
+  it("rejects pitch outside ±48 semitones", () => {
+    const doc = {
+      type: "composition",
+      children: [{ type: "audio", source: "a.mp3", in: 0, out: 1, pitch: 60 }],
+    };
+    expect(parseSeamFile(JSON.stringify(doc)).success).toBe(false);
+  });
+
   it("carries a composition volume through resolve (nested + root)", () => {
     const result = resolveComposition(
       comp({

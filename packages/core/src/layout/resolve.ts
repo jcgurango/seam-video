@@ -275,6 +275,7 @@ function resolveChild(
         ...(child.filters?.length ? { filters: child.filters } : {}),
         ...(child.opacity != null ? { opacity: child.opacity } : {}),
         ...(child.volume != null ? { volume: child.volume } : {}),
+        ...(child.pitch != null ? { pitch: child.pitch } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
@@ -321,6 +322,7 @@ function resolveChild(
         timelineEnd: 0,
         speed,
         ...(leaf.volume != null ? { volume: leaf.volume } : {}),
+        ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
       },
       actualDuration: leafDur,
     };
@@ -337,6 +339,7 @@ function resolveChild(
       speed,
       ...(leaf.orientation != null ? { orientation: leaf.orientation } : {}),
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
+      ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
       ...(leaf.opacity != null ? { opacity: leaf.opacity } : {}),
@@ -443,6 +446,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
       ? { backgroundColor: composition.backgroundColor }
       : {}),
     ...(composition.volume != null ? { volume: composition.volume } : {}),
+    ...(composition.pitch != null ? { pitch: composition.pitch } : {}),
     ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
     ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
   };

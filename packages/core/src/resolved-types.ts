@@ -76,6 +76,9 @@ export interface ResolvedClip {
   transitionOut?: number;
   /** Audio gain multiplier; absent means unity (1). */
   volume?: Keyframed<number | string>;
+  /** Length-preserving pitch shift in semitones; absent means 0. Adds with
+   *  enclosing compositions' `pitch`. */
+  pitch?: number;
   filters?: Filter[];
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
@@ -137,6 +140,8 @@ export interface ResolvedAudio {
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
   volume?: Keyframed<number | string>;
+  /** Length-preserving pitch shift in semitones — see ResolvedClip. */
+  pitch?: number;
 }
 
 export interface ResolvedData {
@@ -201,6 +206,9 @@ export interface ResolvedComposition {
   /** Uniform volume multiplier applied to every audio-bearing descendant.
    *  Sampled per-frame by the audio mixers in the comp's output time. */
   volume?: Keyframed<number | string>;
+  /** Length-preserving pitch shift (semitones) applied to every audio-bearing
+   *  descendant; adds through nesting and with each clip's own `pitch`. */
+  pitch?: number;
   /** Inner canvas dim — the AUTHORED `Keyframed<Length>` preserved through
    *  the spatial pass (default `"100%"` of the parent) so per-frame
    *  consumers sample it against live parent dims. The baked t=0 pixel
@@ -267,6 +275,9 @@ export interface ResolvedTimeline {
   /** Root-composition volume multiplier — scales every audio-bearing
    *  descendant. Sampled in output time against the timeline duration. */
   volume?: Keyframed<number | string>;
+  /** Root-composition pitch shift (semitones) — adds onto every
+   *  audio-bearing descendant's net pitch. */
+  pitch?: number;
   /** Root inner canvas dim. Carries the authored value pre-spatial;
    *  `resolveSpatial` collapses it to a pixel number (and rejects percentage
    *  strings AND keyframes on the root, since there's no parent reference and
