@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { renderCommand } from "./commands/render.js";
 import { resolveCommand } from "./commands/resolve.js";
+import { flatCommand } from "./commands/flat.js";
 
 // In the published CLI, @seam/renderer is bundled into this file, so its
 // source-relative font/style lookups no longer resolve. The build vendors the
@@ -64,6 +65,15 @@ program
   .option("--no-spatial", "Skip spatial resolution (temporal layout only)")
   .option("--no-pretty", "Emit minified JSON")
   .action(resolveCommand);
+
+program
+  .command("flat <file>")
+  .description(
+    "List every source-bearing node (clip/audio/static) as a JSON array of {type, source, in, out, start, end}, with start/end in absolute seconds from the beginning of the composition",
+  )
+  .option("-o, --output <path>", "Write to file instead of stdout")
+  .option("--no-pretty", "Emit minified JSON")
+  .action(flatCommand);
 
 // parseAsync (not parse) so async command actions are awaited and their
 // rejections surface here with full detail, rather than becoming an unhandled
