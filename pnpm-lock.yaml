@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@mediabunny/server@1.48.1':
+    hash: 5b1d378129c15f959a3d7cdab929962620b1831ba01d08541cb4507e99664269
+    path: patches/@mediabunny__server@1.48.1.patch
+
 importers:
 
   .: {}
@@ -21,7 +26,7 @@ importers:
         version: 24.10.0
       '@mediabunny/server':
         specifier: ^1.45.0
-        version: 1.48.1(mediabunny@1.48.1)
+        version: 1.48.1(patch_hash=5b1d378129c15f959a3d7cdab929962620b1831ba01d08541cb4507e99664269)(mediabunny@1.48.1)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -85,7 +90,7 @@ importers:
         version: 1.19.14(hono@4.12.27)
       '@mediabunny/server':
         specifier: ^1.45.0
-        version: 1.48.1(mediabunny@1.48.1)
+        version: 1.48.1(patch_hash=5b1d378129c15f959a3d7cdab929962620b1831ba01d08541cb4507e99664269)(mediabunny@1.48.1)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -316,7 +321,7 @@ importers:
         version: 0.0.6
       '@mediabunny/server':
         specifier: ^1.45.0
-        version: 1.48.1(mediabunny@1.48.1)
+        version: 1.48.1(patch_hash=5b1d378129c15f959a3d7cdab929962620b1831ba01d08541cb4507e99664269)(mediabunny@1.48.1)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -3417,7 +3422,7 @@ snapshots:
       quickselect: 3.0.0
       tinyqueue: 3.0.0
 
-  '@mediabunny/server@1.48.1(mediabunny@1.48.1)':
+  '@mediabunny/server@1.48.1(patch_hash=5b1d378129c15f959a3d7cdab929962620b1831ba01d08541cb4507e99664269)(mediabunny@1.48.1)':
     dependencies:
       mediabunny: 1.48.1
       node-av: 6.0.0

@@ -1,0 +1,166 @@
+diff --git a/dist/bundles/mediabunny-server.cjs b/dist/bundles/mediabunny-server.cjs
+index 8cba9590bd50a52e7fc543b7aa3fad0d1b9a01f9..99b426af48797981a08aa473d1ad4f109b050dc6 100644
+--- a/dist/bundles/mediabunny-server.cjs
++++ b/dist/bundles/mediabunny-server.cjs
+@@ -2623,6 +2623,16 @@ var MediabunnyServer = (() => {
+           codecContext.setOption("preset", "12");
+         }
+       }
++      // [seam patch] Tag 8-bit SDR YUV output as BT.709 limited-range before the
++      // codec opens, so the encoder writes VUI colour info and getDecoderConfig
++      // reports a complete colorSpace (which makes mediabunny's muxers emit a
++      // colr box). The RGB->YUV conversion in encode() is forced to match.
++      if (pixelFormat === NodeAv4.AV_PIX_FMT_YUV420P || pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P) {
++        codecContext.colorPrimaries = NodeAv4.AVCOL_PRI_BT709;
++        codecContext.colorTrc = NodeAv4.AVCOL_TRC_BT709;
++        codecContext.colorSpace = NodeAv4.AVCOL_SPC_BT709;
++        codecContext.colorRange = NodeAv4.AVCOL_RANGE_MPEG;
++      }
+       const ret = await codecContext.open2();
+       NodeAv4.FFmpegError.throwIfError(ret, "Open codec context");
+       this.codecContext = codecContext;
+@@ -2643,7 +2653,51 @@ var MediabunnyServer = (() => {
+       }
+       let frameToEncode = this.frame;
+       const requiresScaler = this.codecContext.pixelFormat !== this.frame.format || this.codecContext.width !== this.frame.width || this.codecContext.height !== this.frame.height;
+-      if (requiresScaler) {
++      // [seam patch] RGB-family input converting to 8-bit SDR YUV: swscale's
++      // default matrix is BT.601, which would contradict the BT.709 VUI tags set
++      // on the codec context. Route the conversion through the scale filter with
++      // out_color_matrix=bt709:out_range=tv instead (sws_scale_frame ignores
++      // frame colour properties in this build; the filter honours the options).
++      const seamRgbFormats = [
++        NodeAv4.AV_PIX_FMT_RGBA, NodeAv4.AV_PIX_FMT_BGRA, NodeAv4.AV_PIX_FMT_ARGB, NodeAv4.AV_PIX_FMT_ABGR,
++        NodeAv4.AV_PIX_FMT_RGB24, NodeAv4.AV_PIX_FMT_BGR24, NodeAv4.AV_PIX_FMT_RGB0, NodeAv4.AV_PIX_FMT_BGR0
++      ];
++      const seamYuvDst = this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUV420P || this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P;
++      if (requiresScaler && seamYuvDst && seamRgbFormats.includes(this.frame.format)) {
++        const seamKey = `${this.frame.width}x${this.frame.height}:${this.frame.format}`;
++        if (!this.seamColorGraph || this.seamColorGraphKey !== seamKey) {
++          this.seamColorGraph?.free();
++          const graph = new NodeAv4.FilterGraph();
++          graph.alloc();
++          const srcArgs = `video_size=${this.frame.width}x${this.frame.height}:pix_fmt=${this.frame.format}:time_base=1/1000000:pixel_aspect=1/1`;
++          const bufferSrc = graph.createFilter(NodeAv4.Filter.getByName("buffer"), "src", srcArgs);
++          const bufferSink = graph.createFilter(NodeAv4.Filter.getByName("buffersink"), "sink");
++          const outputs = NodeAv4.FilterInOut.createList([{ name: "in", filterCtx: bufferSrc, padIdx: 0 }]);
++          const inputs = NodeAv4.FilterInOut.createList([{ name: "out", filterCtx: bufferSink, padIdx: 0 }]);
++          const dstFmt = this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P ? "yuva420p" : "yuv420p";
++          const chain = `scale=${this.codecContext.width}:${this.codecContext.height}:out_color_matrix=bt709:out_range=tv,format=${dstFmt}`;
++          const parseRet = graph.parsePtr(`[in]${chain}[out]`, inputs, outputs);
++          NodeAv4.FFmpegError.throwIfError(parseRet, "FilterGraph.parsePtr");
++          const configRet = await graph.config();
++          NodeAv4.FFmpegError.throwIfError(configRet, "FilterGraph.config");
++          this.seamColorGraph = graph;
++          this.seamColorSrc = bufferSrc;
++          this.seamColorSink = bufferSink;
++          this.seamColorGraphKey = seamKey;
++          this.seamColorFrame = new NodeAv4.Frame();
++          this.seamColorFrame.alloc();
++        }
++        this.frame.pts = BigInt(videoSample.microsecondTimestamp);
++        this.frame.timeBase = new NodeAv4.Rational(1, 1e6);
++        const seamAddRet = await this.seamColorSrc.buffersrcAddFrame(this.frame);
++        NodeAv4.FFmpegError.throwIfError(seamAddRet, "buffersrcAddFrame");
++        this.seamColorFrame.unref();
++        const seamGetRet = await this.seamColorSink.buffersinkGetFrame(this.seamColorFrame);
++        NodeAv4.FFmpegError.throwIfError(seamGetRet, "buffersinkGetFrame");
++        this.seamColorFrame.colorPrimaries = NodeAv4.AVCOL_PRI_BT709;
++        this.seamColorFrame.colorTrc = NodeAv4.AVCOL_TRC_BT709;
++        frameToEncode = this.seamColorFrame;
++      } else if (requiresScaler) {
+         if (!this.scaler) {
+           this.scaler = new NodeAv4.SoftwareScaleContext();
+         }
+@@ -2919,6 +2973,8 @@ var MediabunnyServer = (() => {
+       this.packet.free();
+       this.scaler?.freeContext();
+       this.dstFrame?.free();
++      this.seamColorGraph?.free();
++      this.seamColorFrame?.free();
+     }
+   };
+ 
+diff --git a/dist/bundles/mediabunny-server.mjs b/dist/bundles/mediabunny-server.mjs
+index 4cd904b71479061c6fa6d2ec9a533daeff4384df..d59abb4fe94067d71b9f29585d8c676fdef91e8e 100644
+--- a/dist/bundles/mediabunny-server.mjs
++++ b/dist/bundles/mediabunny-server.mjs
+@@ -2594,6 +2594,16 @@ var NodeAvVideoEncoder = class extends CustomVideoEncoder {
+         codecContext.setOption("preset", "12");
+       }
+     }
++    // [seam patch] Tag 8-bit SDR YUV output as BT.709 limited-range before the
++    // codec opens, so the encoder writes VUI colour info and getDecoderConfig
++    // reports a complete colorSpace (which makes mediabunny's muxers emit a
++    // colr box). The RGB->YUV conversion in encode() is forced to match.
++    if (pixelFormat === NodeAv4.AV_PIX_FMT_YUV420P || pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P) {
++      codecContext.colorPrimaries = NodeAv4.AVCOL_PRI_BT709;
++      codecContext.colorTrc = NodeAv4.AVCOL_TRC_BT709;
++      codecContext.colorSpace = NodeAv4.AVCOL_SPC_BT709;
++      codecContext.colorRange = NodeAv4.AVCOL_RANGE_MPEG;
++    }
+     const ret = await codecContext.open2();
+     NodeAv4.FFmpegError.throwIfError(ret, "Open codec context");
+     this.codecContext = codecContext;
+@@ -2614,7 +2624,51 @@ var NodeAvVideoEncoder = class extends CustomVideoEncoder {
+     }
+     let frameToEncode = this.frame;
+     const requiresScaler = this.codecContext.pixelFormat !== this.frame.format || this.codecContext.width !== this.frame.width || this.codecContext.height !== this.frame.height;
+-    if (requiresScaler) {
++    // [seam patch] RGB-family input converting to 8-bit SDR YUV: swscale's
++    // default matrix is BT.601, which would contradict the BT.709 VUI tags set
++    // on the codec context. Route the conversion through the scale filter with
++    // out_color_matrix=bt709:out_range=tv instead (sws_scale_frame ignores
++    // frame colour properties in this build; the filter honours the options).
++    const seamRgbFormats = [
++      NodeAv4.AV_PIX_FMT_RGBA, NodeAv4.AV_PIX_FMT_BGRA, NodeAv4.AV_PIX_FMT_ARGB, NodeAv4.AV_PIX_FMT_ABGR,
++      NodeAv4.AV_PIX_FMT_RGB24, NodeAv4.AV_PIX_FMT_BGR24, NodeAv4.AV_PIX_FMT_RGB0, NodeAv4.AV_PIX_FMT_BGR0
++    ];
++    const seamYuvDst = this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUV420P || this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P;
++    if (requiresScaler && seamYuvDst && seamRgbFormats.includes(this.frame.format)) {
++      const seamKey = `${this.frame.width}x${this.frame.height}:${this.frame.format}`;
++      if (!this.seamColorGraph || this.seamColorGraphKey !== seamKey) {
++        this.seamColorGraph?.free();
++        const graph = new NodeAv4.FilterGraph();
++        graph.alloc();
++        const srcArgs = `video_size=${this.frame.width}x${this.frame.height}:pix_fmt=${this.frame.format}:time_base=1/1000000:pixel_aspect=1/1`;
++        const bufferSrc = graph.createFilter(NodeAv4.Filter.getByName("buffer"), "src", srcArgs);
++        const bufferSink = graph.createFilter(NodeAv4.Filter.getByName("buffersink"), "sink");
++        const outputs = NodeAv4.FilterInOut.createList([{ name: "in", filterCtx: bufferSrc, padIdx: 0 }]);
++        const inputs = NodeAv4.FilterInOut.createList([{ name: "out", filterCtx: bufferSink, padIdx: 0 }]);
++        const dstFmt = this.codecContext.pixelFormat === NodeAv4.AV_PIX_FMT_YUVA420P ? "yuva420p" : "yuv420p";
++        const chain = `scale=${this.codecContext.width}:${this.codecContext.height}:out_color_matrix=bt709:out_range=tv,format=${dstFmt}`;
++        const parseRet = graph.parsePtr(`[in]${chain}[out]`, inputs, outputs);
++        NodeAv4.FFmpegError.throwIfError(parseRet, "FilterGraph.parsePtr");
++        const configRet = await graph.config();
++        NodeAv4.FFmpegError.throwIfError(configRet, "FilterGraph.config");
++        this.seamColorGraph = graph;
++        this.seamColorSrc = bufferSrc;
++        this.seamColorSink = bufferSink;
++        this.seamColorGraphKey = seamKey;
++        this.seamColorFrame = new NodeAv4.Frame();
++        this.seamColorFrame.alloc();
++      }
++      this.frame.pts = BigInt(videoSample.microsecondTimestamp);
++      this.frame.timeBase = new NodeAv4.Rational(1, 1e6);
++      const seamAddRet = await this.seamColorSrc.buffersrcAddFrame(this.frame);
++      NodeAv4.FFmpegError.throwIfError(seamAddRet, "buffersrcAddFrame");
++      this.seamColorFrame.unref();
++      const seamGetRet = await this.seamColorSink.buffersinkGetFrame(this.seamColorFrame);
++      NodeAv4.FFmpegError.throwIfError(seamGetRet, "buffersinkGetFrame");
++      this.seamColorFrame.colorPrimaries = NodeAv4.AVCOL_PRI_BT709;
++      this.seamColorFrame.colorTrc = NodeAv4.AVCOL_TRC_BT709;
++      frameToEncode = this.seamColorFrame;
++    } else if (requiresScaler) {
+       if (!this.scaler) {
+         this.scaler = new NodeAv4.SoftwareScaleContext();
+       }
+@@ -2890,6 +2944,8 @@ var NodeAvVideoEncoder = class extends CustomVideoEncoder {
+     this.packet.free();
+     this.scaler?.freeContext();
+     this.dstFrame?.free();
++    this.seamColorGraph?.free();
++    this.seamColorFrame?.free();
+   }
+ };
+ 

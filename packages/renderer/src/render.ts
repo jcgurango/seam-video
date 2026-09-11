@@ -245,6 +245,16 @@ export async function renderSeamToFile(
         codedHeight: height,
         timestamp: encoded / fps,
         duration: 1 / fps,
+        // The compositor's readback is gamma-encoded full-range RGB (sRGB-ish,
+        // 709 primaries). The patched @mediabunny/server encoder converts it
+        // to BT.709 limited-range YUV and tags the bitstream + container to
+        // match (VUI + colr) — see patches/@mediabunny__server@1.48.1.patch.
+        colorSpace: {
+          primaries: "bt709",
+          transfer: "iec61966-2-1",
+          matrix: "rgb",
+          fullRange: true,
+        },
       });
       await videoSource.add(sample);
       sample.close();
