@@ -204,7 +204,12 @@ export const UnderflowSchema = z.enum([
 export const ClipSchema = z.object({
   type: z.literal("clip"),
   source: z.string().min(1),
-  in: z.number().nonnegative(),
+  /** May be negative, mirroring how `out` may exceed the file's end: the
+   *  span `[in, out]` defines the clip's duration, not what the file can
+   *  supply. A distilled doc uses this to keep timeline layout stable when
+   *  a source is trimmed — content before the new file start is simply
+   *  never sampled (it was invisible behind a composition window). */
+  in: z.number(),
   out: z.number().positive(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),

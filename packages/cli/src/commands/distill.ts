@@ -23,7 +23,8 @@ import {
   Output,
   WebMOutputFormat,
 } from "mediabunny";
-import { parseSeamFile } from "@seam/core";
+import { compileSeamFile, parseSeamFile, resolveComposition } from "@seam/core";
+import type { Composition, ResolvedChild } from "@seam/core";
 
 export interface DistillOptions {
   output?: string;
@@ -33,29 +34,83 @@ export interface DistillOptions {
 interface ClipNode {
   type: "clip";
   source: string;
-  in?: number;
-  out?: number;
+  in: number;
+  out: number;
+  id?: unknown;
   [key: string]: unknown;
 }
 
-/** Walk the raw (authored) document JSON collecting every clip node —
- *  children + attachments recursively, plus bin entry bodies. Graphic nodes
- *  are treated as leaves (their embedded clip defs stay untouched). */
-function collectClips(node: unknown, out: ClipNode[]) {
-  if (node == null || typeof node !== "object") return;
-  const n = node as Record<string, unknown>;
-  if (n.type === "clip" && typeof n.source === "string") {
-    out.push(n as unknown as ClipNode);
-    return;
-  }
-  if (n.type === "graphic") return;
-  for (const field of ["children", "attachments"]) {
-    const arr = n[field];
-    if (Array.isArray(arr)) for (const child of arr) collectClips(child, out);
-  }
-  if (n.bin && typeof n.bin === "object") {
-    for (const entry of Object.values(n.bin)) collectClips(entry, out);
-  }
+/** One authored clip occurrence plus the source range the render can
+ *  actually reach through every enclosing composition window. An empty
+ *  range (visEnd <= visStart) means the clip is fully occluded — it still
+ *  occupies timeline space, so it gets a one-GOP stub instead of removal. */
+interface ClipUse {
+  clip: ClipNode;
+  visStart: number;
+  visEnd: number;
+}
+
+/**
+ * Walk the compiled document computing each clip's visible source window.
+ *
+ * A composition's `in`/`out` crop what its children can ever show, and
+ * those crops compound through nesting. The full resolver *drops* fully
+ * occluded children (`cropChildrenToWindow`), which would break the 1:1
+ * mapping back to the document — so instead each composition is resolved
+ * **un-windowed in its own scope** (its own `in`/`out` stripped; children
+ * keep theirs), giving every child's inner-timeline placement and net rate
+ * 1:1 with the arrays (`children` then `attachments`, the resolver's
+ * append order). The visible window is intersected per child and mapped
+ * into clip source time / nested comp inner time via the resolved `speed`.
+ *
+ * Also deletes now-dead `bin` maps as it walks (post-compile, nothing
+ * references them — leaving them would keep culled footage referenced).
+ */
+function collectVisibleClips(
+  comp: Record<string, unknown>,
+  visIn: number,
+  visOut: number,
+  out: ClipUse[],
+) {
+  delete comp.bin;
+  const stripped = { ...comp, in: undefined, out: undefined };
+  const resolved = resolveComposition(stripped as unknown as Composition);
+  const children = (comp.children ?? []) as Record<string, unknown>[];
+  const attachments = (comp.attachments ?? []) as Record<string, unknown>[];
+
+  resolved.children.forEach((rchild: ResolvedChild, i: number) => {
+    const authored =
+      i < children.length ? children[i] : attachments[i - children.length];
+    if (!authored) return;
+    const s = Math.max(visIn, rchild.timelineStart);
+    const e = Math.min(visOut, rchild.timelineEnd);
+
+    if (rchild.type === "clip" && authored.type === "clip") {
+      const clip = authored as unknown as ClipNode;
+      if (e <= s) {
+        const stub = clip.in ?? 0;
+        out.push({ clip, visStart: stub, visEnd: stub });
+      } else {
+        out.push({
+          clip,
+          visStart: rchild.sourceIn + (s - rchild.timelineStart) * rchild.speed,
+          visEnd: rchild.sourceIn + (e - rchild.timelineStart) * rchild.speed,
+        });
+      }
+    } else if (rchild.type === "composition" && authored.type === "composition") {
+      const innerIn = (authored.in as number | undefined) ?? 0;
+      if (e <= s) {
+        collectVisibleClips(authored, innerIn, innerIn, out);
+      } else {
+        collectVisibleClips(
+          authored,
+          innerIn + (s - rchild.timelineStart) * rchild.speed,
+          innerIn + (e - rchild.timelineStart) * rchild.speed,
+          out,
+        );
+      }
+    }
+  });
 }
 
 /** Attachments can anchor to a clip in its *source* timebase
@@ -83,9 +138,6 @@ function shiftSourceAnchors(node: unknown, idShifts: Map<string, number>) {
     const arr = n[field];
     if (Array.isArray(arr)) for (const child of arr) shiftSourceAnchors(child, idShifts);
   }
-  if (n.bin && typeof n.bin === "object") {
-    for (const entry of Object.values(n.bin)) shiftSourceAnchors(entry, idShifts);
-  }
 }
 
 function outputFormatFor(ext: string) {
@@ -105,7 +157,8 @@ function outputFormatFor(ext: string) {
   }
 }
 
-/** `[source-with-unsupported-characters-removed]-[in-frame]-[out-frame]` */
+/** `[source-with-unsupported-characters-removed]-[in-frame]-[out-frame]`,
+ *  frame numbers taken from the *visible* window at the source's fps. */
 function distilledName(source: string, inFrame: number, outFrame: number, ext: string) {
   const base = source.slice(0, source.length - extname(source).length);
   const clean = base.replace(/[^A-Za-z0-9_-]+/g, "");
@@ -130,7 +183,8 @@ interface TrimResult {
  *  video + audio track covering [startTime, endTime] into targetPath.
  *  Video is GOP-complete: starts at the keyframe at/before startTime and
  *  runs through the first keyframe at/after endTime (plus that keyframe's
- *  open-GOP leading B-frames), so every frame in the window decodes. */
+ *  open-GOP leading B-frames), so every frame in the window decodes.
+ *  startTime === endTime trims a single-GOP stub. */
 async function trimFile(
   input: Input,
   targetPath: string,
@@ -203,7 +257,7 @@ async function trimFile(
       (await aSink.getPacket(keyTime)) ?? (await aSink.getFirstPacket());
     for await (const packet of aSink.packets(startPacket ?? undefined)) {
       if (packet.timestamp >= endTime - EPS) break;
-      let t = packet.timestamp - keyTime;
+      const t = packet.timestamp - keyTime;
       if (t < 0) {
         const overlap = packet.timestamp + packet.duration - keyTime;
         if (overlap <= 0) continue; // wholly before the window
@@ -213,10 +267,7 @@ async function trimFile(
           const frameBytes = pcmBytes * channels;
           const skipFrames = Math.round((keyTime - packet.timestamp) * sampleRate);
           const sliced = packet.data.subarray(skipFrames * frameBytes);
-          await aSource.add(
-            new EncodedPacket(sliced, "key", 0, overlap),
-            aMeta,
-          );
+          await aSource.add(new EncodedPacket(sliced, "key", 0, overlap), aMeta);
           continue;
         }
         continue; // compressed straddler can't be sliced; ≤1 packet gap
@@ -248,11 +299,28 @@ export async function distillCommand(file: string, options: DistillOptions) {
     process.exit(1);
   }
 
-  // Rewrite the raw JSON (not the Zod output) so untouched parts of the
-  // document survive verbatim, without defaults materializing.
-  const doc = JSON.parse(raw);
-  const clips: ClipNode[] = [];
-  collectClips(doc, clips);
+  // Distill is a destructive finalization step: compile first so macros,
+  // binItem references, and scripts are baked into the output — each clip
+  // occurrence then gets exactly the media its render position needs.
+  const { doc: compiled, errors: compileErrors } = compileSeamFile(parsed.data);
+  if (compileErrors.length > 0) {
+    console.error("Compile errors:");
+    for (const err of compileErrors) {
+      console.error(`  - ${err.source}: ${err.message}`);
+    }
+    process.exit(1);
+  }
+  // Deep-clone: bin splices reuse the entry's node objects across
+  // references, and each occurrence must be rewritable independently.
+  const doc = JSON.parse(JSON.stringify(compiled)) as Record<string, unknown>;
+
+  const uses: ClipUse[] = [];
+  collectVisibleClips(
+    doc,
+    (doc.in as number | undefined) ?? 0,
+    (doc.out as number | undefined) ?? Infinity,
+    uses,
+  );
 
   mkdirSync(mediaDir, { recursive: true });
 
@@ -269,14 +337,12 @@ export async function distillCommand(file: string, options: DistillOptions) {
   let trimmed = 0;
   let reused = 0;
   let untouched = 0;
+  let stubs = 0;
   const failures: string[] = [];
   const idShifts = new Map<string, number>();
 
-  for (const clip of clips) {
-    if (clip.in == null && clip.out == null) {
-      untouched++; // whole file is needed; nothing to distill
-      continue;
-    }
+  for (const use of uses) {
+    const clip = use.clip;
     const ext = extname(clip.source);
     if (!outputFormatFor(ext)) {
       console.warn(`skip (unsupported container): ${clip.source}`);
@@ -302,33 +368,37 @@ export async function distillCommand(file: string, options: DistillOptions) {
       }
       const stats = await videoTrack.computePacketStats(100);
       const fps = stats.averagePacketRate;
-      const startTime = clip.in ?? 0;
-      const endTime = clip.out ?? (await videoTrack.computeDuration());
+      const isStub = use.visEnd <= use.visStart;
+      if (isStub) stubs++;
 
       const name = distilledName(
         clip.source,
-        Math.round(startTime * fps),
-        Math.round(endTime * fps),
+        Math.round(use.visStart * fps),
+        Math.round(use.visEnd * fps),
         ext,
       );
       const targetPath = join(mediaDir, name);
       const exists = existsSync(targetPath);
-      const result = await trimFile(input, targetPath, startTime, endTime, !exists);
+      const result = await trimFile(input, targetPath, use.visStart, use.visEnd, !exists);
       if (exists) reused++;
       else trimmed++;
 
+      const origIn = clip.in ?? 0;
       clip.source = relative(dirname(outSeamPath), targetPath).replace(/\\/g, "/");
-      if (clip.in != null) clip.in = startTime - result.keyTime;
-      else if (result.keyTime > 0) clip.in = startTime - result.keyTime;
-      if (clip.out != null) clip.out = endTime - result.keyTime;
+      // Duration-preserving shift: the whole [in, out] span slides back by
+      // the trimmed file's start (keyTime). `in` may go negative and `out`
+      // past the new file's end — content there was invisible anyway, and
+      // out − in (the clip's timeline footprint) is unchanged.
+      clip.in = origIn - result.keyTime;
+      if (clip.out != null) clip.out = clip.out - result.keyTime;
       if (typeof clip.id === "string" && result.keyTime !== 0) {
         idShifts.set(clip.id, result.keyTime);
       }
 
-      const action = exists ? "reused" : "trimmed";
+      const action = exists ? "reused" : isStub ? "stubbed" : "trimmed";
       console.log(
-        `${action}: ${name}  [${startTime.toFixed(3)}..${endTime.toFixed(3)}]` +
-          ` key@${result.keyTime.toFixed(3)} lead-in ${(startTime - result.keyTime).toFixed(3)}s`,
+        `${action}: ${name}  visible [${use.visStart.toFixed(3)}..${use.visEnd.toFixed(3)}]` +
+          ` key@${result.keyTime.toFixed(3)}`,
       );
     } catch (err) {
       failures.push(clip.source);
@@ -344,7 +414,7 @@ export async function distillCommand(file: string, options: DistillOptions) {
   console.log("---");
   console.log(`wrote ${outSeamPath}`);
   console.log(
-    `${trimmed} trimmed, ${reused} reused (already distilled), ${untouched} untouched` +
+    `${trimmed} trimmed (${stubs} occluded stubs), ${reused} reused (already distilled), ${untouched} untouched` +
       (failures.length ? `, ${failures.length} FAILED` : ""),
   );
   if (failures.length) process.exit(1);

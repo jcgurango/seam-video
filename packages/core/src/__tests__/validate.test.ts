@@ -130,12 +130,12 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects negative in value", () => {
+  it("accepts negative in value (trimmed-source timebase shift, e.g. distill)", () => {
     const result = validate({
       type: "composition",
       children: [{ type: "clip", source: "v.mp4", in: -1, out: 5 }],
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it("rejects zero out value", () => {
