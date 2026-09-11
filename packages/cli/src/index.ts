@@ -7,6 +7,7 @@ import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from "@seam/core";
 import { renderCommand } from "./commands/render.js";
 import { resolveCommand } from "./commands/resolve.js";
 import { flatCommand } from "./commands/flat.js";
+import { distillCommand } from "./commands/distill.js";
 
 // In the published CLI, @seam/renderer is bundled into this file, so its
 // source-relative font/style lookups no longer resolve. The build vendors the
@@ -74,6 +75,21 @@ program
   .option("-o, --output <path>", "Write to file instead of stdout")
   .option("--no-pretty", "Emit minified JSON")
   .action(flatCommand);
+
+program
+  .command("distill <file>")
+  .description(
+    "Losslessly trim every clip's source down to the keyframe-snapped window it actually uses (packet copy, no re-encode), writing the trimmed media to a folder and a rewritten .seam pointing at it. Audio/static/graphic sources stay untouched.",
+  )
+  .option(
+    "-o, --output <path>",
+    "Output .seam path (default: <input>-distilled.seam next to the input)",
+  )
+  .option(
+    "-d, --media-dir <path>",
+    "Folder for trimmed media (default: distilled-media next to the output .seam)",
+  )
+  .action(distillCommand);
 
 // parseAsync (not parse) so async command actions are awaited and their
 // rejections surface here with full detail, rather than becoming an unhandled
