@@ -18,6 +18,14 @@ COPY . .
 
 # @seam/cloud has no workspace dependencies, so a filtered install pulls in
 # only its own dependency tree (not the editor/preview/electron toolchain).
+#
+# Native addons that reach this image: better-sqlite3, @napi-rs/canvas,
+# node-av (via @mediabunny/server) — all ship prebuilt linux binaries. The
+# source-built `canvas` (node-canvas, needs pkg-config + cairo/pango dev libs)
+# must NOT end up here: it's only a workspace neighbour's dependency, and the
+# root package.json override `"vitest>jsdom": "-"` keeps pnpm from dragging it
+# in as vitest → jsdom's optional peer. If a future lockfile change reintroduces
+# it, check `pnpm why canvas --filter @seam/cloud` before adding build deps.
 RUN pnpm install --frozen-lockfile --filter @seam/cloud
 RUN pnpm --filter @seam/cloud build
 
