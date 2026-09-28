@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { deleteMedia, mediaPath } from "../storage.js";
 import {
   ImmichClient,
+  immichAssetDimensions,
   immichTypeToKind,
   parseImmichDuration,
   type ImmichAsset,
@@ -29,7 +30,8 @@ import {
  */
 
 const SWEEP_INTERVAL_MS = 120_000;
-const running = new Set<string>(); // userIds with an in-flight sweep
+/** userIds with an in-flight sweep → whether another was requested meanwhile. */
+const running = new Map<string, { rerun: boolean }>();
 
 interface MediaRow {
   id: string;
@@ -57,20 +59,38 @@ export function kickImmichSweep(userId: string): void {
 
 async function sweepUser(account: ImmichAccount): Promise<void> {
   if (!account.albumId) return;
-  if (running.has(account.userId)) return; // don't overlap sweeps for a user
-  running.add(account.userId);
+  // Don't overlap sweeps for a user — but remember the request, so a burst of
+  // uploads gets a follow-up pass right away instead of waiting a full tick.
+  const inFlight = running.get(account.userId);
+  if (inFlight) {
+    inFlight.rerun = true;
+    return;
+  }
+  const state = { rerun: false };
+  running.set(account.userId, state);
+  try {
+    do {
+      state.rerun = false;
+      await sweepOnce(account);
+    } while (state.rerun);
+  } finally {
+    running.delete(account.userId);
+  }
+}
+
+async function sweepOnce(account: ImmichAccount): Promise<void> {
   try {
     const client = new ImmichClient(account);
     await handoff(client, account);
 
-    const album = await client.getAlbum(account.albumId);
-    const albumIds = new Set(album.assets.map((a) => a.id));
-    await pull(client, account, album.assets);
+    // v3 dropped the embedded `assets` array from GET /albums/:id — list via
+    // the paginated search endpoint instead (works on older servers too).
+    const assets = await client.listAlbumAssets(account.albumId!);
+    const albumIds = new Set(assets.map((a) => a.id));
+    await pull(client, account, assets);
     reconcile(account.userId, albumIds);
   } catch (err) {
     console.warn(`[seam-cloud] Immich sweep failed for ${account.userId}:`, err);
-  } finally {
-    running.delete(account.userId);
   }
 }
 
@@ -244,11 +264,7 @@ async function assetInfo(
       console.warn(`[seam-cloud] fetching immich asset ${asset.id} failed:`, err);
     }
   }
-  return {
-    duration: parseImmichDuration(src.duration),
-    width: src.exifInfo?.exifImageWidth ?? null,
-    height: src.exifInfo?.exifImageHeight ?? null,
-  };
+  return { duration: parseImmichDuration(src.duration), ...immichAssetDimensions(src) };
 }
 
 /** Patch NULL duration/width/height on an existing Immich-backed row when the
@@ -266,8 +282,7 @@ function backfillAssetInfo(
   const patch: Record<string, number> = {};
   const duration = parseImmichDuration(asset.duration);
   if (row.duration == null && duration != null) patch.duration = duration;
-  const width = asset.exifInfo?.exifImageWidth;
-  const height = asset.exifInfo?.exifImageHeight;
+  const { width, height } = immichAssetDimensions(asset);
   if (row.width == null && width != null) patch.width = width;
   if (row.height == null && height != null) patch.height = height;
   const keys = Object.keys(patch);

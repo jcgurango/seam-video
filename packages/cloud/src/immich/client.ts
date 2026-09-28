@@ -28,8 +28,14 @@ export interface ImmichAsset {
   checksum: string;
   fileCreatedAt?: string;
   fileModifiedAt?: string;
-  /** "H:MM:SS.mmmmm" — populated for videos, zero/absent for images. */
-  duration?: string | null;
+  /** Videos only (null/zero for images). Immich ≥3 reports **milliseconds**
+   *  as a number; older servers a "H:MM:SS.mmmmm" string. */
+  duration?: string | number | null;
+  /** Orientation-corrected display dimensions (Immich ≥3, top-level). */
+  width?: number | null;
+  height?: number | null;
+  /** Only on the single-asset endpoint (and pre-3 album listings). Raw sensor
+   *  dimensions — NOT orientation-corrected. */
   exifInfo?: {
     fileSizeInByte?: number | null;
     exifImageWidth?: number | null;
@@ -41,8 +47,12 @@ export interface ImmichAlbum {
   id: string;
   albumName: string;
   assetCount: number;
-  assets: ImmichAsset[];
+  /** Embedded on Immich <3 only — v3 dropped it; use {@link ImmichClient.listAlbumAssets}. */
+  assets?: ImmichAsset[];
 }
+
+/** Immich caps `/search/metadata` page size at 1000. */
+const SEARCH_PAGE_SIZE = 1000;
 
 /** Normalize a user-entered instance URL to a bare origin (strip trailing
  *  slash and a trailing `/api` if they pasted the API root). */
@@ -96,6 +106,30 @@ export class ImmichClient {
   async findAlbumByName(albumName: string): Promise<ImmichAlbum | null> {
     const albums = await this.json<ImmichAlbum[]>("/albums");
     return albums.find((a) => a.albumName === albumName) ?? null;
+  }
+
+  /**
+   * Every asset in an album. Immich v3 removed the `assets` array from
+   * `GET /albums/:id`, so this pages through `POST /search/metadata`
+   * filtered by `albumIds` (available on older servers too). Trashed assets
+   * are excluded by default, matching what the album view shows.
+   */
+  async listAlbumAssets(albumId: string): Promise<ImmichAsset[]> {
+    const out: ImmichAsset[] = [];
+    let page: number | null = 1;
+    while (page != null) {
+      const res: {
+        assets: { items: ImmichAsset[]; nextPage: string | number | null };
+      } = await this.json("/search/metadata", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ albumIds: [albumId], page, size: SEARCH_PAGE_SIZE }),
+      });
+      out.push(...res.assets.items);
+      const next = res.assets.nextPage == null ? NaN : Number(res.assets.nextPage);
+      page = Number.isFinite(next) && next > page ? next : null;
+    }
+    return out;
   }
 
   async addAssetsToAlbum(albumId: string, ids: string[]): Promise<void> {
@@ -213,14 +247,30 @@ export function relayResponse(
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-/** Parse Immich's "H:MM:SS.mmmmm" duration string to seconds (null when
- *  absent, unparseable, or zero — images report a zero duration). */
-export function parseImmichDuration(s: string | null | undefined): number | null {
-  if (!s) return null;
+/** Immich asset duration → seconds. Accepts v3's millisecond number and the
+ *  older "H:MM:SS.mmmmm" string; null when absent, unparseable, or zero
+ *  (images report a zero duration). */
+export function parseImmichDuration(
+  s: string | number | null | undefined
+): number | null {
+  if (s == null || s === "") return null;
+  if (typeof s === "number") {
+    return Number.isFinite(s) && s > 0 ? s / 1000 : null;
+  }
   const m = /^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/.exec(s);
   if (!m) return null;
   const secs = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
   return Number.isFinite(secs) && secs > 0 ? secs : null;
+}
+
+/** Display dimensions of an asset: v3's orientation-corrected top-level
+ *  `width`/`height`, else the raw EXIF pair (older servers / listings). */
+export function immichAssetDimensions(
+  asset: Pick<ImmichAsset, "width" | "height" | "exifInfo">
+): { width: number | null; height: number | null } {
+  const w = asset.width ?? asset.exifInfo?.exifImageWidth ?? null;
+  const h = asset.height ?? asset.exifInfo?.exifImageHeight ?? null;
+  return { width: w && w > 0 ? w : null, height: h && h > 0 ? h : null };
 }
 
 /** Map an Immich asset type to our media kind (audio/other are non-canonical). */
