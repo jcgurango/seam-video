@@ -34,6 +34,7 @@ import type { GraphicFrameRenderer } from "./graphic/frameRenderer.js";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
+import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
 
 let serverRegistered = false;
 function ensureServer(): void {
@@ -67,6 +68,9 @@ interface ClipCursor {
   frame: NodeFrame | null; // cached RGBA of `current`
   lastTime: number; // last requested source time (detect backward jumps)
   rotation: Rotation;
+  // HDR (HLG/PQ-tagged) sources tone-map to SDR on the way to RGBA; created
+  // on the first HDR sample, one per cursor (the converter is sequential).
+  hdr: HdrToSdrConverter | null;
 }
 
 const EPS = 1e-4;
@@ -246,6 +250,7 @@ export class FrameSource {
         pending: null,
         frame: null,
         lastTime: sourceTime,
+        hdr: null,
         // Fold the authored pre-transform orientation onto the container's
         // metadata rotation — both bake into the decoded pixels.
         rotation: addRotation(entry.rotation, node.orientation),
@@ -281,7 +286,7 @@ export class FrameSource {
 
     if (!cursor.current) return null;
     if (advanced || !cursor.frame) {
-      cursor.frame = await sampleToFrame(cursor.current, cursor.rotation);
+      cursor.frame = await sampleToFrame(cursor.current, cursor.rotation, cursor);
     }
     return cursor.frame;
   }
@@ -312,10 +317,17 @@ export class FrameSource {
         this.staticDims.set(node, { w: entry.width, h: entry.height });
         return null;
       }
-      const frame = await sampleToFrame(sample, entry.rotation);
-      sample.close();
-      this.staticDims.set(node, { w: frame.width, h: frame.height });
-      return frame;
+      // One-shot: a freeze frame decodes once, so the HDR converter (if the
+      // source needs one) lives only for this call.
+      const holder = { hdr: null as HdrToSdrConverter | null };
+      try {
+        const frame = await sampleToFrame(sample, entry.rotation, holder);
+        this.staticDims.set(node, { w: frame.width, h: frame.height });
+        return frame;
+      } finally {
+        sample.close();
+        holder.hdr?.dispose();
+      }
     }
   }
 
@@ -349,15 +361,25 @@ export class FrameSource {
   }
 }
 
-/** Convert a decoded VideoSample to a display-oriented RGBA frame. */
+/** Convert a decoded VideoSample to a display-oriented RGBA frame. HDR-tagged
+ *  samples (HLG/PQ) go through `holder.hdr` (tonemapx → SDR BT.709), created
+ *  on demand and owned by the caller; everything else takes mediabunny's
+ *  plain RGBA conversion. */
 async function sampleToFrame(
   sample: VideoSample,
   rotation: Rotation,
+  holder: { hdr: HdrToSdrConverter | null },
 ): Promise<NodeFrame> {
   const cw = sample.codedWidth;
   const ch = sample.codedHeight;
-  const coded = new Uint8Array(sample.allocationSize({ format: "RGBA" }));
-  await sample.copyTo(coded, { format: "RGBA" });
+  let coded: Uint8Array;
+  if (isHdrSample(sample)) {
+    holder.hdr ??= new HdrToSdrConverter();
+    coded = await holder.hdr.toRgba(sample);
+  } else {
+    coded = new Uint8Array(sample.allocationSize({ format: "RGBA" }));
+    await sample.copyTo(coded, { format: "RGBA" });
+  }
   return rotateRGBA(coded, cw, ch, rotation);
 }
 
@@ -371,6 +393,8 @@ function closeCursor(cursor: ClipCursor): void {
   cursor.current?.close();
   cursor.pending?.close();
   cursor.iter.return?.(undefined);
+  cursor.hdr?.dispose();
+  cursor.hdr = null;
   cursor.current = null;
   cursor.pending = null;
   cursor.frame = null;
