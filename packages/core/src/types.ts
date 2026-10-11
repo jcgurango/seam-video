@@ -97,6 +97,30 @@ export type Inset =
 export type InsetMode = "window" | "center" | "fit" | "cover";
 
 /**
+ * Corner-pin distortion of a composition's content canvas. Each entry is
+ * where that corner of the canvas lands, in content-canvas coordinates:
+ * `x*` resolve against `contentWidth`, `y*` against `contentHeight`.
+ * Corners run clockwise from the top-left — `0` top-left, `1` top-right,
+ * `2` bottom-right, `3` bottom-left. Every entry is optional and defaults to
+ * the corner's natural position (`x0: "0%", y0: "0%", x1: "100%", y1: "0%",
+ * x2: "100%", y2: "100%", x3: "0%", y3: "100%"`); a bare pixel number is an
+ * offset from that default (so `x1: -20` pulls the top-right corner 20px in,
+ * like `translation`'s bare numbers offset from center). Keyframes animate
+ * the whole set as one value. The warp is a projective (perspective-correct)
+ * map of the composited content and does NOT change the node's layout rect.
+ */
+export interface Distort {
+  x0?: Length;
+  y0?: Length;
+  x1?: Length;
+  y1?: Length;
+  x2?: Length;
+  y2?: Length;
+  x3?: Length;
+  y3?: Length;
+}
+
+/**
  * A timing anchor references another child (by `id`) in the enclosing
  * composition's scope.
  *
@@ -373,6 +397,15 @@ export interface BaseComposition extends ChildTimingFields {
   /** How the `inset` window maps within the content box's placement. Default
    *  `"window"` (clip in place). See {@link InsetMode}. */
   insetMode?: InsetMode;
+  /**
+   * Corner-pin (perspective) distortion of the composited content —
+   * composition-only. Pins the four corners of the content canvas to
+   * authored points; percentages resolve against `contentWidth`/
+   * `contentHeight`. Purely visual: the layout rect is unchanged (the
+   * warped content may spill outside it). Animatable as a whole set.
+   * See {@link Distort}.
+   */
+  distort?: Keyframed<Distort>;
   /**
    * Playback rate of the inner window (the `[in, out]` slice of the inner
    * timeline, defaulting to the whole thing). >1 plays faster, shortening

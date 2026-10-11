@@ -158,6 +158,23 @@ const InsetSchema = z.union([
   z.tuple([LengthSchema, LengthSchema, LengthSchema, LengthSchema]),
 ]);
 
+// Corner-pin distortion — composition-only. Eight optional `Length`s, one
+// per corner coordinate, clockwise from the top-left (`x0,y0` → `x3,y3`).
+// `%` resolves against the content canvas (`x*` → contentWidth, `y*` →
+// contentHeight); a bare number offsets the corner from its natural spot.
+// Animatable as one value (not per coordinate). Does not move the layout
+// box — a purely visual projective warp of the composited content.
+const DistortSchema = z.object({
+  x0: LengthSchema.optional(),
+  y0: LengthSchema.optional(),
+  x1: LengthSchema.optional(),
+  y1: LengthSchema.optional(),
+  x2: LengthSchema.optional(),
+  y2: LengthSchema.optional(),
+  x3: LengthSchema.optional(),
+  y3: LengthSchema.optional(),
+}).strict();
+
 const SpatialFieldsSchema = {
   objectFit: ObjectFitSchema.optional(),
   origin: keyframed(Point2DSchema).optional(),
@@ -670,6 +687,8 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     inset: keyframed(InsetSchema).optional(),
     // How the inset window maps within the content box's placement.
     insetMode: z.enum(["window", "center", "fit", "cover"]).optional(),
+    // Corner-pin (perspective) distortion — composition-only. See DistortSchema.
+    distort: keyframed(DistortSchema).optional(),
     ...SpatialFieldsSchema,
     ...TransitionFieldSchema,
     ...AnchorFieldsSchema,

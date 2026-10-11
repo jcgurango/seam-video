@@ -16,7 +16,7 @@
  *   opacity — alpha multiply
  */
 
-import type { Filter } from "@seam/core";
+import { quadWeights, type Filter, type Quad } from "@seam/core";
 import type { RenderBackend } from "./backend.js";
 import type {
   RenderCommand,
@@ -39,8 +39,11 @@ struct Uniforms {
   cb_midtones: vec4f,
   cb_highlights: vec4f,
   ct_scale: vec4f,
-  rot: vec4f, // rotation_radians, pivot_x, pivot_y, _
+  rot: vec4f, // rotation_radians, pivot_x, pivot_y, distort_enabled (0/1)
   crop: vec4f, // u0, v0, u1, v1 — visible source sub-rect (inset); full = 0,0,1,1
+  c01: vec4f, // distort corners TL.xy, TR.xy (target px, pre-rotation)
+  c23: vec4f, // distort corners BR.xy, BL.xy
+  cw: vec4f,  // per-corner homogeneous weights (TL, TR, BR, BL) → clip.w
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -62,6 +65,21 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   let p = quad[vi];
   var px = u.dest.x + p.x * u.dest.z;
   var py = u.dest.y + p.y * u.dest.w;
+  // Corner-pin (distort): put this vertex at its pinned corner instead of the
+  // dest rect, and carry the corner's homogeneous weight into clip.w so the
+  // rasterizer interpolates uv projectively (a true perspective warp, no
+  // crease along the diagonal). Weights are all 1 for an ordinary draw.
+  var w = 1.0;
+  if (u.rot.w != 0.0) {
+    let right = p.x > 0.5;
+    let bottom = p.y > 0.5;
+    let top_xy = select(u.c01.xy, u.c01.zw, right);
+    let bot_xy = select(u.c23.zw, u.c23.xy, right);
+    let xy = select(top_xy, bot_xy, bottom);
+    px = xy.x;
+    py = xy.y;
+    w = select(select(u.cw.x, u.cw.y, right), select(u.cw.w, u.cw.z, right), bottom);
+  }
   // Rotate about the pivot (in target-pixel space). Screen y is down, so
   // this matrix gives clockwise-positive rotation (matches the spec).
   let rot = u.rot.x;
@@ -77,7 +95,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   let ndc_y = 1.0 - (py / u.canvas_opacity.y) * 2.0;
   // Map the quad corner into the visible source sub-rect (inset/crop).
   let uv = u.crop.xy + p * (u.crop.zw - u.crop.xy);
-  return VSOut(vec4f(ndc_x, ndc_y, 0.0, 1.0), uv);
+  return VSOut(vec4f(ndc_x * w, ndc_y * w, 0.0, w), uv);
 }
 
 fn rgb_to_yuv(rgb: vec3f) -> vec3f {
@@ -132,7 +150,7 @@ fn fs(input: VSOut) -> @location(0) vec4f {
 }
 `;
 
-const UNIFORM_SIZE = 144; // 9 × vec4f
+const UNIFORM_SIZE = 192; // 12 × vec4f
 const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 128;
 const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
@@ -456,6 +474,7 @@ export class Compositor<F = unknown> {
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
     f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
     writeCrop(f32, cmd.sourceRect);
+    writeCorners(f32, undefined); // leaves aren't corner-pinned (comp-only)
   }
 
   private writeFillUniforms(slot: number, cmd: FillCommand): void {
@@ -481,6 +500,7 @@ export class Compositor<F = unknown> {
     // Fills are never rotated (a rotated comp's bg fill rides inside its FBO).
     f32[28] = 0; f32[29] = 0; f32[30] = 0; f32[31] = 0;
     writeCrop(f32, undefined); // fills sample no sub-rect
+    writeCorners(f32, undefined);
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
@@ -507,8 +527,10 @@ export class Compositor<F = unknown> {
     f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
     f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
     f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
-    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
+    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY;
+    f32[31] = cmd.corners ? 1 : 0; // distort flag — vs reads geometry from c01/c23
     writeCrop(f32, cmd.sourceRect);
+    writeCorners(f32, cmd.corners);
   }
 
   // ── Phase 3: Encode ──
@@ -757,6 +779,22 @@ function writeCrop(
   f32[33] = sr?.v0 ?? 0;
   f32[34] = sr?.u1 ?? 1;
   f32[35] = sr?.v1 ?? 1;
+}
+
+/** Write the corner-pin quad (float slots 36–47): TL/TR, BR/BL in target px
+ *  plus the per-corner homogeneous weights. Absent → zeros + unit weights
+ *  (ignored by the shader when `rot.w` is 0). */
+function writeCorners(f32: Float32Array, corners: Quad | undefined): void {
+  if (!corners) {
+    for (let i = 36; i < 44; i++) f32[i] = 0;
+    f32[44] = 1; f32[45] = 1; f32[46] = 1; f32[47] = 1;
+    return;
+  }
+  const [tl, tr, br, bl] = corners;
+  f32[36] = tl.x; f32[37] = tl.y; f32[38] = tr.x; f32[39] = tr.y;
+  f32[40] = br.x; f32[41] = br.y; f32[42] = bl.x; f32[43] = bl.y;
+  const w = quadWeights(corners);
+  f32[44] = w[0]; f32[45] = w[1]; f32[46] = w[2]; f32[47] = w[3];
 }
 
 // Filters are static now (opacity was ejected to a node field), so this is a

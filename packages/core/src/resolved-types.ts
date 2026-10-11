@@ -5,6 +5,7 @@ import type {
   Point2D,
   Inset,
   InsetMode,
+  Distort,
   Filter,
   GraphicClipDef,
   GraphicFrame,
@@ -203,6 +204,12 @@ export interface ResolvedComposition {
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
   backgroundColor?: string;
+  /** Corner-pin distortion of the composited content — the AUTHORED
+   *  `Keyframed<Distort>` preserved through resolution. Sampled per-frame by
+   *  the compositor in the comp's output time against the live inner canvas
+   *  (`contentWidth`/`contentHeight`), like `opacity`. Purely visual: it does
+   *  not alter `spatial`. */
+  distort?: Keyframed<Distort>;
   /** Uniform volume multiplier applied to every audio-bearing descendant.
    *  Sampled per-frame by the audio mixers in the comp's output time. */
   volume?: Keyframed<number | string>;

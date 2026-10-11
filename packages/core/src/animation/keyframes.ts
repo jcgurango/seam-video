@@ -7,7 +7,7 @@ import { interpolateNumber, interpolateRgb } from "d3-interpolate";
 import { resolveEasing } from "./easing.js";
 import { resolveTimeExpr, type TimeExpr } from "./time.js";
 import { resolveLength } from "../layout/units.js";
-import type { Inset, Length, TextPadding } from "../types.js";
+import type { Distort, Inset, Length, TextPadding } from "../types.js";
 
 export type Keyframe<T> = [TimeExpr, T] | [TimeExpr, T, string];
 export type Keyframed<T> = T | Keyframe<T>[];
@@ -195,6 +195,64 @@ export function sampleInset(
     bottom: edge(2, refH),
     left: edge(3, refW),
   };
+}
+
+// Distort: corner-pin of the content canvas. Eight optional Lengths, one per
+// corner coordinate (clockwise from top-left). Each resolves through
+// `sampleLength` against its axis (x → refW, y → refH) with the corner's OWN
+// natural position as the percent default — so an absent entry sits at the
+// corner, `"100% - 20"` and a bare `-20` both pull it in 20px, and keyframes
+// tween every coordinate in pixels (the whole set animates as one value).
+
+/** Sampled distort corners in content-canvas pixels, clockwise from top-left. */
+export interface DistortCorners {
+  x0: number; y0: number;
+  x1: number; y1: number;
+  x2: number; y2: number;
+  x3: number; y3: number;
+}
+
+const DISTORT_KEYS = ["x0", "y0", "x1", "y1", "x2", "y2", "x3", "y3"] as const;
+/** Natural corner position (percent of the axis) for each coordinate —
+ *  TL (0,0), TR (100,0), BR (100,100), BL (0,100). */
+const DISTORT_DEFAULT_PCT = [0, 0, 100, 0, 100, 100, 0, 100] as const;
+
+export function sampleDistort(
+  value: Keyframed<Distort>,
+  t: number,
+  duration: number,
+  refW: number,
+  refH: number,
+): DistortCorners {
+  const out = {} as DistortCorners;
+  for (let i = 0; i < DISTORT_KEYS.length; i++) {
+    const key = DISTORT_KEYS[i];
+    const ref = i % 2 === 0 ? refW : refH;
+    const pct = DISTORT_DEFAULT_PCT[i];
+    if (!isKeyframed(value)) {
+      const v = (value as Distort)[key];
+      out[key] = v == null ? (pct / 100) * ref : resolveLength(v, ref, pct);
+      continue;
+    }
+    const projected = (value as Keyframe<Distort>[]).map((entry) => {
+      const len: Length = entry[1][key] ?? `${pct}%`;
+      return entry.length === 3
+        ? ([entry[0], len, entry[2]] as [TimeExpr, Length, string])
+        : ([entry[0], len] as [TimeExpr, Length]);
+    });
+    out[key] = sampleLength(projected, t, duration, ref, pct);
+  }
+  return out;
+}
+
+/** True when the corners sit exactly on the canvas rect — nothing to warp. */
+export function isIdentityDistort(c: DistortCorners, w: number, h: number): boolean {
+  return (
+    c.x0 === 0 && c.y0 === 0 &&
+    c.x1 === w && c.y1 === 0 &&
+    c.x2 === w && c.y2 === h &&
+    c.x3 === 0 && c.y3 === h
+  );
 }
 
 /** Expand the inset shorthand to `[top, right, bottom, left]`. */

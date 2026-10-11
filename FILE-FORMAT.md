@@ -365,6 +365,7 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `inset` | `Length` \| `[v,h]` \| `[t,r,b,l]` \| keyframes | no | Per-edge crop of the content box; animatable. **Composition-only** (see [Inset](#inset)) |
 | `insetMode` | string | no | `"window"` (default) \| `"center"` \| `"fit"` \| `"cover"` — how the cropped window maps within the placed content box (see [Inset](#inset)) |
+| `distort` | object \| keyframes | no | Corner-pin (perspective) warp of the composited content: `{ x0, y0, x1, y1, x2, y2, x3, y3 }`, each a `Length` against `contentWidth`/`contentHeight`, clockwise from top-left; every corner optional. Purely visual — the layout box is unchanged. Animatable as one value. **Composition-only** (see [Distort](#distort)) |
 | `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
 | `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
 | `metadata` | object | no | See [Metadata](#metadata) |
@@ -731,6 +732,44 @@ Semantics (the order within [Spatial Layout](#spatial-layout)): objectFit/`size`
 
 Both renderers honour animation: the visible sub-rect zoom-fills the placed box (overflow clipped) and the crop animates through the inset keyframes.
 
+## Distort
+
+`distort` pins the four corners of a **composition's** composited content to arbitrary points — a perspective / keystone / "corner pin" warp. It's **composition-only** (like `inset`): to distort a clip, image, or text, wrap it in a composition.
+
+```json
+{ "type": "composition",
+  "distort": { "x1": "80%", "y1": "10%", "x2": "80%", "y2": "90%" },
+  "children": [ … ] }
+```
+
+The value is an object with up to eight `Length`s — one per corner coordinate, **clockwise from the top-left**:
+
+| Corner | Keys | Default |
+|--------|------|---------|
+| top-left | `x0`, `y0` | `"0%"`, `"0%"` |
+| top-right | `x1`, `y1` | `"100%"`, `"0%"` |
+| bottom-right | `x2`, `y2` | `"100%"`, `"100%"` |
+| bottom-left | `x3`, `y3` | `"0%"`, `"100%"` |
+
+Every key is optional; an absent corner stays where it is, so `{}` is the identity. Percentages resolve against the composition's **content canvas** — `x*` against `contentWidth`, `y*` against `contentHeight` — and a **bare number is a pixel offset from the corner's own default** (`x1: -20` pulls the top-right corner 20px in, the same as `"100% - 20"`), mirroring how `translation`'s bare numbers offset from center. Corners may go outside the canvas (`x1: "120%"`).
+
+Semantics:
+
+- The warp is the **projective map** (homography) that sends the canvas's corners to the pinned points — straight lines stay straight and perspective foreshortening is correct, not a bilinear blend that creases along the diagonal. A corner set that isn't a convex quad (a "bow-tie") falls back to a plain two-triangle blend.
+- It is **purely visual**. The node's layout rect (`origin`/`translation`/`size`, what siblings and anchors see) is unchanged; the warped content may spill outside that rect. It composes with `rotation` (the pinned quad rotates about the authored `origin`), `opacity`, `filters`, and `inset` (the visible window is the matching sub-region of the warped canvas).
+- Order within [Spatial Layout](#spatial-layout): objectFit/`size` build the content box → `origin`/`translation`/`rotation` place it → `inset` picks the window → **`distort` warps where that content is drawn**.
+- Ignored on the root composition (there is no parent quad to draw into).
+
+`distort` is **animatable** as a single value — keyframes carry a whole corner set and every coordinate tweens in pixels (corners you leave out of a keyframe sit at their defaults in that keyframe):
+
+```json
+{ "type": "composition",
+  "distort": [[0, {}], ["100%", { "x1": "60%", "y1": "20%", "x2": "60%", "y2": "80%" }, "ease-in-out"]],
+  "children": [ … ] }
+```
+
+Both the live preview and the headless renderer draw it through the shared WebGPU compositor (the composition takes the FBO path, like a rotated or inset one), so the two match by construction.
+
 ## Spatial Layout
 
 A node's on-screen rect is built from three things:
@@ -931,7 +970,7 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 |------|--------|
 | **Clip** | `opacity`, `volume`, `origin`, `translation`, `size`, `rotation` |
 | **Audio** | `volume` |
-| **Composition** | `opacity`, `inset`, `origin`, `translation`, `size`, `rotation` |
+| **Composition** | `opacity`, `inset`, `distort`, `origin`, `translation`, `size`, `rotation` |
 | **Static** | `opacity`, `origin`, `translation`, `size`, `rotation` |
 | **Text** (and per-run inside `text` array) | `opacity`, `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
 | **Graphic** | Outer wrapper: `opacity`, `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
@@ -939,6 +978,6 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 
 ### Renderer support
 
-The headless renderer honours every animatable field. It runs the same per-output-frame layout the editor preview uses (`buildRenderList`) and composites on WebGPU, so `origin`/`translation`/`size`, `rotation` (about the authored `origin`), `opacity`, `inset`, and `volume` all animate identically to the preview. Text and graphics rasterize per frame (Skia for text; `fabric/node` + headless OpenLayers for graphics/maps), and `origin`/`translation`/`size` are re-resolved each frame against the parent's content dims and the node's natural box. Filter parameters are static (not animatable).
+The headless renderer honours every animatable field. It runs the same per-output-frame layout the editor preview uses (`buildRenderList`) and composites on WebGPU, so `origin`/`translation`/`size`, `rotation` (about the authored `origin`), `opacity`, `inset`, `distort`, and `volume` all animate identically to the preview. Text and graphics rasterize per frame (Skia for text; `fabric/node` + headless OpenLayers for graphics/maps), and `origin`/`translation`/`size` are re-resolved each frame against the parent's content dims and the node's natural box. Filter parameters are static (not animatable).
 
 Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

@@ -413,6 +413,37 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts distort on a composition (partial corners, keyframed)", () => {
+    const result = validate({
+      type: "composition",
+      children: [
+        { type: "composition", distort: {}, children: [] },
+        { type: "composition", distort: { x1: "90%", y1: 10, x2: "100% - 5" }, children: [] },
+        {
+          type: "composition",
+          distort: [[0, {}], [1, { x3: "20%", y3: "80%" }, "ease-out"]],
+          children: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects distort on a clip and unknown distort keys", () => {
+    expect(
+      validate({
+        type: "composition",
+        children: [{ type: "clip", source: "v.mp4", in: 0, out: 5, distort: {} }],
+      }).success,
+    ).toBe(false);
+    expect(
+      validate({
+        type: "composition",
+        children: [{ type: "composition", distort: { x4: 0 }, children: [] }],
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects inset on a clip (composition-only)", () => {
     const result = validate({
       type: "composition",

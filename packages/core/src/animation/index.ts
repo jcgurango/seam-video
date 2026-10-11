@@ -8,9 +8,11 @@ export {
 export type { EasingFn } from "./easing.js";
 export { resolveEasing } from "./easing.js";
 
-export type { Keyframe, Keyframed } from "./keyframes.js";
+export type { Keyframe, Keyframed, DistortCorners } from "./keyframes.js";
 export {
   isKeyframed,
+  sampleDistort,
+  isIdentityDistort,
   sampleNumber,
   sampleColor,
   samplePadding,

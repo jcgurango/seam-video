@@ -277,6 +277,7 @@ function resolveChild(
         ...(child.volume != null ? { volume: child.volume } : {}),
         ...(child.pitch != null ? { pitch: child.pitch } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
+        ...(child.distort != null ? { distort: child.distort } : {}),
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },

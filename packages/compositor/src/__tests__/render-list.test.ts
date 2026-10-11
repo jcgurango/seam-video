@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   resolveComposition,
   resolveSpatial,
+  squareToQuad,
+  applyHomography,
   type Composition,
 } from "@seam/core";
 import {
@@ -184,5 +186,113 @@ describe("buildRenderList — animatable contentWidth", () => {
     // The box width itself stays fixed (200px) — only its placement reflows.
     expect(c0.quadW).toBeCloseTo(200, 0);
     expect(c2.quadW).toBeCloseTo(200, 0);
+  });
+});
+
+describe("buildRenderList — distort (corner pin)", () => {
+  const distorted = (distort: unknown, extra: Record<string, unknown> = {}): Composition => ({
+    type: "composition",
+    contentWidth: W,
+    contentHeight: H,
+    children: [
+      {
+        type: "composition",
+        duration: 2,
+        distort,
+        ...extra,
+        children: [{ type: "empty", duration: 2 }],
+      } as never,
+    ],
+  });
+
+  it("identity corners stay on the flattened path (no group, no corners)", () => {
+    const cmds = commandsAt(distorted({}), 1);
+    expect(groups(cmds)).toHaveLength(0);
+  });
+
+  it("forces the FBO path and maps corners into target pixels", () => {
+    const cmds = commandsAt(distorted({ x1: "50%", y3: -100 }), 1);
+    const g = groups(cmds);
+    expect(g).toHaveLength(1);
+    const corners = g[0].corners!;
+    // The comp fills the canvas (1080×1920), so content px = target px.
+    expect(corners[0]).toEqual({ x: 0, y: 0 });
+    expect(corners[1].x).toBeCloseTo(540);
+    expect(corners[1].y).toBeCloseTo(0);
+    expect(corners[2].x).toBeCloseTo(1080);
+    expect(corners[2].y).toBeCloseTo(1920);
+    expect(corners[3].x).toBeCloseTo(0);
+    expect(corners[3].y).toBeCloseTo(1820);
+    // Layout box unchanged — distort never moves the dest rect.
+    expect(g[0].destX).toBe(0);
+    expect(g[0].destW).toBe(W);
+    expect(g[0].destH).toBe(H);
+  });
+
+  it("widens the scissor to the pinned corners (content may spill the box)", () => {
+    // Half-size comp centred; pull its top-right corner far outside its box.
+    const cmds = commandsAt(
+      distorted({ x1: "200%", y1: "-50%" }, { size: "50%" }),
+      1,
+    );
+    const g = groups(cmds)[0];
+    // Box is 540×960 at (270, 480). TR corner → (270 + 1080, 480 − 480).
+    expect(g.corners![1].x).toBeCloseTo(1350);
+    expect(g.corners![1].y).toBeCloseTo(0);
+    expect(g.scissorX).toBeCloseTo(270);
+    expect(g.scissorY).toBeCloseTo(0);
+    // Clamped to the canvas on the right (1350 > 1080).
+    expect(g.scissorX + g.scissorW).toBeCloseTo(W);
+    expect(g.scissorY + g.scissorH).toBeCloseTo(480 + 960);
+  });
+
+  it("samples % against the inner canvas, scaled onto the display box", () => {
+    // Inner canvas 200×100 fit into 1080×1920 → natural 1080×540 box.
+    const cmds = commandsAt(
+      distorted({ x1: "50%" }, { contentWidth: 200, contentHeight: 100 }),
+      1,
+    );
+    const g = groups(cmds)[0];
+    expect(g.destW).toBeCloseTo(1080);
+    expect(g.destH).toBeCloseTo(540);
+    expect(g.corners![1].x).toBeCloseTo(g.destX + 540);
+    expect(g.corners![1].y).toBeCloseTo(g.destY);
+  });
+
+  it("with an inset, the visible window's corners go through the full-canvas warp", () => {
+    // Left-half window; the canvas's TR corner pulled down 50%. The drawn quad
+    // is the window's corners mapped through the FULL canvas's homography
+    // (the window is a sub-rect of the warped canvas, not its own pin set),
+    // then laid onto the window's output box the way the un-distorted crop is.
+    const cmds = commandsAt(
+      distorted({ y1: "50%" }, { inset: [0, "50%", 0, 0] }),
+      1,
+    );
+    const g = groups(cmds)[0];
+    expect(g.sourceRect).toEqual({ u0: 0, v0: 0, u1: 0.5, v1: 1 });
+    // Window output box: x 0..540 (sourceRect u 0..0.5 fills it), y 0..1920.
+    expect(g.destW).toBeCloseTo(540);
+    const m = squareToQuad([
+      { x: 0, y: 0 },
+      { x: 1, y: 0.5 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ]);
+    const q = applyHomography(m, 0.5, 0); // window's top-right
+    const [tl, tr] = g.corners!;
+    expect(tl).toEqual({ x: 0, y: 0 });
+    expect(tr.x).toBeCloseTo((q.x / 0.5) * 540);
+    expect(tr.y).toBeCloseTo(q.y * 1920);
+    // This pin set is projective (opposite edges not parallel), so u=0.5 is
+    // NOT the linear midpoint of the warped top edge.
+    expect(tr.x).toBeGreaterThan(540);
+  });
+
+  it("animates: the corner set tweens in output time", () => {
+    const doc = distorted([[0, {}], [2, { x1: "0%" }]]);
+    const at0 = groups(commandsAt(doc, 0));
+    expect(at0).toHaveLength(0); // identity at t=0 → flattened
+    const at1 = groups(commandsAt(doc, 1))[0];
+    expect(at1.corners![1].x).toBeCloseTo(540);
   });
 });

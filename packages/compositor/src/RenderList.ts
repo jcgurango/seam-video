@@ -32,7 +32,13 @@ import {
   computeNaturalSize,
   sampleContentDim,
   sampleNumber,
+  sampleDistort,
+  isIdentityDistort,
+  squareToQuad,
+  applyHomography,
   type Keyframed,
+  type Quad,
+  type DistortCorners,
 } from "@seam/core";
 
 /** Sample a node's first-class opacity (Keyframed, ejected from filters);
@@ -117,6 +123,13 @@ export interface GroupCommand {
   children: RenderCommand[];
   /** Visible FBO sub-rect (UV fractions) when the composition is `inset`. */
   sourceRect?: { u0: number; v0: number; u1: number; v1: number };
+  /** Corner-pin (`distort`): where the four corners of the drawn quad land,
+   *  in target-pixel space *before* `rotation`, clockwise from top-left.
+   *  Present only when the composition authored a non-identity `distort`;
+   *  the compositor then ignores `dest*` for geometry and interpolates the
+   *  FBO texture projectively across this quad. `dest*` still describes the
+   *  undistorted layout box. */
+  corners?: Quad;
 }
 
 export type RenderCommand = DrawCommand | GroupCommand | FillCommand;
@@ -372,7 +385,47 @@ function walkChildren(
       const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize);
       const container = absoluteRect(viewport, spatial);
       const { rotation, pivotX, pivotY } = rotationFor(viewport, spatial, container);
-      const childClip = scissorFor(clipRect, container, rotation, pivotX, pivotY);
+
+      // Inner content dim — sample the (animatable) inner canvas against the
+      // live parent dims at the comp's OUTPUT-local time (like opacity below,
+      // not the sped inner time `childLocalTime`). This sizes the FBO and the
+      // child viewport, so children re-layout against the live inner canvas.
+      // Default ("100%") tracks the parent; falls back to the display rect only
+      // when there are no parent dims to resolve against.
+      const compT = localTime - child.timelineStart;
+      const compDur = child.timelineEnd - child.timelineStart;
+      const innerContentW = sampleContentDim(
+        child.contentWidth,
+        compT,
+        compDur,
+        viewport.contentW,
+      );
+      const innerContentH = sampleContentDim(
+        child.contentHeight,
+        compT,
+        compDur,
+        viewport.contentH,
+      );
+
+      // Corner-pin distortion: sample the authored corners (percent against
+      // the inner canvas) in output time, then place the *visible window's*
+      // corners through that homography into target pixels. Identity corners
+      // (the default) carry nothing, so an un-distorted comp stays on the
+      // plain path.
+      let corners: Quad | undefined;
+      if (child.distort != null && innerContentW > 0 && innerContentH > 0) {
+        const c = sampleDistort(child.distort, compT, compDur, innerContentW, innerContentH);
+        if (!isIdentityDistort(c, innerContentW, innerContentH)) {
+          corners = distortedCorners(c, innerContentW, innerContentH, container, spatial.sourceRect);
+        }
+      }
+
+      // Scissor: the (rotated) layout box, or — when distorted — the AABB of
+      // the pinned corners, so content pulled outside the box isn't clipped
+      // to it. Still bounded by the parent's clip.
+      const childClip = corners
+        ? intersect(clipRect, rotatedAABB(corners, pivotX, pivotY, rotation))
+        : scissorFor(clipRect, container, rotation, pivotX, pivotY);
       if (childClip.w <= 0 || childClip.h <= 0) continue;
 
       const fade = transitionFade(child, localTime);
@@ -402,33 +455,15 @@ function walkChildren(
       // like before, and the boundary is seamless (=== 1 either way). An
       // `inset` composition likewise needs the FBO so we can sample its
       // cropped sub-rect (`sourceRect`) out of the composited content box.
+      // A `distort`ed composition is a projective warp of the composited
+      // group, so it needs the FBO too.
       const needsLayer =
         hasFilters ||
         hasRotation ||
         fade < 1 ||
         nodeOpacity < 1 ||
-        spatial.sourceRect != null;
-
-      // Inner content dim — sample the (animatable) inner canvas against the
-      // live parent dims at the comp's OUTPUT-local time (like opacity above,
-      // not the sped inner time `childLocalTime`). This sizes the FBO and the
-      // child viewport, so children re-layout against the live inner canvas.
-      // Default ("100%") tracks the parent; falls back to the display rect only
-      // when there are no parent dims to resolve against.
-      const compT = localTime - child.timelineStart;
-      const compDur = child.timelineEnd - child.timelineStart;
-      const innerContentW = sampleContentDim(
-        child.contentWidth,
-        compT,
-        compDur,
-        viewport.contentW,
-      );
-      const innerContentH = sampleContentDim(
-        child.contentHeight,
-        compT,
-        compDur,
-        viewport.contentH,
-      );
+        spatial.sourceRect != null ||
+        corners != null;
 
       if (needsLayer) {
         const fboW = Math.round(innerContentW);
@@ -490,6 +525,7 @@ function walkChildren(
           pivotY,
           children: groupChildren,
           sourceRect: spatial.sourceRect,
+          ...(corners ? { corners } : {}),
         });
       } else {
         const childViewport: Viewport = {
@@ -568,11 +604,48 @@ function rotationFor(
   };
 }
 
-/** Axis-aligned bounding box of a quad after rotating about a pivot. Used
- *  to widen the (axis-aligned) scissor so a rotated draw isn't clipped to
- *  its un-rotated bounds. */
+/** Place a `distort`ed composition's visible corners in target pixels.
+ *
+ *  `c` are the sampled pin points in inner-canvas px (`innerW`×`innerH`). The
+ *  homography that sends the canvas's own corners to `c` is the warp; the
+ *  drawn quad is the image of the *visible window* (`sourceRect`, or the
+ *  whole canvas) under it, then carried through the same window→`container`
+ *  scaling an undistorted draw uses (the FBO's `sourceRect` fills
+ *  `container`). With no inset this is just `c` scaled onto `container`. */
+function distortedCorners(
+  c: DistortCorners,
+  innerW: number,
+  innerH: number,
+  container: ClipRect,
+  sourceRect: SpatialRect["sourceRect"],
+): Quad {
+  const m = squareToQuad([
+    { x: c.x0 / innerW, y: c.y0 / innerH },
+    { x: c.x1 / innerW, y: c.y1 / innerH },
+    { x: c.x2 / innerW, y: c.y2 / innerH },
+    { x: c.x3 / innerW, y: c.y3 / innerH },
+  ]);
+  const u0 = sourceRect?.u0 ?? 0;
+  const v0 = sourceRect?.v0 ?? 0;
+  const u1 = sourceRect?.u1 ?? 1;
+  const v1 = sourceRect?.v1 ?? 1;
+  const spanU = u1 - u0 > 0 ? u1 - u0 : 1;
+  const spanV = v1 - v0 > 0 ? v1 - v0 : 1;
+  const place = (u: number, v: number) => {
+    const q = applyHomography(m, u, v);
+    return {
+      x: container.x + ((q.x - u0) / spanU) * container.w,
+      y: container.y + ((q.y - v0) / spanV) * container.h,
+    };
+  };
+  return [place(u0, v0), place(u1, v0), place(u1, v1), place(u0, v1)];
+}
+
+/** Axis-aligned bounding box of a quad (rect or explicit corners) after
+ *  rotating about a pivot. Used to widen the (axis-aligned) scissor so a
+ *  rotated / distorted draw isn't clipped to its un-rotated layout bounds. */
 function rotatedAABB(
-  quad: ClipRect,
+  quad: ClipRect | Quad,
   pivotX: number,
   pivotY: number,
   rotation: number,
@@ -580,12 +653,14 @@ function rotatedAABB(
   const c = Math.cos(rotation);
   const s = Math.sin(rotation);
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const corners = [
-    [quad.x, quad.y],
-    [quad.x + quad.w, quad.y],
-    [quad.x, quad.y + quad.h],
-    [quad.x + quad.w, quad.y + quad.h],
-  ];
+  const corners: [number, number][] = Array.isArray(quad)
+    ? quad.map((p) => [p.x, p.y] as [number, number])
+    : [
+        [quad.x, quad.y],
+        [quad.x + quad.w, quad.y],
+        [quad.x, quad.y + quad.h],
+        [quad.x + quad.w, quad.y + quad.h],
+      ];
   for (const [cx, cy] of corners) {
     const dx = cx - pivotX;
     const dy = cy - pivotY;

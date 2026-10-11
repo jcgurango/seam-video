@@ -68,6 +68,7 @@ const PROP_ORDER = [
   "size",
   "rotation",
   "inset",
+  "distort",
   "volume",
 ];
 

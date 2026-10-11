@@ -18,6 +18,14 @@ export {
   DEFAULT_CANVAS_HEIGHT,
 } from "./layout/resolve-spatial.js";
 export {
+  squareToQuad,
+  applyHomography,
+  quadWeights,
+  type Point as QuadPoint,
+  type Quad,
+  type Homography,
+} from "./layout/distort.js";
+export {
   parseLength,
   resolveLength,
   hasPercent,
