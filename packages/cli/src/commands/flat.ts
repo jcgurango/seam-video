@@ -87,6 +87,9 @@ function collect(
         ? [...envs, { volume: child.volume, startAbs: start, duration: end - start }]
         : envs;
       collect(child.children, start, child.speed * parentSpeed, innerEnvs, out);
+    } else if (child.type === "map") {
+      // Map attachments: map-local time at speed 1, no volume of their own.
+      collect(child.children, start, parentSpeed, envs, out);
     }
   }
 }

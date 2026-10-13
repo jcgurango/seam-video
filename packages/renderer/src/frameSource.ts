@@ -6,9 +6,10 @@
  * at time `t` into a cache via {@link prepare}, then (2) the compositor pulls
  * frames synchronously via {@link get}.
  *
- * Currently implements clip (video) decode. Other drawable types hard-error by
- * name until their providers are wired (text/graphic reuse @seam/renderer's
- * rasterizers; static images/video freeze-frames come next).
+ * Providers: clip (mediabunny forward cursor), static (image via Skia, else a
+ * video freeze frame), text (Skia + Pretext layout), map (@seam/map on Skia via
+ * {@link MapRasterizer}). Shapes (`rect`/`circle`) never reach here — the
+ * compositor rasterizes them analytically.
  */
 import { registerMediabunnyServer } from "@mediabunny/server";
 import {
@@ -23,12 +24,12 @@ import {
 import { layoutText, drawTextLayout } from "@seam/core";
 import type {
   ResolvedClip,
-  ResolvedGraphic,
+  ResolvedMap,
   ResolvedStatic,
   ResolvedText,
 } from "@seam/core";
 import { installCanvasShim } from "./text/canvasShim.js";
-import type { GraphicFrameRenderer } from "./graphic/frameRenderer.js";
+import { MapRasterizer } from "./mapRasterizer.js";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
@@ -94,19 +95,15 @@ export class FrameSource {
   private readonly staticDims = new Map<ResolvedStatic, { w: number; h: number }>();
   private textReady = false;
 
-  // Graphics render on demand via @seam/renderer's fabric/OpenLayers renderer
-  // (no disk pre-pass) — one renderer per graphic node, set up once.
-  private readonly graphicRenderers: Map<ResolvedGraphic, GraphicFrameRenderer>;
+  // Maps rasterize on demand (no disk pre-pass); the rasterizer's tile pool
+  // stays warm across frames and is closed in dispose().
+  private readonly maps: MapRasterizer;
 
-  constructor(
-    basePath: string,
-    graphicRenderers?: Map<ResolvedGraphic, GraphicFrameRenderer>,
-    stores?: BlockStores,
-  ) {
+  constructor(basePath: string, stores?: BlockStores) {
     ensureServer();
     this.basePath = basePath;
-    this.graphicRenderers = graphicRenderers ?? new Map();
     this.stores = stores;
+    this.maps = new MapRasterizer(basePath);
   }
 
   /** Absolute path for a local source; an `http(s)://` URL passes through
@@ -197,30 +194,26 @@ export class FrameSource {
       return this.renderText(node, drawTime, contentW, contentH);
     }
 
-    if (node.type === "graphic") {
-      return this.loadGraphicFrame(node, drawTime, contentW, contentH);
+    if (node.type === "map") {
+      return this.renderMap(node, drawTime, contentW, contentH);
     }
 
     throw new Error(
-      `renderer: no frame provider for "${(node as { type: string }).type}" yet`,
+      `renderer: no frame provider for "${(node as { type: string }).type}"`,
     );
   }
 
-  /** Render the graphic on demand at its container-local elapsed `drawTime`,
-   *  at the per-frame inner-canvas size (`contentW`/`contentH`) sampled by the
-   *  compositor. */
-  private async loadGraphicFrame(
-    node: ResolvedGraphic,
+  /** Rasterize the basemap at map-local `drawTime`, at the per-frame
+   *  inner-canvas size (`contentW`/`contentH`) sampled by the compositor. */
+  private renderMap(
+    node: ResolvedMap,
     drawTime: number,
     contentW?: number,
     contentH?: number,
-  ): Promise<NodeFrame | null> {
-    const renderer = this.graphicRenderers.get(node);
-    if (!renderer) {
-      throw new Error("renderer: no renderer for graphic node");
-    }
-    const f = await renderer.renderAt(Math.max(0, drawTime), contentW, contentH);
-    return { data: f.data, width: f.width, height: f.height };
+  ): Promise<NodeFrame> {
+    const w = contentW ?? node.intrinsicWidth ?? 1;
+    const h = contentH ?? node.intrinsicHeight ?? 1;
+    return this.maps.render(node, drawTime, w, h);
   }
 
   /** Decode a clip frame by advancing a forward sample cursor to the needed
@@ -299,10 +292,11 @@ export class FrameSource {
     return cursor.frame;
   }
 
-  /** Release decoder resources held by open clip cursors. */
-  dispose(): void {
+  /** Release decoder resources held by open clip cursors + map archives. */
+  async dispose(): Promise<void> {
     for (const cursor of this.clipCursors.values()) closeCursor(cursor);
     this.clipCursors.clear();
+    await this.maps.dispose();
   }
 
   /** Decode a static. The kind comes from the file's leading bytes (a
@@ -460,7 +454,7 @@ function rotateRGBA(
 }
 
 /** A drawable plus its container-local elapsed time, for {@link FrameSource.prepare}.
- *  `contentW`/`contentH` carry the per-frame inner-canvas size for text/graphic
+ *  `contentW`/`contentH` carry the per-frame inner-canvas size for text/map
  *  (sampled by the compositor against live parent dims). */
 export interface DrawableJob {
   node: Drawable;

@@ -157,7 +157,7 @@ function collectTextNodes(children: ResolvedChild[]): ResolvedText[] {
   function walk(arr: ResolvedChild[]) {
     for (const c of arr) {
       if (c.type === "text") out.push(c);
-      else if (c.type === "composition") walk(c.children);
+      else if (c.type === "composition" || c.type === "map") walk(c.children);
     }
   }
 }

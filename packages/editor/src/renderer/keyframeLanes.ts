@@ -2,9 +2,8 @@
 //
 // When a timeline block is expanded, we draw one horizontal "lane" per
 // animated property of its node: a track spanning the block's width with a
-// diamond at each keyframe. A graphic's `frames` array is just another
-// keyframe track (the stamp is the keyframe time), so it gets a lane too —
-// which is why non-composition nodes can now be expandable.
+// diamond at each keyframe — which is why non-composition nodes can be
+// expandable.
 //
 // The shape here is intentionally read-only + pure: it reads the *authored*
 // node (so the keyframe arrays match what's in the JSON, and edits write
@@ -48,9 +47,6 @@ export interface KeyframeLane {
   label: string;
   /** Authored field name holding the keyframe array — write-back + JSON path. */
   prop: string;
-  /** `frames` (graphic) writes back differently (Length stamp + objects)
-   *  than a plain keyframed property ([time, value, easing]). */
-  kind: "keyframed" | "frames";
   /** The block's start in the enclosing group's output coordinate (s). */
   outputStart: number;
   /** The block's output span (s) — its drawn width AND the duration its
@@ -60,13 +56,21 @@ export interface KeyframeLane {
 }
 
 // Stable lane ordering: the properties users animate most, first; anything
-// else alphabetical after. `frames` sorts last (it's the whole scene).
+// else alphabetical after.
 const PROP_ORDER = [
   "opacity",
   "translation",
   "origin",
   "size",
   "rotation",
+  "cornerRadius",
+  "fill",
+  "stroke",
+  "strokeWidth",
+  "pin",
+  "latitude",
+  "longitude",
+  "zoom",
   "inset",
   "distort",
   "volume",
@@ -100,7 +104,6 @@ export function lanesForNode(
   )) {
     if (!isKeyframed(value as never)) continue;
     const kfs = value as Array<[TimeExpr, unknown, string?]>;
-    const isFrames = prop === "frames";
 
     const diamonds: LaneDiamond[] = kfs.map((kf, index) => {
       let localSec = 0;
@@ -125,7 +128,6 @@ export function lanesForNode(
     lanes.push({
       label: prop,
       prop,
-      kind: isFrames ? "frames" : "keyframed",
       outputStart,
       outputSpan,
       diamonds,
@@ -137,7 +139,6 @@ export function lanesForNode(
 }
 
 function laneRank(prop: string): number {
-  if (prop === "frames") return PROP_ORDER.length + 1;
   const i = PROP_ORDER.indexOf(prop);
   return i === -1 ? PROP_ORDER.length : i;
 }

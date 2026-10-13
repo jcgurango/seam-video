@@ -616,7 +616,7 @@ describe("validate — verbose error messages", () => {
       type: "composition",
       children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
     });
-    expect(messages.some((m) => /audio|static|empty|graphic/.test(m))).toBe(
+    expect(messages.some((m) => /audio|static|empty|rect|circle|map/.test(m))).toBe(
       false
     );
   });
@@ -701,20 +701,10 @@ describe("validate — macro expansion runs before schema checks", () => {
       },
       children: [
         {
-          type: "graphic",
+          type: "map",
+          source: "area.pmtiles",
           duration: 5,
-          frames: [
-            [
-              0,
-              [
-                {
-                  type: "Map",
-                  source: "area.pmtiles",
-                  paths: [{ color: "red", points: ["$$POINTS"] }],
-                },
-              ],
-            ],
-          ],
+          paths: [{ color: "red", points: ["$$POINTS"] }],
         },
       ],
     });

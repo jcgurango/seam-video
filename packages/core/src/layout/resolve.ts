@@ -1,8 +1,10 @@
 import type {
   Composition,
   Child,
+  Keyframed,
   Length,
   Overflow,
+  Pin,
   TimeAnchor,
   TextRun,
   Underflow,
@@ -44,19 +46,11 @@ function naturalDuration(child: Child): number {
     case "data":
       return child.duration ?? 0;
     case "text":
+    case "rect":
+    case "circle":
       return child.duration ?? 0;
-    case "graphic":
-      // Graphics carry their own timeline. With both anchors set the
-      // anchor span dictates target duration; otherwise we trust the
-      // authored `duration`, then fall back to the last keyframe's
-      // numeric stamp. (Length-typed stamps default to numeric here —
-      // percent stamps need a duration context to resolve, and at this
-      // point we have none, so they fall back to 0.)
-      if (child.in != null && child.out != null) return child.out - child.in;
-      if (typeof child.duration === "number") return child.duration;
-      const lastFrame = child.frames[child.frames.length - 1];
-      const lastStamp = lastFrame?.[0];
-      return typeof lastStamp === "number" ? lastStamp : 0;
+    case "map":
+      return child.duration;
     case "composition": {
       const compIn = child.in ?? 0;
       const compOut = child.out ?? resolveCompositionInner(child).duration;
@@ -96,6 +90,21 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
     return undefined;
   }
   return { objectFit, origin, translation, size, rotation, inset, insetMode };
+}
+
+/** Per-frame-sampled visual fields every spatial node carries through
+ *  resolution verbatim (like `volume`): opacity, the corner mask, and the map
+ *  pin. Omitted keys stay omitted so resolved nodes don't grow `undefined`s. */
+function spatialExtras(child: {
+  opacity?: Keyframed<number>;
+  cornerRadius?: Keyframed<Length>;
+  pin?: Keyframed<Pin>;
+}): { opacity?: Keyframed<number>; cornerRadius?: Keyframed<Length>; pin?: Keyframed<Pin> } {
+  return {
+    ...(child.opacity != null ? { opacity: child.opacity } : {}),
+    ...(child.cornerRadius != null ? { cornerRadius: child.cornerRadius } : {}),
+    ...(child.pin != null ? { pin: child.pin } : {}),
+  };
 }
 
 /**
@@ -146,7 +155,7 @@ function resolveChild(
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...(child.opacity != null ? { opacity: child.opacity } : {}),
+        ...spatialExtras(child),
       },
       actualDuration: target,
     };
@@ -194,35 +203,59 @@ function resolveChild(
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...(child.opacity != null ? { opacity: child.opacity } : {}),
+        ...spatialExtras(child),
       } as ResolvedChild,
       actualDuration: target,
     };
   }
 
-  if (child.type === "graphic") {
-    // Graphic carries its own internal timeline (frames / clips). For the
-    // outer layout pass we treat it like static: a single placeable rect
-    // with content dimensions for the spatial pass to consume. The
-    // animation playhead is driven by the renderer/preview at render
-    // time, not here. overflow/underflow collapse to "play at the rate
-    // implied by target / natural" — same as text/static — and we leave
-    // playback-time mapping (e.g. speed-up) to the consumer.
+  if (child.type === "rect" || child.type === "circle") {
+    // Shapes are static leaves like text: overflow/underflow collapse to
+    // "show the shape for the target span". Fill/stroke stay keyframed —
+    // the renderers sample them per frame.
     return {
       resolved: {
-        type: "graphic" as const,
-        duration: child.duration,
-        loop: child.loop,
-        contentWidth: child.contentWidth,
-        contentHeight: child.contentHeight,
-        clips: child.clips,
-        frames: child.frames,
+        type: child.type,
         timelineStart: 0,
         timelineEnd: 0,
+        ...(child.fill != null ? { fill: child.fill } : {}),
+        ...(child.stroke != null ? { stroke: child.stroke } : {}),
+        ...(child.strokeWidth != null ? { strokeWidth: child.strokeWidth } : {}),
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...(child.opacity != null ? { opacity: child.opacity } : {}),
+        ...spatialExtras(child),
       } as ResolvedChild,
+      actualDuration: target,
+    };
+  }
+
+  if (child.type === "map") {
+    // A map is a static-like leaf for timing (the camera keyframes sample
+    // against its span) that also hosts attachments: resolved exactly like a
+    // composition's — anchors may reference earlier attachments' ids — in
+    // map-local time (0 = map start, speed 1). The attachments are NOT
+    // cropped to the map's span here; the compositor only draws what's active.
+    const idMap = new Map<string, IdMapEntry>();
+    const children = resolveAttachments(child.attachments ?? [], idMap);
+    return {
+      resolved: {
+        type: "map" as const,
+        source: child.source,
+        timelineStart: 0,
+        timelineEnd: 0,
+        ...(child.latitude != null ? { latitude: child.latitude } : {}),
+        ...(child.longitude != null ? { longitude: child.longitude } : {}),
+        ...(child.zoom != null ? { zoom: child.zoom } : {}),
+        ...(child.mapOpacity != null ? { mapOpacity: child.mapOpacity } : {}),
+        ...(child.theme != null ? { theme: child.theme } : {}),
+        ...(child.paths?.length ? { paths: child.paths } : {}),
+        children,
+        ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
+        ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
+        ...(spatialInput ? { spatialInput } : {}),
+        ...(child.filters?.length ? { filters: child.filters } : {}),
+        ...spatialExtras(child),
+      },
       actualDuration: target,
     };
   }
@@ -273,7 +306,7 @@ function resolveChild(
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...(child.opacity != null ? { opacity: child.opacity } : {}),
+        ...spatialExtras(child),
         ...(child.volume != null ? { volume: child.volume } : {}),
         ...(child.pitch != null ? { pitch: child.pitch } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
@@ -343,7 +376,7 @@ function resolveChild(
       ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
       ...(spatialInput ? { spatialInput } : {}),
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
-      ...(leaf.opacity != null ? { opacity: leaf.opacity } : {}),
+      ...spatialExtras(leaf),
     },
     actualDuration: leafDur,
   };
@@ -426,17 +459,7 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   // direct children or earlier attachments. Rendered as regular resolved
   // children appended after the sequential ones — later in the array means
   // on top.
-  for (const att of composition.attachments ?? []) {
-    const resolvedAtt = resolveAttachment(att, idMap);
-    resolvedChildren.push(resolvedAtt);
-    const id = getId(att);
-    if (id != null) {
-      if (idMap.has(id)) {
-        throw new Error(`duplicate id "${id}" in composition`);
-      }
-      idMap.set(id, buildIdMapEntry(att, resolvedAtt));
-    }
-  }
+  resolvedChildren.push(...resolveAttachments(composition.attachments ?? [], idMap));
 
   return {
     // Total = end of the last placed child (sum of durations minus overlaps).
@@ -451,6 +474,27 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
     ...(composition.contentWidth != null ? { contentWidth: composition.contentWidth } : {}),
     ...(composition.contentHeight != null ? { contentHeight: composition.contentHeight } : {}),
   };
+}
+
+/** Resolve a list of attachments in array order against (and extending) an
+ *  id map. Shared by compositions and maps. */
+function resolveAttachments(
+  attachments: Child[],
+  idMap: Map<string, IdMapEntry>,
+): ResolvedChild[] {
+  const out: ResolvedChild[] = [];
+  for (const att of attachments) {
+    const resolvedAtt = resolveAttachment(att, idMap);
+    out.push(resolvedAtt);
+    const id = getId(att);
+    if (id != null) {
+      if (idMap.has(id)) {
+        throw new Error(`duplicate id "${id}" in composition`);
+      }
+      idMap.set(id, buildIdMapEntry(att, resolvedAtt));
+    }
+  }
+  return out;
 }
 
 /**
@@ -495,11 +539,11 @@ function buildIdMapEntry(
     resolved.type === "empty" ||
     resolved.type === "data" ||
     resolved.type === "text" ||
-    resolved.type === "graphic"
+    resolved.type === "rect" ||
+    resolved.type === "circle" ||
+    resolved.type === "map"
   ) {
-    // Graphic's internal playhead is owned by the renderer/preview; from
-    // the outer layout's perspective there's no source-time mapping to
-    // expose to attachments.
+    // Static-like leaves: no source-time mapping to expose to attachments.
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   if (resolved.type === "static") {
@@ -670,7 +714,9 @@ function cropChildrenToWindow(
       child.type === "data" ||
       child.type === "text" ||
       child.type === "static" ||
-      child.type === "graphic"
+      child.type === "rect" ||
+      child.type === "circle" ||
+      child.type === "map"
     ) {
       result.push({
         ...child,

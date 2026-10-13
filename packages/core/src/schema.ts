@@ -175,6 +175,23 @@ const DistortSchema = z.object({
   y3: LengthSchema.optional(),
 }).strict();
 
+// Where a node's `origin` lands when it is an attachment of a `map`: either a
+// geographic coordinate or a fraction along one of the map's `paths` (by index
+// or path `id`; `position` defaults to that path's current `progress`, so the
+// node rides the head of the reveal). Ignored outside a map. Keyframes
+// interpolate lat/lng (geo→geo) or `position` (same path→same path); a change
+// of kind or path snaps at the keyframe.
+const PinSchema = z.union([
+  z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+  }).strict(),
+  z.object({
+    path: z.union([z.number().int().nonnegative(), z.string().min(1)]),
+    position: z.number().min(0).max(1).optional(),
+  }).strict(),
+]);
+
 const SpatialFieldsSchema = {
   objectFit: ObjectFitSchema.optional(),
   origin: keyframed(Point2DSchema).optional(),
@@ -184,6 +201,13 @@ const SpatialFieldsSchema = {
   // First-class opacity (ejected from filters); animatable like volume.
   // 0 = transparent, 1 = opaque. Absent = fully opaque.
   opacity: keyframed(z.number().min(0).max(1)).optional(),
+  // Rounded-corner mask applied to the node's final rect (any node — a clip,
+  // image, text, composition or shape). A bare number is pixels; a `%`
+  // resolves against the SHORTER side of the rect, so `"50%"` turns a square
+  // into a circle and a rectangle into a pill. Animatable.
+  cornerRadius: keyframed(LengthSchema).optional(),
+  // Geo / path anchor — only meaningful on a `map`'s attachments. See PinSchema.
+  pin: keyframed(PinSchema).optional(),
 };
 
 /** Crossfade overlap (seconds) with the previous sequential sibling.
@@ -372,240 +396,106 @@ export const TextSchema = z.object({
   }
 );
 
-// ── Graphic (animated 2D layer) ────────────────────────────────────
+// ── Shapes ─────────────────────────────────────────────────────────
 //
-// A graphic is a self-contained 2D animation: a list of keyframes, each
-// holding a snapshot of fabric-style objects (Rect, Circle, Path, Polygon,
-// Text, Image, Group, Clip-instance, Map). The renderer/preview run the
-// pure interp engine in `animation/interp.ts` against these snapshots.
-//
-// The typed inner-object schemas below describe the well-known fabric shapes
-// (for authoring tools / reference), but they no longer *gate* frame objects:
-// see `GraphicObjectSchema` at the end of this section, which validates a
-// frame object as any plain object — fabric's domain, not Seam's.
+// `rect` and `circle` are first-class nodes placed by the ordinary spatial
+// model (`origin` / `translation` / `size` / `rotation` …). They have no
+// intrinsic media size: their natural box is the parent, so `size` is the
+// shape's pixel size (a bare number = literal px, `%` = of the parent). Fill
+// and stroke are animatable colours; the stroke is drawn INSIDE the box
+// (border-box), so `size` is always the outer extent. A `rect`'s corners round
+// via the universal `cornerRadius`; a `circle` is the ellipse inscribed in its
+// box (equal `size` → a circle).
 
-// Animation direction for the `angle` property when revolutions != 0.
-const AngleDirectionSchema = z.enum(["shortest", "cw", "ccw"]);
-
-// Fields every inner object can carry. id is the stable cross-frame
-// correspondence key; revolutions/angleDirection drive winding for `angle`;
-// easing overrides the frame-level default for this object only (and, like
-// the frame default, governs the tween *arriving at* this keyframe).
-const GraphicObjectBaseSchema = {
-  id: z.string().min(1).optional(),
-  easing: EasingSchema.optional(),
-  revolutions: z.number().optional(),
-  angleDirection: AngleDirectionSchema.optional(),
+const ShapeFieldsSchema = {
+  // Any CSS colour. Default "black". "none" / "transparent" skips the fill.
+  fill: keyframed(z.string()).optional(),
+  // Stroke colour; drawn only when `strokeWidth` > 0.
+  stroke: keyframed(z.string()).optional(),
+  // Stroke width in pixels, inside the box.
+  strokeWidth: keyframed(z.number().nonnegative()).optional(),
 };
 
-// Common fabric transform props. Plain numbers — the seam Length system
-// stops at the graphic boundary; inner objects are fabric's domain.
-const FabricTransformSchema = {
-  left: z.number().optional(),
-  top: z.number().optional(),
-  width: z.number().optional(),
-  height: z.number().optional(),
-  scaleX: z.number().optional(),
-  scaleY: z.number().optional(),
-  angle: z.number().optional(),
-  opacity: z.number().min(0).max(1).optional(),
-  flipX: z.boolean().optional(),
-  flipY: z.boolean().optional(),
-  originX: z.enum(["left", "center", "right"]).optional(),
-  originY: z.enum(["top", "center", "bottom"]).optional(),
-  fill: z.string().optional(),
-  stroke: z.string().optional(),
-  strokeWidth: z.number().nonnegative().optional(),
-  visible: z.boolean().optional(),
+const shapeDurationRefine = {
+  check: (data: { duration?: number; start?: unknown; end?: unknown }) =>
+    data.duration != null || (data.start != null && data.end != null),
+  message:
+    "'duration' is required unless both 'start' and 'end' anchors are set",
 };
-
-const Point2DCoordSchema = z.object({ x: z.number(), y: z.number() }).strict();
 
 export const RectSchema = z.object({
-  type: z.literal("Rect"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  rx: z.number().optional(),
-  ry: z.number().optional(),
-}).passthrough();
-
-export const CircleSchema = z.object({
-  type: z.literal("Circle"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  radius: z.number().nonnegative().optional(),
-}).passthrough();
-
-export const PathSchema = z.object({
-  type: z.literal("Path"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  // SVG path string or fabric's parsed-array form. Animation engine matches
-  // structures between frames and falls back to discrete on mismatch.
-  path: z.union([z.string(), z.array(z.array(z.union([z.string(), z.number()])))]).optional(),
-}).passthrough();
-
-export const PolygonSchema = z.object({
-  type: z.literal("Polygon"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  points: z.array(Point2DCoordSchema).optional(),
-}).passthrough();
-
-export const GraphicTextSchema = z.object({
-  type: z.literal("Textbox"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  text: z.string().optional(),
-  fontFamily: z.string().optional(),
-  fontSize: z.number().positive().optional(),
-  fontWeight: z.union([z.string(), z.number()]).optional(),
-  fontStyle: z.string().optional(),
-  textAlign: z.enum(["left", "center", "right", "justify"]).optional(),
-  lineHeight: z.number().positive().optional(),
-}).passthrough();
-
-export const GraphicImageSchema = z.object({
-  type: z.literal("Image"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  // External media reference, host-resolved like `source` on clip/audio/
-  // static: a bare filename / project-relative path is resolved (blob URL on
-  // web, file:// on electron, absolute path for the CLI renderer) and bundled
-  // on export. `data:`/`http(s)`/`blob:` srcs pass through untouched.
-  src: z.string().min(1).optional(),
-}).passthrough();
-
-// Inner clip-instance: references a ClipDef on the parent Graphic by id.
-// Has its own sub-timeline (startPosition + repeat) per the spec we
-// designed in the motion editor.
-export const GraphicClipInstanceSchema = z.object({
-  type: z.literal("Clip"),
-  ...GraphicObjectBaseSchema,
-  ...FabricTransformSchema,
-  clipId: z.string().min(1),
-  startPosition: z.number().optional(),
-  // -1 = infinite; otherwise count of additional plays after the first.
-  repeat: z.number().int().optional(),
-}).passthrough();
-
-// A fabric object anchored to a Map. Its (0,0) projects to screen space —
-// from a fraction along a path (path-level) or a geo coordinate (map-level)
-// — and the object draws there, offset by its own left/top. `object` is any
-// graphic object (recursive → lazy; same union as everywhere else, so there's
-// no separate "map-embeddable" object type).
-export const MapPathObjectSchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    // Fraction (0..1) along the path. Default: the path's own `progress`
-    // (so the object rides the head of the reveal); progress unset ⇒ 1 (end).
-    position: z.number().min(0).max(1).optional(),
-    object: GraphicObjectSchema,
-  }).strict()
-);
-
-export const MapObjectSchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    latitude: z.number().min(-90).max(90),
-    longitude: z.number().min(-180).max(180),
-    object: GraphicObjectSchema,
-  }).strict()
-);
-
-// Geo polyline rendered on a Map. progress fades the gradient; lineWidth
-// stays in display pixels (no Length: maplibre interprets in px directly).
-// Lazy because `objects` recurses into the GraphicObject union.
-export const MapPathSchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    color: z.string(),
-    points: z.array(z.tuple([z.number(), z.number()])).min(2),
-    progress: z.number().min(0).max(1).optional(),
-    lineWidth: z.number().positive().optional(),
-    easing: EasingSchema.optional(),
-    objects: z.array(MapPathObjectSchema).optional(),
-  }).strict()
-);
-
-export const MapElementSchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    type: z.literal("Map"),
-    ...GraphicObjectBaseSchema,
-    ...FabricTransformSchema,
-    // pmtiles file path — host-resolved (file:// for renderer/electron,
-    // OPFS for web).
-    source: z.string().min(1),
-    latitude: z.number().min(-90).max(90).optional(),
-    longitude: z.number().min(-180).max(180).optional(),
-    zoom: z.number().nonnegative().optional(),
-    // Opacity of the basemap layers only (tiles: fills/lines/labels), distinct
-    // from the object's `opacity`. Excludes embedded objects/paths. A plain
-    // number — animated across graphic frames like latitude/longitude/zoom.
-    mapOpacity: z.number().min(0).max(1).optional(),
-    paths: z.array(MapPathSchema).optional(),
-    objects: z.array(MapObjectSchema).optional(),
-  }).passthrough()
-);
-
-// Recursive group of graphic objects. fabric semantics: child coordinates
-// are group-local (relative to group center).
-export const GraphicGroupSchema: z.ZodType<any> = z.lazy(() =>
-  z.object({
-    type: z.literal("Group"),
-    ...GraphicObjectBaseSchema,
-    ...FabricTransformSchema,
-    objects: z.array(GraphicObjectSchema).optional(),
-  }).passthrough()
-);
-
-// Inside a graphic frame is **fabric's domain, not Seam's** (the "Graphic
-// boundary" in CLAUDE.md). We deliberately don't model fabric's full JSON
-// format: now that the fabric frame editor round-trips arbitrary fabric output
-// (SVG-parsed paths, gradient fills, IText / Polyline / Ellipse, and fabric's
-// long tail of optional props), enumerating object types + props would only
-// manufacture false validation failures. So a frame object is just "an object"
-// — the interp engine + renderers read it dynamically, treating unknown props
-// as discrete (non-interpolated). Seam still validates the frame envelope
-// ([stamp, objects, easing?]) and the graphic node's own outer-world fields.
-export const GraphicObjectSchema: z.ZodType<any> = z.object({}).passthrough();
-
-// A keyframe: [stamp, objects, easing?]. Stamp is a Length so authors can
-// write "50%" of the graphic's duration. Easing is the default for the tween
-// *arriving at* this keyframe (matching core's keyframe sampler + every other
-// animated value); per-object `easing` overrides it.
-export const GraphicFrameSchema = z.union([
-  z.tuple([LengthSchema, z.array(GraphicObjectSchema)]),
-  z.tuple([LengthSchema, z.array(GraphicObjectSchema), EasingSchema]),
-]);
-
-// A reusable clip definition the parent Graphic exposes by id, referenced
-// from a {type:"Clip", clipId} instance in any keyframe.
-export const GraphicClipDefSchema = z.object({
-  id: z.string().min(1),
-  type: z.literal("graphic"),
-  duration: LengthSchema.optional(),
-  loop: z.boolean().optional(),
-  contentWidth: LengthSchema.optional(),
-  contentHeight: LengthSchema.optional(),
-  frames: z.array(GraphicFrameSchema).min(1),
-}).strict();
-
-export const GraphicSchema = z.object({
-  type: z.literal("graphic"),
-  duration: LengthSchema.optional(),
-  loop: z.boolean().optional(),
-  contentWidth: keyframed(LengthSchema).optional(),
-  contentHeight: keyframed(LengthSchema).optional(),
-  clips: z.array(GraphicClipDefSchema).optional(),
-  frames: z.array(GraphicFrameSchema).min(1),
-  in: z.number().nonnegative().optional(),
-  out: z.number().positive().optional(),
-  overflow: OverflowSchema.optional(),
-  underflow: UnderflowSchema.optional(),
+  type: z.literal("rect"),
+  duration: z.number().positive().optional(),
   filters: FiltersArraySchema,
+  ...ShapeFieldsSchema,
   ...SpatialFieldsSchema,
   ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
+}).strict().refine(shapeDurationRefine.check, { message: shapeDurationRefine.message });
+
+export const CircleSchema = z.object({
+  type: z.literal("circle"),
+  duration: z.number().positive().optional(),
+  filters: FiltersArraySchema,
+  ...ShapeFieldsSchema,
+  ...SpatialFieldsSchema,
+  ...TransitionFieldSchema,
+  ...AnchorFieldsSchema,
+  ...MetadataFieldsSchema,
+}).strict().refine(shapeDurationRefine.check, { message: shapeDurationRefine.message });
+
+// ── Map ────────────────────────────────────────────────────────────
+//
+// A basemap rasterized from a pmtiles archive (see @seam/map), used like a
+// `static` with a camera: `latitude` / `longitude` / `zoom` / `mapOpacity`
+// are animatable, `paths` draw geo polylines over it, and `attachments` are
+// ordinary nodes (any type) composited over the map — a node carrying a `pin`
+// has its `origin` placed at the pin's projected point (its `translation`
+// then acts as a pixel offset from there). The map's inner canvas
+// (`contentWidth`/`contentHeight`, default 100% of the parent) is both the
+// raster size and the layout space its attachments resolve against.
+
+export const MapPathSchema = z.object({
+  // Referenced by a `pin: { path: "<id>" }`; else pins address paths by index.
+  id: z.string().min(1).optional(),
+  color: keyframed(z.string()),
+  // [[lng, lat], ...] — at least two points. Not animatable.
+  points: z.array(z.tuple([z.number(), z.number()])).min(2),
+  // 0..1 fraction of the line drawn (the rest is hidden). Default 1.
+  progress: keyframed(z.number().min(0).max(1)).optional(),
+  // Stroke width in display pixels. Default 4.
+  lineWidth: keyframed(z.number().positive()).optional(),
 }).strict();
+
+export const MapSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal("map"),
+    // pmtiles archive — host-resolved like clip/static `source`.
+    source: z.string().min(1),
+    duration: z.number().positive(),
+    latitude: keyframed(z.number().min(-90).max(90)).optional(),
+    longitude: keyframed(z.number().min(-180).max(180)).optional(),
+    // maplibre-512 convention. Interpolates in scale space (linear in 2^-zoom).
+    zoom: keyframed(z.number().nonnegative()).optional(),
+    // Opacity of the basemap layers only (tiles: fills/lines/labels) — paths
+    // and attachments are unaffected. Distinct from the node's `opacity`.
+    mapOpacity: keyframed(z.number().min(0).max(1)).optional(),
+    theme: z.enum(["light", "dark"]).optional(),
+    paths: z.array(MapPathSchema).optional(),
+    /** Nodes composited over the map, resolved like a composition's
+     *  attachments (anchors may reference earlier attachments' ids; time 0 is
+     *  the map's start). A `pin` places a node geographically. */
+    attachments: z.array(ChildSchema).optional(),
+    contentWidth: keyframed(LengthSchema).optional(),
+    contentHeight: keyframed(LengthSchema).optional(),
+    filters: FiltersArraySchema,
+    ...SpatialFieldsSchema,
+    ...TransitionFieldSchema,
+    ...AnchorFieldsSchema,
+    ...MetadataFieldsSchema,
+  }).strict()
+);
 
 const ChildSchema: z.ZodType<any> = z.lazy(() =>
   z.union([
@@ -615,7 +505,9 @@ const ChildSchema: z.ZodType<any> = z.lazy(() =>
     EmptySchema,
     DataSchema,
     TextSchema,
-    GraphicSchema,
+    RectSchema,
+    CircleSchema,
+    MapSchema,
     CompositionSchema,
   ])
 );

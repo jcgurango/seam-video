@@ -10,13 +10,13 @@
 import { Compositor, type RenderCommand } from "@seam/compositor";
 import type {
   ResolvedClip,
-  ResolvedGraphic,
+  ResolvedMap,
   ResolvedStatic,
   ResolvedText,
 } from "@seam/core";
 import { BrowserBackend, type BrowserFrame } from "./BrowserBackend.js";
 
-type Drawable = ResolvedClip | ResolvedStatic | ResolvedText | ResolvedGraphic;
+type Drawable = ResolvedClip | ResolvedStatic | ResolvedText | ResolvedMap;
 
 export class WebGPURenderer {
   private backend = new BrowserBackend();

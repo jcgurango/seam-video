@@ -5,8 +5,8 @@
  *   → decode active frames (mediabunny) → composite (Dawn) → read back
  *   → encode (mediabunny) → mux mp4.
  *
- * Work in progress: video only (clip drawables). Text/graphic/static/audio
- * providers are added incrementally; unsupported drawables hard-error by name.
+ * Drawables: clip / static / text / map decode or rasterize in `FrameSource`;
+ * `rect` / `circle` are analytic fills the compositor draws itself.
  */
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -21,14 +21,9 @@ import {
 import type {
   ResolvedChild,
   ResolvedClip,
-  ResolvedGraphic,
   ResolvedStatic,
 } from "@seam/core";
 import { Compositor, buildRenderList } from "@seam/compositor";
-import {
-  createGraphicFrameRenderer,
-  type GraphicFrameRenderer,
-} from "./graphic/frameRenderer.js";
 import {
   Output,
   Mp4OutputFormat,
@@ -104,35 +99,40 @@ export interface RenderResult {
   duration: number;
 }
 
-/** Swap clip/static/audio `source`s that exactly equal a proxy key, recursing
- *  compositions. Verbatim match, mutates the (local) resolved tree in place —
- *  mirrors the MLT path so probe/decode/audio all see the replacement. */
+/** Swap clip/static/audio/map `source`s that exactly equal a proxy key,
+ *  recursing compositions and maps. Verbatim match, mutates the (local)
+ *  resolved tree in place so probe/decode/audio all see the replacement. */
 function applyProxies(children: ResolvedChild[], proxies: Map<string, string>): void {
   if (proxies.size === 0) return;
   for (const child of children) {
-    if (child.type === "clip" || child.type === "static" || child.type === "audio") {
+    if (
+      child.type === "clip" ||
+      child.type === "static" ||
+      child.type === "audio" ||
+      child.type === "map"
+    ) {
       const replacement = proxies.get(child.source);
       if (replacement != null) child.source = replacement;
-    } else if (child.type === "composition") {
+    }
+    if (child.type === "composition" || child.type === "map") {
       applyProxies(child.children, proxies);
     }
   }
 }
 
-/** Collect clip + static nodes (recursing compositions) so their dimensions
- *  can be warmed up before the frame loop's buildRenderList needs them. */
+/** Collect clip + static nodes (recursing compositions and maps) so their
+ *  dimensions can be warmed up before the frame loop's buildRenderList needs
+ *  them. */
 function collectMediaNodes(
   children: ResolvedChild[],
   clips: Set<ResolvedClip>,
   statics: Set<ResolvedStatic>,
-  graphics: Set<ResolvedGraphic>,
 ): void {
   for (const child of children) {
     if (child.type === "clip") clips.add(child);
     else if (child.type === "static") statics.add(child);
-    else if (child.type === "graphic") graphics.add(child);
-    else if (child.type === "composition")
-      collectMediaNodes(child.children, clips, statics, graphics);
+    else if (child.type === "composition" || child.type === "map")
+      collectMediaNodes(child.children, clips, statics);
   }
 }
 
@@ -161,7 +161,7 @@ export async function renderSeamToFile(
   const height =
     options.height ?? (temporal.contentHeight as number | undefined) ?? DEFAULT_CANVAS_HEIGHT;
   const timeline = resolveSpatial(temporal, width, height);
-  // Swap proxied sources before anything reads them (decode, audio, graphics).
+  // Swap proxied sources before anything reads them (decode, audio, maps).
   if (options.proxies) applyProxies(timeline.children, options.proxies);
   const basePath = dirname(seamPath);
 
@@ -176,12 +176,11 @@ export async function renderSeamToFile(
   };
   mark("compile+resolve");
 
-  // Graphics render on demand inside the loop (no disk pre-pass). Track the
-  // per-node renderers so we can release their Map pools at the end.
-  const graphicRenderers = new Map<ResolvedGraphic, GraphicFrameRenderer>();
   let output: Output | null = null;
   let stores: BlockStores | null = null;
   let planner: CutPlanner | null = null;
+  // Owns the clip decode cursors + the map tile pool; closed in `finally`.
+  let frameSource: FrameSource | null = null;
   try {
     // Kick off the audio mix concurrently with the frame loop instead of
     // blocking on it up front. The OpenLayers map path used to install global
@@ -219,21 +218,14 @@ export async function renderSeamToFile(
     compositor.resize(width, height);
 
     // Warm up media dims so getIntrinsicSize resolves during buildRenderList:
-    // clips by source (video dims), statics decoded once, graphics set up
-    // (cheap — the per-frame render is deferred to the loop).
+    // clips by source (video dims), statics decoded once. Maps rasterize on
+    // demand in the loop (their tile pool warms as frames go).
     const clipNodes = new Set<ResolvedClip>();
     const staticNodes = new Set<ResolvedStatic>();
-    const graphicNodes = new Set<ResolvedGraphic>();
-    collectMediaNodes(timeline.children, clipNodes, staticNodes, graphicNodes);
-    for (const g of graphicNodes) {
-      graphicRenderers.set(
-        g,
-        await createGraphicFrameRenderer(g, { mapBasePath: basePath }),
-      );
-    }
-    const frameSource = new FrameSource(basePath, graphicRenderers, stores);
-    for (const clip of clipNodes) await frameSource.openSource(clip.source);
-    for (const node of staticNodes) await frameSource.openStatic(node);
+    collectMediaNodes(timeline.children, clipNodes, staticNodes);
+    const source = (frameSource = new FrameSource(basePath, stores));
+    for (const clip of clipNodes) await source.openSource(clip.source);
+    for (const node of staticNodes) await source.openStatic(node);
     mark("gpu+warmup");
 
     // ── encoder + muxer ──
@@ -294,12 +286,12 @@ export async function renderSeamToFile(
       const t = i / fps;
       planner.update(t);
       const commands = buildRenderList(timeline, t, width, height, (clip) =>
-        frameSource.intrinsicSize(clip),
+        source.intrinsicSize(clip),
       );
       const p0 = performance.now();
-      await frameSource.prepare(collectDrawables(commands));
+      await source.prepare(collectDrawables(commands));
       const p1 = performance.now();
-      await compositor.render(commands, (clip) => frameSource.get(clip));
+      await compositor.render(commands, (clip) => source.get(clip));
       tRender += performance.now() - p1;
       tPrep += p1 - p0;
     }
@@ -328,7 +320,6 @@ export async function renderSeamToFile(
     mark("audio residual");
 
     await output.finalize();
-    frameSource.dispose();
     compositor.dispose();
     backend.dispose();
 
@@ -348,7 +339,7 @@ export async function renderSeamToFile(
     }
     throw err;
   } finally {
-    for (const r of graphicRenderers.values()) await r.dispose();
+    await frameSource?.dispose();
     planner?.dispose();
     stores?.dispose();
   }

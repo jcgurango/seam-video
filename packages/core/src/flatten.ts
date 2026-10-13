@@ -5,8 +5,10 @@ import type {
   ResolvedStatic,
   ResolvedEmpty,
   ResolvedData,
-  ResolvedGraphic,
   ResolvedText,
+  ResolvedRect,
+  ResolvedCircle,
+  ResolvedMap,
 } from "./resolved-types.js";
 
 export type FlatLeaf =
@@ -16,7 +18,9 @@ export type FlatLeaf =
   | ResolvedEmpty
   | ResolvedData
   | ResolvedText
-  | ResolvedGraphic;
+  | ResolvedRect
+  | ResolvedCircle
+  | ResolvedMap;
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
@@ -81,15 +85,22 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
       });
-    } else if (child.type === "graphic") {
-      // Graphic is a leaf for layout purposes — the renderer/preview
-      // drives the internal animation playhead; flatten just hands the
-      // resolved node downstream.
+    } else if (child.type === "rect" || child.type === "circle") {
       result.push({
         ...child,
         timelineStart: start,
         timelineEnd: end,
       });
+    } else if (child.type === "map") {
+      // The map itself is a leaf (basemap + camera); its attachments live in
+      // map-local time at speed 1, so they flatten like a composition's
+      // children offset by the map's start.
+      result.push({
+        ...child,
+        timelineStart: start,
+        timelineEnd: end,
+      });
+      result.push(...flattenResolved(child.children, start, parentSpeed));
     } else {
       // Composition: recurse with compounded speed and offset
       const compoundSpeed = child.speed * parentSpeed;

@@ -9,7 +9,6 @@
  *   attachments.<i>
  *   bin.<i>.children.<i>
  *   children.<i>.opacity.<k>      ← a keyframe of an animated property
- *   children.<i>.frames.<k>       ← a graphic frame
  *   …
  *
  * Recording at any depth lets the JSON editor jump into nested

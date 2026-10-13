@@ -11,8 +11,6 @@ export type {
   VideoCanvasView,
   GizmoSurface,
 } from "./components/VideoCanvas.js";
-export { default as FrameEditorCanvas } from "./components/FrameEditorCanvas.js";
-export type { FrameEditorCanvasProps } from "./components/FrameEditorCanvas.js";
 export { default as TransportControls } from "./components/TransportControls.js";
 export {
   TimelineContext,
@@ -33,5 +31,5 @@ export {
   resetSourceResolver,
 } from "./components/resolveSource.js";
 export type { SourceResolver } from "./components/resolveSource.js";
-export { setPmtilesResolver } from "./media/graphic/TileMap.js";
-export type { PmtilesResolver } from "./media/graphic/TileMap.js";
+export { setPmtilesResolver } from "./media/mapPool.js";
+export type { PmtilesResolver } from "./media/mapPool.js";

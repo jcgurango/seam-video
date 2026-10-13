@@ -2,7 +2,7 @@ import type {
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
-  ResolvedGraphic,
+  ResolvedMap,
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
@@ -15,7 +15,7 @@ import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
 import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
-import { GraphicStore } from "./GraphicStore.js";
+import { MapStore } from "./MapStore.js";
 import { resolveSource } from "../components/resolveSource.js";
 import { CutPlanner, type Cut } from "@seam/media-source";
 
@@ -90,7 +90,7 @@ export class FrameCoordinator {
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
   private staticStore = new StaticStore();
-  private graphicStore = new GraphicStore();
+  private mapStore = new MapStore();
   private ready = false;
   /** Bumped on each setTimeline. An in-flight (async) setTimeline checks this
    *  after every await and bails if a newer one started — otherwise its decode
@@ -161,8 +161,9 @@ export class FrameCoordinator {
     this.staticStore.onFrameAvailable = () => this.onFrameAvailable?.();
     void this.staticStore.setTimeline(timeline, basePath, mediaStore);
 
-    this.graphicStore.onFrameAvailable = () => this.onFrameAvailable?.();
-    void this.graphicStore.setTimeline(timeline, basePath);
+    // Maps rasterize per frame from the render list (applyContentSizes); the
+    // store only needs to repaint when tiles land.
+    this.mapStore.onFrameAvailable = () => this.onFrameAvailable?.();
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -294,15 +295,15 @@ export class FrameCoordinator {
    * cached Map, so async frame arrivals (via onFrameAvailable) immediately
    * become visible on the next gpuRender call without needing a reconcile.
    */
-  /** Push the compositor's per-frame inner-canvas sizes (text/graphic) from a
-   *  freshly-built render list into the text/graphic stores, so an animated
-   *  `contentWidth` reflows/resizes the rasterized texture. Call right before
-   *  `getFrame` in the render pass — text resizes synchronously, graphics
-   *  schedule an async redraw (prior frame held until ready). */
+  /** Push the compositor's per-frame inner-canvas sizes (text/map) from a
+   *  freshly-built render list into the stores, so an animated `contentWidth`
+   *  reflows/resizes the rasterized texture. Call right before `getFrame` in
+   *  the render pass — text resizes synchronously; maps rasterize here for
+   *  the draw's map-local `drawTime` (so nested-composition time mapping lives
+   *  in the render list alone). */
   applyContentSizes(commands: RenderCommand[], currentTime: number): void {
     if (!this.ready) return;
     const textSizes = new Map<ResolvedText, { w: number; h: number }>();
-    const graphicSizes = new Map<ResolvedGraphic, { w: number; h: number }>();
     const walk = (cmds: RenderCommand[]): void => {
       for (const c of cmds) {
         if (c.type === "draw") {
@@ -310,8 +311,8 @@ export class FrameCoordinator {
           const node = c.clip;
           if (node.type === "text")
             textSizes.set(node, { w: c.contentW, h: c.contentH });
-          else if (node.type === "graphic")
-            graphicSizes.set(node, { w: c.contentW, h: c.contentH });
+          else if (node.type === "map")
+            this.mapStore.draw(node, c.drawTime, c.contentW, c.contentH);
         } else if (c.type === "group") {
           walk(c.children);
         }
@@ -319,12 +320,10 @@ export class FrameCoordinator {
     };
     walk(commands);
     if (textSizes.size > 0) this.textStore.setContentSizes(textSizes, currentTime);
-    if (graphicSizes.size > 0)
-      this.graphicStore.setContentSizes(graphicSizes, currentTime);
   }
 
   getFrame(
-    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedGraphic,
+    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedMap,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
     if (clip.type === "text") {
@@ -333,8 +332,8 @@ export class FrameCoordinator {
     if (clip.type === "static") {
       return this.staticStore.getFrame(clip);
     }
-    if (clip.type === "graphic") {
-      return this.graphicStore.getFrame(clip);
+    if (clip.type === "map") {
+      return this.mapStore.getFrame(clip);
     }
     const flat = this.flatByClip.get(clip);
     if (!flat) return null;
@@ -371,7 +370,7 @@ export class FrameCoordinator {
     this.playingClips.clear();
     this.textStore.dispose();
     this.staticStore.dispose();
-    this.graphicStore.dispose();
+    this.mapStore.clear();
     this.ready = false;
   }
 
@@ -458,9 +457,8 @@ export class FrameCoordinator {
     }
 
     // Animated text styles: re-rasterize each frame. Static texts noop.
+    // (Maps rasterize from the render list in applyContentSizes.)
     this.textStore.update(currentTime);
-    // Animated graphics: re-rasterize via fabric. Static graphics noop.
-    void this.graphicStore.update(currentTime);
 
     // Animated clip volumes + crossfade gain: sample once per tick and push
     // to the scheduler. Static-volume clips with no transition skip the
@@ -589,6 +587,24 @@ function collectClips(
           childHasVol,
           parentRate * comp.speed,
           parentPitch + (comp.pitch ?? 0)
+        )
+      );
+    } else if (child.type === "map") {
+      // Map attachments: map-local time (0 = map start) at speed 1; the map
+      // itself has no volume/pitch, so the enclosing multipliers pass through.
+      const parentToLocal = toLocalTime;
+      const parentToAbsolute = toAbsoluteTime;
+      const map = child;
+      result.push(
+        ...collectClips(
+          map.children,
+          (t: number) => parentToLocal(t) - map.timelineStart,
+          (localT: number) => parentToAbsolute(map.timelineStart + localT),
+          basePath,
+          volumeAt,
+          hasVol,
+          parentRate,
+          parentPitch
         )
       );
     }

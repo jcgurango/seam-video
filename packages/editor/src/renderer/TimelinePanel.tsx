@@ -74,9 +74,6 @@ export interface TimelinePanelProps {
   /** Reveal a dotted JSON path in the inspector's JSON editor — used when a
    *  keyframe diamond on a lane is clicked (`children.3.opacity.2`). */
   onJumpToJson?: (pathKey: string) => void;
-  /** Open the fabric frame editor — double-click a graphic `frames` diamond.
-   *  `(graphicPathKey, frameIndex)`. */
-  onOpenFrameEditor?: (graphicPathKey: string, frameIndex: number) => void;
 }
 
 const MIN_PX_PER_SEC = 10;
@@ -158,7 +155,9 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   empty: { bg: "#555", border: "#666" },
   data: { bg: "#7a5a3a", border: "#a47a52" },
   text: { bg: "#a04060", border: "#c45582" },
-  graphic: { bg: "#b03a8f", border: "#d957b8" },
+  rect: { bg: "#b03a8f", border: "#d957b8" },
+  circle: { bg: "#b03a8f", border: "#d957b8" },
+  map: { bg: "#2f7a5a", border: "#4bb886" },
 };
 
 // Window-boundary markers drawn at the left/right edges of an expanded
@@ -275,8 +274,6 @@ interface InnerProps {
   ) => void;
   /** Reveal a dotted JSON path (keyframe diamond click). */
   onJumpToJson?: (pathKey: string) => void;
-  /** Open the fabric frame editor (double-click a graphic `frames` diamond). */
-  onOpenFrameEditor?: (graphicPathKey: string, frameIndex: number) => void;
 }
 
 // ── Timeline surface (hook + body) ───────────────────────────────────
@@ -390,9 +387,6 @@ interface TimelineSurfaceProps {
   /** Reveal a dotted JSON path (e.g. a keyframe `children.3.opacity.2`)
    *  when a keyframe diamond is clicked. */
   onJumpToJson: ((pathKey: string) => void) | null;
-  /** Open the fabric frame editor for a graphic frame (double-click a
-   *  `frames` diamond). Null disables it (read-only previews). */
-  onOpenFrameEditor: ((graphicPathKey: string, frameIndex: number) => void) | null;
 }
 
 /** Body of the timeline: ruler + child blocks + anchor lines. Positioned
@@ -415,10 +409,9 @@ function TimelineSurface({
   showAttachZone,
   attachHoverSide,
   onJumpToJson,
-  onOpenFrameEditor,
 }: TimelineSurfaceProps) {
   const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
-  const { currentTime, totalDuration, seek, pause } = useTimeline();
+  const { currentTime, totalDuration, seek } = useTimeline();
   // Editable group placements drive the anchor-line overlay (it draws every
   // selected attachment's line in content coords, at any nesting level).
   const groups = useMemo(
@@ -570,18 +563,6 @@ function TimelineSurface({
 
   const onKeyframeDragStart = editHistory ? startKeyframeDrag : null;
 
-  // Double-click a graphic `frames` diamond → pause + seek the preview to
-  // that frame's time (so the right pane shows exactly what you're editing)
-  // and open the fabric frame editor on it.
-  const openFrame = useEvent(
-    (nodeKey: string, frameIndex: number, rootSec: number) => {
-      pause();
-      seek(Math.max(0, Math.min(rootSec, totalDuration)));
-      onOpenFrameEditor?.(nodeKey, frameIndex);
-    },
-  );
-  const onOpenFrame = onOpenFrameEditor ? openFrame : null;
-
   return (
     <>
       <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
@@ -599,8 +580,6 @@ function TimelineSurface({
         onResizeDragStart={onResizeDragStart}
         onJumpToJson={onJumpToJson ?? null}
         onKeyframeDragStart={onKeyframeDragStart}
-        onOpenFrame={onOpenFrame}
-        rootBaseSec={0}
       />
       <AnchorLinesLayer
         selection={selection}
@@ -757,7 +736,6 @@ function DesktopTimeline({
   onAttachChildrenAt,
   onAttachExistingAt,
   onJumpToJson,
-  onOpenFrameEditor,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1152,7 +1130,6 @@ function DesktopTimeline({
           showAttachZone={showAttachZone}
           attachHoverSide={attachHoverSide}
           onJumpToJson={onJumpToJson ?? null}
-          onOpenFrameEditor={onOpenFrameEditor ?? null}
         />
         <Playhead x={playheadX} height={contentHeight} />
       </div>
@@ -1241,8 +1218,6 @@ function KeyframeLaneRow({
   toX,
   onJump,
   onKeyframeDragStart,
-  onOpenFrame,
-  toRootSec,
 }: {
   lane: KeyframeLane;
   /** The lane's node path (for write-back). */
@@ -1259,12 +1234,6 @@ function KeyframeLaneRow({
   onJump?: (pathKey: string) => void;
   /** Begin a diamond drag (editable timelines only). */
   onKeyframeDragStart?: KeyframeDragStart | null;
-  /** Open the fabric frame editor for a graphic `frames` keyframe
-   *  (double-click). Only wired for `frames` lanes. */
-  onOpenFrame?: ((nodeKey: string, frameIndex: number, rootSec: number) => void) | null;
-  /** Map a time in this group's local coordinate up to root output time
-   *  (for seeking the playhead — nested groups are windowed). */
-  toRootSec?: (localSec: number) => number;
 }) {
   const left = toX(lane.outputStart);
   const right = toX(lane.outputStart + lane.outputSpan);
@@ -1341,18 +1310,6 @@ function KeyframeLaneRow({
                     }
                   : undefined
               }
-              onDoubleClick={
-                lane.kind === "frames" && onOpenFrame
-                  ? (e) => {
-                      e.stopPropagation();
-                      onOpenFrame(
-                        nodeKey,
-                        d.index,
-                        toRootSec ? toRootSec(d.outputSec) : d.outputSec,
-                      );
-                    }
-                  : undefined
-              }
             />
           </div>
         );
@@ -1389,16 +1346,10 @@ function TimelineGroup({
   onResizeDragStart,
   onJumpToJson,
   onKeyframeDragStart,
-  onOpenFrame,
-  rootBaseSec,
 }: {
   group: TreeGroup;
   /** Y offset (px) for row 0 within this group's container. */
   yBase: number;
-  /** Root output time (s) that this group's local time 0 maps to, once the
-   *  enclosing window transforms are unwound. 0 for the root group. Used to
-   *  seek the (root-time) playhead from a nested graphic's frame. */
-  rootBaseSec: number;
   depth: number;
   pxPerSec: number;
   selection: string[];
@@ -1419,20 +1370,12 @@ function TimelineGroup({
   onJumpToJson: ((pathKey: string) => void) | null;
   /** Begin a keyframe-diamond drag (editable timelines only). */
   onKeyframeDragStart: KeyframeDragStart | null;
-  /** Open the fabric frame editor for a graphic frame (double-click a
-   *  `frames` diamond). Null in read-only previews. */
-  onOpenFrame: ((nodeKey: string, frameIndex: number, outputSec: number) => void) | null;
 }) {
   const isRoot = depth === 0;
   // Window transform: inner time → this group's container px. A child of a
   // windowed composition is shifted by the window `in` and compressed by
   // the window speed; the container clips what lands outside.
   const toX = (sec: number) => ((sec - group.originSec) / group.scale) * pxPerSec;
-  // Inverse-of-windowing in time: this group's local seconds → root output
-  // seconds. Mirrors `toX`'s transform but accumulates through nesting via
-  // `rootBaseSec` (the root time of this group's origin).
-  const toRootSec = (localSec: number) =>
-    rootBaseSec + (localSec - group.originSec) / group.scale;
   return (
     <>
       {group.blocks.map((block) => {
@@ -1516,8 +1459,6 @@ function TimelineGroup({
               onResizeDragStart={onResizeDragStart}
               onJumpToJson={onJumpToJson}
               onKeyframeDragStart={onKeyframeDragStart}
-              onOpenFrame={onOpenFrame}
-              rootBaseSec={toRootSec(block.child.timelineStart)}
             />
             {/* Window boundary lines (left = in, right = out), drawn over
                 the clipped content so the composition's extent is clear. */}
@@ -1540,8 +1481,6 @@ function TimelineGroup({
             toX={toX}
             onJump={onJumpToJson ?? undefined}
             onKeyframeDragStart={group.editable ? onKeyframeDragStart : null}
-            onOpenFrame={group.editable ? onOpenFrame : null}
-            toRootSec={toRootSec}
           />
         ));
       })}
@@ -1897,7 +1836,6 @@ export default function TimelinePanel({
   history,
   platform,
   onJumpToJson,
-  onOpenFrameEditor,
 }: TimelinePanelProps) {
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
@@ -2154,7 +2092,6 @@ export default function TimelinePanel({
             onAttachChildrenAt={shellOnAttachChildrenAt}
             onAttachExistingAt={shellOnAttachExistingAt}
             onJumpToJson={onJumpToJson}
-            onOpenFrameEditor={onOpenFrameEditor}
           />
         );
       })()}

@@ -72,7 +72,26 @@ export interface SpatialFields {
    *  (ejected from filters). Mirrors how `volume` rides through resolution as
    *  a Keyframed value sampled per-frame by renderers. */
   opacity?: Keyframed<number>;
+  /** Rounded-corner mask on the node's final rect (any node). Bare number =
+   *  px; `%` resolves against the SHORTER side of the rect, so `"50%"` turns a
+   *  square into a circle and a rectangle into a pill. Default 0. Animatable. */
+  cornerRadius?: Keyframed<Length>;
+  /** Geo / path anchor — only meaningful on a `map`'s attachments: the node's
+   *  `origin` lands at the pin's projected point and `translation` becomes a
+   *  pixel offset from there. Ignored elsewhere. Animatable (see {@link Pin}). */
+  pin?: Keyframed<Pin>;
 }
+
+/**
+ * Where a map attachment is anchored: a geographic coordinate, or a fraction
+ * along one of the map's `paths` (by index or path `id`). `position` defaults
+ * to that path's current `progress`, so the node rides the head of the
+ * reveal. Keyframes interpolate lat/lng (geo→geo) or `position` (same path →
+ * same path); a change of kind or path snaps at the keyframe.
+ */
+export type Pin =
+  | { latitude: number; longitude: number }
+  | { path: number | string; position?: number };
 
 /** Per-edge inset, in the text-padding shorthand shape but `Length`-valued:
  *  `L` (all edges) | `[v, h]` | `[t, r, b, l]`. `%` resolves against the
@@ -508,216 +527,93 @@ export interface BinItemComposition extends BaseComposition {
 
 export type Composition = BasicComposition | BinItemComposition;
 
-// ── Graphic (animated 2D layer) ────────────────────────────────────
+// ── Shapes ─────────────────────────────────────────────────────────
 
-export type AngleDirection = "shortest" | "cw" | "ccw";
+/** Fill / stroke shared by `rect` and `circle`. The stroke is drawn INSIDE the
+ *  node's box (border-box), so `size` is always the outer extent. */
+export interface ShapeFields {
+  /** Any CSS colour. Default `"black"`; `"none"` / `"transparent"` skips it. */
+  fill?: Keyframed<string>;
+  /** Stroke colour; drawn only when `strokeWidth` > 0. */
+  stroke?: Keyframed<string>;
+  /** Stroke width in px, inside the box. Default 0. */
+  strokeWidth?: Keyframed<number>;
+}
 
-/** Common fields on every inner graphic object. `id` is the stable
- *  cross-frame correspondence key the animation engine uses to pair
- *  objects between keyframes; without it pairing falls back to
- *  positional-index within the parent container. */
-export interface GraphicObjectBase {
+/**
+ * A solid rectangle. No intrinsic media size: its natural box is the parent,
+ * so `size` IS the rectangle (bare number = px). Corners round via the
+ * universal `cornerRadius`.
+ */
+export interface Rect extends SpatialFields, ShapeFields {
+  type: "rect";
+  /** Required unless both `start` and `end` anchors are set. */
+  duration?: number;
+  filters?: Filter[];
   id?: string;
-  /** Easing name (linear / ease / ease-in / ease-out / ease-in-out / discrete /
-   *  step-end / step-start / cubic-bezier(...)) overriding the frame-level
-   *  default for this object only. `discrete` holds the value until the next
-   *  keyframe, then snaps (no tween). */
-  easing?: string;
-  /** Winding count for the `angle` property: 1 = one extra full turn,
-   *  -1 = one in the opposite direction, etc. */
-  revolutions?: number;
-  /** Direction of rotation for the inter-frame angle delta. */
-  angleDirection?: AngleDirection;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+  transition?: number;
+  metadata?: Metadata;
 }
 
-/** Fabric-style transform fields shared by most graphic objects.
- *  All plain numbers — the Length system stops at the graphic boundary;
- *  inner-object props are passed verbatim to fabric. */
-export interface FabricTransform {
-  left?: number;
-  top?: number;
-  width?: number;
-  height?: number;
-  scaleX?: number;
-  scaleY?: number;
-  angle?: number;
-  opacity?: number;
-  flipX?: boolean;
-  flipY?: boolean;
-  originX?: "left" | "center" | "right";
-  originY?: "top" | "center" | "bottom";
-  fill?: string;
-  stroke?: string;
-  strokeWidth?: number;
-  visible?: boolean;
+/** The ellipse inscribed in the node's box (equal `size` → a circle). */
+export interface Circle extends SpatialFields, ShapeFields {
+  type: "circle";
+  duration?: number;
+  filters?: Filter[];
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+  transition?: number;
+  metadata?: Metadata;
 }
 
-export interface GraphicRect extends GraphicObjectBase, FabricTransform {
-  type: "Rect";
-  rx?: number;
-  ry?: number;
-  [key: string]: unknown;
-}
+// ── Map ────────────────────────────────────────────────────────────
 
-export interface GraphicCircle extends GraphicObjectBase, FabricTransform {
-  type: "Circle";
-  radius?: number;
-  [key: string]: unknown;
-}
-
-/** Fabric Path: SVG-string or its parsed-array form. */
-export type FabricPathSegment = (string | number)[];
-export interface GraphicPath extends GraphicObjectBase, FabricTransform {
-  type: "Path";
-  path?: string | FabricPathSegment[];
-  [key: string]: unknown;
-}
-
-export interface GraphicPolygon extends GraphicObjectBase, FabricTransform {
-  type: "Polygon";
-  points?: { x: number; y: number }[];
-  [key: string]: unknown;
-}
-
-export interface GraphicTextbox extends GraphicObjectBase, FabricTransform {
-  type: "Textbox";
-  text?: string;
-  fontFamily?: string;
-  fontSize?: number;
-  fontWeight?: string | number;
-  fontStyle?: string;
-  textAlign?: "left" | "center" | "right" | "justify";
-  lineHeight?: number;
-  [key: string]: unknown;
-}
-
-export interface GraphicImage extends GraphicObjectBase, FabricTransform {
-  type: "Image";
-  /** Host-resolved asset id (cache lookup in editor / file path at render). */
-  src?: string;
-  [key: string]: unknown;
-}
-
-/** Reference to a `ClipDef` on the enclosing Graphic. */
-export interface GraphicClipInstance extends GraphicObjectBase, FabricTransform {
-  type: "Clip";
-  clipId: string;
-  /** Local-time the clip starts playing from when this keyframe is reached.
-   *  Subsequent frames without their own `startPosition` let the playhead
-   *  continue from where it was. */
-  startPosition?: number;
-  /** -1 = infinite; otherwise number of additional plays after the first.
-   *  When the playhead reaches the clip's duration it wraps to 0 up to
-   *  `repeat` times, then holds at the end. */
-  repeat?: number;
-  [key: string]: unknown;
-}
-
-/** A fabric object anchored to a Map: its (0,0) projects to screen space,
- *  then the object draws there offset by its own left/top. */
-export interface MapPathObject {
-  /** Fraction (0..1) along the path. Default: the path's `progress`
-   *  (progress unset ⇒ 1, the path's end). */
-  position?: number;
-  object: GraphicObject;
-}
-
-/** A fabric object anchored to a geo coordinate on a Map. */
-export interface MapObject {
-  latitude: number;
-  longitude: number;
-  object: GraphicObject;
-}
-
-/** Geo polyline drawn over a Map. */
+/** Geo polyline drawn over a map. */
 export interface MapPath {
-  color: string;
-  /** [[lng, lat], ...] — at least two points. */
+  /** Referenced by `pin: { path: "<id>" }`; else pins address by index. */
+  id?: string;
+  color: Keyframed<string>;
+  /** [[lng, lat], ...] — at least two points. Not animatable. */
   points: [number, number][];
-  /** 0..1 fraction of the line to draw (the rest is transparent). */
-  progress?: number;
-  /** Stroke width in display pixels. Default 4. */
-  lineWidth?: number;
-  /** Per-path easing override for color/progress/lineWidth interpolation. */
-  easing?: string;
-  /** Objects anchored along the path (default at the reveal head). */
-  objects?: MapPathObject[];
+  /** 0..1 fraction of the line drawn. Default 1. Animatable. */
+  progress?: Keyframed<number>;
+  /** Stroke width in display pixels. Default 4. Animatable. */
+  lineWidth?: Keyframed<number>;
 }
 
-export interface GraphicMap extends GraphicObjectBase, FabricTransform {
-  type: "Map";
-  /** pmtiles path; host-resolved (file:// for renderer, OPFS for web). */
+/**
+ * A basemap rasterized from a pmtiles archive with an animatable camera,
+ * geo `paths`, and ordinary nodes composited over it as `attachments`
+ * (placed geographically via `pin`). The inner canvas (`contentWidth` /
+ * `contentHeight`, default 100% of the parent) is both the raster size and the
+ * layout space the attachments resolve against.
+ */
+export interface MapNode extends SpatialFields {
+  type: "map";
+  /** pmtiles archive — host-resolved like clip/static `source`. */
   source: string;
-  latitude?: number;
-  longitude?: number;
-  zoom?: number;
-  /** Opacity (0..1) of the basemap layers only — tiles (fills/lines/labels),
-   *  not embedded objects/paths. Distinct from `opacity`; animated across
-   *  graphic frames like latitude/longitude/zoom. */
-  mapOpacity?: number;
+  duration: number;
+  latitude?: Keyframed<number>;
+  longitude?: Keyframed<number>;
+  /** maplibre-512 convention; interpolates in scale space (linear in 2^-zoom). */
+  zoom?: Keyframed<number>;
+  /** Basemap-only opacity (tiles); paths/attachments unaffected. */
+  mapOpacity?: Keyframed<number>;
+  theme?: "light" | "dark";
   paths?: MapPath[];
-  /** Objects anchored to geo coordinates on the map. */
-  objects?: MapObject[];
-  [key: string]: unknown;
-}
-
-export interface GraphicGroup extends GraphicObjectBase, FabricTransform {
-  type: "Group";
-  objects?: GraphicObject[];
-  [key: string]: unknown;
-}
-
-export type GraphicObject =
-  | GraphicRect
-  | GraphicCircle
-  | GraphicPath
-  | GraphicPolygon
-  | GraphicTextbox
-  | GraphicImage
-  | GraphicClipInstance
-  | GraphicMap
-  | GraphicGroup;
-
-/** A keyframe in a graphic's timeline. Stamp is a Length so authors can
- *  use percentages of the graphic's duration. */
-export type GraphicFrame =
-  | [Length, GraphicObject[]]
-  | [Length, GraphicObject[], string];
-
-/** A reusable clip-graphic exposed by the parent Graphic and referenced
- *  from {type:"Clip", clipId} instances inside keyframes. Same shape as
- *  the outer Graphic but with a mandatory `id` and no spatial/anchor
- *  fields (those live on each Clip instance). */
-export interface GraphicClipDef {
-  id: string;
-  type: "graphic";
-  duration?: Length;
-  loop?: boolean;
-  contentWidth?: Length;
-  contentHeight?: Length;
-  frames: GraphicFrame[];
-}
-
-export interface Graphic extends ChildTimingFields {
-  type: "graphic";
-  /** Total animation duration. Defaults to the last keyframe's stamp.
-   *  Length so it can be `"100%"` of the parent composition's duration. */
-  duration?: Length;
-  /** When true, the timeline wraps with ghost keyframes at the seam so
-   *  the last frame's state animates back into the first. */
-  loop?: boolean;
-  /** Animation design space dimensions. Authored coordinates inside
-   *  keyframe objects resolve against these. Animatable; defaults to
-   *  `"100%"` of the parent container. */
+  /** Resolved like a composition's attachments (time 0 = map start). */
+  attachments?: Child[];
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
-  clips?: GraphicClipDef[];
-  frames: GraphicFrame[];
-  in?: number;
-  out?: number;
-  overflow?: Overflow;
-  underflow?: Underflow;
   filters?: Filter[];
+  id?: string;
+  start?: TimeAnchor;
+  end?: TimeAnchor;
+  transition?: number;
+  metadata?: Metadata;
 }
 
 export type Child =
@@ -727,6 +623,8 @@ export type Child =
   | Empty
   | Data
   | Text
-  | Graphic
+  | Rect
+  | Circle
+  | MapNode
   | Composition;
 export type SeamFile = Composition;

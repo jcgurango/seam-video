@@ -18,6 +18,12 @@ export {
   DEFAULT_CANVAS_HEIGHT,
 } from "./layout/resolve-spatial.js";
 export {
+  sampleMapState,
+  DEFAULT_MAP_ZOOM,
+  type MapState,
+  type MapPathState,
+} from "./layout/map-state.js";
+export {
   squareToQuad,
   applyHomography,
   quadWeights,

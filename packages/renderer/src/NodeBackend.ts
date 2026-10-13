@@ -13,6 +13,7 @@
  * bindings and assigns the WebGPU globals); the backend just uses it.
  */
 import type { RenderBackend } from "@seam/compositor";
+import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 
 /** A decoded/rasterized frame as tightly-packed RGBA8 (row stride = width*4). */
 export interface NodeFrame {
@@ -196,16 +197,36 @@ export class NodeBackend implements RenderBackend<NodeFrame> {
 
 const align256 = (n: number): number => Math.ceil(n / 256) * 256;
 
+const colorCache = new Map<string, [number, number, number, number]>();
+let colorCtx: SKRSContext2D | null = null;
+
 /**
- * Minimal CSS color parser for composition `backgroundColor`s. Handles hex
- * (#rgb/#rgba/#rrggbb/#rrggbbaa), rgb()/rgba(), and `transparent`. Returns
- * straight (non-premultiplied) RGBA bytes to match the browser fill path.
- * Unknown strings fall back to opaque black.
+ * CSS color → straight (non-premultiplied) RGBA bytes, matching the browser
+ * fill path (which rasterizes the colour on a 1×1 canvas). Fast paths for hex
+ * (#rgb/#rgba/#rrggbb/#rrggbbaa), rgb()/rgba() and `transparent`; everything
+ * else — named colours (`"green"`, the samples' favourite), hsl(), … — is
+ * painted through a 1×1 Skia canvas and read back, so any colour the preview
+ * accepts renders identically here. Results are cached per string.
  */
 export function parseColor(input: string): [number, number, number, number] {
   const c = input.trim().toLowerCase();
   if (c === "transparent") return [0, 0, 0, 0];
+  const fast = parseColorFast(c);
+  if (fast) return fast;
+  let cached = colorCache.get(c);
+  if (cached) return cached;
+  if (!colorCtx) colorCtx = createCanvas(1, 1).getContext("2d");
+  const ctx = colorCtx;
+  ctx.clearRect(0, 0, 1, 1);
+  ctx.fillStyle = c;
+  ctx.fillRect(0, 0, 1, 1);
+  const d = ctx.getImageData(0, 0, 1, 1).data;
+  cached = [d[0], d[1], d[2], d[3]];
+  colorCache.set(c, cached);
+  return cached;
+}
 
+function parseColorFast(c: string): [number, number, number, number] | null {
   if (c[0] === "#") {
     let hex = c.slice(1);
     if (hex.length === 3 || hex.length === 4) {
@@ -231,5 +252,5 @@ export function parseColor(input: string): [number, number, number, number] {
     if ([r, g, b, a].every((n) => Number.isFinite(n))) return [r, g, b, a];
   }
 
-  return [0, 0, 0, 255];
+  return null;
 }

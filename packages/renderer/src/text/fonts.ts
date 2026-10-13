@@ -7,12 +7,10 @@
 //
 // Two font systems consume these:
 //   - @napi-rs/canvas (Skia) `GlobalFonts` drives text-node rasterization
-//     — and renders OpenMoji in colour via its COLR table.
-//   - node-canvas (Cairo) backs fabric/node for graphic rendering and has
-//     its OWN registry, so the same TTFs must be registered there too
-//     (`registerNodeCanvasFonts`). Cairo can't do colour fonts, so emoji
-//     in graphic exports come out as monochrome silhouettes — a known V1
-//     limitation; everything else matches the browser preview.
+//     AND map labels — and renders OpenMoji in colour via its COLR table.
+//   - node-canvas (Cairo + librsvg) rasterizes SVG statics only
+//     (`svgImage.ts`) and has its OWN registry, so the same TTFs must be
+//     registered there too (`registerNodeCanvasFonts`) for `<text>` in SVGs.
 //
 // The TTFs live at `packages/renderer/fonts/**`, reachable from either
 // `src/` or `dist/` by walking up two directories.
@@ -57,7 +55,7 @@ function fontsDir(): string {
 let skiaInstalled = false;
 
 /** Register the bundled fonts with @napi-rs/canvas's global font set
- *  (text-node rasterization + map TinySDF). Idempotent — safe to call from
+ *  (text-node rasterization + map labels). Idempotent — safe to call from
  *  multiple entry points. Must run before any text rasterization. */
 export function installFonts(): void {
   if (skiaInstalled) return;
@@ -70,9 +68,9 @@ export function installFonts(): void {
 
 let nodeCanvasInstalled = false;
 
-/** Register the bundled fonts with node-canvas (Cairo), which backs
- *  fabric/node for graphic rendering. Separate registry from @napi-rs's,
- *  so this must run before any graphic is rasterized. Idempotent. */
+/** Register the bundled fonts with node-canvas (Cairo), which rasterizes SVG
+ *  statics (`svgImage.ts`). Separate registry from @napi-rs's, so this must
+ *  run before any SVG is rasterized. Idempotent. */
 export function registerNodeCanvasFonts(): void {
   if (nodeCanvasInstalled) return;
   nodeCanvasInstalled = true;

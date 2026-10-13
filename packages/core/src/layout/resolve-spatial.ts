@@ -128,9 +128,10 @@ function resolveNode(
   const fitForSelf: ObjectFit = parentObjectFit;
 
   // Step 1+2: figure out the intrinsic dimensions. Core knows them for
-  // compositions, text, and graphics (contentWidth/Height); for clip/static
-  // it's a renderer concern (intrinsic media size is probed later), so we
-  // treat the parent dims as a stand-in for the natural size. contentWidth
+  // compositions, text, and maps (contentWidth/Height); for clip/static it's
+  // a renderer concern (intrinsic media size is probed later), and shapes have
+  // none at all (their natural box IS the parent — `size` sets the pixels), so
+  // in those cases the parent dims stand in for the natural size. contentWidth
   // is now an animatable `Keyframed<Length>` — we bake the t=0 value here
   // (into `intrinsicWidth`) for static consumers; the per-frame renderers
   // re-sample the preserved authored `contentWidth` against live parent dims.
@@ -140,7 +141,7 @@ function resolveNode(
   const hasContentDims =
     node.type === "composition" ||
     node.type === "text" ||
-    node.type === "graphic";
+    node.type === "map";
   // `hasContentDims` is a boolean (not a type guard), so read the authored
   // dims through a cast — they exist exactly on the three content-bearing types.
   const cw = hasContentDims
@@ -167,9 +168,14 @@ function resolveNode(
 
   // The node re-evaluates per-frame (keep `spatialInput`) if its own spatial
   // animates, OR its inner content size animates (natural size depends on it),
-  // OR its parent dims animate (translation/size resolve against the parent).
+  // OR its parent dims animate (translation/size resolve against the parent),
+  // OR it is pinned to a map (the pin replaces `translation` at render time, so
+  // the baked rect is meaningless and the authored input must survive).
   const animated =
-    hasAnimatedSpatialInput(input) || parentDimsAnimated || ownContentKeyframed;
+    hasAnimatedSpatialInput(input) ||
+    parentDimsAnimated ||
+    ownContentKeyframed ||
+    node.pin != null;
 
   // Step 3: post-objectFit natural size (the value of `size: "100%"`).
   const { naturalWidth, naturalHeight } = computeNaturalSize(
@@ -191,7 +197,7 @@ function resolveNode(
     return rest as T;
   };
 
-  if (node.type === "composition") {
+  if (node.type === "composition" || node.type === "map") {
     const displayW = spatial ? spatial.width : naturalWidth;
     const displayH = spatial ? spatial.height : naturalHeight;
     // Inner-canvas dim (t=0 bake) — the parent dims used to resolve children's
@@ -212,9 +218,10 @@ function resolveNode(
     });
   }
 
-  if (node.type === "text" || node.type === "graphic") {
-    // Authored `contentWidth`/`contentHeight` preserved (via spread) for
-    // per-frame re-sampling; baked t=0 value in `intrinsicWidth`.
+  if (node.type === "text" || node.type === "rect" || node.type === "circle") {
+    // Text: authored `contentWidth`/`contentHeight` preserved (via spread) for
+    // per-frame re-sampling; baked t=0 value in `intrinsicWidth`. Shapes carry
+    // no intrinsic dims (undefined → natural = parent).
     return stripIfStatic({
       ...node,
       intrinsicWidth: intrinsicW,
@@ -273,7 +280,7 @@ function resolveContentDim(
  *  at time `t`. Absent → `"100%"` of the parent (the default inner canvas);
  *  a bare pixel number → literal pixels; a percentage → fraction of the
  *  parent. Shared by the spatial pass (t=0 bake) and the per-frame renderers
- *  (compositor / text / graphic), so preview and render stay in lockstep. */
+ *  (compositor / text / map), so preview and render stay in lockstep. */
 export function sampleContentDim(
   value: Keyframed<Length> | undefined,
   t: number,
@@ -332,7 +339,12 @@ export function computeNaturalSize(
 /** Resolve `size` / `origin` / `translation` (at time `t`) into the final
  *  parent-space SpatialRect for a node. `natural*` is the post-objectFit
  *  "100% size" reference. Exported so the renderers can re-evaluate per
- *  frame against the same math. */
+ *  frame against the same math.
+ *
+ *  `anchor` (a map pin's projected point, parent px) replaces the parent
+ *  center as the `translation` reference: the origin lands on the anchor and
+ *  `translation` becomes an offset from it (bare numbers = px; `%` still
+ *  resolves against the parent dims). */
 export function resolveBoxProps(
   input: SpatialInput,
   parentW: number,
@@ -341,6 +353,7 @@ export function resolveBoxProps(
   naturalH: number,
   t: number = 0,
   duration: number = 0,
+  anchor?: { x: number; y: number },
 ): SpatialRect {
   // size → content box. `origin`/`translation` place THIS box (decoupled from
   // any inset), so cropping never silently drifts the placement.
@@ -353,17 +366,18 @@ export function resolveBoxProps(
   const originX = originXY?.x ?? contentW / 2;
   const originY = originXY?.y ?? contentH / 2;
 
-  // translation → point in parent (default 50% — center).
+  // translation → point in parent (default 50% — center), or an offset from
+  // the pin anchor when one is given (bare numbers then mean 0% + px).
   const transXY = samplePoint(
     input.translation,
     t,
     duration,
     parentW,
     parentH,
-    TRANSLATION_DEFAULT_PCT,
+    anchor ? 0 : TRANSLATION_DEFAULT_PCT,
   );
-  const transX = transXY?.x ?? parentW / 2;
-  const transY = transXY?.y ?? parentH / 2;
+  const transX = anchor ? anchor.x + (transXY?.x ?? 0) : (transXY?.x ?? parentW / 2);
+  const transY = anchor ? anchor.y + (transXY?.y ?? 0) : (transXY?.y ?? parentH / 2);
 
   // The content box placed in parent space ("full" rect, pre-inset).
   const fullX = transX - originX;

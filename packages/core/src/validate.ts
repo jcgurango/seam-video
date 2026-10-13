@@ -32,7 +32,7 @@ export function validate(input: unknown): ValidationResult {
   if (!result.success) {
     return {
       success: false,
-      // Descends into `z.union` errors (Child, graphic objects, Length, …)
+      // Descends into `z.union` errors (Child, Length, …)
       // so failures report the offending node's real problem instead of
       // collapsing to Zod's top-level union message, `"Invalid input"`.
       errors: formatZodError(result.error),

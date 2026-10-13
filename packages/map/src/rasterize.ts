@@ -48,7 +48,7 @@ export function drawBasemap(
   // Clip to the viewport rect. Per-tile clips use the FULL tile rect (a tile
   // can be far larger than the viewport when overzoomed), so without this the
   // tile geometry spills outside (0,0,w,h) — invisible in the renderer (its
-  // canvas IS w×h) but it bled across the shared fabric canvas in the preview.
+  // canvas IS w×h) but it would bleed across a shared host canvas.
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, view.width, view.height);

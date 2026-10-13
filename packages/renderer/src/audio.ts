@@ -53,7 +53,18 @@ function collectAudioNodes(
   out: AudioEntry[],
 ): void {
   for (const c of children) {
-    if (c.type === "composition") {
+    if (c.type === "map") {
+      // A map's attachments live in map-local time at speed 1 and inherit
+      // every enclosing volume/pitch unchanged (maps have neither).
+      collectAudioNodes(
+        c.children,
+        parentSpeed,
+        parentDelay + c.timelineStart / parentSpeed,
+        parentVolumes,
+        parentPitch,
+        out,
+      );
+    } else if (c.type === "composition") {
       const compStartAbs = parentDelay + c.timelineStart / parentSpeed;
       const volumes =
         c.volume != null
