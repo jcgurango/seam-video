@@ -119,6 +119,13 @@ function rulerInterval(pxPerSec: number): number {
 }
 
 function childLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
+  const base = baseLabel(docChild, resolved);
+  // A node that actually loops (anchored span longer than its content with
+  // `underflow: "loop"`) — the block shows one span; the content repeats.
+  return (resolved as { loop?: unknown }).loop ? `${base} ↻` : base;
+}
+
+function baseLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
   if (docChild) {
     if (docChild.type === "clip" || docChild.type === "audio") {
       return (docChild.source ?? "").split("/").pop() || "untitled";

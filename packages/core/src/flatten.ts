@@ -10,6 +10,7 @@ import type {
   ResolvedCircle,
   ResolvedMap,
 } from "./resolved-types.js";
+import { unrollLoops } from "./layout/resolve.js";
 
 export type FlatLeaf =
   | ResolvedClip
@@ -25,6 +26,8 @@ export type FlatLeaf =
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
  * empties, data). Compounds speed and offsets through nested compositions.
+ * Looping nodes are unrolled into the cycles they play (see `unrollLoops`),
+ * so every leaf here is a plain span.
  */
 export function flattenResolved(
   children: ResolvedChild[],
@@ -33,7 +36,7 @@ export function flattenResolved(
 ): FlatLeaf[] {
   const result: FlatLeaf[] = [];
 
-  for (const child of children) {
+  for (const child of unrollLoops(children)) {
     const start = parentOffset + child.timelineStart / parentSpeed;
     const end = parentOffset + child.timelineEnd / parentSpeed;
 

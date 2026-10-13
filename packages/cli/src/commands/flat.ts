@@ -5,6 +5,7 @@ import {
   parseSeamFile,
   resolveComposition,
   sampleVolume,
+  unrollLoops,
 } from "@seam/core";
 import type { Keyframed, ResolvedChild } from "@seam/core";
 
@@ -58,7 +59,8 @@ function collect(
   envs: VolumeEnv[],
   out: FlatSourceEntry[],
 ) {
-  for (const child of children) {
+  // Looping nodes list once per played cycle (see core's `unrollLoops`).
+  for (const child of unrollLoops(children)) {
     const start = parentOffset + child.timelineStart / parentSpeed;
     const end = parentOffset + child.timelineEnd / parentSpeed;
 

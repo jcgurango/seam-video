@@ -3,11 +3,17 @@ export type { Keyframe, Keyframed } from "./animation/keyframes.js";
 export type { TimeExpr } from "./animation/time.js";
 
 export type Overflow = "trim-end" | "trim-start" | "trim-center" | "stretch";
+/** How a node fills a target span longer than its natural duration (only
+ *  attachments with both ends anchored ever have one). `loop` replays the
+ *  content from its start — a clip/audio's `[in, out]` at its own speed, a
+ *  composition's inner window — until the span is filled (the last cycle is
+ *  cut short); the node's own keyframes still run over the whole span. */
 export type Underflow =
   | "extend-end"
   | "extend-start"
   | "extend-center"
-  | "stretch";
+  | "stretch"
+  | "loop";
 
 export type ObjectFit = "center" | "fit" | "cover";
 

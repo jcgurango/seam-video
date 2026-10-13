@@ -240,6 +240,7 @@ export const UnderflowSchema = z.enum([
   "extend-start",
   "extend-center",
   "stretch",
+  "loop",
 ]);
 
 export const ClipSchema = z.object({

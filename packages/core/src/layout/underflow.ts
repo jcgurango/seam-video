@@ -4,6 +4,8 @@ export interface AdjustedRange {
   sourceIn: number;
   sourceOut: number;
   speed: number;
+  /** `loop`: the range is one cycle, replayed until the target is filled. */
+  loop?: true;
 }
 
 /**
@@ -50,5 +52,10 @@ export function applyUnderflow(
         sourceOut,
         speed: natural / targetDuration,
       };
+
+    case "loop":
+      // Keep the natural range and rate; the caller marks the node as a
+      // loop so consumers replay the cycle across the target.
+      return { sourceIn, sourceOut, speed: 1, loop: true };
   }
 }

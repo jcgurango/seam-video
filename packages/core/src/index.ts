@@ -7,7 +7,8 @@ export { compileSeamFile, runScript } from "./compile.js";
 export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { expandMacros, findUnresolvedMacros } from "./macros.js";
 export type { MacroExpandResult } from "./macros.js";
-export { resolveComposition } from "./layout/resolve.js";
+export { resolveComposition, unrollLoops } from "./layout/resolve.js";
+export { loopLocalTime, loopIterations, type LoopIteration } from "./layout/loop.js";
 export {
   resolveSpatial,
   resolveBoxProps,

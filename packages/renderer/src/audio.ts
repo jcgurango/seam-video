@@ -15,12 +15,20 @@
 import { registerMediabunnyServer } from "@mediabunny/server";
 import { Input, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 import { OfflineAudioContext, AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
-import { sampleVolume, resolveVolume, isKeyframed, createPitchShifter } from "@seam/core";
+import {
+  sampleVolume,
+  resolveVolume,
+  isKeyframed,
+  createPitchShifter,
+  loopIterations,
+  unrollLoops,
+} from "@seam/core";
 import type {
   Keyframed,
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
+  ResolvedComposition,
   ResolvedTimeline,
 } from "@seam/core";
 import { openMediaSource } from "./mediaInput.js";
@@ -39,7 +47,17 @@ interface VolumeEnv {
 interface AudioEntry {
   node: ResolvedClip | ResolvedAudio;
   parentSpeed: number; // ancestor speed product (excludes node.speed)
-  start: number; // absolute output start (seconds)
+  start: number; // absolute output start (seconds) of this entry
+  /** Played portion of the decoded `[sourceIn, sourceOut]` region, in source
+   *  seconds: the whole region for a plain node, one cycle (possibly cut
+   *  short) for a looping one. */
+  srcOffset: number;
+  srcLength: number;
+  /** The NODE's absolute output start + length — the axis its own keyframed
+   *  `volume` and crossfade ramps run on. Equal to this entry's span unless
+   *  the node loops (then each cycle is its own entry). */
+  nodeStart: number;
+  nodeDuration: number;
   compVolumes: VolumeEnv[]; // enclosing composition volume multipliers
   pitch: number; // net semitone shift (node pitch + enclosing comp pitches)
 }
@@ -66,26 +84,44 @@ function collectAudioNodes(
       );
     } else if (c.type === "composition") {
       const compStartAbs = parentDelay + c.timelineStart / parentSpeed;
+      // The comp's own volume runs over its whole span (not per loop cycle).
       const volumes =
         c.volume != null
-          ? [...parentVolumes, { volume: c.volume, startAbs: compStartAbs, duration: c.duration }]
+          ? [
+              ...parentVolumes,
+              { volume: c.volume, startAbs: compStartAbs, duration: c.timelineEnd - c.timelineStart },
+            ]
           : parentVolumes;
-      collectAudioNodes(
-        c.children,
-        parentSpeed * c.speed,
-        compStartAbs,
-        volumes,
-        parentPitch + (c.pitch ?? 0),
-        out,
-      );
+      // A looping composition replays its inner window once per cycle:
+      // recurse each cycle's (window-cropped) children at that cycle's start.
+      const cycles = c.loop ? (unrollLoops([c]) as ResolvedComposition[]) : [c];
+      for (const cycle of cycles) {
+        collectAudioNodes(
+          cycle.children,
+          parentSpeed * c.speed,
+          parentDelay + cycle.timelineStart / parentSpeed,
+          volumes,
+          parentPitch + (c.pitch ?? 0),
+          out,
+        );
+      }
     } else if (c.type === "clip" || c.type === "audio") {
-      out.push({
-        node: c,
-        parentSpeed,
-        start: parentDelay + c.timelineStart / parentSpeed,
-        compVolumes: parentVolumes,
-        pitch: parentPitch + (c.pitch ?? 0),
-      });
+      const nodeStart = parentDelay + c.timelineStart / parentSpeed;
+      const span = c.timelineEnd - c.timelineStart;
+      // One entry per played cycle (a single one for a plain node).
+      for (const it of loopIterations(c.loop, span)) {
+        out.push({
+          node: c,
+          parentSpeed,
+          start: nodeStart + it.start / parentSpeed,
+          srcOffset: it.offset * c.speed,
+          srcLength: (it.end - it.start) * c.speed,
+          nodeStart,
+          nodeDuration: span / parentSpeed,
+          compVolumes: parentVolumes,
+          pitch: parentPitch + (c.pitch ?? 0),
+        });
+      }
     }
   }
 }
@@ -186,7 +222,9 @@ export async function renderAudioMix(
 
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(durationSec * SR)), SR);
 
-  for (const { node, parentSpeed, start, compVolumes, pitch } of entries) {
+  for (const entry of entries) {
+    const { node, parentSpeed, start, compVolumes, pitch, srcOffset, srcLength } = entry;
+    // Decoded once per source+region — a loop's cycles share the buffer.
     const decoded = await decodeRegion(node.source, node.sourceIn, node.sourceOut);
     if (!decoded || decoded.channels.length === 0) continue;
 
@@ -200,7 +238,14 @@ export async function renderAudioMix(
     for (let i = 0; i < srcCh; i++) {
       region.getChannelData(i).set(decoded.channels[i]);
     }
-    const audioDuration = (node.sourceOut - node.sourceIn) / effectiveSpeed;
+    const regionLen = node.sourceOut - node.sourceIn;
+    const playedLen = Math.min(srcLength, Math.max(0, regionLen - srcOffset));
+    if (playedLen <= 0) continue;
+    const audioDuration = playedLen / effectiveSpeed;
+    // The node's own axis for its volume keyframes + crossfades (== this
+    // entry's for a plain node; the full looped span for a loop cycle).
+    const nodeDuration = entry.nodeDuration;
+    const nodeOffset = start - entry.nodeStart;
 
     const srcNode = ctx.createBufferSource();
     srcNode.buffer = region;
@@ -211,11 +256,11 @@ export async function renderAudioMix(
     // absolute output, same as the start delay.
     const fadeIn =
       node.transition && node.transition > 0
-        ? Math.min(node.transition / parentSpeed, audioDuration)
+        ? Math.min(node.transition / parentSpeed, nodeDuration)
         : 0;
     const fadeOut =
       node.transitionOut && node.transitionOut > 0
-        ? Math.min(node.transitionOut / parentSpeed, audioDuration)
+        ? Math.min(node.transitionOut / parentSpeed, nodeDuration)
         : 0;
     const vol = node.volume;
     // Enclosing-composition volume at absolute output time T (product of every
@@ -237,10 +282,11 @@ export async function renderAudioMix(
       const curve = new Float32Array(n);
       for (let k = 0; k < n; k++) {
         const tau = (k / (n - 1)) * audioDuration;
-        let g = vol == null ? 1 : sampleVolume(vol, tau, audioDuration);
+        const tauNode = nodeOffset + tau;
+        let g = vol == null ? 1 : sampleVolume(vol, tauNode, nodeDuration);
         g *= compVolAt(Math.max(0, start) + tau);
-        if (fadeIn > 0) g *= Math.min(1, tau / fadeIn);
-        if (fadeOut > 0) g *= Math.min(1, (audioDuration - tau) / fadeOut);
+        if (fadeIn > 0) g *= Math.min(1, tauNode / fadeIn);
+        if (fadeOut > 0) g *= Math.min(1, (nodeDuration - tauNode) / fadeOut);
         curve[k] = g;
       }
       gain.gain.setValueCurveAtTime(curve, Math.max(0, start), audioDuration);
@@ -259,7 +305,13 @@ export async function renderAudioMix(
     } else {
       srcNode.connect(gain).connect(ctx.destination);
     }
-    srcNode.start(Math.max(0, start), 0);
+    if (srcOffset === 0 && playedLen >= regionLen) {
+      srcNode.start(Math.max(0, start), 0);
+    } else {
+      // One cycle of a loop (or a phase-shifted / cut-short one): play just
+      // that slice of the shared region buffer.
+      srcNode.start(Math.max(0, start), srcOffset, playedLen);
+    }
   }
 
   // Always emit a buffer when the timeline declared audio (matches

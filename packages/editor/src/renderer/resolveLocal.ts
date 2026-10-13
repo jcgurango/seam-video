@@ -7,11 +7,14 @@
 // `speed` / `in`/`out` describe how that inner timeline maps to the comp's
 // output. So descending one level is:
 //   inner = (comp.in ?? 0) + (parentTime - comp.timelineStart) * comp.speed
-// (For the common non-windowed comp this is just `(t - start) * speed`.)
+// (For the common non-windowed comp this is just `(t - start) * speed`.) A
+// looping comp (`underflow: "loop"`) wraps `parentTime - timelineStart` into
+// its current cycle first (`loopLocalTime`).
 //
 // Used by the toolbar slice (find the playhead inside a sub-composition) and
 // attach (compute a source anchor point on a nested primary).
 
+import { loopLocalTime } from "@seam/core";
 import type {
   Child,
   ResolvedChild,
@@ -62,7 +65,8 @@ export function descendToContainer(
         ? aChildren[seg.index]
         : (aNode.attachments ?? [])[seg.index];
     if (!aChild || aChild.type !== "composition") return null;
-    t = (aChild.in ?? 0) + (t - rChild.timelineStart) * rChild.speed;
+    // A looping comp replays its window: wrap into the current cycle first.
+    t = (aChild.in ?? 0) + loopLocalTime(rChild.loop, t - rChild.timelineStart) * rChild.speed;
     rNode = rChild;
     aNode = aChild;
   }
