@@ -13,6 +13,7 @@ import ScriptPanel from "./ScriptPanel.js";
 import BinPanel from "./BinPanel.js";
 import MediaBrowser from "./MediaBrowser.js";
 import NewPanel from "./NewPanel.js";
+import PropertiesPanel from "./PropertiesPanel.js";
 import { findBinItem } from "./nodeBin.js";
 import type { Platform } from "./platform/index.js";
 import type { WebPlatform } from "./platform/web.js";
@@ -68,6 +69,12 @@ interface InspectorAccordionProps {
   onEnterCCCut: (binId: string) => void;
   /** Platform — gates the web-only Media section + backs its browser. */
   platform: Platform;
+  /** Path-keyed selection — the Properties section edits these nodes. */
+  selection: string[];
+  /** Commit a property edit on the editor-surface root WITHOUT clearing the
+   *  selection (unlike `onRootDocumentChange`), so the panel stays on the
+   *  nodes being edited. */
+  onDocumentEdit: (next: SeamFile) => void;
 }
 
 /**
@@ -90,6 +97,8 @@ export default function InspectorAccordion({
   onRootDocumentChange,
   onEnterCCCut,
   platform,
+  selection,
+  onDocumentEdit,
 }: InspectorAccordionProps) {
   const sections =
     platform.kind === "web" ? [...BASE_SECTIONS, ...WEB_SECTIONS] : BASE_SECTIONS;
@@ -117,7 +126,13 @@ export default function InspectorAccordion({
       case "new":
         return <NewPanel />;
       case "properties":
-        return <PaddedTab>Properties panel (placeholder)</PaddedTab>;
+        return (
+          <PropertiesPanel
+            document={rootDocument}
+            selection={selection}
+            onDocumentEdit={onDocumentEdit}
+          />
+        );
       case "filters":
         return <PaddedTab>Filters panel (placeholder)</PaddedTab>;
       case "json":
