@@ -53,6 +53,7 @@ import {
   samplePin,
   sampleDistort,
   isIdentityDistort,
+  loopLocalTime,
   squareToQuad,
   applyHomography,
   type Keyframed,
@@ -483,6 +484,13 @@ function walkChildren(
 
     const drawDuration = child.timelineEnd - child.timelineStart;
     const drawTime = localTime - child.timelineStart;
+    // Content time: a looping clip/composition (`underflow: "loop"`) replays
+    // its single cycle, so the media / inner-window time wraps while the
+    // node's own keyframes (opacity, spatial, mask…) keep using `drawTime`.
+    const contentTime =
+      child.type === "clip" || child.type === "composition"
+        ? loopLocalTime(child.loop, drawTime)
+        : drawTime;
 
     // A pinned attachment of a map: its origin lands on the projected pin.
     const anchor =
@@ -540,7 +548,7 @@ function walkChildren(
         pivotX,
         pivotY,
         opacity: opacity * fade * nodeOpacity,
-        drawTime,
+        drawTime: contentTime,
         contentW,
         contentH,
         sourceRect: spatial.sourceRect,
@@ -623,13 +631,11 @@ function walkChildren(
     // (windowDur = span / speed), which also holds with overflow/underflow
     // stretch folded into `speed`. Clamping to `duration` alone pinned inner
     // time at the output length, freezing the first child and starving every
-    // later child. A map's attachments live in map-local time at speed 1.
+    // later child. A map's attachments live in map-local time at speed 1. A
+    // looping comp's `contentTime` already wraps into one cycle.
     const childLocalTime = isMap
       ? drawTime
-      : Math.min(
-          (localTime - child.timelineStart) * child.speed,
-          child.duration * child.speed,
-        );
+      : Math.min(contentTime * child.speed, child.duration * child.speed);
 
     const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize, anchor);
     const container = absoluteRect(viewport, spatial);

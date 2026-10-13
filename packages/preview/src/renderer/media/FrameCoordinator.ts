@@ -2,12 +2,13 @@ import type {
   ResolvedAudio,
   ResolvedChild,
   ResolvedClip,
+  ResolvedComposition,
   ResolvedMap,
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
-import { isKeyframed, sampleVolume } from "@seam/core";
+import { isKeyframed, sampleVolume, loopIterations, unrollLoops } from "@seam/core";
 import type { RenderCommand } from "@seam/compositor";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
@@ -41,8 +42,15 @@ const SPARSE_FPS = 30;
  */
 interface FlatClip {
   clip: ResolvedClip | ResolvedAudio;
+  /** This entry's absolute span. A looping node (`underflow: "loop"`) yields
+   *  one FlatClip per played cycle, each with its own buffer + audio
+   *  registration, so cycles preload/schedule exactly like sequential clips. */
   absoluteStart: number;
   absoluteEnd: number;
+  /** The NODE's absolute span — the axis its keyframed `volume` and
+   *  crossfades run on (== the entry's unless the node loops). */
+  nodeAbsStart: number;
+  nodeAbsEnd: number;
   source: string;
   audioId: string | null;
   toSourceTime: (absoluteTime: number) => number;
@@ -69,24 +77,25 @@ function audioCrossfadeGain(flat: FlatClip, currentTime: number): number {
   let g = 1;
   const inD = flat.clip.transition;
   if (inD != null && inD > 0) {
-    const e = currentTime - flat.absoluteStart;
+    const e = currentTime - flat.nodeAbsStart;
     if (e < inD) g *= Math.max(0, Math.min(1, e / inD));
   }
   const outD = flat.clip.transitionOut;
   if (outD != null && outD > 0) {
-    const e = flat.absoluteEnd - currentTime;
+    const e = flat.nodeAbsEnd - currentTime;
     if (e < outD) g *= Math.max(0, Math.min(1, e / outD));
   }
   return g;
 }
 
 export class FrameCoordinator {
-  /** Video buffers, keyed by resolved video clips only (audio nodes have none). */
-  private buffers = new Map<ResolvedClip, ClipBuffer>();
+  /** Video buffers, one per video FlatClip (audio entries have none). */
+  private buffers = new Map<FlatClip, ClipBuffer>();
   private flatClips: FlatClip[] = [];
-  private flatByClip = new Map<ResolvedClip | ResolvedAudio, FlatClip>();
+  /** Every entry of a resolved node — several when it loops. */
+  private flatByClip = new Map<ResolvedClip | ResolvedAudio, FlatClip[]>();
   private sizes = new Map<ResolvedClip, { w: number; h: number }>();
-  private playingClips = new Set<ResolvedClip | ResolvedAudio>();
+  private playingClips = new Set<FlatClip>();
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
   private staticStore = new StaticStore();
@@ -177,7 +186,9 @@ export class FrameCoordinator {
     }
 
     for (const flat of this.flatClips) {
-      this.flatByClip.set(flat.clip, flat);
+      const list = this.flatByClip.get(flat.clip);
+      if (list) list.push(flat);
+      else this.flatByClip.set(flat.clip, [flat]);
     }
 
     const initAll = this.flatClips.map(async (flat) => {
@@ -193,11 +204,11 @@ export class FrameCoordinator {
           buffer.dispose();
           return;
         }
-        this.buffers.set(flat.clip, buffer);
+        this.buffers.set(flat, buffer);
 
         const size = await mediaStore.getIntrinsicSize(flat.source);
         if (gen !== this.generation) return;
-        if (size.w > 0) {
+        if (size.w > 0 && !this.sizes.has(flat.clip)) {
           // A 90/270 pre-transform orientation swaps the display dims
           // objectFit sees (mirrors the renderer's intrinsicSize).
           const o = flat.clip.orientation ?? 0;
@@ -220,7 +231,11 @@ export class FrameCoordinator {
         // updated each tick via setClipVolume.
         const baseVolume = flat.clip.volume == null
           ? 1
-          : sampleVolume(flat.clip.volume, 0, flat.absoluteEnd - flat.absoluteStart);
+          : sampleVolume(
+              flat.clip.volume,
+              flat.absoluteStart - flat.nodeAbsStart,
+              flat.nodeAbsEnd - flat.nodeAbsStart,
+            );
         const initialVolume = baseVolume * flat.compVolumeAt(flat.absoluteStart);
         // Composed rate (clip speed × enclosing comp speeds), NOT clip.speed:
         // the scheduler uses it both as playbackRate and to map source-time
@@ -335,12 +350,14 @@ export class FrameCoordinator {
     if (clip.type === "map") {
       return this.mapStore.getFrame(clip);
     }
-    const flat = this.flatByClip.get(clip);
+    const entries = this.flatByClip.get(clip);
+    if (!entries) return null;
+    // The entry (loop cycle) active at this instant.
+    const flat = entries.find(
+      (f) => timelineTime >= f.absoluteStart && timelineTime < f.absoluteEnd,
+    );
     if (!flat) return null;
-    if (timelineTime < flat.absoluteStart || timelineTime >= flat.absoluteEnd) {
-      return null;
-    }
-    const buffer = this.buffers.get(clip);
+    const buffer = this.buffers.get(flat);
     if (!buffer) return null;
     return buffer.getFrame(flat.toSourceTime(timelineTime));
   }
@@ -392,7 +409,7 @@ export class FrameCoordinator {
       // Video clips have a ClipBuffer; audio-only nodes don't and just need
       // start/stop scheduling against the audio scheduler.
       const buffer =
-        flat.clip.type === "clip" ? this.buffers.get(flat.clip) : null;
+        flat.clip.type === "clip" ? this.buffers.get(flat) : null;
 
       // Timeline range of this clip that overlaps the lookahead/lookbehind window
       const overlapStart = Math.max(flat.absoluteStart, windowMin);
@@ -401,8 +418,8 @@ export class FrameCoordinator {
       if (overlapEnd <= overlapStart) {
         // Outside the window: drop video buffer and stop audio
         if (buffer) buffer.clear();
-        if (this.playingClips.has(flat.clip)) {
-          this.playingClips.delete(flat.clip);
+        if (this.playingClips.has(flat)) {
+          this.playingClips.delete(flat);
           if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
         }
         continue;
@@ -442,16 +459,16 @@ export class FrameCoordinator {
         currentTime >= flat.absoluteStart && currentTime < flat.absoluteEnd;
 
       if (isActive) {
-        if (isPlaying && !this.playingClips.has(flat.clip)) {
-          this.playingClips.add(flat.clip);
+        if (isPlaying && !this.playingClips.has(flat)) {
+          this.playingClips.add(flat);
           if (flat.audioId) {
             const sourceTime = flat.toSourceTime(currentTime);
             this.audioScheduler?.startClip(flat.audioId, sourceTime);
           }
         }
-      } else if (this.playingClips.has(flat.clip)) {
+      } else if (this.playingClips.has(flat)) {
         // Clip no longer active — stop audio (buffer may still be in window)
-        this.playingClips.delete(flat.clip);
+        this.playingClips.delete(flat);
         if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
       }
     }
@@ -474,8 +491,9 @@ export class FrameCoordinator {
         // Skip only when nothing varies — static clip volume, no crossfade, and
         // no enclosing composition volume to apply.
         if (!isKeyframed(v) && fade === 1 && !flat.hasCompVolume) continue;
-        const localT = currentTime - flat.absoluteStart;
-        const dur = flat.absoluteEnd - flat.absoluteStart;
+        // Keyframed volume runs on the NODE's span (a loop cycle is a slice).
+        const localT = currentTime - flat.nodeAbsStart;
+        const dur = flat.nodeAbsEnd - flat.nodeAbsStart;
         const base = sampleVolume(v ?? 1, localT, dur);
         const compVol = flat.compVolumeAt(currentTime);
         // Pass the crossfade `fade` separately so it stays a transient — the
@@ -526,69 +544,86 @@ function collectClips(
 
   for (const child of children) {
     if (child.type === "clip" || child.type === "audio") {
-      const absStart = toAbsoluteTime(child.timelineStart);
-      const absEnd = toAbsoluteTime(child.timelineEnd);
+      const nodeAbsStart = toAbsoluteTime(child.timelineStart);
+      const nodeAbsEnd = toAbsoluteTime(child.timelineEnd);
       const capturedToLocal = toLocalTime;
       const capturedChild = child;
+      const span = child.timelineEnd - child.timelineStart;
 
-      result.push({
-        clip: child,
-        absoluteStart: absStart,
-        absoluteEnd: absEnd,
-        source: resolveSource(child.source, basePath),
-        audioId: null,
-        toSourceTime: (t: number) => {
-          const local = capturedToLocal(t);
-          const clipLocal = Math.max(0, local - capturedChild.timelineStart);
-          return capturedChild.sourceIn + clipLocal * capturedChild.speed;
-        },
-        sourceRate: parentRate * child.speed,
-        compVolumeAt: volumeAt,
-        hasCompVolume: hasVol,
-        pitch: parentPitch + (child.pitch ?? 0),
-      });
+      // One entry per played cycle — a single one for a plain node. A loop
+      // cycle maps its own slice of the clip's source range.
+      for (const it of loopIterations(child.loop, span)) {
+        const iterLocalStart = child.timelineStart + it.start;
+        const srcBase = child.sourceIn + it.offset * child.speed;
+        result.push({
+          clip: child,
+          absoluteStart: toAbsoluteTime(iterLocalStart),
+          absoluteEnd: toAbsoluteTime(child.timelineStart + it.end),
+          nodeAbsStart,
+          nodeAbsEnd,
+          source: resolveSource(child.source, basePath),
+          audioId: null,
+          toSourceTime: (t: number) => {
+            const local = capturedToLocal(t);
+            const clipLocal = Math.max(0, local - iterLocalStart);
+            return srcBase + clipLocal * capturedChild.speed;
+          },
+          sourceRate: parentRate * child.speed,
+          compVolumeAt: volumeAt,
+          hasCompVolume: hasVol,
+          pitch: parentPitch + (child.pitch ?? 0),
+        });
+      }
     } else if (child.type === "composition") {
       const parentToLocal = toLocalTime;
       const parentToAbsolute = toAbsoluteTime;
       const comp = child;
-      // Compose this comp's own volume (sampled in its output time) onto the
-      // enclosing multiplier, for every clip beneath it.
+      // Compose this comp's own volume (sampled in its output time, over the
+      // comp's whole span — not per loop cycle) onto the enclosing
+      // multiplier, for every clip beneath it.
       const compAbsStart = parentToAbsolute(comp.timelineStart);
+      const compSpan = comp.timelineEnd - comp.timelineStart;
       const compVol = comp.volume;
       const childVolumeAt = compVol != null
-        ? (t: number) => volumeAt(t) * sampleVolume(compVol, t - compAbsStart, comp.duration)
+        ? (t: number) => volumeAt(t) * sampleVolume(compVol, t - compAbsStart, compSpan)
         : volumeAt;
       const childHasVol = hasVol || compVol != null;
 
-      const childToLocal = (t: number): number => {
-        const parentLocal = parentToLocal(t);
-        // Clamp to the composition's *inner-window* span, not its output
-        // `duration`: nested clips live in inner coords (span = duration ×
-        // speed, since windowDur = span / speed). Clamping to `duration` pinned
-        // inner time at the output length, freezing the first child and
-        // collapsing every later child onto its `sourceIn` (frame 0). Mirrors
-        // the compositor's RenderList clamp.
-        return Math.min(
-          Math.max(0, (parentLocal - comp.timelineStart) * comp.speed),
-          comp.duration * comp.speed
-        );
-      };
-      const childToAbsolute = (localT: number): number => {
-        return parentToAbsolute(comp.timelineStart + localT / comp.speed);
-      };
+      // A looping composition replays its inner window once per cycle: walk
+      // each cycle's (window-cropped) children with that cycle's own time
+      // mapping, so every cycle gets its own buffers + audio schedule.
+      const cycles = comp.loop ? (unrollLoops([comp]) as ResolvedComposition[]) : [comp];
+      for (const cycle of cycles) {
+        const childToLocal = (t: number): number => {
+          const parentLocal = parentToLocal(t);
+          // Clamp to the composition's *inner-window* span, not its output
+          // `duration`: nested clips live in inner coords (span = duration ×
+          // speed, since windowDur = span / speed). Clamping to `duration` pinned
+          // inner time at the output length, freezing the first child and
+          // collapsing every later child onto its `sourceIn` (frame 0). Mirrors
+          // the compositor's RenderList clamp.
+          return Math.min(
+            Math.max(0, (parentLocal - cycle.timelineStart) * comp.speed),
+            cycle.duration * comp.speed
+          );
+        };
+        const childToAbsolute = (localT: number): number => {
+          return parentToAbsolute(cycle.timelineStart + localT / comp.speed);
+        };
 
-      result.push(
-        ...collectClips(
-          comp.children,
-          childToLocal,
-          childToAbsolute,
-          basePath,
-          childVolumeAt,
-          childHasVol,
-          parentRate * comp.speed,
-          parentPitch + (comp.pitch ?? 0)
-        )
-      );
+        result.push(
+          ...collectClips(
+            cycle.children,
+            childToLocal,
+            childToAbsolute,
+            basePath,
+            childVolumeAt,
+            childHasVol,
+            parentRate * comp.speed,
+            parentPitch + (comp.pitch ?? 0)
+          )
+        );
+      }
     } else if (child.type === "map") {
       // Map attachments: map-local time (0 = map start) at speed 1; the map
       // itself has no volume/pitch, so the enclosing multipliers pass through.

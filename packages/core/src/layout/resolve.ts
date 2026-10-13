@@ -12,10 +12,12 @@ import type {
 import type {
   ResolvedTimeline,
   ResolvedChild,
+  ResolvedLoop,
   SpatialInput,
 } from "../resolved-types.js";
 import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
+import { loopIterations, loopLocalTime } from "./loop.js";
 
 function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration?: number }): number {
   if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
@@ -274,6 +276,7 @@ function resolveChild(
     let windowIn = compIn;
     let windowOut = compOut;
     let speed = baseSpeed;
+    let loops = false;
 
     if (target < natural) {
       const overflow = child.overflow ?? defaultOverflow;
@@ -290,11 +293,16 @@ function resolveChild(
         windowIn = result.sourceIn;
         windowOut = result.sourceOut;
         speed = result.speed * baseSpeed;
+        loops = result.loop === true;
       }
     }
 
     const croppedChildren = cropChildrenToWindow(inner.children, windowIn, windowOut);
+    // Output length of one pass over the window. A looping comp replays it
+    // until `target` is filled; `duration` stays the single-cycle length so
+    // `duration × speed` is still the inner span the children live in.
     const windowDur = (windowOut - windowIn) / speed;
+    const loop: ResolvedLoop | undefined = loops ? { period: windowDur, phase: 0 } : undefined;
 
     return {
       resolved: {
@@ -303,6 +311,7 @@ function resolveChild(
         timelineEnd: 0,
         duration: windowDur,
         speed,
+        ...(loop ? { loop } : {}),
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
         ...(child.filters?.length ? { filters: child.filters } : {}),
@@ -314,7 +323,7 @@ function resolveChild(
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },
-      actualDuration: windowDur,
+      actualDuration: loop ? target : windowDur,
     };
   }
 
@@ -324,6 +333,7 @@ function resolveChild(
   let sourceOut = leaf.out;
   const baseSpeed = clipBaseSpeed(leaf);
   let speed = baseSpeed;
+  let loops = false;
 
   if (target < nat) {
     const overflow = leaf.overflow ?? defaultOverflow;
@@ -340,10 +350,15 @@ function resolveChild(
       sourceIn = result.sourceIn;
       sourceOut = result.sourceOut;
       speed = result.speed * baseSpeed;
+      loops = result.loop === true;
     }
   }
 
+  // One pass over `[sourceIn, sourceOut]`; a looping leaf replays it until
+  // `target` is filled.
   const leafDur = (sourceOut - sourceIn) / speed;
+  const loop: ResolvedLoop | undefined = loops ? { period: leafDur, phase: 0 } : undefined;
+  const actualDuration = loop ? target : leafDur;
 
   if (leaf.type === "audio") {
     return {
@@ -355,10 +370,11 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         speed,
+        ...(loop ? { loop } : {}),
         ...(leaf.volume != null ? { volume: leaf.volume } : {}),
         ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
       },
-      actualDuration: leafDur,
+      actualDuration,
     };
   }
 
@@ -371,6 +387,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(loop ? { loop } : {}),
       ...(leaf.orientation != null ? { orientation: leaf.orientation } : {}),
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
@@ -378,7 +395,7 @@ function resolveChild(
       ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
       ...spatialExtras(leaf),
     },
-    actualDuration: leafDur,
+    actualDuration,
   };
 }
 
@@ -698,7 +715,24 @@ function cropChildrenToWindow(
     const rebasedStart = visibleStart - windowIn;
     const rebasedEnd = visibleEnd - windowIn;
 
-    if (child.type === "clip" || child.type === "audio") {
+    if (
+      (child.type === "clip" || child.type === "audio" || child.type === "composition") &&
+      child.loop
+    ) {
+      // A looping node keeps its whole cycle (source range / inner children /
+      // single-cycle `duration`); cropping only advances the phase at which
+      // the visible part starts and shortens the span.
+      const startOffset = visibleStart - child.timelineStart;
+      result.push({
+        ...child,
+        loop: {
+          period: child.loop.period,
+          phase: loopLocalTime(child.loop, startOffset),
+        },
+        timelineStart: rebasedStart,
+        timelineEnd: rebasedEnd,
+      });
+    } else if (child.type === "clip" || child.type === "audio") {
       const startOffset = visibleStart - child.timelineStart;
       const endOffset = child.timelineEnd - visibleEnd;
 
@@ -751,4 +785,54 @@ function cropChildrenToWindow(
   }
 
   return result;
+}
+
+/**
+ * Replace every looping node (`underflow: "loop"`) in `children` by the
+ * cycles it actually plays, as plain non-looping siblings in the same
+ * container coordinates: a clip/audio becomes one trimmed copy per cycle, a
+ * composition one copy per cycle with its children cropped to the part of
+ * the inner window that cycle shows. Non-looping nodes pass through
+ * untouched (same object). For flat listings / transcription mixes — the
+ * compositor and the two output mixers consume the `loop` marker directly so
+ * the node's own keyframes keep running over its full span.
+ */
+export function unrollLoops(children: ResolvedChild[]): ResolvedChild[] {
+  const out: ResolvedChild[] = [];
+  for (const child of children) {
+    if (
+      (child.type !== "clip" && child.type !== "audio" && child.type !== "composition") ||
+      !child.loop
+    ) {
+      out.push(child);
+      continue;
+    }
+    const span = child.timelineEnd - child.timelineStart;
+    for (const it of loopIterations(child.loop, span)) {
+      const len = it.end - it.start;
+      const timelineStart = child.timelineStart + it.start;
+      const timelineEnd = child.timelineStart + it.end;
+      if (child.type === "composition") {
+        const { loop: _loop, ...rest } = child;
+        const innerIn = it.offset * child.speed;
+        out.push({
+          ...rest,
+          timelineStart,
+          timelineEnd,
+          duration: len,
+          children: cropChildrenToWindow(child.children, innerIn, innerIn + len * child.speed),
+        });
+      } else {
+        const { loop: _loop, ...rest } = child;
+        out.push({
+          ...rest,
+          sourceIn: child.sourceIn + it.offset * child.speed,
+          sourceOut: child.sourceIn + (it.offset + len) * child.speed,
+          timelineStart,
+          timelineEnd,
+        } as ResolvedChild);
+      }
+    }
+  }
+  return out;
 }

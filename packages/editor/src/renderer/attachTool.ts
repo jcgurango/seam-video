@@ -4,7 +4,7 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { resolveComposition } from "@seam/core";
+import { loopLocalTime, resolveComposition } from "@seam/core";
 import type {
   Child,
   Composition,
@@ -79,8 +79,10 @@ function computeAnchorSpec(
     (primary.type === "clip" || primary.type === "audio") &&
     (resolved.type === "clip" || resolved.type === "audio")
   ) {
+    // A looping clip replays its range — map into the current cycle.
     const sourceTime =
-      resolved.sourceIn + (t - resolved.timelineStart) * resolved.speed;
+      resolved.sourceIn +
+      loopLocalTime(resolved.loop, t - resolved.timelineStart) * resolved.speed;
     const clamped = Math.max(primary.in, Math.min(primary.out, sourceTime));
     return { timeSource: "source", anchorPoint: clamped };
   }
@@ -91,7 +93,7 @@ function computeAnchorSpec(
     // the visible source range to clamp into.
     const compOut = compIn + resolved.duration * resolved.speed;
     const sourceTime =
-      compIn + (t - resolved.timelineStart) * resolved.speed;
+      compIn + loopLocalTime(resolved.loop, t - resolved.timelineStart) * resolved.speed;
     const clamped = Math.max(compIn, Math.min(compOut, sourceTime));
     return { timeSource: "source", anchorPoint: clamped };
   }

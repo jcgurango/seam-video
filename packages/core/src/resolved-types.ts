@@ -52,6 +52,19 @@ export interface SpatialInput {
   insetMode?: InsetMode;
 }
 
+/** Loop marker (`underflow: "loop"`): the node spans `[timelineStart,
+ *  timelineEnd]` but its content — a clip/audio's `[sourceIn, sourceOut]` at
+ *  `speed`, a composition's inner window (`duration` × `speed`) — is ONE
+ *  cycle, replayed from its start every `period` node-local output seconds.
+ *  `phase` is how far into a cycle the node is at `timelineStart` (non-zero
+ *  only after a window crop). Content time at node-local `t` is
+ *  `(t + phase) mod period` — see `loopLocalTime`. The node's own keyframes
+ *  (opacity, spatial, volume, …) still run over the full span. */
+export interface ResolvedLoop {
+  period: number;
+  phase: number;
+}
+
 export interface ResolvedClip {
   type: "clip";
   source: string;
@@ -60,6 +73,8 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Present when the clip loops its `[sourceIn, sourceOut]` cycle. */
+  loop?: ResolvedLoop;
   /** Pre-transform source orientation (clockwise degrees). Renderers bake it
    *  into the decoded frame (composing with container-metadata rotation)
    *  before the spatial transform. Absent means 0. */
@@ -145,6 +160,8 @@ export interface ResolvedAudio {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Present when the node loops its `[sourceIn, sourceOut]` cycle. */
+  loop?: ResolvedLoop;
   /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
@@ -203,8 +220,15 @@ export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
   timelineEnd: number;
+  /** Output length of ONE pass over the inner window (`duration × speed` =
+   *  the inner span the children live in). Equals `timelineEnd −
+   *  timelineStart` unless the composition loops, where it is the loop
+   *  period and the node span is a whole number of cycles or more. */
   duration: number;
   speed: number;
+  /** Present when the composition replays its inner window (one cycle =
+   *  `duration` output seconds) across its span. */
+  loop?: ResolvedLoop;
   /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
