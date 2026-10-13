@@ -428,6 +428,15 @@ export default function App({ platform }: AppProps) {
     [commitDocument]
   );
 
+  // Property edits keep the selection: the Properties panel rewrites fields
+  // in place, so the selected paths stay valid and the user keeps editing.
+  const editDocument = useCallback(
+    (newDoc: SeamFile) => {
+      void commitDocument(newDoc);
+    },
+    [commitDocument]
+  );
+
   // The JSON tab edits the authored root document directly. Bin
   // references appear as compositions with a `binItem` field; scripts
   // appear as a `script` string.
@@ -1076,6 +1085,8 @@ export default function App({ platform }: AppProps) {
                 onRootDocumentChange={updateDocument}
                 onEnterCCCut={handleEnterCCCut}
                 platform={platform}
+                selection={selection}
+                onDocumentEdit={editDocument}
               />
             )}
           </div>
