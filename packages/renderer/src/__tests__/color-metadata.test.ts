@@ -16,13 +16,15 @@ import {
 } from "mediabunny";
 
 // Render outputs must be real BT.709 limited-range video, tagged as such —
-// not just tagged. Encodes a pure-red frame the way render.ts does and checks
-// both halves:
+// not just tagged — and inputs must be read back with their tagged matrix.
+// Encodes a pure-red frame the way render.ts does and checks three things:
 //   1. the file carries complete colour metadata (VUI + colr → getColorSpace)
 //   2. the encoded YUV actually used the BT.709 matrix, not swscale's BT.601
 //      default (pure red: 709 ⇒ Y≈63 Cb≈102 Cr≈240; 601 would give Y≈81).
+//   3. decoding that 709-tagged YUV back to RGBA (the renderer's clip path)
+//      uses the 709 matrix too, not 601 (red ≈255, not ≈233).
 // Backed by patches/@mediabunny__server@1.48.1.patch — if a dependency bump
-// drops the patch, the second test is the tripwire.
+// drops the patch, tests 2 and 3 are the tripwires.
 
 registerMediabunnyServer();
 
@@ -120,5 +122,31 @@ describe("render encode colour handling", () => {
     expect(Math.abs(v - 240)).toBeLessThanOrEqual(4);
     // Explicitly not BT.601 (Y'≈81, Cb≈90).
     expect(Math.abs(y - 81)).toBeGreaterThan(8);
+  });
+
+  it("decodes tagged BT.709 YUV→RGB with the 709 matrix (the input-side tripwire)", async () => {
+    // The two tests above only cover RGB→YUV + tags. The renderer reads every
+    // clip frame back through `copyTo({ format: "RGBA" })` — @mediabunny/server's
+    // toRgbSample — which, unpatched, uses swscale's legacy path and converts
+    // EVERY frame with BT.601 regardless of tags. Our red fixture is a 709
+    // limited-range (63,102,240): through 709 that's (255,0,0); through 601 it
+    // comes back as roughly (233,0,2). The red channel is the discriminator.
+    // Backed by the decode-side half of the same pnpm patch.
+    const input = new Input({
+      source: new FilePathSource(videoPath),
+      formats: ALL_FORMATS,
+    });
+    const track = (await input.getPrimaryVideoTrack())!;
+    const sink = new VideoSampleSink(track);
+    const sample = (await sink.getSample(FRAMES / 2 / FPS))!;
+    const rgba = new Uint8Array(sample.allocationSize({ format: "RGBA" }));
+    await sample.copyTo(rgba, { format: "RGBA" });
+    sample.close();
+
+    const i = ((H / 2) * W + W / 2) * 4;
+    const [r, g, b] = [rgba[i], rgba[i + 1], rgba[i + 2]];
+    expect(r).toBeGreaterThanOrEqual(247); // 601 decode lands at ≈233
+    expect(g).toBeLessThanOrEqual(8);
+    expect(b).toBeLessThanOrEqual(8);
   });
 });
