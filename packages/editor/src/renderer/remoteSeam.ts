@@ -27,8 +27,8 @@ export interface RemoteDocumentResult {
 }
 
 /**
- * Rewrite every local media source (clip/audio/static `source`, graphic
- * `Image` `src`, recursing bin bodies) to the URL `urlFor` returns for it.
+ * Rewrite every local media source (clip/audio/static `source`, a map's
+ * pmtiles `source`, recursing bin bodies) to the URL `urlFor` returns for it.
  * Remote and opaque sources pass through; a `null` from `urlFor` leaves the
  * source as-is and reports it in `unresolved` so the caller can abort.
  */

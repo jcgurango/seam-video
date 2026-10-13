@@ -21,7 +21,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@seam/core": "workspace:*"
+    "@seam/core": "workspace:*",
+    "@seam/map": "workspace:*"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.40",

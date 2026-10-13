@@ -30,7 +30,7 @@ if (platform instanceof WebPlatform) {
 // render agree on glyph metrics. Fire-and-forget — text drawn before
 // the font resolves will reflow when it does, same as web fonts.
 loadLiberationSans();
-// CJK + emoji fallbacks for text/graphic nodes and map labels.
+// CJK + emoji fallbacks for text nodes and map labels.
 loadFallbackFonts();
 // Warm the map-label alias families so the first map's local glyph
 // rasterization finds Liberation Sans already registered.
@@ -42,7 +42,7 @@ setSourceResolver((source, basePath) =>
 );
 
 // pmtiles → byte-range Source — same shape on web (OPFS) + electron
-// (file:// FetchSource). OpenLayersMap uses it when opening pmtiles.
+// (file:// FetchSource). `map` nodes use it when opening pmtiles.
 setPmtilesResolver(async (filename: string) => {
   const src = await platform.openPmtilesSource(filename, "");
   return (src as Source | null) ?? null;

@@ -169,7 +169,7 @@ export function updateCompAtPath(
 
 /** Immutably replace the node at `path` with `fn`'s result. Unlike
  *  {@link updateCompAtPath} the *target* can be any node type (filters live on
- *  clips/static/text/graphic/composition); intermediate segments must still be
+ *  clips/static/text/rect/circle/map/composition); intermediate segments must still be
  *  compositions. A leading `bin` segment edits inside the named bin entry. */
 export function updateNodeAtPath(
   root: SeamFile,

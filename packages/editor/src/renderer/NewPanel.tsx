@@ -25,10 +25,21 @@ const NEW_ITEMS: NewItem[] = [
     node: { type: "empty", duration: 1 } as Child,
   },
   {
-    label: "Graphic",
-    icon: "◆",
-    hint: "An animated 2D scene with one empty keyframe.",
-    node: { type: "graphic", duration: 1, frames: [[0, []]] } as Child,
+    label: "Rect",
+    icon: "▬",
+    hint: "A solid rectangle (fill / stroke / cornerRadius).",
+    node: {
+      type: "rect",
+      duration: 1,
+      fill: "#d957b8",
+      size: { x: 400, y: 120 },
+    } as Child,
+  },
+  {
+    label: "Circle",
+    icon: "●",
+    hint: "A solid ellipse inscribed in its box.",
+    node: { type: "circle", duration: 1, fill: "#d957b8", size: 240 } as Child,
   },
   {
     label: "Text",

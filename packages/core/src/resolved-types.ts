@@ -7,9 +7,8 @@ import type {
   InsetMode,
   Distort,
   Filter,
-  GraphicClipDef,
-  GraphicFrame,
   Orientation,
+  Pin,
   TextPadding,
   TextRun,
   TextStyleFields,
@@ -84,6 +83,11 @@ export interface ResolvedClip {
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
+  /** Rounded-corner mask (authored `Keyframed<Length>`); absent = square.
+   *  Sampled per-frame against the shorter side of the final rect. */
+  cornerRadius?: Keyframed<Length>;
+  /** Geo / path anchor — read only when this node is a map attachment. */
+  pin?: Keyframed<Pin>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -113,6 +117,11 @@ export interface ResolvedStatic {
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
+  /** Rounded-corner mask (authored `Keyframed<Length>`); absent = square.
+   *  Sampled per-frame against the shorter side of the final rect. */
+  cornerRadius?: Keyframed<Length>;
+  /** Geo / path anchor — read only when this node is a map attachment. */
+  pin?: Keyframed<Pin>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -176,6 +185,11 @@ export interface ResolvedText extends TextStyleFields {
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
+  /** Rounded-corner mask (authored `Keyframed<Length>`); absent = square.
+   *  Sampled per-frame against the shorter side of the final rect. */
+  cornerRadius?: Keyframed<Length>;
+  /** Geo / path anchor — read only when this node is a map attachment. */
+  pin?: Keyframed<Pin>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -200,6 +214,11 @@ export interface ResolvedComposition {
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
+  /** Rounded-corner mask (authored `Keyframed<Length>`); absent = square.
+   *  Sampled per-frame against the shorter side of the final rect. */
+  cornerRadius?: Keyframed<Length>;
+  /** Geo / path anchor — read only when this node is a map attachment. */
+  pin?: Keyframed<Pin>;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -228,39 +247,78 @@ export interface ResolvedComposition {
   naturalHeight?: number;
 }
 
-/** Animated 2D layer after layout resolution. The animation engine
- *  (env-specific) consumes `frames` + `clips` directly — there's no
- *  per-keyframe baking at layout time; spatial-only fields here describe
- *  the graphic's placement in the parent composition. */
-export interface ResolvedGraphic {
-  type: "graphic";
-  duration?: Length;
-  loop?: boolean;
+/** Fields shared by the two shape leaves. */
+interface ResolvedShapeBase {
+  timelineStart: number;
+  timelineEnd: number;
   /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
-  /** Animation design space — the AUTHORED `Keyframed<Length>` preserved
-   *  through the spatial pass (default `"100%"` of the parent). Renderers
-   *  sample it per-frame against live parent dims; the baked t=0 pixel value
-   *  lives in `intrinsicWidth`/`intrinsicHeight`. */
-  contentWidth?: Keyframed<Length>;
-  contentHeight?: Keyframed<Length>;
-  clips?: GraphicClipDef[];
-  frames: GraphicFrame[];
-  timelineStart: number;
-  timelineEnd: number;
+  fill?: Keyframed<string>;
+  stroke?: Keyframed<string>;
+  strokeWidth?: Keyframed<number>;
+  filters?: Filter[];
+  opacity?: Keyframed<number>;
+  cornerRadius?: Keyframed<Length>;
+  pin?: Keyframed<Pin>;
   spatial?: SpatialRect;
-  spatialInput?: SpatialInput;
   objectFit?: ObjectFit;
+  spatialInput?: SpatialInput;
   intrinsicWidth?: number;
   intrinsicHeight?: number;
   naturalWidth?: number;
   naturalHeight?: number;
+}
+
+export interface ResolvedRect extends ResolvedShapeBase {
+  type: "rect";
+}
+
+export interface ResolvedCircle extends ResolvedShapeBase {
+  type: "circle";
+}
+
+export interface ResolvedMapPath {
+  id?: string;
+  color: Keyframed<string>;
+  points: [number, number][];
+  progress?: Keyframed<number>;
+  lineWidth?: Keyframed<number>;
+}
+
+/** A map after resolution. Its `children` are the resolved attachments, in
+ *  map-local time (0 = the map's start, speed 1), laid out against the map's
+ *  inner canvas; a child's `pin` overrides its translation at render time. */
+export interface ResolvedMap {
+  type: "map";
+  source: string;
+  timelineStart: number;
+  timelineEnd: number;
+  transition?: number;
+  transitionOut?: number;
+  latitude?: Keyframed<number>;
+  longitude?: Keyframed<number>;
+  zoom?: Keyframed<number>;
+  mapOpacity?: Keyframed<number>;
+  theme?: "light" | "dark";
+  paths?: ResolvedMapPath[];
+  children: ResolvedChild[];
+  /** Inner canvas — the AUTHORED `Keyframed<Length>` preserved (default
+   *  `"100%"` of the parent); the t=0 bake lives in `intrinsicWidth/Height`. */
+  contentWidth?: Keyframed<Length>;
+  contentHeight?: Keyframed<Length>;
   filters?: Filter[];
-  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
-   *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
+  cornerRadius?: Keyframed<Length>;
+  pin?: Keyframed<Pin>;
+  spatial?: SpatialRect;
+  objectFit?: ObjectFit;
+  spatialInput?: SpatialInput;
+  intrinsicWidth?: number;
+  intrinsicHeight?: number;
+  naturalWidth?: number;
+  naturalHeight?: number;
 }
 
 export type ResolvedChild =
@@ -270,7 +328,9 @@ export type ResolvedChild =
   | ResolvedEmpty
   | ResolvedData
   | ResolvedText
-  | ResolvedGraphic
+  | ResolvedRect
+  | ResolvedCircle
+  | ResolvedMap
   | ResolvedComposition;
 
 export interface ResolvedTimeline {

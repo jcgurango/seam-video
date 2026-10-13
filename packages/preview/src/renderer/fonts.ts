@@ -51,7 +51,7 @@ export function loadLiberationSans(): Promise<void> {
 // ── Fallback fonts (CJK + emoji) ───────────────────────────────────
 //
 // Registered under the same family names @seam/core appends to every
-// font string (text nodes, graphic text, map labels). With these in
+// font string (text nodes, map labels). With these in
 // document.fonts, the browser falls back per-glyph to the bundled fonts
 // instead of whatever the host has — so CJK and emoji match the renderer
 // (emoji render in colour here via the browser's COLR/SVG support). The

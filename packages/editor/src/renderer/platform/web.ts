@@ -576,6 +576,9 @@ export class WebPlatform implements Platform {
     for (const source of unique) {
       if (this.blobUrlCache.has(source)) continue;
       if (source.startsWith("http") || source.startsWith("blob:")) continue;
+      // Map archives are read by byte range via openPmtilesSource — a blob
+      // URL would force the whole (multi-GB) file into memory.
+      if (source.toLowerCase().endsWith(".pmtiles")) continue;
       try {
         const file = await readFileFromDir(CLIPS_DIR, source);
         this.blobUrlCache.set(source, URL.createObjectURL(file));

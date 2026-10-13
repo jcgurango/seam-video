@@ -63,7 +63,7 @@ type AnchorSpec =
  *   source_time = base + (output_time − timelineStart) * speed
  * where `base` is `sourceIn` (clip/audio) or `in ?? 0` (composition).
  *
- * Every other type (empty, static, text, graphic, data) has no content axis
+ * Every other type (empty, static, text, rect, circle, map, data) has no content axis
  * but still occupies an output span — anchor in **output** mode as a
  * percentage of that span (the file format allows attaching to any node).
  *

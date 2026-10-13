@@ -13,4 +13,5 @@ export type {
   DrawCommand,
   GroupCommand,
   FillCommand,
+  ShapeGeometry,
 } from "./RenderList.js";

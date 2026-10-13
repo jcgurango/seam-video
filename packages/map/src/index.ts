@@ -1,5 +1,5 @@
 // @seam/map — platform-neutral DIY map rasterizer. Shared by the renderer
-// (node-canvas, headless) and the preview (browser canvas inside fabric).
+// (@napi-rs/canvas, headless) and the preview (browser canvas).
 // pmtiles + MVT + Mapbox-GL style → Canvas2D. No OpenLayers, no WebGL, no DOM.
 //
 // Split of concerns mirrors how Images work: TileSource owns the async

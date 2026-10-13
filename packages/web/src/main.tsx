@@ -14,7 +14,7 @@ import type { Source } from "pmtiles";
 const platform = new WebPlatform();
 
 // Bundle the same fonts the renderer uses (body + CJK/emoji fallbacks) so
-// web text/graphic/map output matches the final render. Fire-and-forget.
+// web text/map output matches the final render. Fire-and-forget.
 loadLiberationSans();
 loadFallbackFonts();
 loadMapLabelFonts();
@@ -23,7 +23,7 @@ setSourceResolver((source, basePath) =>
   platform.resolveSource(source, basePath)
 );
 
-// Map elements in graphics need byte-range pmtiles access — the
+// `map` nodes need byte-range pmtiles access — the
 // platform opens an OPFS-backed File and wraps it as a pmtiles Source.
 // basePath is "" on web (OPFS clips/ is the resolution root).
 setPmtilesResolver(async (filename: string) => {

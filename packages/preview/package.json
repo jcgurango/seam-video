@@ -18,7 +18,6 @@
     "@seam/map": "workspace:*",
     "@seam/media-source": "workspace:*",
     "chokidar": "^4.0.0",
-    "fabric": "^7.4.0",
     "mediabunny": "^1.61.5",
     "pmtiles": "^4.4.1",
     "react": "^19.0.0",

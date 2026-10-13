@@ -75,7 +75,7 @@ function collectStaticNodes(children: ResolvedChild[]): ResolvedStatic[] {
   function walk(arr: ResolvedChild[]) {
     for (const c of arr) {
       if (c.type === "static") out.push(c);
-      else if (c.type === "composition") walk(c.children);
+      else if (c.type === "composition" || c.type === "map") walk(c.children);
     }
   }
 }

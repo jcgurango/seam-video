@@ -29,7 +29,6 @@
     "@seam/map": "workspace:*",
     "@seam/media-source": "workspace:*",
     "canvas": "^3.2.3",
-    "fabric": "^7.4.0",
     "mediabunny": "^1.61.5",
     "node-av": "^6.0.0",
     "node-web-audio-api": "^1.0.0",

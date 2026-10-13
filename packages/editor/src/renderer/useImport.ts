@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTimeline } from "@seam/preview";
 import { resolveComposition } from "@seam/core";
-import type { SeamFile, Clip, Audio, Static, Child, Graphic } from "@seam/core";
+import type { SeamFile, Clip, Audio, Static, Child, MapNode } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
 import type { Platform } from "./platform/index.js";
 
@@ -41,7 +41,7 @@ export const SOURCE_DRAG_MIME = "application/x-seam-source";
 export const IMAGE_DEFAULT_DURATION_S = 5;
 
 /** Sensible default for a pmtiles drop — 5s static map. Authors can
- *  then animate camera + paths in the graphic JSON. */
+ *  then animate camera + paths in the map node's JSON. */
 const PMTILES_DEFAULT_DURATION = 5;
 /** Default map view. Authors should set their own; 0,0 just centers
  *  somewhere visible until they update it. */
@@ -164,48 +164,22 @@ export function buildItemFromSource(
     case "audio":
       return { type: "audio", source, in: 0, out: duration } satisfies Audio;
     case "pmtiles":
-      return makeMapGraphic(source, duration);
+      return makeMapNode(source, duration);
     case "image":
       return { type: "static", source, duration } satisfies Static;
   }
 }
 
-/** A graphic with a single Map element filling the canvas, ready for
- *  the author to set lat/lng/zoom. Static (one keyframe) for now —
- *  refining the editing experience comes later.
- *
- *  fabric defaults `originX`/`originY` to `"center"`, so `left`/`top`
- *  specify the center of the Map. To fill a 1080×1920 canvas we center
- *  the 1080×1920 Map at (540, 960). Authoring `left: 0, top: 0` would
- *  put the center at the canvas origin and clip three quarters of the
- *  Map off-screen. */
-function makeMapGraphic(source: string, duration: number): Graphic {
-  const W = 1080;
-  const H = 1920;
+/** A `map` node filling its parent (default inner canvas = 100% of the
+ *  parent), ready for the author to set lat/lng/zoom + paths. */
+function makeMapNode(source: string, duration: number): MapNode {
   return {
-    type: "graphic",
+    type: "map",
+    source,
     duration,
-    contentWidth: W,
-    contentHeight: H,
-    frames: [
-      [
-        0,
-        [
-          {
-            id: "map",
-            type: "Map",
-            source,
-            left: W / 2,
-            top: H / 2,
-            width: W,
-            height: H,
-            latitude: PMTILES_DEFAULT_VIEW.latitude,
-            longitude: PMTILES_DEFAULT_VIEW.longitude,
-            zoom: PMTILES_DEFAULT_VIEW.zoom,
-          },
-        ],
-      ],
-    ],
+    latitude: PMTILES_DEFAULT_VIEW.latitude,
+    longitude: PMTILES_DEFAULT_VIEW.longitude,
+    zoom: PMTILES_DEFAULT_VIEW.zoom,
   };
 }
 

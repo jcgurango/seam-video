@@ -7,7 +7,7 @@ export interface FormattedIssue {
   message: string;
 }
 
-/** The discriminant key our object unions (Child, graphic objects, filters)
+/** The discriminant key our object unions (Child, filters)
  *  switch on. */
 const TYPE_KEY = "type";
 
@@ -19,7 +19,7 @@ const MAX_EXPECTED = 8;
  * Turn a Zod error into a flat list of human-readable issues.
  *
  * The reason this exists: our schema is built from recursive `z.union`s
- * (`ChildSchema`, the graphic-object union, `Length`/`Point2D`/`keyframed`,
+ * (`ChildSchema`, `Length`/`Point2D`/`keyframed`,
  * text, padding). When a `z.union` fails, Zod surfaces a single top-level
  * issue whose message is the famously unhelpful `"Invalid input"` — every
  * branch's real complaint is buried in `issue.unionErrors`. Mapping over
@@ -28,7 +28,7 @@ const MAX_EXPECTED = 8;
  *
  * This walker descends into union errors and, for each one, decides which
  * branch the author *meant*:
- *   - For type-discriminated unions (Child, graphic objects) it drops every
+ *   - For type-discriminated unions (Child) it drops every
  *     branch that only failed because its `type` literal didn't match, so a
  *     bad clip reports the clip's real errors rather than seven sibling
  *     "expected literal 'audio'" complaints.

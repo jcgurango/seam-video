@@ -21,7 +21,7 @@ export {
   sampleVolume,
   resolveVolume,
   dbToGain,
+  sampleZoom,
+  samplePin,
 } from "./keyframes.js";
 
-export type { FilledObject, FilledTree, FlatFrame, FilledFrame } from "./interp.js";
-export { buildFlat, interpolateFrames } from "./interp.js";

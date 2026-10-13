@@ -2,16 +2,14 @@ import { compileSeamFile } from "@seam/core";
 import type { SeamFile, Child, Composition } from "@seam/core";
 import { basename, isAbsolute, relative } from "./pathUtils.js";
 import { isMediaSource } from "./mediaSource.js";
-import { mapGraphicImageSources } from "./graphicSources.js";
-
-type Obj = Record<string, unknown>;
 
 /**
  * Immutably map every media-source path in a document — clip/audio/static
- * `source` fields and graphic `Image` `src`s — through `fn`. Recurses
- * compositions' `children`, `attachments`, AND `bin` entry bodies (a clip
- * living only inside a bin entry is media too). The single walk behind
- * export planning, relative remapping, and import-time source rewriting.
+ * `source` fields and a map's pmtiles `source` — through `fn`. Recurses
+ * compositions' `children`, `attachments`, `bin` entry bodies (a clip living
+ * only inside a bin entry is media too) AND a map's `attachments`. The single
+ * walk behind export planning, relative remapping, and import-time source
+ * rewriting.
  */
 export function mapDocumentSources(
   doc: SeamFile,
@@ -21,8 +19,14 @@ export function mapDocumentSources(
     if (isMediaSource(child)) {
       return { ...child, source: fn(child.source) };
     }
-    if (child.type === "graphic") {
-      return mapGraphicImageSources(child as Obj, fn) as Child;
+    if (child.type === "map") {
+      return {
+        ...child,
+        source: fn(child.source),
+        ...(child.attachments
+          ? { attachments: child.attachments.map(walkChild) }
+          : {}),
+      };
     }
     if (child.type === "composition") {
       return walkComp(child) as Child;

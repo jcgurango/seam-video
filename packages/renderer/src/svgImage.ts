@@ -2,9 +2,9 @@
  * SVG statics rasterize through node-canvas (Cairo + librsvg), not Skia's
  * `loadImage`: @napi-rs/canvas's SVG path silently drops embedded
  * `<image href="data:…">` content (a comment-card export keeps its avatar
- * there), while librsvg renders images, text and clip paths. Fonts come from
- * the same node-canvas registrations the graphic path uses
- * (`registerNodeCanvasFonts`). Intrinsic size = the SVG's width/height, the
+ * there), while librsvg renders images, text and clip paths. This is the ONE
+ * place node-canvas is used (fonts via `registerNodeCanvasFonts`, its own
+ * registry). Intrinsic size = the SVG's width/height, the
  * size the preview's <img> path rasterizes at too.
  */
 import { createCanvas as createCairoCanvas, loadImage as loadCairoImage } from "canvas";

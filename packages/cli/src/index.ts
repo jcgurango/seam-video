@@ -79,7 +79,7 @@ program
 program
   .command("distill <file>")
   .description(
-    "Losslessly trim every clip's source down to the keyframe-snapped window the render can actually reach — composition in/out windows included — writing the trimmed media to a folder and a rewritten .seam pointing at it (packet copy, no re-encode). Compiles first (macros/bins/scripts baked), so this is a destructive finalization step. Audio/static/graphic sources stay untouched.",
+    "Losslessly trim every clip's source down to the keyframe-snapped window the render can actually reach — composition in/out windows included — writing the trimmed media to a folder and a rewritten .seam pointing at it (packet copy, no re-encode). Compiles first (macros/bins/scripts baked), so this is a destructive finalization step. Audio/static/map sources (and clips inside maps) stay untouched.",
   )
   .option(
     "-o, --output <path>",

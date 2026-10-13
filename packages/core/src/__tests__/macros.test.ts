@@ -44,38 +44,28 @@ describe("macro expansion", () => {
       macros: { POINTS: points },
       children: [
         {
-          type: "graphic",
-          frames: [
-            [
-              0,
-              [
-                {
-                  type: "Map",
-                  paths: [
-                    { color: "red", points: ["$$POINTS"] },
-                    {
-                      color: "blue",
-                      points: [
-                        [0, 0],
-                        "$$POINTS",
-                        [99, 99],
-                      ],
-                    },
-                  ],
-                },
+          type: "map",
+          source: "area.pmtiles",
+          duration: 5,
+          paths: [
+            { color: "red", points: ["$$POINTS"] },
+            {
+              color: "blue",
+              points: [
+                [0, 0],
+                "$$POINTS",
+                [99, 99],
               ],
-            ],
+            },
           ],
         },
       ],
     });
     expect(result.success).toBe(true);
     const data = result.data as {
-      children: Array<{
-        frames: Array<[number, Array<{ paths: Array<{ points: unknown[] }> }>]>;
-      }>;
+      children: Array<{ paths: Array<{ points: unknown[] }> }>;
     };
-    const paths = data.children[0].frames[0][1][0].paths;
+    const paths = data.children[0].paths;
     expect(paths[0].points).toEqual(points);
     expect(paths[1].points).toEqual([[0, 0], ...points, [99, 99]]);
   });
@@ -84,7 +74,7 @@ describe("macro expansion", () => {
     const result = expandMacros({
       type: "composition",
       macros: { POINTS: [[0, 0], [1, 1]] },
-      children: [{ type: "graphic", paths: "$$POINTS" }],
+      children: [{ type: "map", paths: "$$POINTS" }],
     });
     expect(result.success).toBe(false);
     expect(result.errors.join(" ")).toMatch(/array macros must be used inside an array/);
@@ -153,28 +143,22 @@ describe("macro expansion", () => {
       type: "composition",
       macros: {
         MAP: {
-          type: "Map",
+          type: "map",
           id: "map",
           source: "area.pmtiles",
+          duration: 5,
           paths: [{ color: "blue", points: ["$$POINTS"] }],
         },
         POINTS: points,
       },
-      children: [
-        {
-          type: "graphic",
-          frames: [[0, ["$$MAP"]]],
-        },
-      ],
+      children: ["$$MAP"],
     });
     expect(result.success).toBe(true);
-    const graphic = (result.data as { children: Array<{ frames: Array<[number, unknown[]]> }> })
-      .children[0];
-    const mapObj = graphic.frames[0][1][0] as {
+    const mapObj = (result.data as { children: unknown[] }).children[0] as {
       type: string;
       paths: Array<{ points: unknown[] }>;
     };
-    expect(mapObj.type).toBe("Map");
+    expect(mapObj.type).toBe("map");
     expect(mapObj.paths[0].points).toEqual(points);
   });
 

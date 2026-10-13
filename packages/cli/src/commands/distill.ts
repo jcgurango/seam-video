@@ -120,7 +120,6 @@ function collectVisibleClips(
 function shiftSourceAnchors(node: unknown, idShifts: Map<string, number>) {
   if (node == null || typeof node !== "object") return;
   const n = node as Record<string, unknown>;
-  if (n.type === "graphic") return;
   for (const field of ["start", "end"]) {
     const spec = n[field] as Record<string, unknown> | undefined;
     if (

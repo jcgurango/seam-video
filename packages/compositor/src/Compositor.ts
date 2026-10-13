@@ -14,6 +14,9 @@
  *   colorbalance — FFmpeg's exact weight functions (a=4, b=0.333, scale=0.7)
  *   colortemperature — Planckian locus RGB scaling
  *   opacity — alpha multiply
+ *   shape — analytic rounded-rect / ellipse coverage (signed distance, 1px
+ *           AA): the geometry of a `rect`/`circle` fill, or the `cornerRadius`
+ *           mask on any textured draw / composited group
  */
 
 import { quadWeights, type Filter, type Quad } from "@seam/core";
@@ -23,6 +26,7 @@ import type {
   DrawCommand,
   FillCommand,
   GroupCommand,
+  ShapeGeometry,
 } from "./RenderList.js";
 
 /** Anything a {@link DrawCommand} can carry — addressed by object identity. */
@@ -44,6 +48,7 @@ struct Uniforms {
   c01: vec4f, // distort corners TL.xy, TR.xy (target px, pre-rotation)
   c23: vec4f, // distort corners BR.xy, BL.xy
   cw: vec4f,  // per-corner homogeneous weights (TL, TR, BR, BL) → clip.w
+  shape: vec4f, // kind (0 none / 1 roundrect / 2 ellipse), radius px, outer inset px, inner inset px (<0 = solid)
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -53,6 +58,9 @@ struct Uniforms {
 struct VSOut {
   @builtin(position) pos: vec4f,
   @location(0) uv: vec2f,
+  // Quad-local coordinate (0..1 across the dest rect, before crop/rotation) —
+  // the shape mask is evaluated in this space.
+  @location(1) local: vec2f,
 }
 
 var<private> quad: array<vec2f, 6> = array(
@@ -95,7 +103,33 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   let ndc_y = 1.0 - (py / u.canvas_opacity.y) * 2.0;
   // Map the quad corner into the visible source sub-rect (inset/crop).
   let uv = u.crop.xy + p * (u.crop.zw - u.crop.xy);
-  return VSOut(vec4f(ndc_x * w, ndc_y * w, 0.0, w), uv);
+  return VSOut(vec4f(ndc_x * w, ndc_y * w, 0.0, w), uv, p);
+}
+
+// Signed distance (px) from p (px from the quad center) to the shape's
+// boundary, inset by inset px. Negative inside.
+fn shape_dist(p: vec2f, size: vec2f, kind: f32, radius: f32, inset: f32) -> f32 {
+  let half = size * 0.5 - vec2f(inset, inset);
+  if (kind > 1.5) {
+    // Ellipse inscribed in the (inset) box. First-order distance estimate:
+    // f / |∇f| with f = |p/ab| − 1 — exact for circles, close for ellipses.
+    let ab = max(half, vec2f(1e-3, 1e-3));
+    let f = length(p / ab) - 1.0;
+    let g = length(p / (ab * ab));
+    return select(f * min(ab.x, ab.y), f / g, g > 1e-6);
+  }
+  // Rounded rect: corner radius shrinks with the inset and is capped at the
+  // shorter half-side (a 50% radius on a square is exactly a circle).
+  let r = clamp(radius - inset, 0.0, max(min(half.x, half.y), 0.0));
+  let q = abs(p) - half + vec2f(r, r);
+  return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Pixel coverage of the inside of a signed-distance boundary (1px AA in
+// screen space via the derivative, so rotation/scale don't soften the edge).
+fn coverage(d: f32) -> f32 {
+  let aa = max(fwidth(d), 1e-4);
+  return clamp(0.5 - d / aa, 0.0, 1.0);
 }
 
 fn rgb_to_yuv(rgb: vec3f) -> vec3f {
@@ -146,11 +180,21 @@ fn fs(input: VSOut) -> @location(0) vec4f {
   // ── colortemperature ──
   rgb = clamp(rgb * u.ct_scale.xyz, vec3f(0.0), vec3f(1.0));
 
-  return vec4f(rgb, color.a * u.canvas_opacity.z);
+  // ── shape / cornerRadius mask ──
+  // Computed unconditionally (derivatives need uniform control flow); a kind
+  // of 0 yields full coverage.
+  let pl = (input.local - vec2f(0.5, 0.5)) * u.dest.zw;
+  let d_outer = shape_dist(pl, u.dest.zw, u.shape.x, u.shape.y, u.shape.z);
+  let d_inner = shape_dist(pl, u.dest.zw, u.shape.x, u.shape.y, u.shape.w);
+  var cov = coverage(d_outer);
+  if (u.shape.w >= 0.0) { cov = cov - coverage(d_inner); }
+  cov = select(1.0, clamp(cov, 0.0, 1.0), u.shape.x > 0.5);
+
+  return vec4f(rgb, color.a * u.canvas_opacity.z * cov);
 }
 `;
 
-const UNIFORM_SIZE = 192; // 12 × vec4f
+const UNIFORM_SIZE = 208; // 13 × vec4f
 const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 128;
 const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
@@ -450,7 +494,7 @@ export class Compositor<F = unknown> {
   }
 
   private writeUniforms(slot: number, cmd: DrawCommand): void {
-    const fp = extractFilterParams(cmd.clip.filters);
+    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -475,9 +519,12 @@ export class Compositor<F = unknown> {
     f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
     writeCrop(f32, cmd.sourceRect);
     writeCorners(f32, undefined); // leaves aren't corner-pinned (comp-only)
+    writeShape(f32, cmd.mask);
   }
 
   private writeFillUniforms(slot: number, cmd: FillCommand): void {
+    // Background fills carry no filters (identity); shape nodes may.
+    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
       slot * UNIFORM_ALIGN,
@@ -491,16 +538,20 @@ export class Compositor<F = unknown> {
     f32[5] = 0; // canvas_h — set during encode
     f32[6] = cmd.opacity;
     f32[7] = 0;
-    // Identity filter params — fill has no per-channel transforms.
-    f32[8] = 0; f32[9] = 1; f32[10] = 1; f32[11] = 1;
-    f32[12] = 0; f32[13] = 0; f32[14] = 0; f32[15] = 0;
-    f32[16] = 0; f32[17] = 0; f32[18] = 0; f32[19] = 0;
-    f32[20] = 0; f32[21] = 0; f32[22] = 0; f32[23] = 0;
-    f32[24] = 1; f32[25] = 1; f32[26] = 1; f32[27] = 0;
-    // Fills are never rotated (a rotated comp's bg fill rides inside its FBO).
-    f32[28] = 0; f32[29] = 0; f32[30] = 0; f32[31] = 0;
+    f32[8] = fp.brightness;
+    f32[9] = fp.contrast;
+    f32[10] = fp.saturation;
+    f32[11] = fp.gamma;
+    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
+    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
+    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
+    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
+    // Shape fills rotate about their origin like any node; background fills
+    // pass 0 (a rotated comp's bg fill rides inside its FBO).
+    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
     writeCrop(f32, undefined); // fills sample no sub-rect
     writeCorners(f32, undefined);
+    writeShape(f32, cmd.shape);
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
@@ -531,6 +582,7 @@ export class Compositor<F = unknown> {
     f32[31] = cmd.corners ? 1 : 0; // distort flag — vs reads geometry from c01/c23
     writeCrop(f32, cmd.sourceRect);
     writeCorners(f32, cmd.corners);
+    writeShape(f32, cmd.mask);
   }
 
   // ── Phase 3: Encode ──
@@ -795,6 +847,19 @@ function writeCorners(f32: Float32Array, corners: Quad | undefined): void {
   f32[40] = br.x; f32[41] = br.y; f32[42] = bl.x; f32[43] = bl.y;
   const w = quadWeights(corners);
   f32[44] = w[0]; f32[45] = w[1]; f32[46] = w[2]; f32[47] = w[3];
+}
+
+/** Write the shape / mask geometry (float slots 48–51). Absent → kind 0 (the
+ *  shader then yields full coverage). */
+function writeShape(f32: Float32Array, shape: ShapeGeometry | undefined): void {
+  if (!shape) {
+    f32[48] = 0; f32[49] = 0; f32[50] = 0; f32[51] = -1;
+    return;
+  }
+  f32[48] = shape.kind === "ellipse" ? 2 : 1;
+  f32[49] = shape.radius;
+  f32[50] = shape.outerInset;
+  f32[51] = shape.innerInset;
 }
 
 // Filters are static now (opacity was ejected to a node field), so this is a
