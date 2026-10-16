@@ -464,6 +464,48 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
   composition: COMPOSITION_PROPS,
 };
 
+/** The root composition (no selection): it has no parent, so none of the
+ *  placement / timing fields apply — it defines the output canvas (static
+ *  pixel dims; `%` and keyframes are rejected there) and the global mix. */
+export const ROOT_PROPS: PropDef[] = [
+  {
+    key: "contentWidth",
+    label: "Canvas width",
+    group: "Layout",
+    kind: "number",
+    unit: "px",
+    placeholder: "1080",
+    hint: "Output width. The root must be a static pixel number.",
+  },
+  {
+    key: "contentHeight",
+    label: "Canvas height",
+    group: "Layout",
+    kind: "number",
+    unit: "px",
+    placeholder: "1920",
+    hint: "Output height. The root must be a static pixel number.",
+  },
+  {
+    key: "objectFit",
+    label: "Object fit",
+    group: "Layout",
+    kind: "enum",
+    options: ["fit", "cover", "center"],
+    placeholder: "fit",
+    hint: "Default fit for every descendant that doesn't set its own.",
+  },
+  {
+    key: "backgroundColor",
+    label: "Background",
+    group: "Appearance",
+    kind: "color",
+    placeholder: "black",
+  },
+  VOLUME,
+  PITCH,
+];
+
 /** Display order of groups in the panel. */
 export const GROUP_ORDER: PropGroup[] = [
   "Timing",
@@ -511,11 +553,13 @@ export function summarizeSelection(nodes: Child[]): SelectionSummary {
 }
 
 /** Resolve the selection's path keys to authored nodes (dropping any that
- *  don't resolve, e.g. a stale key after an undo). */
+ *  don't resolve, e.g. a stale key after an undo). An EMPTY selection
+ *  targets the root composition itself (path `[]`, key `""`). */
 export function selectedNodes(
   doc: SeamFile,
   selection: string[],
 ): { path: NodePath; key: string; node: Child }[] {
+  if (selection.length === 0) return [{ path: [], key: "", node: doc as Child }];
   const out: { path: NodePath; key: string; node: Child }[] = [];
   for (const key of selection) {
     const path = parsePath(key);

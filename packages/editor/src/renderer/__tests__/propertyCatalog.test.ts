@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Child, SeamFile } from "@seam/core";
 import {
+  ROOT_PROPS,
   addKeyframe,
   applyPropertyEdit,
   catalogFor,
@@ -67,6 +68,23 @@ describe("catalog + multi-selection", () => {
       kind: "same",
       value: [[0, 0], [2, 1]],
     });
+  });
+
+  it("an empty selection targets the root composition", () => {
+    const sel = selectedNodes(doc, []);
+    expect(sel).toHaveLength(1);
+    expect(sel[0].path).toEqual([]);
+    expect(sel[0].node).toBe(doc);
+    // Editing through path [] rewrites the root itself.
+    const r = applyPropertyEdit(doc, [[]], "backgroundColor", () => "#112233");
+    expect(r.errors).toBeNull();
+    expect(r.doc.backgroundColor).toBe("#112233");
+    expect(r.doc.children).toBe(doc.children);
+    // The schema allows a percent root canvas but the spatial pass throws on
+    // it, so the root catalog exposes the canvas dims as plain numbers only.
+    expect(ROOT_PROPS.find((d) => d.key === "contentWidth")?.kind).toBe("number");
+    expect(ROOT_PROPS.find((d) => d.key === "contentHeight")?.kind).toBe("number");
+    expect(ROOT_PROPS.some((d) => d.key === "translation" || d.key === "duration")).toBe(false);
   });
 
   it("drops stale selection keys", () => {
