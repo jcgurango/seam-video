@@ -68,3 +68,56 @@ export function descendToContainer(
   }
   return { localTime: t, rContainer: rNode, aContainer: aNode };
 }
+
+export interface Span {
+  start: number;
+  end: number;
+}
+
+/** The node's resolved [timelineStart, timelineEnd] mapped up into GLOBAL
+ *  output time, walking the enclosing compositions' inner→output transforms
+ *  (`parent = timelineStart + (inner − in) / speed` per level). Null for
+ *  bin-rooted paths or when any level doesn't resolve 1:1. */
+export function globalSpanOf(
+  resolvedRoot: ResolvedTimeline,
+  doc: SeamFile,
+  path: NodePath,
+): Span | null {
+  let rNode: { children: ResolvedChild[] } = resolvedRoot;
+  let aNode: { children?: Child[]; attachments?: Child[] } = doc;
+  let toGlobal = (t: number) => t;
+  for (let i = 0; i < path.length; i++) {
+    const seg = path[i];
+    if (seg.field === "bin") return null;
+    const aChildren = aNode.children ?? [];
+    const flat =
+      seg.field === "children" ? seg.index : aChildren.length + seg.index;
+    const rChild = rNode.children[flat];
+    if (!rChild) return null;
+    if (i === path.length - 1) {
+      return {
+        start: toGlobal(rChild.timelineStart),
+        end: toGlobal(rChild.timelineEnd),
+      };
+    }
+    const aChild =
+      seg.field === "children"
+        ? aChildren[seg.index]
+        : (aNode.attachments ?? [])[seg.index];
+    if (
+      !aChild ||
+      aChild.type !== "composition" ||
+      rChild.type !== "composition"
+    ) {
+      return null;
+    }
+    const start = rChild.timelineStart;
+    const speed = rChild.speed;
+    const inVal = aChild.in ?? 0;
+    const prev = toGlobal;
+    toGlobal = (t) => prev(start + (t - inVal) / speed);
+    rNode = rChild;
+    aNode = aChild;
+  }
+  return null;
+}

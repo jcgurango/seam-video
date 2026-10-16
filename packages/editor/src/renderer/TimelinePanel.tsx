@@ -11,6 +11,7 @@ import type {
 } from "@seam/core";
 import { buildItemsFromFiles, SOURCE_DRAG_MIME } from "./useImport.js";
 import { attachNewItems } from "./attachTool.js";
+import { playheadAfterDelete } from "./deletePlayhead.js";
 import { dirname } from "./pathUtils.js";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
@@ -1901,6 +1902,7 @@ export default function TimelinePanel({
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
   const editable = doc != null;
+  const { currentTime, seek } = useTimeline();
   // Expanded compositions, keyed by node address (see `timelineTree`).
   // Local to the panel: expansion is a view concern, not part of the doc.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -2089,13 +2091,18 @@ export default function TimelinePanel({
         onDocumentChange
       ) {
         e.preventDefault();
-        onDocumentChange(removeNodesAtPaths(doc, selection.map(parsePath)));
+        const paths = selection.map(parsePath);
+        // Follow the content: slide the playhead back by the removed span
+        // when what's under it shifts (see `deletePlayhead.ts`).
+        const nextTime = playheadAfterDelete(timeline, doc, paths, currentTime);
+        if (nextTime !== currentTime) seek(nextTime);
+        onDocumentChange(removeNodesAtPaths(doc, paths));
         onSelectionChange([]);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selection, doc, onDocumentChange, onSelectionChange]);
+  }, [selection, doc, timeline, currentTime, seek, onDocumentChange, onSelectionChange]);
 
   // Only forward drag / drop / attach callbacks when editable; a read-only
   // preview should no-op on drop.

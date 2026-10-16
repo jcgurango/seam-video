@@ -28,11 +28,13 @@ import {
   editContainer,
   getNodeAtPath,
   parsePath,
+  rootKeyFromIndex,
   type NodePath,
 } from "./nodePath.js";
 import { descendToContainer } from "./resolveLocal.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
+import { playheadAfterDelete } from "./deletePlayhead.js";
 import {
   applyCompose,
   composeAttachments,
@@ -631,6 +633,16 @@ export default function ControlsBar({
             <button
               onClick={() => {
                 if (selectedIndices.length > 0) {
+                  const cc = (doc.children ?? []).length;
+                  const nextTime = playheadAfterDelete(
+                    timeline,
+                    doc,
+                    selectedIndices.map((i) =>
+                      parsePath(rootKeyFromIndex(i, cc)),
+                    ),
+                    currentTime,
+                  );
+                  if (nextTime !== currentTime) seek(nextTime);
                   onDocumentChange(removeSelected(doc, selectedIndices));
                   onSelectionChange([]);
                 }
