@@ -14,6 +14,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { isKeyframed, type Child, type Length, type SeamFile, type TimeExpr } from "@seam/core";
 import {
   GROUP_ORDER,
+  ROOT_PROPS,
   addKeyframe,
   applyPropertyEdit,
   formatNumber,
@@ -59,10 +60,12 @@ const EASINGS = [
 const MIXED = "—";
 
 export default function PropertiesPanel({ document, selection, onDocumentEdit }: PropertiesPanelProps) {
+  // No selection → the root composition itself (its own, parentless catalog).
+  const isRoot = selection.length === 0;
   const selected = useMemo(() => selectedNodes(document, selection), [document, selection]);
   const nodes = useMemo(() => selected.map((s) => s.node), [selected]);
   const paths = useMemo(() => selected.map((s) => s.path), [selected]);
-  const props = useMemo(() => sharedProps(nodes), [nodes]);
+  const props = useMemo(() => (isRoot ? ROOT_PROPS : sharedProps(nodes)), [isRoot, nodes]);
   const summary = useMemo(() => summarizeSelection(nodes), [nodes]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setError(null), [selection]);
@@ -80,7 +83,7 @@ export default function PropertiesPanel({ document, selection, onDocumentEdit }:
   if (selected.length === 0) {
     return (
       <div style={{ padding: 12, color: "#777" }}>
-        Select a block on the timeline to edit its properties.
+        Nothing selected resolves to a node.
       </div>
     );
   }
@@ -95,7 +98,9 @@ export default function PropertiesPanel({ document, selection, onDocumentEdit }:
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "8px 12px 16px" }}>
       <div style={{ color: "#999", fontSize: 11, marginBottom: 8 }}>
-        {summary.count === 1
+        {isRoot
+          ? "Root composition"
+          : summary.count === 1
           ? `1 ${nodes[0].type}`
           : `${summary.count} selected · ${summary.types
               .map((t) => `${t.count} ${t.type}${t.count > 1 ? "s" : ""}`)
