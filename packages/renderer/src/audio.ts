@@ -12,9 +12,8 @@
  * Returns a rendered AudioBuffer (or null when there's no audio), ready to feed
  * mediabunny's AudioBufferSource.
  */
-import { isAbsolute, join } from "node:path";
 import { registerMediabunnyServer } from "@mediabunny/server";
-import { Input, FilePathSource, ALL_FORMATS, AudioBufferSink } from "mediabunny";
+import { Input, ALL_FORMATS, AudioBufferSink } from "mediabunny";
 import { OfflineAudioContext, AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
 import { sampleVolume, resolveVolume, isKeyframed, createPitchShifter } from "@seam/core";
 import type {
@@ -24,6 +23,7 @@ import type {
   ResolvedClip,
   ResolvedTimeline,
 } from "@seam/core";
+import { openMediaSource } from "./mediaInput.js";
 
 const SR = 48000;
 
@@ -123,8 +123,10 @@ export async function renderAudioMix(
   ): Promise<DecodedAudio | null> => {
     const cacheKey = `${src}:${inT}:${outT}`;
     if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-    const path = isAbsolute(src) ? src : join(basePath, src);
-    const input = new Input({ source: new FilePathSource(path), formats: ALL_FORMATS });
+    const input = new Input({
+      source: openMediaSource(src, basePath),
+      formats: ALL_FORMATS,
+    });
     const track = await input.getPrimaryAudioTrack();
     if (!track) {
       cache.set(cacheKey, null);

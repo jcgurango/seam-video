@@ -788,6 +788,15 @@ export default function App({ platform }: AppProps) {
     }
   });
 
+  // Web-only: a project the Cloud menu's Import Remote .seam just wrote into
+  // projects/ — open it like any other import.
+  const handleProjectImported = useEvent(
+    async (result: { filePath: string; json: string }) => {
+      await openFromJson(result.json, result.filePath);
+      setShowBrowser(false);
+    }
+  );
+
   // Web-only: download just the .seam JSON, no clips bundled.
   const handleExportSeam = useEvent(async () => {
     if (platform.kind !== "web") return;
@@ -1206,6 +1215,7 @@ export default function App({ platform }: AppProps) {
                 projectName={filePath ? basename(filePath) : null}
                 getDoc={() => history.current}
                 onProjectDownloaded={reloadCurrentProject}
+                onProjectImported={handleProjectImported}
               />
             ) : undefined
           }

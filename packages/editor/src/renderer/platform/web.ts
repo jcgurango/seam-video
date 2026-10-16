@@ -13,6 +13,13 @@ import {
 } from "../exportHelpers.js";
 import { classifyByName, type MediaKind } from "../useImport.js";
 import {
+  toRemoteDocument,
+  fromRemoteDocument,
+  parseCloudMediaUrl,
+  remoteExportFilename,
+  localProjectFilename,
+} from "../remoteSeam.js";
+import {
   CloudClient,
   type CloudProject,
   type UploadResult,
@@ -882,12 +889,13 @@ export class WebPlatform implements Platform {
   /**
    * Categorize a document's media sources by where they live. `localOnly` are
    * held locally but not on the cloud (upload candidates); `cloudOnly` are on
-   * the cloud but absent locally (download candidates). Remote (http) and blob
+   * the cloud but absent locally (download candidates); `missing` are in
+   * neither place (nothing can be done with them). Remote (http) and blob
    * sources are ignored — they aren't cloud-syncable assets.
    */
   async classifyProjectMedia(
     doc: SeamFile
-  ): Promise<{ localOnly: string[]; cloudOnly: string[] }> {
+  ): Promise<{ localOnly: string[]; cloudOnly: string[]; missing: string[] }> {
     const sources = Array.from(new Set(collectClipSources(doc))).filter(
       (s) =>
         !s.startsWith("http://") &&
@@ -897,13 +905,15 @@ export class WebPlatform implements Platform {
     const local = await this.localClipNames();
     const localOnly: string[] = [];
     const cloudOnly: string[] = [];
+    const missing: string[] = [];
     for (const s of sources) {
       const isLocal = local.has(s);
       const onCloud = !!this._cloud?.mediaByName(s);
       if (isLocal && !onCloud) localOnly.push(s);
       else if (!isLocal && onCloud) cloudOnly.push(s);
+      else if (!isLocal && !onCloud) missing.push(s);
     }
-    return { localOnly, cloudOnly };
+    return { localOnly, cloudOnly, missing };
   }
 
   /** The document's media sources that live only on the cloud — i.e. wouldn't
@@ -963,6 +973,89 @@ export class WebPlatform implements Platform {
       queued++;
     }
     return queued;
+  }
+
+  /** Upload every media source this project references that the cloud doesn't
+   *  have yet, blocking until done (the pre-Export-Remote flow, which must
+   *  finish before the URLs can be written). Dedup conflicts are collected,
+   *  not thrown. Refreshes the cloud media list at the end so the new assets
+   *  resolve by name. Interactive uploads use the TransferQueue instead. */
+  async uploadProjectMedia(
+    doc: SeamFile,
+    onProgress?: (done: number, total: number, name: string) => void
+  ): Promise<MediaSyncSummary> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const { localOnly } = await this.classifyProjectMedia(doc);
+    const summary: MediaSyncSummary = { done: 0, conflicts: [] };
+    for (let i = 0; i < localOnly.length; i++) {
+      const name = localOnly[i];
+      onProgress?.(i, localOnly.length, name);
+      try {
+        const r = await this.uploadClipToCloud(name);
+        if (r.kind === "conflict") summary.conflicts.push({ name, message: r.message });
+        else summary.done++;
+      } catch (err) {
+        summary.conflicts.push({ name, message: errMessage(err) });
+      }
+    }
+    onProgress?.(localOnly.length, localOnly.length, "");
+    if (localOnly.length > 0) await cloud.refresh();
+    return summary;
+  }
+
+  /**
+   * Build the "remote" form of a document: every media source becomes its
+   * Seam Cloud streaming URL (token attached), so a render can stream straight
+   * off the cloud. Sources the cloud doesn't have come back in `unresolved`
+   * (the caller uploads first, or aborts) — nothing is downloaded here.
+   */
+  buildRemoteDocument(doc: SeamFile): { document: SeamFile; unresolved: string[] } {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    return toRemoteDocument(doc, (name) => cloud.fileUrlForName(name));
+  }
+
+  /** Trigger a browser download of a remote-form document as
+   *  `<stem>-remote.seam`. */
+  async exportRemoteSeamFile(doc: SeamFile, stem: string): Promise<void> {
+    const json = JSON.stringify(doc, null, 2);
+    triggerDownload(
+      new Blob([json], { type: "application/json" }),
+      remoteExportFilename(stem)
+    );
+  }
+
+  /** The `projects/` filename an imported remote `.seam` lands under
+   *  (`intro-remote.seam` → `intro.seam`). For the overwrite check. */
+  remoteImportTargetName(remoteFilename: string): string {
+    return localProjectFilename(remoteFilename);
+  }
+
+  /**
+   * Import a remote `.seam`: every streaming URL this cloud issued is mapped
+   * back to the asset's bare filename (so the project plays from the local
+   * copy when present, else streams from the cloud, and the usual sync tools
+   * see it — and no session token stays baked into the file). URLs from
+   * elsewhere are kept as-is and reported in `kept`. Overwrites a project of
+   * the same name (caller confirms first). Returns `{filePath, json}` ready
+   * for `openFromJson`.
+   */
+  async importRemoteSeamFile(
+    file: File
+  ): Promise<{ filePath: string; json: string; kept: string[] }> {
+    const cloud = this._cloud;
+    if (!cloud) throw new Error("Seam Cloud is not connected.");
+    const text = await file.text();
+    const parsed = JSON.parse(text) as SeamFile;
+    const { document, kept } = fromRemoteDocument(parsed, (url) => {
+      const id = parseCloudMediaUrl(url, cloud.baseUrl);
+      return id ? cloud.mediaById(id)?.filename ?? null : null;
+    });
+    const json = JSON.stringify(document, null, 2);
+    const name = localProjectFilename(file.name);
+    await writeFileToDir(PROJECTS_DIR, name, json);
+    return { filePath: `projects/${name}`, json, kept };
   }
 
   /** Download every media source this project references that exists on the

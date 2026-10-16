@@ -111,6 +111,7 @@ export class CloudClient {
     lastError: null,
   };
   private byName = new Map<string, CloudMedia>();
+  private byId = new Map<string, CloudMedia>();
   private projectByNameMap = new Map<string, CloudProject>();
   private listeners = new Set<(s: CloudState) => void>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -140,6 +141,7 @@ export class CloudClient {
           lastError: null,
         };
         this.byName = new Map((cache.media ?? []).map((m) => [m.filename, m]));
+        this.byId = new Map((cache.media ?? []).map((m) => [m.id, m]));
         this.projectByNameMap = new Map(
           (cache.projects ?? []).map((p) => [p.name, p])
         );
@@ -158,6 +160,12 @@ export class CloudClient {
     return this.byName.get(name);
   }
 
+  /** Synchronous id → cloud media lookup (for mapping streaming URLs back to
+   *  filenames when importing a remote .seam). */
+  mediaById(id: string): CloudMedia | undefined {
+    return this.byId.get(id);
+  }
+
   /** Synchronous name → cloud project lookup (for sync-state checks). */
   projectByName(name: string): CloudProject | undefined {
     return this.projectByNameMap.get(name);
@@ -172,6 +180,7 @@ export class CloudClient {
     this.state = { ...this.state, ...patch };
     if ("media" in patch) {
       this.byName = new Map((patch.media ?? []).map((m) => [m.filename, m]));
+      this.byId = new Map((patch.media ?? []).map((m) => [m.id, m]));
     }
     if ("projects" in patch) {
       this.projectByNameMap = new Map(

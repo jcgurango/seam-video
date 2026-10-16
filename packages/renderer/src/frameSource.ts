@@ -10,11 +10,9 @@
  * name until their providers are wired (text/graphic reuse @seam/renderer's
  * rasterizers; static images/video freeze-frames come next).
  */
-import { isAbsolute, join } from "node:path";
 import { registerMediabunnyServer } from "@mediabunny/server";
 import {
   Input,
-  FilePathSource,
   ALL_FORMATS,
   EncodedPacketSink,
   VideoSampleSink,
@@ -35,6 +33,7 @@ import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
+import { openMediaSource, resolveSourcePath } from "./mediaInput.js";
 
 let serverRegistered = false;
 function ensureServer(): void {
@@ -103,8 +102,10 @@ export class FrameSource {
     this.graphicRenderers = graphicRenderers ?? new Map();
   }
 
+  /** Absolute path for a local source; an `http(s)://` URL passes through
+   *  (static images fetch it via `loadImage`, videos via `openMediaSource`). */
   private resolvePath(src: string): string {
-    return isAbsolute(src) ? src : join(this.basePath, src);
+    return resolveSourcePath(src, this.basePath);
   }
 
   /** Open (once) a video source and learn its coded dimensions. */
@@ -112,7 +113,7 @@ export class FrameSource {
     let entry = this.sources.get(src);
     if (!entry) {
       const input = new Input({
-        source: new FilePathSource(this.resolvePath(src)),
+        source: openMediaSource(src, this.basePath),
         formats: ALL_FORMATS,
       });
       const track = await input.getPrimaryVideoTrack();

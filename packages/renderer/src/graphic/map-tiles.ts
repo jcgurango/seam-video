@@ -9,7 +9,7 @@
 import { open, readFile, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Source } from "pmtiles";
+import { FetchSource, type Source } from "pmtiles";
 import { createCanvas, type Canvas as NodeCanvas } from "canvas";
 import {
   TileSource,
@@ -113,6 +113,11 @@ class NodeFileSource implements Source {
  *  end (closing the underlying file handles). */
 export function createTileSourcePool(basePath?: string): TileSourcePool {
   return new TileSourcePool((filename) => {
+    // Remote pmtiles (e.g. a cloud streaming URL from a remote .seam) — let
+    // pmtiles' own byte-range fetcher handle it, like the preview does.
+    if (/^https?:\/\//i.test(filename)) {
+      return Promise.resolve(new FetchSource(filename));
+    }
     const abs = isAbsolute(filename)
       ? filename
       : join(basePath ?? process.cwd(), filename);
