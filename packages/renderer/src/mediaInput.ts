@@ -3,6 +3,10 @@
  * or an `http(s)://` URL. Remote sources — e.g. the editor's "Export Remote
  * .seam", whose sources are Seam Cloud streaming URLs — are streamed with
  * mediabunny's byte-range `UrlSource` instead of being downloaded first.
+ *
+ * mediabunny ≥ 1.61.5 required: earlier UrlSource read orchestrators could
+ * leave a queued read pending forever on far seeks (see the
+ * `urlsource-deadlock` memory and `__tests__/url-source-far-seek.test.ts`).
  */
 import { isAbsolute, join } from "node:path";
 import { FilePathSource, UrlSource } from "mediabunny";

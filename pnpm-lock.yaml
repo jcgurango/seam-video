@@ -7,11 +7,6 @@ settings:
 overrides:
   vitest>jsdom: '-'
 
-patchedDependencies:
-  '@mediabunny/server@1.48.1':
-    hash: 7537ce9b8fc97d63d702c0bdbd95dcadfff8585822621eb3530faf6dfca746f4
-    path: patches/@mediabunny__server@1.48.1.patch
-
 importers:
 
   .: {}
@@ -28,8 +23,8 @@ importers:
         specifier: ^24.10.0
         version: 24.10.0
       '@mediabunny/server':
-        specifier: ^1.45.0
-        version: 1.48.1(patch_hash=7537ce9b8fc97d63d702c0bdbd95dcadfff8585822621eb3530faf6dfca746f4)(mediabunny@1.48.1)
+        specifier: ^1.61.5
+        version: 1.61.5(mediabunny@1.61.5)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -49,8 +44,8 @@ importers:
         specifier: ^7.4.0
         version: 7.4.0
       mediabunny:
-        specifier: ^1.45.0
-        version: 1.48.1
+        specifier: ^1.61.5
+        version: 1.61.5
       node-web-audio-api:
         specifier: ^1.0.0
         version: 1.0.9
@@ -92,8 +87,8 @@ importers:
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.27)
       '@mediabunny/server':
-        specifier: ^1.45.0
-        version: 1.48.1(patch_hash=7537ce9b8fc97d63d702c0bdbd95dcadfff8585822621eb3530faf6dfca746f4)(mediabunny@1.48.1)
+        specifier: ^1.61.5
+        version: 1.61.5(mediabunny@1.61.5)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -107,8 +102,8 @@ importers:
         specifier: ^4.6.0
         version: 4.12.27
       mediabunny:
-        specifier: ^1.45.0
-        version: 1.48.1
+        specifier: ^1.61.5
+        version: 1.61.5
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -206,8 +201,8 @@ importers:
         specifier: ^1.8.0
         version: 1.8.0(react@19.2.4)
       mediabunny:
-        specifier: ^1.38.0
-        version: 1.38.0
+        specifier: ^1.61.5
+        version: 1.61.5
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -289,8 +284,8 @@ importers:
         specifier: ^7.4.0
         version: 7.4.0
       mediabunny:
-        specifier: ^1.38.0
-        version: 1.38.0
+        specifier: ^1.61.5
+        version: 1.61.5
       pmtiles:
         specifier: ^4.4.1
         version: 4.4.1
@@ -323,8 +318,8 @@ importers:
         specifier: ^0.0.6
         version: 0.0.6
       '@mediabunny/server':
-        specifier: ^1.45.0
-        version: 1.48.1(patch_hash=7537ce9b8fc97d63d702c0bdbd95dcadfff8585822621eb3530faf6dfca746f4)(mediabunny@1.48.1)
+        specifier: ^1.61.5
+        version: 1.61.5(mediabunny@1.61.5)
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -344,8 +339,8 @@ importers:
         specifier: ^7.4.0
         version: 7.4.0
       mediabunny:
-        specifier: ^1.45.0
-        version: 1.48.1
+        specifier: ^1.61.5
+        version: 1.61.5
       node-av:
         specifier: ^6.0.0
         version: 6.0.0
@@ -1115,8 +1110,13 @@ packages:
     resolution: {integrity: sha512-lichxSiagMEBBrqHF0trtMQH9RKh+9jUlIJl0qW0QHvt2H/tbvUWdE+ZzI2Jd0/pT7j/iavLonlPu7EQ/ixTOw==}
     hasBin: true
 
-  '@mediabunny/server@1.48.1':
-    resolution: {integrity: sha512-STQAoLc1eph7m82CSNZWERhd5CjAlQnD0UpSPeoGfoRK2uPs+GBPEFYaN0VH/72xjkBia62XKWtYdCeWmLDx4g==}
+  '@mediabunny/prores@1.61.5':
+    resolution: {integrity: sha512-cDp1SoMqOIA74mlJh5+bai7eld0MtHn03+8DGXO6wY9caWKBT+2bQOVwZ7or1xwiNh/VS8w5bFR/vc7a28v+9g==}
+    peerDependencies:
+      mediabunny: ^1.49.0
+
+  '@mediabunny/server@1.61.5':
+    resolution: {integrity: sha512-bEtcqk++4aq6+hXxiT1x3Zw/Jrd9+WXQlCdFd++2IB4LYPiXi7cp62upnV2b8BrN7EZ0yfMM2ihY2ltX9NW5XA==}
     peerDependencies:
       mediabunny: ^1.45.0
 
@@ -1366,6 +1366,12 @@ packages:
 
   '@rollup/rollup-linux-x64-gnu@4.59.0':
     resolution: {integrity: sha512-3AHmtQq/ppNuUspKAlvA8HtLybkDflkMuLK4DPo77DfthRb71V84/c4MlWJXixZz4uruIH4uaa07IqoAkG64fg==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@rollup/rollup-linux-x64-gnu@4.62.1':
+    resolution: {integrity: sha512-nVQGk/jStQc2V4rrkI+vPD2J+85boKqS4R4nOdPhc3eWw0kyW/b+AYRGoH8qo057XSVqaTx13AliH5qPeLTtgQ==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
@@ -2167,11 +2173,8 @@ packages:
     resolution: {integrity: sha512-OkeDaAZ/bQCxeFAozM55PKcKU0yJMPGifLwV4Qgjitu+5MoAfSQN4lsLJeXZ1b8w0x+/Emda6MZgXS1jvsapng==}
     engines: {node: '>=10'}
 
-  mediabunny@1.38.0:
-    resolution: {integrity: sha512-FiZtTWLY4rmEw4jBx8r5Tk+sE+PcBb03UYUZNv9DujEy9wdmX7JaQOvHNUZLVTxPWT0h+LYmWFnWKRkl4KmzyA==}
-
-  mediabunny@1.48.1:
-    resolution: {integrity: sha512-a0pSUTFXgk72yHrQ4ydWavWPtCDw6dnKc6XIFmyE96JOdcA/Xlrgp/C0qVus4Csbw8927hCxNTNZZHa7SUrYVA==}
+  mediabunny@1.61.5:
+    resolution: {integrity: sha512-IYrDTozxGVRTWQ1YdIcF+P7S7qHvvkiQYsX3WUbAHkxgAcCfEn7a/RbM9i/WiJHJ1MSYZqSxZkna1UUn4FGGBQ==}
 
   mimic-response@1.0.1:
     resolution: {integrity: sha512-j5EctnkH7amfV/q5Hgmoal1g2QHFJRraOtmx0JpIqkxhBhI/lJSl1nMpQ45hVarwNETOoWEimndZ4QK0RHxuxQ==}
@@ -2530,6 +2533,9 @@ packages:
 
   tunnel-agent@0.6.0:
     resolution: {integrity: sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==}
+
+  turbores@1.2.2:
+    resolution: {integrity: sha512-dTSKeZ6/BgBKz9T5goMS5ZMcqOiNYO1MbvresYGfWXEF5ZWK+yIZDxNjh86bRj1mnEzhtdsMOJ5GBi8b3Azcpg==}
 
   tweetnacl@1.0.3:
     resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
@@ -3227,9 +3233,15 @@ snapshots:
       quickselect: 3.0.0
       tinyqueue: 3.0.0
 
-  '@mediabunny/server@1.48.1(patch_hash=7537ce9b8fc97d63d702c0bdbd95dcadfff8585822621eb3530faf6dfca746f4)(mediabunny@1.48.1)':
+  '@mediabunny/prores@1.61.5(mediabunny@1.61.5)':
     dependencies:
-      mediabunny: 1.48.1
+      mediabunny: 1.61.5
+      turbores: 1.2.2
+
+  '@mediabunny/server@1.61.5(mediabunny@1.61.5)':
+    dependencies:
+      '@mediabunny/prores': 1.61.5(mediabunny@1.61.5)
+      mediabunny: 1.61.5
       node-av: 6.0.0
     transitivePeerDependencies:
       - supports-color
@@ -3469,6 +3481,9 @@ snapshots:
     optional: true
 
   '@rollup/rollup-linux-x64-gnu@4.59.0':
+    optional: true
+
+  '@rollup/rollup-linux-x64-gnu@4.62.1':
     optional: true
 
   '@rollup/rollup-linux-x64-musl@4.59.0':
@@ -4342,12 +4357,7 @@ snapshots:
       escape-string-regexp: 4.0.0
     optional: true
 
-  mediabunny@1.38.0:
-    dependencies:
-      '@types/dom-mediacapture-transform': 0.1.11
-      '@types/dom-webcodecs': 0.1.13
-
-  mediabunny@1.48.1:
+  mediabunny@1.61.5:
     dependencies:
       '@types/dom-mediacapture-transform': 0.1.11
       '@types/dom-webcodecs': 0.1.13
@@ -4750,6 +4760,10 @@ snapshots:
   tunnel-agent@0.6.0:
     dependencies:
       safe-buffer: 5.1.2
+
+  turbores@1.2.2:
+    optionalDependencies:
+      '@rollup/rollup-linux-x64-gnu': 4.62.1
 
   tweetnacl@1.0.3:
     optional: true

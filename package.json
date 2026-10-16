@@ -15,9 +15,6 @@
       "node-av",
       "webgpu"
     ],
-    "patchedDependencies": {
-      "@mediabunny/server@1.48.1": "patches/@mediabunny__server@1.48.1.patch"
-    },
     "overrides": {
       "vitest>jsdom": "-"
     }

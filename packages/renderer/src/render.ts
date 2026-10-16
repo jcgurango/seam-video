@@ -169,6 +169,7 @@ export async function renderSeamToFile(
   // Graphics render on demand inside the loop (no disk pre-pass). Track the
   // per-node renderers so we can release their Map pools at the end.
   const graphicRenderers = new Map<ResolvedGraphic, GraphicFrameRenderer>();
+  let output: Output | null = null;
   try {
     // Kick off the audio mix concurrently with the frame loop instead of
     // blocking on it up front. The OpenLayers map path used to install global
@@ -218,7 +219,7 @@ export async function renderSeamToFile(
     mark("gpu+warmup");
 
     // ── encoder + muxer ──
-    const output = new Output({
+    output = new Output({
       format: new Mp4OutputFormat(),
       target: new FilePathTarget(outPath),
     });
@@ -312,6 +313,14 @@ export async function renderSeamToFile(
       height,
       duration: timeline.duration,
     };
+  } catch (err) {
+    // Close the half-written output so its FileHandle doesn't get collected
+    // while still open — on Node ≥ 24 that's a fatal ERR_INVALID_STATE that
+    // masks the real failure (and leaves a stray 0-byte mp4 fd behind).
+    if (output && output.state !== "finalized") {
+      await output.cancel().catch(() => {});
+    }
+    throw err;
   } finally {
     for (const r of graphicRenderers.values()) await r.dispose();
   }
