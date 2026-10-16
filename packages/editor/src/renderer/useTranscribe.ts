@@ -12,6 +12,7 @@
 // undo step; intermediate updates use `history.replace` so the user sees
 // progress without polluting the undo stack.
 
+import { clipOut } from "@seam/core";
 import { useCallback, useRef, useState } from "react";
 import type {
   Audio,
@@ -254,7 +255,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
             wav = await extractAudioWav(
               sourceUrl,
               target.child.in,
-              target.child.out
+              clipOut(target.child)
             );
             anchorBase = target.child.in;
           }

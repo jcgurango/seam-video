@@ -18,9 +18,11 @@ import type {
 import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
 import { loopIterations, loopLocalTime } from "./loop.js";
+import { clipOut } from "./clip-span.js";
 
-function clipBaseSpeed(clip: { in: number; out: number; speed?: number; duration?: number }): number {
-  if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
+function clipBaseSpeed(clip: { in: number; out?: number; speed?: number; duration?: number }): number {
+  // `out` omitted ⇒ out = in + duration ⇒ rate 1.
+  if (clip.duration != null) return (clipOut(clip) - clip.in) / clip.duration;
   return clip.speed ?? 1;
 }
 
@@ -40,7 +42,7 @@ function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
     case "audio":
-      return (child.out - child.in) / clipBaseSpeed(child as { in: number; out: number; speed?: number; duration?: number });
+      return (clipOut(child) - child.in) / clipBaseSpeed(child);
     case "static":
       return child.duration;
     case "empty":
@@ -330,7 +332,7 @@ function resolveChild(
   // Clip / Audio — same temporal logic, different leaf shape.
   const leaf = child;
   let sourceIn = leaf.in;
-  let sourceOut = leaf.out;
+  let sourceOut = clipOut(leaf);
   const baseSpeed = clipBaseSpeed(leaf);
   let speed = baseSpeed;
   let loops = false;

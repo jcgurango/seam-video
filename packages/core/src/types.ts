@@ -206,7 +206,9 @@ export interface Clip extends ChildTimingFields {
   type: "clip";
   source: string;
   in: number;
-  out: number;
+  /** Source end. Optional when `duration` is set: defaults to `in + duration`
+   *  (speed 1). Readers use `clipOut()`. */
+  out?: number;
   speed?: number;
   duration?: number;
   /** Pre-transform source orientation (clockwise degrees). Baked into the
@@ -264,7 +266,9 @@ export interface Audio {
   type: "audio";
   source: string;
   in: number;
-  out: number;
+  /** Source end. Optional when `duration` is set: defaults to `in + duration`
+   *  (speed 1). Readers use `clipOut()`. */
+  out?: number;
   speed?: number;
   duration?: number;
   overflow?: Overflow;

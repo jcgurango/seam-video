@@ -252,7 +252,9 @@ export const ClipSchema = z.object({
    *  a source is trimmed — content before the new file start is simply
    *  never sampled (it was invisible behind a composition window). */
   in: z.number(),
-  out: z.number().positive(),
+  /** Optional when `duration` is given: `out` then defaults to
+   *  `in + duration` (speed 1). */
+  out: z.number().positive().optional(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
   orientation: OrientationSchema.optional(),
@@ -271,6 +273,9 @@ export const ClipSchema = z.object({
 }).strict().refine(
   (data) => !(data.speed != null && data.duration != null),
   { message: "Cannot specify both 'speed' and 'duration' on a clip" }
+).refine(
+  (data) => data.out != null || data.duration != null,
+  { message: "A clip needs 'out' or 'duration' (out defaults to in + duration)" }
 );
 
 export const StaticSchema = z.object({
@@ -298,7 +303,8 @@ export const AudioSchema = z.object({
   type: z.literal("audio"),
   source: z.string().min(1),
   in: z.number().nonnegative(),
-  out: z.number().positive(),
+  /** Optional when `duration` is given — see clip `out`. */
+  out: z.number().positive().optional(),
   speed: z.number().positive().optional(),
   duration: z.number().positive().optional(),
   volume: keyframed(VolumeValueSchema).optional(),
@@ -317,6 +323,10 @@ export const AudioSchema = z.object({
   .refine(
     (data) => !(data.speed != null && data.duration != null),
     { message: "Cannot specify both 'speed' and 'duration' on audio" }
+  )
+  .refine(
+    (data) => data.out != null || data.duration != null,
+    { message: "Audio needs 'out' or 'duration' (out defaults to in + duration)" }
   );
 
 export const DataSchema = z.object({

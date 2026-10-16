@@ -115,3 +115,22 @@ describe("resizeChild rate-aware in/out", () => {
     expect(childOf(next).duration).toBe(4);
   });
 });
+
+describe("resizeChild with an omitted out (in + duration shorthand)", () => {
+  it("right handle materialises out = in + duration, then extends it", () => {
+    const doc = docWith({ type: "clip", source: "a.mp4", in: 2, duration: 3 } as Child);
+    const next = childOf(resizeChild(doc, 0, false, "right", 1));
+    // Rate is 1 (span == duration), so +1s output = +1s source.
+    expect(next.out).toBe(6);
+    expect(next.duration).toBe(4);
+    expect(next.in).toBe(2);
+  });
+
+  it("left handle trims in and shrinks duration without needing out", () => {
+    const doc = docWith({ type: "clip", source: "a.mp4", in: 2, duration: 3 } as Child);
+    const next = childOf(resizeChild(doc, 0, false, "left", 1));
+    expect(next.in).toBe(3);
+    expect(next.duration).toBe(2);
+    expect(next.out).toBeUndefined();
+  });
+});

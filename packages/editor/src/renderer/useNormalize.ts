@@ -5,6 +5,7 @@
 // silence) is collected as a non-fatal error and the rest proceed.
 
 import { useCallback, useState } from "react";
+import { clipOut } from "@seam/core";
 import type { SeamFile, Clip, Audio } from "@seam/core";
 import type { Platform } from "./platform/index.js";
 import { decodeMonoRange } from "./audioExtract.js";
@@ -57,7 +58,7 @@ export function useNormalize(opts: UseNormalizeOptions): UseNormalize {
         if (!node) continue;
         try {
           const url = platform.resolveSource(node.source, basePath);
-          const { samples } = await decodeMonoRange(url, node.in, node.out);
+          const { samples } = await decodeMonoRange(url, node.in, clipOut(node));
           const gainDb = peakGainDb(samples, TARGET_PEAK_DB);
           if (gainDb == null) {
             errs.push(`${node.source}: silent — left unchanged`);
