@@ -164,6 +164,73 @@ describe("Compositor — rect / circle / cornerRadius", () => {
     expect(p[2]).toBeLessThan(10);
   });
 
+  // JC's two preview repros (2026-10-16): several fills in one frame must each
+  // keep their own colour. The preview's BrowserBackend shared one 1×1 tile
+  // and skipped repainting per key, so a stroke's white leaked into the root
+  // background and a circle's red into a rect. The renderer writes per key;
+  // this pins the shared compositor side for both scenes.
+  it("a stroked rect leaves the background black and the fill its own colour", async () => {
+    const doc: Composition = {
+      type: "composition",
+      contentWidth: W,
+      contentHeight: H,
+      backgroundColor: "#000000",
+      children: [
+        {
+          type: "rect",
+          duration: 1,
+          fill: "#ff0000",
+          stroke: "#ffffff",
+          strokeWidth: 4,
+          size: { x: 80, y: 40 },
+        },
+      ],
+    };
+    const p = await renderPixels(doc, 0.5);
+    expect(isBlack(px(p, 8, 8))).toBe(true); // background untouched
+    expect(isRed(px(p, 64, 64))).toBe(true); // fill
+    const edge = px(p, 26, 64); // 2px inside the left edge: stroke band
+    expect(edge[0]).toBeGreaterThan(200);
+    expect(edge[1]).toBeGreaterThan(200);
+    expect(edge[2]).toBeGreaterThan(200);
+  });
+
+  it("a second shape appearing does not recolour the first", async () => {
+    const doc: Composition = {
+      type: "composition",
+      contentWidth: W,
+      contentHeight: H,
+      children: [
+        {
+          type: "rect",
+          id: "anchor",
+          duration: 2,
+          fill: "#0000ff",
+          size: { x: 60, y: 30 },
+          origin: "0%",
+          translation: "0%",
+        },
+      ],
+      attachments: [
+        {
+          type: "circle",
+          duration: 1,
+          fill: "#ff0000",
+          size: 40,
+          origin: "0%",
+          translation: { x: "0% + 80", y: "0% + 80" },
+          start: { anchor: "anchor", timeSource: "output", anchorPoint: "50%" },
+        },
+      ],
+    };
+    const before = await renderPixels(doc, 0.5);
+    expect(isBlue(px(before, 30, 15))).toBe(true);
+    expect(isBlack(px(before, 100, 100))).toBe(true);
+    const after = await renderPixels(doc, 1.5);
+    expect(isBlue(px(after, 30, 15))).toBe(true); // still blue once the circle is on
+    expect(isRed(px(after, 100, 100))).toBe(true);
+  });
+
   it("fill colours tween between keyframes", async () => {
     const doc: Composition = {
       type: "composition",

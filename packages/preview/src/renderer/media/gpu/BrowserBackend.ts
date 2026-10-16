@@ -16,11 +16,17 @@ export class BrowserBackend implements RenderBackend<BrowserFrame> {
   private context!: GPUCanvasContext;
   private textures!: TextureManager;
 
-  /** Last color rasterised per fill key — lets us skip re-painting the 1×1
-   *  tile when a composition's bg color is stable across frames. */
-  private fillColors = new Map<object, string>();
+  /** ONE shared 1×1 tile every fill is rasterized on, then copied into the
+   *  key's own texture. `fillTileColor` is what the tile currently holds —
+   *  the repaint test must compare against THAT, not against a per-key
+   *  record: with several fills per frame (root background + a shape's fill
+   *  + its stroke, …) a key whose colour hadn't changed would otherwise
+   *  upload whatever colour the previous key left on the tile (a white
+   *  stroke turned the whole canvas white; a red circle appearing turned a
+   *  magenta rect red). */
   private fillTile: OffscreenCanvas | null = null;
   private fillTileCtx: OffscreenCanvasRenderingContext2D | null = null;
+  private fillTileColor: string | null = null;
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
     const adapter = await navigator.gpu?.requestAdapter();
@@ -47,24 +53,22 @@ export class BrowserBackend implements RenderBackend<BrowserFrame> {
       this.fillTile = new OffscreenCanvas(1, 1);
       this.fillTileCtx = this.fillTile.getContext("2d");
     }
-    if (this.fillColors.get(key) !== color) {
+    if (this.fillTileColor !== color) {
       const ctx = this.fillTileCtx;
       if (ctx) {
         ctx.clearRect(0, 0, 1, 1);
         ctx.fillStyle = color;
         ctx.fillRect(0, 0, 1, 1);
       }
-      this.fillColors.set(key, color);
+      this.fillTileColor = color;
     }
-    // Always (re-)upload so TextureManager.prune sees the entry as touched.
+    // A 1×1 copy per fill per frame — cheap, and it keeps each key's texture
+    // holding its own colour regardless of what other keys painted since.
     return this.textures.upload(key, this.fillTile);
   }
 
   prune(active: Set<object>): void {
     this.textures.prune(active);
-    for (const key of this.fillColors.keys()) {
-      if (!active.has(key)) this.fillColors.delete(key);
-    }
   }
 
   acquireTarget(): GPUTextureView {
@@ -73,8 +77,8 @@ export class BrowserBackend implements RenderBackend<BrowserFrame> {
 
   dispose(): void {
     this.textures?.dispose();
-    this.fillColors.clear();
     this.fillTile = null;
     this.fillTileCtx = null;
+    this.fillTileColor = null;
   }
 }
