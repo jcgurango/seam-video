@@ -113,7 +113,14 @@ const UNDERFLOW: PropDef = timing({
 });
 const IN_OUT: PropDef[] = [
   timing({ key: "in", label: "In", kind: "number", unit: "s" }),
-  timing({ key: "out", label: "Out", kind: "number", unit: "s" }),
+  timing({
+    key: "out",
+    label: "Out",
+    kind: "number",
+    unit: "s",
+    placeholder: "in + duration",
+    hint: "Source end. Omit it when Duration is set: out = in + duration.",
+  }),
 ];
 const SPEED: PropDef = timing({
   key: "speed",

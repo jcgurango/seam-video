@@ -16,7 +16,7 @@
 // known during a timeline drag, so it's left to the schema validator
 // or to a later UX polish pass that probes media.
 
-import { resolveComposition } from "@seam/core";
+import { clipOut, resolveComposition } from "@seam/core";
 import type { Child, Composition, SeamFile } from "@seam/core";
 
 export function resizeChild(
@@ -77,18 +77,21 @@ function innerDuration(comp: Composition): number {
 }
 
 function resizeInOut<
-  T extends { in: number; out: number; speed?: number; duration?: number },
+  T extends { in: number; out?: number; speed?: number; duration?: number },
 >(child: T, side: "left" | "right", deltaSec: number): T {
+  // `out` may be omitted on clips/audio (= in + duration); resolve it once.
+  // A right-handle drag then materialises `out` on the node.
+  const out = clipOut(child);
   // Source seconds consumed per output second. With a `duration` override
   // the rate is implied by the window; otherwise it's `speed` (default 1).
   const rawRate =
     child.duration != null && child.duration > 0
-      ? (child.out - child.in) / child.duration
+      ? (out - child.in) / child.duration
       : child.speed ?? 1;
   const rate = rawRate > 0 ? rawRate : 1;
   const sourceDelta = deltaSec * rate;
   if (side === "left") {
-    const newIn = Math.max(0, Math.min(child.out, child.in + sourceDelta));
+    const newIn = Math.max(0, Math.min(out, child.in + sourceDelta));
     // Applied output delta after clamping — keeps `duration` consistent when
     // the drag ran out of source headroom.
     const applied = (newIn - child.in) / rate;
@@ -98,8 +101,8 @@ function resizeInOut<
     }
     return next;
   }
-  const newOut = Math.max(child.in, child.out + sourceDelta);
-  const applied = (newOut - child.out) / rate;
+  const newOut = Math.max(child.in, out + sourceDelta);
+  const applied = (newOut - out) / rate;
   const next = { ...child, out: newOut };
   if (child.duration != null) {
     next.duration = Math.max(0, child.duration + applied);

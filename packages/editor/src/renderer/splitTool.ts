@@ -6,16 +6,16 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { compileSeamFile, resolveComposition } from "@seam/core";
+import { clipOut, compileSeamFile, resolveComposition } from "@seam/core";
 import type { Child, Composition, SeamFile, TimeAnchor } from "@seam/core";
 
 function clipBaseSpeed(clip: {
   in: number;
-  out: number;
+  out?: number;
   speed?: number;
   duration?: number;
 }): number {
-  if (clip.duration != null) return (clip.out - clip.in) / clip.duration;
+  if (clip.duration != null) return (clipOut(clip) - clip.in) / clip.duration;
   return clip.speed ?? 1;
 }
 
@@ -75,7 +75,7 @@ function nodeNaturalDuration(node: Child): number {
   if (node.type === "clip" || node.type === "audio") {
     if (node.duration != null) return node.duration;
     const speed = node.speed ?? 1;
-    return (node.out - node.in) / speed;
+    return (clipOut(node) - node.in) / speed;
   }
   if (node.type === "empty") return node.duration;
   if (node.type === "data") return node.duration ?? 0;
@@ -242,9 +242,12 @@ export function sliceAtPlayhead(
   if (child.type === "clip" || child.type === "audio") {
     const speed = clipBaseSpeed(child);
     const splitSource = child.in + offset * speed;
+    // Dropping `duration` leaves both halves on the plain [in, out] axis, so an
+    // omitted `out` (= in + duration) must be materialised on the right half.
+    const out = clipOut(child);
     const { duration: _d, ...base } = child;
     first = { ...base, out: splitSource } as typeof child;
-    second = { ...base, in: splitSource } as typeof child;
+    second = { ...base, in: splitSource, out } as typeof child;
     if (rightId != null) (second as { id?: string }).id = rightId;
     else delete (second as { id?: string }).id;
     if (origId != null && rightId != null) {

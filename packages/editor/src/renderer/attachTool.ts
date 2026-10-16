@@ -4,7 +4,7 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { loopLocalTime, resolveComposition } from "@seam/core";
+import { clipOut, loopLocalTime, resolveComposition } from "@seam/core";
 import type {
   Child,
   Composition,
@@ -83,7 +83,7 @@ function computeAnchorSpec(
     const sourceTime =
       resolved.sourceIn +
       loopLocalTime(resolved.loop, t - resolved.timelineStart) * resolved.speed;
-    const clamped = Math.max(primary.in, Math.min(primary.out, sourceTime));
+    const clamped = Math.max(primary.in, Math.min(clipOut(primary), sourceTime));
     return { timeSource: "source", anchorPoint: clamped };
   }
   if (primary.type === "composition" && resolved.type === "composition") {

@@ -9,7 +9,7 @@
 // through `toggleAnchorPoint` / `toggleOffset`. Commit goes through
 // `setAttachmentSpec`.
 
-import { resolveComposition } from "@seam/core";
+import { clipOut, resolveComposition } from "@seam/core";
 import type {
   Child,
   ResolvedChild,
@@ -123,7 +123,7 @@ export function naturalDurOf(node: Child): number {
   if (node.type === "clip" || node.type === "audio") {
     if (node.duration != null) return node.duration;
     const speed = node.speed ?? 1;
-    return (node.out - node.in) / speed;
+    return (clipOut(node) - node.in) / speed;
   }
   if (node.type === "empty") return node.duration;
   if (node.type === "data") return node.duration ?? 0;

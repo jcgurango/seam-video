@@ -8,6 +8,7 @@ export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { expandMacros, findUnresolvedMacros } from "./macros.js";
 export type { MacroExpandResult } from "./macros.js";
 export { resolveComposition, unrollLoops } from "./layout/resolve.js";
+export { clipOut } from "./layout/clip-span.js";
 export { loopLocalTime, loopIterations, type LoopIteration } from "./layout/loop.js";
 export {
   resolveSpatial,
