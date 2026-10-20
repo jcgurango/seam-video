@@ -25,6 +25,9 @@ import {
 // frames; the render silently stalls. Minimal shape: two far-apart reads in
 // flight at once on a single-worker source over a slow Range server. 1.48.1
 // hangs on the very first pair; a bump that regresses this fails by timeout.
+// The renderer no longer reads http sources through UrlSource (it uses
+// @seam/media-source's PlannedSource, a CustomSource), but CustomSource runs on
+// the same ReadOrchestrator, so this stays the floor's tripwire.
 
 registerMediabunnyServer();
 

@@ -47,6 +47,7 @@ import { createGpuDevice } from "./gpu.js";
 import { NodeBackend } from "./NodeBackend.js";
 import { FrameSource, collectDrawables } from "./frameSource.js";
 import { renderAudioMix, timelineHasAudio } from "./audio.js";
+import { BlockStores, CutPlanner, cutsFromTimeline } from "@seam/media-source";
 import type { AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
 
 /** Encode quality presets (video + audio bitrate). Each maps to a mediabunny
@@ -69,8 +70,17 @@ export const QUALITY_PRESETS: Record<QualityPreset, Quality> = {
 
 export const DEFAULT_QUALITY: QualityPreset = "high";
 
+/** The audio mix walks every cut's bytes up front and the frame loop walks
+ *  them again, so a batch render wants the whole project's cut spans resident
+ *  (≈ 5 MiB per second of high-bitrate phone footage) — far above the
+ *  browser's 192 MiB default. */
+export const DEFAULT_REMOTE_CACHE_BYTES = 1024 << 20;
+
 export interface RenderOptions {
   fps?: number;
+  /** Byte budget of the remote-source block cache (default 1 GiB). Only
+   *  matters for `http(s)://` sources (remote .seam). */
+  remoteCacheBytes?: number;
   width?: number;
   height?: number;
   /** Encode quality tier for video + audio (default `"high"`). */
@@ -170,6 +180,8 @@ export async function renderSeamToFile(
   // per-node renderers so we can release their Map pools at the end.
   const graphicRenderers = new Map<ResolvedGraphic, GraphicFrameRenderer>();
   let output: Output | null = null;
+  let stores: BlockStores | null = null;
+  let planner: CutPlanner | null = null;
   try {
     // Kick off the audio mix concurrently with the frame loop instead of
     // blocking on it up front. The OpenLayers map path used to install global
@@ -183,10 +195,16 @@ export async function renderSeamToFile(
     // can't surface as an unhandledRejection during the loop — it's re-thrown
     // when we await below.
     const hasAudio = timelineHasAudio(timeline);
+    // Remote sources: one block-cache registry for the whole render; the
+    // planner warms each upcoming cut (keyframe → out point) ahead of the
+    // frame loop and ranks eviction by timeline distance from the playhead.
+    stores = new BlockStores({ budgetBytes: options.remoteCacheBytes ?? DEFAULT_REMOTE_CACHE_BYTES });
+    planner = new CutPlanner({ stores });
+    planner.setCuts(cutsFromTimeline(timeline));
     const audioMixSettled: Promise<
       { buf: NWAudioBuffer | null } | { err: unknown }
     > = hasAudio
-      ? renderAudioMix(timeline, basePath, timeline.duration).then(
+      ? renderAudioMix(timeline, basePath, timeline.duration, stores).then(
           (buf) => ({ buf }),
           (err) => ({ err }),
         )
@@ -213,7 +231,7 @@ export async function renderSeamToFile(
         await createGraphicFrameRenderer(g, { mapBasePath: basePath }),
       );
     }
-    const frameSource = new FrameSource(basePath, graphicRenderers);
+    const frameSource = new FrameSource(basePath, graphicRenderers, stores);
     for (const clip of clipNodes) await frameSource.openSource(clip.source);
     for (const node of staticNodes) await frameSource.openStatic(node);
     mark("gpu+warmup");
@@ -274,6 +292,7 @@ export async function renderSeamToFile(
         tDrain += performance.now() - d0;
       }
       const t = i / fps;
+      planner.update(t);
       const commands = buildRenderList(timeline, t, width, height, (clip) =>
         frameSource.intrinsicSize(clip),
       );
@@ -284,10 +303,17 @@ export async function renderSeamToFile(
       tRender += performance.now() - p1;
       tPrep += p1 - p0;
     }
-    if (process.env.SEAM_NEXT_TIMING)
+    if (process.env.SEAM_NEXT_TIMING) {
       process.stderr.write(
         `[timing] loop split: prepare ${(tPrep / 1000).toFixed(1)}s, render ${(tRender / 1000).toFixed(1)}s, drain+encode ${(tDrain / 1000).toFixed(1)}s\n`,
       );
+      if (planner.cutCount > 0) {
+        const st = stores.stats();
+        process.stderr.write(
+          `[timing] remote cache: ${st.requests} requests, ${(st.bytesFetched / 2 ** 20).toFixed(1)} MiB fetched, ${st.hits} hits / ${st.misses} misses, ${st.evictions} evictions\n`,
+        );
+      }
+    }
     // Drain the tail.
     while (backend.inFlightCount > 0) {
       await encodeNext(await backend.drainOldest());
@@ -323,5 +349,7 @@ export async function renderSeamToFile(
     throw err;
   } finally {
     for (const r of graphicRenderers.values()) await r.dispose();
+    planner?.dispose();
+    stores?.dispose();
   }
 }

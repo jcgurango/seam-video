@@ -34,6 +34,7 @@ import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
 import { openMediaSource, resolveSourcePath } from "./mediaInput.js";
+import type { BlockStores } from "@seam/media-source";
 
 let serverRegistered = false;
 function ensureServer(): void {
@@ -82,6 +83,8 @@ const SEEK_CHECK_MIN_JUMP = 0.25;
 export class FrameSource {
   private readonly basePath: string;
   private readonly sources = new Map<string, SourceEntry>();
+  /** Remote block-cache registry shared with the planner + audio mix. */
+  private readonly stores: BlockStores | undefined;
   private readonly cache = new Map<object, NodeFrame | null>();
   private readonly clipCursors = new Map<ResolvedClip, ClipCursor>();
   // Statics decode once (fixed sourceTime / image) — cached for the run.
@@ -96,10 +99,12 @@ export class FrameSource {
   constructor(
     basePath: string,
     graphicRenderers?: Map<ResolvedGraphic, GraphicFrameRenderer>,
+    stores?: BlockStores,
   ) {
     ensureServer();
     this.basePath = basePath;
     this.graphicRenderers = graphicRenderers ?? new Map();
+    this.stores = stores;
   }
 
   /** Absolute path for a local source; an `http(s)://` URL passes through
@@ -113,7 +118,7 @@ export class FrameSource {
     let entry = this.sources.get(src);
     if (!entry) {
       const input = new Input({
-        source: openMediaSource(src, this.basePath),
+        source: openMediaSource(src, this.basePath, this.stores),
         formats: ALL_FORMATS,
       });
       const track = await input.getPrimaryVideoTrack();

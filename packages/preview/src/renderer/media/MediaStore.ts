@@ -1,6 +1,11 @@
 import { Input, UrlSource, BlobSource, ALL_FORMATS } from "mediabunny";
+import { BlockStores, PlannedSource } from "@seam/media-source";
 
 export class MediaStore {
+  /** Remote (`http(s)://`, i.e. Seam Cloud) sources read through a shared
+   *  block cache: bounded Range requests, one byte budget, eviction and
+   *  prefetch ranked by the timeline via FrameCoordinator's `CutPlanner`. */
+  readonly stores = new BlockStores();
   private inputCache = new Map<string, Promise<Input>>();
   private trackCache = new Map<
     string,
@@ -17,6 +22,12 @@ export class MediaStore {
   }
 
   private async createInput(sourceUrl: string): Promise<Input> {
+    if (/^https?:\/\//i.test(sourceUrl)) {
+      return new Input({
+        source: new PlannedSource(this.stores.get(sourceUrl)),
+        formats: ALL_FORMATS,
+      });
+    }
     try {
       return new Input({
         source: new UrlSource(sourceUrl),

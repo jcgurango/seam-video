@@ -263,6 +263,25 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@25.3.3)(terser@5.46.2)
 
+  packages/media-source:
+    dependencies:
+      '@seam/core':
+        specifier: workspace:*
+        version: link:../core
+      mediabunny:
+        specifier: ^1.61.5
+        version: 1.61.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.21)(terser@5.46.2)
+
   packages/preview:
     dependencies:
       '@chenglou/pretext':
@@ -277,6 +296,9 @@ importers:
       '@seam/map':
         specifier: workspace:*
         version: link:../map
+      '@seam/media-source':
+        specifier: workspace:*
+        version: link:../media-source
       chokidar:
         specifier: ^4.0.0
         version: 4.0.3
@@ -332,6 +354,9 @@ importers:
       '@seam/map':
         specifier: workspace:*
         version: link:../map
+      '@seam/media-source':
+        specifier: workspace:*
+        version: link:../media-source
       canvas:
         specifier: ^3.2.3
         version: 3.2.3

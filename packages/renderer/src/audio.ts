@@ -24,6 +24,7 @@ import type {
   ResolvedTimeline,
 } from "@seam/core";
 import { openMediaSource } from "./mediaInput.js";
+import type { BlockStores } from "@seam/media-source";
 
 const SR = 48000;
 
@@ -98,6 +99,7 @@ export async function renderAudioMix(
   timeline: ResolvedTimeline,
   basePath: string,
   durationSec: number,
+  stores?: BlockStores,
 ): Promise<NWAudioBuffer | null> {
   registerMediabunnyServer();
   // Let mediabunny's AudioBufferSink and node-web-audio-api share one class.
@@ -124,7 +126,7 @@ export async function renderAudioMix(
     const cacheKey = `${src}:${inT}:${outT}`;
     if (cache.has(cacheKey)) return cache.get(cacheKey)!;
     const input = new Input({
-      source: openMediaSource(src, basePath),
+      source: openMediaSource(src, basePath, stores),
       formats: ALL_FORMATS,
     });
     const track = await input.getPrimaryAudioTrack();

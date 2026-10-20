@@ -27,6 +27,7 @@
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
     "@seam/map": "workspace:*",
+    "@seam/media-source": "workspace:*",
     "canvas": "^3.2.3",
     "fabric": "^7.4.0",
     "mediabunny": "^1.61.5",

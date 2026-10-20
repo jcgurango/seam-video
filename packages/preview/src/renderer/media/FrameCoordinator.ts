@@ -17,6 +17,7 @@ import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
 import { GraphicStore } from "./GraphicStore.js";
 import { resolveSource } from "../components/resolveSource.js";
+import { CutPlanner, type Cut } from "@seam/media-source";
 
 /** Seconds of source time to keep buffered ahead of the playhead per clip. */
 const LOOKAHEAD = 1.0;
@@ -100,6 +101,12 @@ export class FrameCoordinator {
   /** Fires when a buffered frame becomes available — used to repaint while paused. */
   onFrameAvailable: (() => void) | null = null;
 
+  /** Timeline-driven prefetch + eviction for remote (cloud) sources: warms
+   *  each upcoming cut's bytes (keyframe → out point) into the MediaStore's
+   *  block cache ahead of the ±1 s decode window, and ranks the cache by
+   *  distance from the playhead. Fed from `reconcile`. */
+  private planner: CutPlanner | null = null;
+
   async setTimeline(
     timeline: ResolvedTimeline,
     basePath: string,
@@ -125,6 +132,22 @@ export class FrameCoordinator {
       rootVol != null,
       1,
       timeline.pitch ?? 0
+    );
+    this.planner = new CutPlanner({ stores: mediaStore.stores });
+    this.planner.setCuts(
+      this.flatClips.map((flat, i): Cut => {
+        const a = flat.toSourceTime(flat.absoluteStart);
+        const b = flat.toSourceTime(flat.absoluteEnd);
+        return {
+          id: String(i),
+          kind: flat.clip.type,
+          source: flat.source,
+          sourceIn: Math.min(a, b),
+          sourceOut: Math.max(a, b),
+          start: flat.absoluteStart,
+          end: flat.absoluteEnd,
+        };
+      }),
     );
 
     // Text nodes rasterize synchronously straight onto OffscreenCanvases
@@ -331,6 +354,8 @@ export class FrameCoordinator {
   }
 
   dispose(): void {
+    this.planner?.dispose();
+    this.planner = null;
     // Tear down every audio clip we registered (this coordinator owns them
     // 1:1). Without this, each setTimeline left the previous timeline's clips
     // connected in the scheduler — a resize drag (many rebuilds/sec, with
@@ -362,6 +387,7 @@ export class FrameCoordinator {
   ): void {
     const windowMin = currentTime - LOOKBEHIND;
     const windowMax = currentTime + LOOKAHEAD;
+    this.planner?.update(currentTime);
 
     for (const flat of this.flatClips) {
       // Video clips have a ClipBuffer; audio-only nodes don't and just need
