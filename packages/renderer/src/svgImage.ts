@@ -10,11 +10,6 @@
 import { createCanvas as createCairoCanvas, loadImage as loadCairoImage } from "canvas";
 import { registerNodeCanvasFonts } from "./text/fonts.js";
 
-export function isSvgSource(src: string): boolean {
-  const base = src.split(/[?#]/)[0];
-  return /\.svg$/i.test(base);
-}
-
 export async function rasterizeSvg(
   pathOrUrl: string,
 ): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {

@@ -34,7 +34,8 @@ import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
 import { openMediaSource, resolveSourcePath } from "./mediaInput.js";
-import { isSvgSource, rasterizeSvg } from "./svgImage.js";
+import { rasterizeSvg } from "./svgImage.js";
+import { classifyStatic } from "./staticKind.js";
 import type { BlockStores } from "@seam/media-source";
 
 let serverRegistered = false;
@@ -304,16 +305,19 @@ export class FrameSource {
     this.clipCursors.clear();
   }
 
-  /** Decode a static: try as an image first, fall back to a video freeze
-   *  frame at `sourceTime` (mirrors the preview's StaticStore). */
+  /** Decode a static. The kind comes from the file's leading bytes (a
+   *  remote source has no extension to go by): SVG → Cairo, raster → Skia,
+   *  anything else → a video freeze frame at `sourceTime` (mirrors the
+   *  preview's StaticStore). */
   private async decodeStatic(node: ResolvedStatic): Promise<NodeFrame | null> {
     const path = this.resolvePath(node.source);
-    try {
-      if (isSvgSource(node.source)) {
-        const svg = await rasterizeSvg(path);
-        this.staticDims.set(node, { w: svg.width, h: svg.height });
-        return svg;
-      }
+    const kind = await classifyStatic(path);
+    if (kind === "svg") {
+      const svg = await rasterizeSvg(path);
+      this.staticDims.set(node, { w: svg.width, h: svg.height });
+      return svg;
+    }
+    if (kind === "raster") {
       const img = await loadImage(path);
       const canvas = createCanvas(img.width, img.height);
       const ctx = canvas.getContext("2d");
@@ -321,25 +325,23 @@ export class FrameSource {
       const id = ctx.getImageData(0, 0, img.width, img.height);
       this.staticDims.set(node, { w: img.width, h: img.height });
       return { data: id.data, width: img.width, height: img.height };
-    } catch {
-      // Not a decodable image — treat as a video and freeze at sourceTime.
-      const entry = await this.openSource(node.source);
-      const sample = await entry.sink.getSample(node.sourceTime);
-      if (!sample) {
-        this.staticDims.set(node, { w: entry.width, h: entry.height });
-        return null;
-      }
-      // One-shot: a freeze frame decodes once, so the HDR converter (if the
-      // source needs one) lives only for this call.
-      const holder = { hdr: null as HdrToSdrConverter | null };
-      try {
-        const frame = await sampleToFrame(sample, entry.rotation, holder);
-        this.staticDims.set(node, { w: frame.width, h: frame.height });
-        return frame;
-      } finally {
-        sample.close();
-        holder.hdr?.dispose();
-      }
+    }
+    const entry = await this.openSource(node.source);
+    const sample = await entry.sink.getSample(node.sourceTime);
+    if (!sample) {
+      this.staticDims.set(node, { w: entry.width, h: entry.height });
+      return null;
+    }
+    // One-shot: a freeze frame decodes once, so the HDR converter (if the
+    // source needs one) lives only for this call.
+    const holder = { hdr: null as HdrToSdrConverter | null };
+    try {
+      const frame = await sampleToFrame(sample, entry.rotation, holder);
+      this.staticDims.set(node, { w: frame.width, h: frame.height });
+      return frame;
+    } finally {
+      sample.close();
+      holder.hdr?.dispose();
     }
   }
 

@@ -4,7 +4,8 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCanvas } from "@napi-rs/canvas";
-import { isSvgSource, rasterizeSvg } from "../svgImage.js";
+import { rasterizeSvg } from "../svgImage.js";
+import { classifyStatic } from "../staticKind.js";
 
 // SVG statics must keep their embedded <image href="data:…"> content and
 // text (comment-card exports put the avatar in a data URI). Skia's loadImage
@@ -29,10 +30,38 @@ const px = (r: { data: Uint8ClampedArray; width: number }, x: number, y: number)
 };
 
 describe("SVG statics", () => {
-  it("classifies .svg sources (paths and URLs)", () => {
-    expect(isSvgSource("a/b.svg")).toBe(true);
-    expect(isSvgSource("https://x/y.SVG?token=1")).toBe(true);
-    expect(isSvgSource("a.png")).toBe(false);
+  it("classifies by content, not by name (remote sources have no extension)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "seam-sniff-"));
+    const svgFile = join(dir, "noext");
+    const pngFile = join(dir, "also-noext");
+    writeFileSync(svgFile, fixtureSvg());
+    writeFileSync(pngFile, createCanvas(2, 2).toBuffer("image/png"));
+    const server = createServer((req, res) => {
+      // Mirrors Seam Cloud's `/api/media/<id>/file?token=…`: Range honoured.
+      const body = req.url?.startsWith("/svg") ? Buffer.from(fixtureSvg()) : createCanvas(2, 2).toBuffer("image/png");
+      const m = /bytes=(\d+)-(\d+)?/.exec(req.headers.range ?? "");
+      if (m) {
+        const a = Number(m[1]);
+        const b = Math.min(body.length - 1, m[2] ? Number(m[2]) : body.length - 1);
+        res.writeHead(206, { "content-range": `bytes ${a}-${b}/${body.length}` });
+        res.end(body.subarray(a, b + 1));
+      } else {
+        res.writeHead(200);
+        res.end(body);
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      expect(await classifyStatic(svgFile)).toBe("svg");
+      expect(await classifyStatic(pngFile)).toBe("raster");
+      expect(await classifyStatic(`${base}/svg/file?token=1`)).toBe("svg");
+      expect(await classifyStatic(`${base}/png/file?token=1`)).toBe("raster");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rasterizes embedded data-URI images and text from a file and over http", async () => {

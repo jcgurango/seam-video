@@ -4,6 +4,7 @@ import type {
   ResolvedTimeline,
 } from "@seam/core";
 import { CanvasSink } from "mediabunny";
+import { SNIFF_BYTES, sniffStaticKind, type StaticKind } from "@seam/media-source";
 import type { MediaStore } from "./MediaStore.js";
 import { resolveSource } from "../components/resolveSource.js";
 
@@ -36,18 +37,11 @@ export class StaticStore {
     await Promise.all(
       nodes.map(async (node) => {
         const url = resolveSource(node.source, basePath);
-        // Classify by the original `source` field rather than the resolved
-        // url, because web-platform urls are opaque blob: URIs without an
-        // extension and would always fall through to the video path.
-        const isImage = isImageSource(node.source);
         try {
-          const result = await decodeStaticFrame(
-            url,
-            node.source,
-            isImage,
-            node.sourceTime,
-            mediaStore,
-          );
+          // Classify by content: blob: and remote (`…/file?token=…`) urls
+          // carry no extension, so the name says nothing.
+          const kind = sniffStaticKind(await readHead(url));
+          const result = await decodeStaticFrame(url, kind, node.sourceTime, mediaStore);
           if (!result) return;
           this.bitmaps.set(node, result.canvas);
           this.sizes.set(node, { w: result.width, h: result.height });
@@ -86,30 +80,41 @@ function collectStaticNodes(children: ResolvedChild[]): ResolvedStatic[] {
   }
 }
 
-const IMAGE_EXTS = new Set([
-  "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "tif", "tiff", "svg",
-]);
-
-function isImageSource(source: string): boolean {
-  const dot = source.lastIndexOf(".");
-  if (dot < 0) return false;
-  const ext = source.slice(dot + 1).split(/[?#]/)[0].toLowerCase();
-  return IMAGE_EXTS.has(ext);
-}
-
-function isSvgSource(source: string): boolean {
-  const dot = source.lastIndexOf(".");
-  return dot >= 0 && source.slice(dot + 1).split(/[?#]/)[0].toLowerCase() === "svg";
+/** First `SNIFF_BYTES` of a url: a bounded Range for http (Seam Cloud
+ *  honours it), and only the first body chunk otherwise — a blob: video
+ *  answers 200 with the whole file, which we cancel after one read. */
+async function readHead(url: string): Promise<Uint8Array> {
+  const res = await fetch(url, { headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` } });
+  if (!res.ok) throw new Error(`static source ${res.status} ${res.statusText}`);
+  if (!res.body) return new Uint8Array(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let got = 0;
+  while (got < SNIFF_BYTES) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+  }
+  await reader.cancel().catch(() => {});
+  const out = new Uint8Array(Math.min(got, SNIFF_BYTES));
+  let off = 0;
+  for (const c of chunks) {
+    const n = Math.min(c.length, out.length - off);
+    out.set(c.subarray(0, n), off);
+    off += n;
+    if (off >= out.length) break;
+  }
+  return out;
 }
 
 async function decodeStaticFrame(
   url: string,
-  source: string,
-  isImage: boolean,
+  kind: StaticKind,
   sourceTime: number,
   mediaStore: MediaStore,
 ): Promise<{ canvas: OffscreenCanvas; width: number; height: number } | null> {
-  if (isImage && isSvgSource(source)) {
+  if (kind === "svg") {
     // Chrome's createImageBitmap rejects some perfectly valid SVGs
     // ("The source image could not be decoded") that an <img> renders fine,
     // so SVG goes through an HTMLImageElement and is rasterized at its
@@ -137,7 +142,7 @@ async function decodeStaticFrame(
       URL.revokeObjectURL(objectUrl);
     }
   }
-  if (isImage) {
+  if (kind === "raster") {
     const response = await fetch(url);
     const blob = await response.blob();
     // `imageOrientation: "from-image"` applies EXIF Orientation so camera
