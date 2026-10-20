@@ -224,7 +224,10 @@ export class BlockStore {
   ) {
     this.blockSize = options.blockSize ?? DEFAULT_BLOCK;
     this.maxRequestBytes = Math.max(this.blockSize, options.maxRequestBytes ?? DEFAULT_MAX_REQUEST);
-    this.fetchFn = options.fetchFn ?? fetch;
+    // Wrapped, not stored bare: browsers throw "Illegal invocation" when
+    // window.fetch is called with any other `this` (Node doesn't care, so
+    // the test suite never sees it).
+    this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.requestInit = options.requestInit ?? {};
     this.readAhead = options.readAhead ?? true;
     this.maxReadAheadBlocks = options.maxReadAheadBlocks ?? DEFAULT_READ_AHEAD;

@@ -43,6 +43,7 @@ export class StaticStore {
         try {
           const result = await decodeStaticFrame(
             url,
+            node.source,
             isImage,
             node.sourceTime,
             mediaStore,
@@ -96,12 +97,46 @@ function isImageSource(source: string): boolean {
   return IMAGE_EXTS.has(ext);
 }
 
+function isSvgSource(source: string): boolean {
+  const dot = source.lastIndexOf(".");
+  return dot >= 0 && source.slice(dot + 1).split(/[?#]/)[0].toLowerCase() === "svg";
+}
+
 async function decodeStaticFrame(
   url: string,
+  source: string,
   isImage: boolean,
   sourceTime: number,
   mediaStore: MediaStore,
 ): Promise<{ canvas: OffscreenCanvas; width: number; height: number } | null> {
+  if (isImage && isSvgSource(source)) {
+    // Chrome's createImageBitmap rejects some perfectly valid SVGs
+    // ("The source image could not be decoded") that an <img> renders fine,
+    // so SVG goes through an HTMLImageElement and is rasterized at its
+    // intrinsic size — the same size Skia's loadImage uses in the renderer.
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const svgBlob = blob.type === "image/svg+xml" ? blob : new Blob([blob], { type: "image/svg+xml" });
+    const objectUrl = URL.createObjectURL(svgBlob);
+    try {
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("SVG <img> failed to load"));
+        img.src = objectUrl;
+      });
+      const width = img.naturalWidth;
+      const height = img.naturalHeight;
+      if (!width || !height) throw new Error("SVG has no intrinsic size (needs width/height or a viewBox)");
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, width, height);
+      return { canvas, width, height };
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
   if (isImage) {
     const response = await fetch(url);
     const blob = await response.blob();

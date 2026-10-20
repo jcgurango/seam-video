@@ -22,7 +22,8 @@ RUN pnpm install --frozen-lockfile --filter @seam/web...
 # @seam/core, @seam/compositor and @seam/map resolve from their built dist, so
 # compile them (tsc) before bundling. editor/preview are consumed as source by
 # Vite, so they don't need an electron-vite build.
-RUN pnpm --filter @seam/core --filter @seam/compositor --filter @seam/map build \
+RUN pnpm --filter @seam/core --filter @seam/compositor --filter @seam/map \
+ --filter @seam/media-source build \
  && pnpm --filter @seam/web build
 
 # ---- serve ----

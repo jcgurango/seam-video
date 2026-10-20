@@ -34,6 +34,7 @@ import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
 import { openMediaSource, resolveSourcePath } from "./mediaInput.js";
+import { isSvgSource, rasterizeSvg } from "./svgImage.js";
 import type { BlockStores } from "@seam/media-source";
 
 let serverRegistered = false;
@@ -308,6 +309,11 @@ export class FrameSource {
   private async decodeStatic(node: ResolvedStatic): Promise<NodeFrame | null> {
     const path = this.resolvePath(node.source);
     try {
+      if (isSvgSource(node.source)) {
+        const svg = await rasterizeSvg(path);
+        this.staticDims.set(node, { w: svg.width, h: svg.height });
+        return svg;
+      }
       const img = await loadImage(path);
       const canvas = createCanvas(img.width, img.height);
       const ctx = canvas.getContext("2d");
