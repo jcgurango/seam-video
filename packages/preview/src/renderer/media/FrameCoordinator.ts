@@ -455,19 +455,34 @@ export class FrameCoordinator {
         }
       }
 
-      const isActive =
-        currentTime >= flat.absoluteStart && currentTime < flat.absoluteEnd;
+      // Audio pre-rolls like video: a clip's decode starts as soon as its
+      // start enters the lookahead window, with its buffers scheduled at
+      // their future context times and a stop at its end. Starting only
+      // once the playhead crosses in (as before) left each clip exactly its
+      // own lifetime to go from a cold decoder to a first scheduled buffer —
+      // a run of short clips never sounded at all.
+      const audioWanted =
+        isPlaying &&
+        flat.absoluteStart < windowMax &&
+        currentTime < flat.absoluteEnd;
 
-      if (isActive) {
-        if (isPlaying && !this.playingClips.has(flat)) {
+      if (audioWanted) {
+        if (!this.playingClips.has(flat)) {
           this.playingClips.add(flat);
-          if (flat.audioId) {
-            const sourceTime = flat.toSourceTime(currentTime);
-            this.audioScheduler?.startClip(flat.audioId, sourceTime);
+          if (flat.audioId && this.audioScheduler) {
+            const startAt = Math.max(flat.absoluteStart, currentTime);
+            this.audioScheduler.startClip(
+              flat.audioId,
+              flat.toSourceTime(startAt),
+              {
+                at: this.audioScheduler.contextTimeFor(startAt),
+                until: this.audioScheduler.contextTimeFor(flat.absoluteEnd),
+              },
+            );
           }
         }
       } else if (this.playingClips.has(flat)) {
-        // Clip no longer active — stop audio (buffer may still be in window)
+        // Clip no longer wanted — stop audio (buffer may still be in window)
         this.playingClips.delete(flat);
         if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
       }
