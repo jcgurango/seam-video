@@ -111,7 +111,9 @@ function childLabel(docChild: import("@seam/core").Child | undefined, resolved: 
   const base = baseLabel(docChild, resolved);
   // A node that actually loops (anchored span longer than its content with
   // `underflow: "loop"`) — the block shows one span; the content repeats.
-  return (resolved as { loop?: unknown }).loop ? `${base} ↻` : base;
+  // Reversed clip/audio (`out < in` / negative `duration`) gets a `◀`.
+  const marked = (resolved as { reverse?: boolean }).reverse ? `◀ ${base}` : base;
+  return (resolved as { loop?: unknown }).loop ? `${marked} ↻` : marked;
 }
 
 function baseLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {

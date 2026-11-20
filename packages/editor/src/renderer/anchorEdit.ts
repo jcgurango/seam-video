@@ -9,7 +9,7 @@
 // seconds via the panel's pxPerSec, and hands deltas to `dragAnchorPoint` /
 // `dragOffset`; a click on the top handle goes through `toggleAnchorPoint`.
 
-import { formatStart, parseStart } from "@seam/core";
+import { formatStart, parseStart, resolvedPlayStart, resolvedSignedRate } from "@seam/core";
 import type { Child, Composition, ParsedStart, ResolvedChild, Start } from "@seam/core";
 import { withPlacement } from "./runEdit.js";
 
@@ -48,7 +48,8 @@ export function anchorSource(
   anchorResolved: ResolvedChild,
 ): { base: number; speed: number } {
   if (anchorResolved.type === "clip" || anchorResolved.type === "audio") {
-    return { base: anchorResolved.sourceIn, speed: anchorResolved.speed };
+    // Signed for a reversed clip (source falls as output advances).
+    return { base: resolvedPlayStart(anchorResolved), speed: resolvedSignedRate(anchorResolved) };
   }
   if (anchorResolved.type === "composition") {
     return {
@@ -113,7 +114,12 @@ export function dragAnchorPoint(start: Start, deltaSec: number, ctx: AnchorEditC
   if (anchor.point?.kind === "source") {
     const sourceStart = ctx.anchorBase;
     const sourceEnd = ctx.anchorBase + (ctx.anchorEnd - ctx.anchorStart) * ctx.anchorSpeed;
-    const next = clamp(anchor.point.value + deltaSec * ctx.anchorSpeed, sourceStart, sourceEnd);
+    // `anchorSpeed` is negative on a reversed clip, where the range runs down.
+    const next = clamp(
+      anchor.point.value + deltaSec * ctx.anchorSpeed,
+      Math.min(sourceStart, sourceEnd),
+      Math.max(sourceStart, sourceEnd),
+    );
     return formatStart({ ...anchor, point: { kind: "source", value: fmtSec(next) } });
   }
   const range = ctx.anchorEnd - ctx.anchorStart;

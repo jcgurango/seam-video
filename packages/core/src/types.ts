@@ -182,9 +182,12 @@ export interface Clip extends ChildTimingFields {
   source: string;
   in: number;
   /** Source end. Optional when `duration` is set: defaults to `in + duration`
-   *  (speed 1). Readers use `clipOut()`. */
+   *  (speed 1). Readers use `clipOut()`. `out < in` plays the span in
+   *  REVERSE (from `in` back to `out`). */
   out?: number;
   speed?: number;
+  /** Output length. Negative = reverse playback (`{in: 5, duration: -3}`
+   *  shows source 5 → 2); the length is `|duration|`. See `clipPlayRange()`. */
   duration?: number;
   /** Pre-transform source orientation (clockwise degrees). Baked into the
    *  decoded pixels before the spatial transform, composing with any rotation
@@ -227,9 +230,11 @@ export interface Audio extends PlacementFields {
   source: string;
   in: number;
   /** Source end. Optional when `duration` is set: defaults to `in + duration`
-   *  (speed 1). Readers use `clipOut()`. */
+   *  (speed 1). Readers use `clipOut()`. `out < in` = reverse — see
+   *  {@link Clip.out}. */
   out?: number;
   speed?: number;
+  /** Output length; negative = reverse — see {@link Clip.duration}. */
   duration?: number;
   overflow?: Overflow;
   underflow?: Underflow;

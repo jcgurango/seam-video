@@ -139,7 +139,7 @@ const IN_OUT: PropDef[] = [
     kind: "number",
     unit: "s",
     placeholder: "in + duration",
-    hint: "Source end. Omit it when Duration is set: out = in + duration.",
+    hint: "Source end. Omit it when Duration is set: out = in + duration. Out before In plays the span in reverse.",
   }),
 ];
 const SPEED: PropDef = timing({
@@ -159,6 +159,10 @@ const DURATION_OPT: PropDef = timing({
   placeholder: "natural",
   hint: "Output length. Overflow / Underflow say how the content fills it (default: stretch, the rate derives from it).",
 });
+const DURATION_CLIP: PropDef = {
+  ...DURATION_OPT,
+  hint: "Output length; negative plays the span in reverse. Overflow / Underflow say how the content fills it (default: stretch, the rate derives from it).",
+};
 
 const SOURCE: PropDef = { key: "source", label: "Source", group: "Media", kind: "string" };
 
@@ -456,7 +460,7 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
     SOURCE,
     ...IN_OUT,
     SPEED,
-    DURATION_OPT,
+    DURATION_CLIP,
     OVERFLOW,
     UNDERFLOW,
     ...PLACEMENT,
@@ -473,7 +477,7 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
     VOLUME,
     PITCH,
   ],
-  audio: [SOURCE, ...IN_OUT, SPEED, DURATION_OPT, OVERFLOW, UNDERFLOW, ...PLACEMENT, VOLUME, PITCH],
+  audio: [SOURCE, ...IN_OUT, SPEED, DURATION_CLIP, OVERFLOW, UNDERFLOW, ...PLACEMENT, VOLUME, PITCH],
   static: [
     SOURCE,
     DURATION_REQ,

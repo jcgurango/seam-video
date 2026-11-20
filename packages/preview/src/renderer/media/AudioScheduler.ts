@@ -27,6 +27,11 @@ interface ClipState {
   id: string;
   sink: AudioBufferSink;
   speed: number;
+  /** The clip plays its source backwards: a run's `sourceTime` is where it
+   *  STARTS and source time falls from there. Decoders only run forward, so
+   *  the pump decodes fixed chunks walking down the source axis and schedules
+   *  each one sample-reversed (see `pumpReverse`). */
+  reverse: boolean;
   /** Length-preserving semitone shifter between the buffer sources and the
    *  gain node, present when the clip's net `pitch` ≠ 0. Its looped
    *  modulation sources run until dispose. */
@@ -60,6 +65,11 @@ export interface StartClipOptions {
   /** Context time to stop at (the clip's end). Default: until `stopClip`. */
   until?: number;
 }
+
+/** Source seconds per reversed chunk. The first is short so a run sounds
+ *  soon after it starts; later ones amortize the per-chunk decoder seek. */
+const REVERSE_FIRST_CHUNK = 0.25;
+const REVERSE_CHUNK = 1;
 
 const now = () =>
   typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -163,7 +173,8 @@ export class AudioScheduler {
     sink: AudioBufferSink,
     speed: number,
     volume: number = 1,
-    pitch: number = 0
+    pitch: number = 0,
+    reverse: boolean = false
   ): void {
     // Idempotent: re-registering an id (or a stale one that lingers after a
     // timeline rebuild) must tear the old clip down first, or its GainNode
@@ -178,6 +189,7 @@ export class AudioScheduler {
       id,
       sink,
       speed,
+      reverse,
       pitchShifter,
       sourceTarget: pitchShifter ? pitchShifter.input : gainNode,
       volume,
@@ -265,6 +277,10 @@ export class AudioScheduler {
     state.asyncId++;
     const myAsyncId = state.asyncId;
     state.run = run;
+    if (state.reverse) {
+      void this.pumpReverse(state, myAsyncId, run);
+      return;
+    }
     state.iterator = state.sink.buffers(run.sourceTime)[Symbol.asyncIterator]();
     void this.pump(state, myAsyncId, run);
   }
@@ -443,57 +459,168 @@ export class AudioScheduler {
         return;
       }
 
-      const node = ctx.createBufferSource();
-      node.buffer = buffer;
-      node.playbackRate.value = state.speed;
-      node.connect(state.sourceTarget);
-
-      // Earliest the buffer can start: its scheduled time, or now if that has
-      // passed (late decode) — skipping the elapsed portion keeps sync. A
-      // pre-rolled run (`at` in the future) likewise skips the part of the
-      // buffer that precedes `sourceTime`.
-      const startRef = Math.max(run.at, ctxNow);
-      let started = false;
-      if (audioCtxTime >= startRef) {
-        node.start(audioCtxTime);
-        started = true;
-      } else {
-        const offset = startRef - audioCtxTime; // output seconds already elapsed
-        if (offset < buffer.duration / state.speed) {
-          node.start(startRef, offset * state.speed);
-          started = true;
-        }
-      }
-
-      if (!started) {
-        node.disconnect();
-        continue;
-      }
-      if (run.until != null) node.stop(run.until);
-
-      if (run.firstBufferAt == null) {
-        run.firstBufferAt = ctxNow;
-        this.lastStartLatencyMs = now() - run.startedWall;
-        if (AudioScheduler.debug) {
-          console.debug(
-            `[audio] ${run.scrub ? "scrub" : "start"} ${state.id}: first buffer after ${this.lastStartLatencyMs.toFixed(1)} ms` +
-              (run.scrub ? "" : `, scheduled ${((audioCtxTime - ctxNow) * 1000).toFixed(0)} ms ahead`),
-          );
-        }
-      }
-
-      state.queuedNodes.add(node);
-      node.onended = () => state.queuedNodes.delete(node);
+      if (!this.scheduleBuffer(state, run, buffer, audioCtxTime, ctxNow)) continue;
 
       // Throttle: if we're more than 1s ahead, wait
-      const realTimeAhead = audioCtxTime - ctx.currentTime;
-      if (realTimeAhead > 1) {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, Math.max(0, (realTimeAhead - 0.5) * 1000)),
-        );
-        if (state.asyncId !== myAsyncId) return;
+      if (!(await this.throttle(state, myAsyncId, audioCtxTime))) return;
+    }
+  }
+
+  /** Queue one decoded buffer to be heard at `audioCtxTime` (context
+   *  seconds). Returns false when it had fully elapsed and was dropped. */
+  private scheduleBuffer(
+    state: ClipState,
+    run: Run,
+    buffer: AudioBuffer,
+    audioCtxTime: number,
+    ctxNow: number,
+  ): boolean {
+    const node = this.audioContext.createBufferSource();
+    node.buffer = buffer;
+    node.playbackRate.value = state.speed;
+    node.connect(state.sourceTarget);
+
+    // Earliest the buffer can start: its scheduled time, or now if that has
+    // passed (late decode) — skipping the elapsed portion keeps sync. A
+    // pre-rolled run (`at` in the future) likewise skips the part of the
+    // buffer that precedes `sourceTime`.
+    const startRef = Math.max(run.at, ctxNow);
+    let started = false;
+    if (audioCtxTime >= startRef) {
+      node.start(audioCtxTime);
+      started = true;
+    } else {
+      const offset = startRef - audioCtxTime; // output seconds already elapsed
+      if (offset < buffer.duration / state.speed) {
+        node.start(startRef, offset * state.speed);
+        started = true;
       }
     }
+
+    if (!started) {
+      node.disconnect();
+      return false;
+    }
+    if (run.until != null) node.stop(run.until);
+
+    if (run.firstBufferAt == null) {
+      run.firstBufferAt = ctxNow;
+      this.lastStartLatencyMs = now() - run.startedWall;
+      if (AudioScheduler.debug) {
+        console.debug(
+          `[audio] ${run.scrub ? "scrub" : "start"} ${state.id}: first buffer after ${this.lastStartLatencyMs.toFixed(1)} ms` +
+            (run.scrub ? "" : `, scheduled ${((audioCtxTime - ctxNow) * 1000).toFixed(0)} ms ahead`),
+        );
+      }
+    }
+
+    state.queuedNodes.add(node);
+    node.onended = () => state.queuedNodes.delete(node);
+    return true;
+  }
+
+  /** Hold the pump while it is more than 1 s ahead of the clock. Resolves
+   *  false when the run was superseded during the wait. */
+  private async throttle(
+    state: ClipState,
+    myAsyncId: number,
+    audioCtxTime: number,
+  ): Promise<boolean> {
+    const realTimeAhead = audioCtxTime - this.audioContext.currentTime;
+    if (realTimeAhead > 1) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.max(0, (realTimeAhead - 0.5) * 1000)),
+      );
+      if (state.asyncId !== myAsyncId) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Reversed counterpart of {@link pump}: walks DOWN the source axis from
+   * `run.sourceTime` in chunks `[lo, hi]`, decodes each forward, and schedules
+   * it sample-reversed at `at + (sourceTime − hi) / speed`. Chunk edges are
+   * rounded on the absolute sample grid so consecutive chunks abut exactly.
+   * Everything else (pre-roll, late-start skip, `until`, scrub anchoring,
+   * throttle) is shared with the forward pump.
+   */
+  private async pumpReverse(state: ClipState, myAsyncId: number, run: Run): Promise<void> {
+    const ctx = this.audioContext;
+    let hi = run.sourceTime;
+    let first = true;
+    while (hi > 1e-6) {
+      if (state.asyncId !== myAsyncId) return;
+      const len = run.scrub
+        ? Math.max(0.05, run.scrub.durationSec * state.speed + 0.01)
+        : first
+          ? REVERSE_FIRST_CHUNK
+          : REVERSE_CHUNK;
+      const lo = Math.max(0, hi - len);
+      // Past the clip's end — nothing more to decode. (A scrub's `at`/`until`
+      // aren't known until its first buffer lands.)
+      if (
+        !run.scrub &&
+        run.until != null &&
+        run.at + (run.sourceTime - hi) / state.speed >= run.until
+      ) {
+        return;
+      }
+
+      const buffer = await this.decodeReversed(state, myAsyncId, lo, hi);
+      if (state.asyncId !== myAsyncId) return;
+      const ctxNow = ctx.currentTime;
+      // An undecodable chunk (past the file's end) is silence: skip it.
+      if (buffer) {
+        if (run.scrub && run.firstBufferAt == null) this.armScrub(state, run, ctxNow);
+        const audioCtxTime = run.at + (run.sourceTime - hi) / state.speed;
+        this.scheduleBuffer(state, run, buffer, audioCtxTime, ctxNow);
+        if (run.scrub) return; // one chunk covers the whole burst
+        if (!(await this.throttle(state, myAsyncId, audioCtxTime))) return;
+      }
+      hi = lo;
+      first = false;
+    }
+  }
+
+  /** Decode source `[lo, hi]` and return it reversed (sample 0 = source time
+   *  `hi`), or null if nothing decoded / the run was superseded. */
+  private async decodeReversed(
+    state: ClipState,
+    myAsyncId: number,
+    lo: number,
+    hi: number,
+  ): Promise<AudioBuffer | null> {
+    const iterator = state.sink.buffers(lo, hi)[Symbol.asyncIterator]();
+    state.iterator = iterator;
+    const parts: Array<{ buffer: AudioBuffer; timestamp: number }> = [];
+    for (;;) {
+      const result = await iterator.next();
+      if (state.asyncId !== myAsyncId) return null;
+      if (result.done || !result.value) break;
+      parts.push(result.value);
+    }
+    if (state.iterator === iterator) state.iterator = null;
+    if (parts.length === 0) return null;
+
+    const sr = parts[0].buffer.sampleRate;
+    const channels = parts[0].buffer.numberOfChannels;
+    const base = Math.round(lo * sr);
+    const length = Math.round(hi * sr) - base;
+    if (length <= 0) return null;
+    const out = this.audioContext.createBuffer(channels, length, sr);
+    for (const part of parts) {
+      // Where this decoded buffer sits in the chunk; the first usually starts
+      // a little before `lo`, the last may run past `hi`.
+      const at = Math.round(part.timestamp * sr) - base;
+      const from = Math.max(0, -at);
+      const to = Math.min(part.buffer.length, length - at);
+      for (let c = 0; c < channels; c++) {
+        const src = part.buffer.getChannelData(Math.min(c, part.buffer.numberOfChannels - 1));
+        const dst = out.getChannelData(c);
+        for (let i = from; i < to; i++) dst[length - 1 - (at + i)] = src[i];
+      }
+    }
+    return out;
   }
 
   dispose(): void {

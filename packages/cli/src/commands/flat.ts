@@ -68,8 +68,9 @@ function collect(
       out.push({
         type: child.type,
         source: child.source,
-        in: child.sourceIn,
-        out: child.sourceOut,
+        // Playback order: a reversed clip lists `in > out`, like the authored form.
+        in: child.reverse ? child.sourceOut : child.sourceIn,
+        out: child.reverse ? child.sourceIn : child.sourceOut,
         start,
         end,
         volume: volumeAt(child.volume, envs, (start + end) / 2, start, end),

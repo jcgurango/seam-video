@@ -169,8 +169,9 @@ export async function renderAudioMix(
     src: string,
     inT: number,
     outT: number,
+    reverse: boolean,
   ): Promise<DecodedAudio | null> => {
-    const cacheKey = `${src}:${inT}:${outT}`;
+    const cacheKey = `${src}:${inT}:${outT}:${reverse ? "r" : "f"}`;
     if (cache.has(cacheKey)) return cache.get(cacheKey)!;
     const input = new Input({
       source: openMediaSource(src, basePath, stores),
@@ -213,7 +214,18 @@ export async function renderAudioMix(
         a.set(cc[i], off);
         off += cc[i].length;
       }
-      channels.push(a.slice(startSample, endSample));
+      const region = a.slice(startSample, endSample);
+      if (reverse) {
+        // A reversed node plays the region back to front. Pad a short decode
+        // (source ends before `outT`) to the full length FIRST, so the missing
+        // tail becomes leading silence and sample k of the buffer is still
+        // source time `outT − k/sr` — offsets into it stay in playback order.
+        const full = new Float32Array(Math.max(region.length, wantLen));
+        full.set(region);
+        channels.push(full.reverse());
+      } else {
+        channels.push(region);
+      }
     }
     const decoded: DecodedAudio = { sampleRate: sr, channels };
     cache.set(cacheKey, decoded);
@@ -225,7 +237,12 @@ export async function renderAudioMix(
   for (const entry of entries) {
     const { node, parentSpeed, start, compVolumes, pitch, srcOffset, srcLength } = entry;
     // Decoded once per source+region — a loop's cycles share the buffer.
-    const decoded = await decodeRegion(node.source, node.sourceIn, node.sourceOut);
+    const decoded = await decodeRegion(
+      node.source,
+      node.sourceIn,
+      node.sourceOut,
+      node.reverse === true,
+    );
     if (!decoded || decoded.channels.length === 0) continue;
 
     const effectiveSpeed = node.speed * parentSpeed;

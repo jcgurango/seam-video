@@ -143,6 +143,8 @@ export async function mixCompositionAudio(
     // `.set` (vs copyToChannel) sidesteps the Float32Array<ArrayBuffer>
     // typed-array variance mismatch and copies the same PCM.
     buffer.getChannelData(0).set(range.samples);
+    // A reversed leaf plays its range back to front, like the output mixers.
+    if (leaf.reverse) buffer.getChannelData(0).reverse();
 
     const node = ctx.createBufferSource();
     node.buffer = buffer;

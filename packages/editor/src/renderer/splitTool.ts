@@ -20,6 +20,8 @@ import {
   formatStart,
   parseStart,
   resolveComposition,
+  resolvedPlayStart,
+  resolvedSignedRate,
 } from "@seam/core";
 import type {
   Audio,
@@ -75,7 +77,8 @@ interface SplitContext {
   /** Same, for each half after the split. */
   leftBase: number;
   rightBase: number;
-  speed: number; // source seconds per output second
+  /** SIGNED source seconds per output second (negative = reversed clip). */
+  speed: number;
 }
 
 /**
@@ -203,7 +206,14 @@ function splitChildAt(
 
   const offset = currentTime - rChild.timelineStart;
   const origLen = rChild.timelineEnd - rChild.timelineStart;
-  const speed = rChild.speed;
+  // Signed: a reversed clip/audio runs DOWN its source axis, so everything
+  // below works in playback order (`windowIn` = the source time at the node's
+  // first output instant, `windowOut` at its last) and both halves come out
+  // reversed, the left one keeping the high end.
+  const speed =
+    rChild.type === "composition" ? rChild.speed : resolvedSignedRate(rChild);
+  // A negative authored `duration` (reverse) stays negative on both halves.
+  const durSign = child.duration != null && child.duration < 0 ? -1 : 1;
 
   // Both halves of a split can't share the original id — left keeps it,
   // right gets a generated `${id}_split` variant (de-duplicated against
@@ -230,9 +240,9 @@ function splitChildAt(
     windowOut = windowIn + windowLen;
     origBase = compIn;
   } else {
-    windowIn = rChild.sourceIn;
-    windowOut = rChild.sourceOut;
-    origBase = rChild.sourceIn;
+    windowIn = resolvedPlayStart(rChild);
+    windowOut = rChild.reverse ? rChild.sourceIn : rChild.sourceOut;
+    origBase = windowIn;
   }
   const splitSource = windowIn + offset * speed;
 
@@ -242,7 +252,7 @@ function splitChildAt(
     ...child,
     in: windowIn,
     out: splitSource,
-    ...(child.duration != null ? { duration: offset } : {}),
+    ...(child.duration != null ? { duration: durSign * offset } : {}),
   } as Child;
   const { id: _id, ...rightBase } = child;
   const second = withPlacement(
@@ -251,7 +261,7 @@ function splitChildAt(
       ...(rightId != null ? { id: rightId } : {}),
       in: splitSource,
       out: windowOut,
-      ...(child.duration != null ? { duration: origLen - offset } : {}),
+      ...(child.duration != null ? { duration: durSign * (origLen - offset) } : {}),
     } as Child,
     undefined,
     undefined,

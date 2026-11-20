@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useTimeline } from "@seam/preview";
+import { clipSourceTime } from "@seam/core";
 import type {
   BinEntry,
   Child,
@@ -393,9 +394,10 @@ function NodeBlock({
   let sourceOut: number | null = null;
   let sourceTime: number | null = null;
   if (child.type === "clip" || child.type === "audio") {
-    sourceIn = child.sourceIn;
-    sourceOut = child.sourceOut;
-    sourceTime = sourceIn + localTime * child.speed;
+    // Playback order: a reversed clip runs sourceOut → sourceIn.
+    sourceIn = child.reverse ? child.sourceOut : child.sourceIn;
+    sourceOut = child.reverse ? child.sourceIn : child.sourceOut;
+    sourceTime = clipSourceTime(child, localTime);
   } else if (child.type === "composition" && docChild?.type === "composition") {
     sourceIn = docChild.in ?? 0;
     // out unset → window spans the full inner timeline; reconstruct
@@ -406,7 +408,7 @@ function NodeBlock({
   const hasSource = sourceTime != null && sourceIn != null && sourceOut != null;
   const sourceSpan = hasSource ? sourceOut! - sourceIn! : 0;
   const sourcePct =
-    hasSource && sourceSpan > 0
+    hasSource && sourceSpan !== 0
       ? ((sourceTime! - sourceIn!) / sourceSpan) * 100
       : null;
 
@@ -475,7 +477,11 @@ function NodeBlock({
       {child.type === "clip" || child.type === "audio" ? (
         <Row
           label="Effective in/out"
-          value={`${formatTime(child.sourceIn)} – ${formatTime(child.sourceOut)}`}
+          value={
+            child.reverse
+              ? `${formatTime(child.sourceOut)} – ${formatTime(child.sourceIn)} (reversed)`
+              : `${formatTime(child.sourceIn)} – ${formatTime(child.sourceOut)}`
+          }
         />
       ) : null}
     </div>

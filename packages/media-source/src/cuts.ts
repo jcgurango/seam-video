@@ -5,6 +5,7 @@
  * inner = (t − comp.timelineStart) · comp.speed, clamped to the comp's inner
  * span). Pure.
  */
+import { clipSourceTime } from "@seam/core";
 import type { ResolvedChild, ResolvedTimeline } from "@seam/core";
 
 export interface Cut {
@@ -42,8 +43,10 @@ function walk(
       const innerStart = Math.max(0, child.timelineStart);
       const innerEnd = Math.min(child.timelineEnd, innerSpan);
       if (innerEnd <= innerStart) return;
-      const sourceIn = child.sourceIn + (innerStart - child.timelineStart) * child.speed;
-      const sourceOut = child.sourceIn + (innerEnd - child.timelineStart) * child.speed;
+      // Direction-agnostic (a reversed clip maps start → the high end): the
+      // cut's window is the ascending byte span either way.
+      const sourceIn = clipSourceTime(child, innerStart - child.timelineStart);
+      const sourceOut = clipSourceTime(child, innerEnd - child.timelineStart);
       out.push({
         id,
         kind: child.type,

@@ -240,12 +240,14 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
               target.child.source,
               opts.basePath
             );
-            wav = await extractAudioWav(
-              sourceUrl,
-              target.child.in,
-              clipOut(target.child)
-            );
-            anchorBase = target.child.in;
+            // Always transcribe the range FORWARD (speech played backwards
+            // isn't transcribable), even for a reversed clip (`out < in`);
+            // phrases anchor in source time, so they still land on the right
+            // content moments.
+            const out = clipOut(target.child);
+            const lo = Math.min(target.child.in, out);
+            wav = await extractAudioWav(sourceUrl, lo, Math.max(target.child.in, out));
+            anchorBase = lo;
           }
           if (cancelRef.current) break;
 

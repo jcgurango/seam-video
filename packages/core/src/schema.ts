@@ -242,6 +242,12 @@ export const UnderflowSchema = z.enum([
   "loop",
 ]);
 
+/** `duration` on clip/audio: any non-zero number (negative = reverse). */
+const nonZero = z.number().refine((n) => n !== 0, { message: "Must be non-zero" });
+/** A clip/audio's `[in, out]` must have length (either direction). */
+const spanNonEmpty = (data: { in: number; out?: number }) =>
+  data.out == null || data.out !== data.in;
+
 export const ClipSchema = z.object({
   type: z.literal("clip"),
   source: z.string().min(1),
@@ -252,10 +258,11 @@ export const ClipSchema = z.object({
    *  never sampled (it was invisible behind a composition window). */
   in: z.number(),
   /** Optional when `duration` is given: `out` then defaults to
-   *  `in + duration` (speed 1). */
-  out: z.number().positive().optional(),
+   *  `in + duration` (speed 1). `out < in` plays the span in reverse. */
+  out: z.number().optional(),
   speed: z.number().positive().optional(),
-  duration: z.number().positive().optional(),
+  /** Output length; negative = reverse playback (length is `|duration|`). */
+  duration: nonZero.optional(),
   orientation: OrientationSchema.optional(),
   volume: keyframed(VolumeValueSchema).optional(),
   /** Length-preserving audio pitch shift in semitones (fractional ok,
@@ -277,7 +284,7 @@ export const ClipSchema = z.object({
 ).refine(
   (data) => data.out != null || data.duration != null,
   { message: "A clip needs 'out' or 'duration' (out defaults to in + duration)" }
-);
+).refine(spanNonEmpty, { message: "A clip's 'out' must differ from 'in'", path: ["out"] });
 
 export const StaticSchema = z.object({
   type: z.literal("static"),
@@ -296,10 +303,12 @@ export const AudioSchema = z.object({
   type: z.literal("audio"),
   source: z.string().min(1),
   in: z.number().nonnegative(),
-  /** Optional when `duration` is given — see clip `out`. */
-  out: z.number().positive().optional(),
+  /** Optional when `duration` is given — see clip `out` (`out < in` =
+   *  reverse). */
+  out: z.number().nonnegative().optional(),
   speed: z.number().positive().optional(),
-  duration: z.number().positive().optional(),
+  /** Negative = reverse — see clip `duration`. */
+  duration: nonZero.optional(),
   volume: keyframed(VolumeValueSchema).optional(),
   /** Length-preserving pitch shift in semitones — see clip `pitch`. */
   pitch: z.number().gte(-48).lte(48).optional(),
@@ -322,6 +331,11 @@ export const AudioSchema = z.object({
   .refine(
     (data) => data.out != null || data.duration != null,
     { message: "Audio needs 'out' or 'duration' (out defaults to in + duration)" }
+  )
+  .refine(spanNonEmpty, { message: "Audio 'out' must differ from 'in'", path: ["out"] })
+  .refine(
+    (data) => data.out != null || data.duration == null || data.in + data.duration >= 0,
+    { message: "Audio 'in + duration' must not be negative" }
   );
 
 export const DataSchema = z.object({

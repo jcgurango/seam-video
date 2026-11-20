@@ -17,7 +17,12 @@ import type {
 import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
 import { loopIterations, loopLocalTime } from "./loop.js";
-import { clipOut } from "./clip-span.js";
+import {
+  clipNaturalDuration,
+  clipPlayRange,
+  resolvedPlayStart,
+  resolvedSignedRate,
+} from "./clip-span.js";
 import { parseStart } from "./anchor.js";
 
 /**
@@ -29,7 +34,7 @@ function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
     case "audio":
-      return (clipOut(child) - child.in) / (child.speed ?? 1);
+      return clipNaturalDuration(child);
     case "static":
     case "text":
     case "rect":
@@ -51,9 +56,11 @@ function naturalDuration(child: Child): number {
  *  composition, `overflow` / `underflow` (default `stretch`) decide how the
  *  content fills it. */
 function targetDuration(child: Child, nat: number): number {
-  if (child.type === "clip" || child.type === "audio" || child.type === "composition") {
-    return child.duration ?? nat;
+  if (child.type === "clip" || child.type === "audio") {
+    // Negative `duration` = reverse playback; the length is its magnitude.
+    return child.duration != null ? Math.abs(child.duration) : nat;
   }
+  if (child.type === "composition") return child.duration ?? nat;
   return nat;
 }
 
@@ -313,9 +320,15 @@ function resolveChild(
   }
 
   // Clip / Audio — same temporal logic, different leaf shape.
+  // A reversed leaf (`out < in` / negative `duration`) runs the same logic on
+  // the NEGATED source axis — there playback is forward again, so "start" /
+  // "end" in the overflow/underflow strategies mean playback start/end — and
+  // the result is negated back into an ascending `[sourceIn, sourceOut]`.
   const leaf = child;
-  let sourceIn = leaf.in;
-  let sourceOut = clipOut(leaf);
+  const range = clipPlayRange(leaf);
+  const reverse = range.reverse;
+  let sourceIn = reverse ? -range.start : range.start;
+  let sourceOut = reverse ? -range.end : range.end;
   const baseSpeed = leaf.speed ?? 1;
   let speed = baseSpeed;
   let loops = false;
@@ -342,6 +355,7 @@ function resolveChild(
   const leafDur = (sourceOut - sourceIn) / speed;
   const loop: ResolvedLoop | undefined = loops ? { period: leafDur, phase: 0 } : undefined;
   const actualDuration = loop ? target : leafDur;
+  if (reverse) [sourceIn, sourceOut] = [-sourceOut, -sourceIn];
 
   if (leaf.type === "audio") {
     return {
@@ -353,6 +367,7 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         speed,
+        ...(reverse ? { reverse: true as const } : {}),
         ...(loop ? { loop } : {}),
         ...(leaf.volume != null ? { volume: leaf.volume } : {}),
         ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
@@ -370,6 +385,7 @@ function resolveChild(
       timelineStart: 0,
       timelineEnd: 0,
       speed,
+      ...(reverse ? { reverse: true as const } : {}),
       ...(loop ? { loop } : {}),
       ...(leaf.orientation != null ? { orientation: leaf.orientation } : {}),
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
@@ -558,8 +574,9 @@ function buildIdMapEntry(resolved: ResolvedChild, compWindowIn = 0): IdMapEntry 
     return {
       start,
       end,
-      baseSourceTime: resolved.sourceIn,
-      speed: resolved.speed,
+      // Signed for a reversed node: source time falls as output advances.
+      baseSourceTime: resolvedPlayStart(resolved),
+      speed: resolvedSignedRate(resolved),
     };
   }
   if (
@@ -631,10 +648,14 @@ function cropChildrenToWindow(
       const startOffset = visibleStart - child.timelineStart;
       const endOffset = child.timelineEnd - visibleEnd;
 
+      // The crop's start eats the PLAYBACK start — the high end of a
+      // reversed node's source range.
+      const headTrim = startOffset * child.speed;
+      const tailTrim = endOffset * child.speed;
       result.push({
         ...child,
-        sourceIn: child.sourceIn + startOffset * child.speed,
-        sourceOut: child.sourceOut - endOffset * child.speed,
+        sourceIn: child.sourceIn + (child.reverse ? tailTrim : headTrim),
+        sourceOut: child.sourceOut - (child.reverse ? headTrim : tailTrim),
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
@@ -712,10 +733,12 @@ export function unrollLoops(children: ResolvedChild[]): ResolvedChild[] {
         });
       } else {
         const { loop: _loop, ...rest } = child;
+        const a = it.offset * child.speed;
+        const b = (it.offset + len) * child.speed;
         out.push({
           ...rest,
-          sourceIn: child.sourceIn + it.offset * child.speed,
-          sourceOut: child.sourceIn + (it.offset + len) * child.speed,
+          sourceIn: child.reverse ? child.sourceOut - b : child.sourceIn + a,
+          sourceOut: child.reverse ? child.sourceOut - a : child.sourceIn + b,
           timelineStart,
           timelineEnd,
         } as ResolvedChild);

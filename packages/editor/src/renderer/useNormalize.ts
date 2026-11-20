@@ -58,7 +58,14 @@ export function useNormalize(opts: UseNormalizeOptions): UseNormalize {
         if (!node) continue;
         try {
           const url = platform.resolveSource(node.source, basePath);
-          const { samples } = await decodeMonoRange(url, node.in, clipOut(node));
+          // Peak is direction-agnostic: decode the ascending range even
+          // when the node plays it reversed (`out < in`).
+          const out = clipOut(node);
+          const { samples } = await decodeMonoRange(
+            url,
+            Math.min(node.in, out),
+            Math.max(node.in, out),
+          );
           const gainDb = peakGainDb(samples, TARGET_PEAK_DB);
           if (gainDb == null) {
             errs.push(`${node.source}: silent — left unchanged`);

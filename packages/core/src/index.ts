@@ -8,7 +8,15 @@ export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { expandMacros, findUnresolvedMacros } from "./macros.js";
 export type { MacroExpandResult } from "./macros.js";
 export { resolveComposition, unrollLoops, type ResolveOptions } from "./layout/resolve.js";
-export { clipOut } from "./layout/clip-span.js";
+export {
+  clipOut,
+  clipIsReversed,
+  clipPlayRange,
+  clipNaturalDuration,
+  resolvedPlayStart,
+  resolvedSignedRate,
+  clipSourceTime,
+} from "./layout/clip-span.js";
 export {
   parseStart,
   formatStart,

@@ -23,7 +23,14 @@ import {
   Output,
   WebMOutputFormat,
 } from "mediabunny";
-import { compileSeamFile, formatStart, parseSeamFile, parseStart, resolveComposition } from "@seam/core";
+import {
+  clipSourceTime,
+  compileSeamFile,
+  formatStart,
+  parseSeamFile,
+  parseStart,
+  resolveComposition,
+} from "@seam/core";
 import type { Composition, ResolvedChild } from "@seam/core";
 
 export interface DistillOptions {
@@ -92,8 +99,14 @@ function collectVisibleClips(
       } else {
         out.push({
           clip,
-          visStart: rchild.sourceIn + (s - rchild.timelineStart) * rchild.speed,
-          visEnd: rchild.sourceIn + (e - rchild.timelineStart) * rchild.speed,
+          visStart: Math.min(
+            clipSourceTime(rchild, s - rchild.timelineStart),
+            clipSourceTime(rchild, e - rchild.timelineStart),
+          ),
+          visEnd: Math.max(
+            clipSourceTime(rchild, s - rchild.timelineStart),
+            clipSourceTime(rchild, e - rchild.timelineStart),
+          ),
         });
       }
     } else if (rchild.type === "composition" && authored.type === "composition") {

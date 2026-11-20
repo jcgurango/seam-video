@@ -114,7 +114,9 @@ export interface DrawCommand {
    *  `containerLocalTime − node.timelineStart`, with every enclosing
    *  composition's offset + speed already folded into the container time. The
    *  host uses this (not the global output time) to address the node's source:
-   *  clip `sourceIn + drawTime·speed`, text/map local time `drawTime`. */
+   *  clip `clipSourceTime(node, drawTime)` (= `sourceIn + drawTime·speed`,
+   *  or `sourceOut − drawTime·speed` when reversed), text/map local time
+   *  `drawTime`. */
   drawTime: number;
   /** Inner-canvas (contentWidth/Height) in pixels for text/map nodes,
    *  sampled per-frame against the live parent dims. The host rasterizer

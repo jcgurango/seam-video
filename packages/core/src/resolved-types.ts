@@ -73,6 +73,10 @@ export interface ResolvedClip {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Plays `sourceOut → sourceIn` (authored `out < in` / negative
+   *  `duration`). `sourceIn < sourceOut` and `speed > 0` always hold; map
+   *  time through `clipSourceTime()` rather than `sourceIn + t·speed`. */
+  reverse?: true;
   /** Present when the clip loops its `[sourceIn, sourceOut]` cycle. */
   loop?: ResolvedLoop;
   /** Pre-transform source orientation (clockwise degrees). Renderers bake it
@@ -153,6 +157,8 @@ export interface ResolvedAudio {
   timelineStart: number;
   timelineEnd: number;
   speed: number;
+  /** Plays `sourceOut → sourceIn` — see {@link ResolvedClip.reverse}. */
+  reverse?: true;
   /** Present when the node loops its `[sourceIn, sourceOut]` cycle. */
   loop?: ResolvedLoop;
   /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */

@@ -21,7 +21,7 @@ import {
   type Rotation,
   type VideoSample,
 } from "mediabunny";
-import { layoutText, drawTextLayout } from "@seam/core";
+import { layoutText, drawTextLayout, clipSourceTime } from "@seam/core";
 import type {
   ResolvedClip,
   ResolvedMap,
@@ -76,6 +76,25 @@ interface ClipCursor {
   hdr: HdrToSdrConverter | null;
 }
 
+/** Backward decode window for a reversed clip (`reverse: true`). Decoders
+ *  only run forward, so stepping back one frame means decoding from the
+ *  keyframe behind it; instead each refill decodes keyframe → target once and
+ *  keeps the LAST `REVERSE_WINDOW` decoded samples, which then serve that many
+ *  backward steps for free. Amortized cost per output frame ≈ GOP/(2·window)
+ *  decodes; memory = `REVERSE_WINDOW` decoded samples. */
+interface ReverseCursor {
+  samples: VideoSample[]; // ascending by timestamp
+  /** Source time the window was filled for: `samples` holds every sample in
+   *  `[samples[0].timestamp, filledFor]`. */
+  filledFor: number;
+  shown: VideoSample | null; // sample `frame` was converted from
+  frame: NodeFrame | null;
+  rotation: Rotation;
+  hdr: HdrToSdrConverter | null;
+}
+
+const REVERSE_WINDOW = 12;
+
 const EPS = 1e-4;
 
 /** Forward jumps shorter than this always advance sequentially, skipping the
@@ -90,6 +109,7 @@ export class FrameSource {
   private readonly stores: BlockStores | undefined;
   private readonly cache = new Map<object, NodeFrame | null>();
   private readonly clipCursors = new Map<ResolvedClip, ClipCursor>();
+  private readonly reverseCursors = new Map<ResolvedClip, ReverseCursor>();
   // Statics decode once (fixed sourceTime / image) — cached for the run.
   private readonly statics = new Map<ResolvedStatic, NodeFrame | null>();
   private readonly staticDims = new Map<ResolvedStatic, { w: number; h: number }>();
@@ -221,7 +241,8 @@ export class FrameSource {
    *  elapsed time (nesting already folded in by the compositor). */
   private async decodeClip(node: ResolvedClip, drawTime: number): Promise<NodeFrame | null> {
     const entry = await this.openSource(node.source);
-    const sourceTime = node.sourceIn + Math.max(0, drawTime) * node.speed;
+    const sourceTime = clipSourceTime(node, Math.max(0, drawTime));
+    if (node.reverse) return this.decodeReverse(node, entry, sourceTime);
 
     let cursor = this.clipCursors.get(node);
     // A large forward jump (high `speed` / short `duration`) crossing a
@@ -292,10 +313,82 @@ export class FrameSource {
     return cursor.frame;
   }
 
+  /** Frame for a reversed clip: the latest sample ≤ `sourceTime`, served from
+   *  a window of decoded samples that is refilled (keyframe → target) only
+   *  when the playhead steps below it. Same sample selection as the forward
+   *  cursor, so a reversed clip shows exactly the frames the forward one
+   *  does, in the opposite order. */
+  private async decodeReverse(
+    node: ResolvedClip,
+    entry: SourceEntry,
+    sourceTime: number,
+  ): Promise<NodeFrame | null> {
+    let cursor = this.reverseCursors.get(node);
+    if (!cursor) {
+      cursor = {
+        samples: [],
+        filledFor: -Infinity,
+        shown: null,
+        frame: null,
+        hdr: null,
+        rotation: addRotation(entry.rotation, node.orientation),
+      };
+      this.reverseCursors.set(node, cursor);
+    }
+    const t = Math.max(0, sourceTime);
+    const covered =
+      cursor.samples.length > 0 &&
+      t <= cursor.filledFor + EPS &&
+      t >= cursor.samples[0].timestamp - EPS;
+    if (!covered) {
+      for (const s of cursor.samples) s.close();
+      cursor.samples = [];
+      cursor.shown = null;
+      cursor.frame = null;
+      cursor.filledFor = t;
+      // `samples(t0)` starts at the sample containing t0 (decoding from the
+      // keyframe behind it internally); starting at that keyframe hands us
+      // the whole GOP prefix to keep the tail of.
+      const key = await entry.packetSink.getKeyPacket(t, { metadataOnly: true });
+      const iter = entry.sink.samples(Math.max(0, key?.timestamp ?? t))[Symbol.asyncIterator]();
+      try {
+        for (;;) {
+          const res = await iter.next();
+          if (res.done) break;
+          if (res.value.timestamp > t + EPS) {
+            res.value.close();
+            break;
+          }
+          cursor.samples.push(res.value);
+          if (cursor.samples.length > REVERSE_WINDOW) cursor.samples.shift()!.close();
+        }
+      } finally {
+        await iter.return?.(undefined);
+      }
+    }
+
+    let pick: VideoSample | null = null;
+    for (const s of cursor.samples) {
+      if (s.timestamp > t + EPS) break;
+      pick = s;
+    }
+    if (!pick) return null;
+    if (pick !== cursor.shown || !cursor.frame) {
+      cursor.frame = await sampleToFrame(pick, cursor.rotation, cursor);
+      cursor.shown = pick;
+    }
+    return cursor.frame;
+  }
+
   /** Release decoder resources held by open clip cursors + map archives. */
   async dispose(): Promise<void> {
     for (const cursor of this.clipCursors.values()) closeCursor(cursor);
     this.clipCursors.clear();
+    for (const cursor of this.reverseCursors.values()) {
+      for (const s of cursor.samples) s.close();
+      cursor.hdr?.dispose();
+    }
+    this.reverseCursors.clear();
     await this.maps.dispose();
   }
 

@@ -67,8 +67,13 @@ export class ClipBuffer {
 
   // ── Sparse-mode state ──
   private sparseTargets: number[] = []; // ascending source times
-  /** Highest target already filled (high-water; targets ≤ this are done). */
-  private sparseFilledThrough = -Infinity;
+  /** Fill progress: the last target filled, `null` when none. Ascending fill
+   *  (forward clip): a high-water mark, targets ≤ it are done. Descending
+   *  fill (reversed clip): a low-water mark, targets ≥ it are done. */
+  private sparseMark: number | null = null;
+  /** Fill order: highest unfilled target first (reversed playback heads down
+   *  the source axis, so the nearest-needed frame is the highest one). */
+  private sparseDescending = false;
   /** Last sample the sparse cursor pulled that is ≤ the current target. */
   private sparseCurrent: WrappedCanvas | null = null;
   /** One-sample lookahead (timestamp in the future of the last target). */
@@ -106,16 +111,25 @@ export class ClipBuffer {
 
   /** Declare the discrete source times we want buffered (sparse mode, for
    *  high-effective-speed clips). `targets` must be ascending; stability of
-   *  the values across ticks (a quantized grid) is what lets the high-water
-   *  mark skip already-filled targets as the window slides. */
-  setWantedTimes(targets: number[], pivot: number): void {
+   *  the values across ticks (a quantized grid) is what lets the fill mark
+   *  skip already-filled targets as the window slides. `descending` (a
+   *  reversed clip) fills from the highest target down. */
+  setWantedTimes(targets: number[], pivot: number, descending = false): void {
     this.sparseTargets = targets;
     this.pivot = pivot;
+    this.sparseDescending = descending;
     if (targets.length === 0) return;
-    // Backward jump (scrub): every wanted target is behind the high-water
-    // mark, so nothing would fill. Reset and let the cursor re-seek.
-    if (targets[targets.length - 1] < this.sparseFilledThrough - TS_EPS) {
-      this.sparseFilledThrough = -Infinity;
+    // A jump against the fill direction (scrub): every wanted target is on
+    // the done side of the mark, so nothing would fill. Reset and let the
+    // cursor re-seek.
+    const mark = this.sparseMark;
+    if (
+      mark !== null &&
+      (descending
+        ? targets[0] > mark + TS_EPS
+        : targets[targets.length - 1] < mark - TS_EPS)
+    ) {
+      this.sparseMark = null;
     }
     this.evictSparse();
     this.reconcileSparse();
@@ -139,7 +153,7 @@ export class ClipBuffer {
     this.draining = false;
     this.frames = [];
     this.sparseTargets = [];
-    this.sparseFilledThrough = -Infinity;
+    this.sparseMark = null;
     this.sparseCurrent = null;
     this.sparsePending = null;
   }
@@ -186,15 +200,17 @@ export class ClipBuffer {
     // backward hysteresis (which exists to prevent expensive small-scrub
     // restarts, not to leave the playhead black).
     if (hasFrames && firstTs > this.pivot) {
-      void this.restartIterator(this.wantedStart);
+      void this.restartIterator(this.wantedStart, firstTs);
       return;
     }
 
     // Backward seek is expensive — only restart if we have frames but they
     // start too far past wantedStart. Empty buffers are handled by the forward
     // branch below.
+    // This is also how a REVERSED clip plays: its window slides down the
+    // source axis, so every refill is a backward one.
     if (hasFrames && firstTs - this.wantedStart > BACKWARD_HYSTERESIS) {
-      void this.restartIterator(this.wantedStart);
+      void this.restartIterator(this.wantedStart, firstTs);
       return;
     }
 
@@ -205,7 +221,11 @@ export class ClipBuffer {
     }
   }
 
-  private async restartIterator(fromTime: number): Promise<void> {
+  /** `stopAt`: a backward fill only needs the gap below the frames we
+   *  already hold (they're contiguous from `stopAt` up) — stop there instead
+   *  of re-decoding the whole window; the next tick's forward check resumes
+   *  past the last frame if more is wanted. */
+  private async restartIterator(fromTime: number, stopAt?: number): Promise<void> {
     if (!this.canvasSink || this.disposed) return;
 
     this.asyncId++;
@@ -228,6 +248,8 @@ export class ClipBuffer {
 
         // Stop if we've gone past what's wanted (with a bit of overshoot slack)
         if (timestamp > this.wantedEnd + EVICT_TOLERANCE) return;
+        // Backward fill reached the frames already buffered.
+        if (stopAt !== undefined && timestamp >= stopAt - 0.001) return;
 
         // Abort only if the decoder is *grossly* behind — that's the
         // large-forward-seek case where it'd take forever to plod forward
@@ -296,9 +318,19 @@ export class ClipBuffer {
   }
 
   private nextSparseTarget(): number | undefined {
-    return this.sparseTargets.find(
-      (t) => t > this.sparseFilledThrough + TS_EPS,
-    );
+    const mark = this.sparseMark;
+    if (mark === null) {
+      return this.sparseDescending
+        ? this.sparseTargets[this.sparseTargets.length - 1]
+        : this.sparseTargets[0];
+    }
+    if (this.sparseDescending) {
+      for (let i = this.sparseTargets.length - 1; i >= 0; i--) {
+        if (this.sparseTargets[i] < mark - TS_EPS) return this.sparseTargets[i];
+      }
+      return undefined;
+    }
+    return this.sparseTargets.find((t) => t > mark + TS_EPS);
   }
 
   /** Single-flight fill: decode each unfilled target in order. Re-reads the
@@ -314,7 +346,7 @@ export class ClipBuffer {
         if (target === undefined) return;
         const frame = await this.decodeAt(target, myId);
         if (this.asyncId !== myId || this.disposed) return;
-        this.sparseFilledThrough = target;
+        this.sparseMark = target;
         if (frame && !this.frames.some((f) => Math.abs(f.timestamp - frame.timestamp) < 0.001)) {
           insertSorted(this.frames, {
             timestamp: frame.timestamp,

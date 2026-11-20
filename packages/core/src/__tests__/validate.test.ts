@@ -625,7 +625,7 @@ describe("validate — verbose error messages", () => {
       type: "composition",
       children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
     });
-    // out must be positive — points at children[0].out, not the union root.
+    // out must differ from in — points at children[0].out, not the union root.
     expect(messages.some((m) => /children\[0\]\.out/.test(m))).toBe(true);
   });
 
@@ -749,7 +749,7 @@ describe("validate — macro expansion runs before schema checks", () => {
   it("still reports schema errors against the expanded document", () => {
     const result = validate({
       type: "composition",
-      macros: { BAD: -5 },
+      macros: { BAD: 0 },
       children: [{ type: "clip", source: "v.mp4", in: 0, out: "$$BAD" }],
     });
     expect(result.success).toBe(false);

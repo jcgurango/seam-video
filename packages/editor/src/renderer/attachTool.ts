@@ -6,7 +6,14 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { clipOut, formatStart, loopLocalTime } from "@seam/core";
+import {
+  clipOut,
+  clipSourceTime,
+  formatStart,
+  loopLocalTime,
+  resolvedPlayStart,
+  resolvedSignedRate,
+} from "@seam/core";
 import type { Child, ResolvedChild, ResolvedTimeline, SeamFile, Start } from "@seam/core";
 import {
   getCompAtPath,
@@ -63,13 +70,20 @@ export function anchorAt(
     (resolved.type === "clip" || resolved.type === "audio")
   ) {
     // A looping clip replays its range — map into the current cycle.
-    const sourceTime =
-      resolved.sourceIn +
-      loopLocalTime(resolved.loop, t - resolved.timelineStart) * resolved.speed;
-    const clamped = round3(Math.max(primary.in, Math.min(clipOut(primary), sourceTime)));
+    // (`clipSourceTime` handles a reversed clip, whose source runs down.)
+    const sourceTime = clipSourceTime(
+      resolved,
+      loopLocalTime(resolved.loop, t - resolved.timelineStart),
+    );
+    const out = clipOut(primary);
+    const clamped = round3(
+      Math.max(Math.min(primary.in, out), Math.min(Math.max(primary.in, out), sourceTime)),
+    );
     return {
       start: sourcePoint(id, clamped),
-      pointTime: resolved.timelineStart + (clamped - resolved.sourceIn) / resolved.speed,
+      pointTime:
+        resolved.timelineStart +
+        (clamped - resolvedPlayStart(resolved)) / resolvedSignedRate(resolved),
     };
   }
   if (primary.type === "composition" && resolved.type === "composition") {

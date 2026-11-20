@@ -20,11 +20,22 @@
 // a left-handle trim keeps the node's start in place and whatever follows it
 // in the run moves with its end.
 //
+// A REVERSED clip/audio (`out < in` / negative `duration`) plays `in → out`
+// down the source axis, so its left handle still edits the playback start
+// (`in`, the high end) and its right handle the playback end — the source
+// delta just flips sign. Direction and the sign of `duration` are preserved.
+//
 // Clamped at 0 lower bound; the upper bound (source media length) isn't
 // known during a timeline drag, so it's left to the schema validator
 // or to a later UX polish pass that probes media.
 
-import { clipOut, compileSeamFile, resolveComposition, runHeadIndex } from "@seam/core";
+import {
+  clipOut,
+  clipPlayRange,
+  compileSeamFile,
+  resolveComposition,
+  runHeadIndex,
+} from "@seam/core";
 import { withPlacement } from "./runEdit.js";
 import type { Child, Composition, Overflow, Underflow, SeamFile } from "@seam/core";
 
@@ -137,27 +148,29 @@ function innerDuration(comp: Composition): number {
   }
 }
 
-/** Source seconds consumed per output second. `speed` (default 1), unless a
- *  `duration` that differs from the natural length is filled by `stretch` —
- *  then the window is squeezed/stretched into it. */
+/** Source seconds consumed per output second (magnitude — direction is the
+ *  caller's). `speed` (default 1), unless a `duration` that differs from the
+ *  natural length is filled by `stretch` — then the window is
+ *  squeezed/stretched into it. `span` is the window's length, `|out − in|`. */
 function playbackRate(
   child: {
-    in: number;
     speed?: number;
     duration?: number;
     overflow?: Overflow;
     underflow?: Underflow;
   },
-  out: number,
+  span: number,
 ): number {
   const speed = child.speed != null && child.speed > 0 ? child.speed : 1;
-  if (child.duration == null || !(child.duration > 0)) return speed;
-  const natural = (out - child.in) / speed;
-  if (child.duration === natural) return speed;
+  // A negative `duration` (reverse) is a length all the same.
+  const duration = Math.abs(child.duration ?? 0);
+  if (!(duration > 0)) return speed;
+  const natural = span / speed;
+  if (duration === natural) return speed;
   const strategy =
-    child.duration < natural ? child.overflow ?? "stretch" : child.underflow ?? "stretch";
+    duration < natural ? child.overflow ?? "stretch" : child.underflow ?? "stretch";
   if (strategy !== "stretch") return speed;
-  const rate = (out - child.in) / child.duration;
+  const rate = span / duration;
   return rate > 0 ? rate : speed;
 }
 
@@ -171,27 +184,38 @@ function resizeInOut<
     underflow?: Underflow;
   },
 >(child: T, side: "left" | "right", deltaSec: number): T {
-  // `out` may be omitted on clips/audio (= in + duration); resolve it once.
-  // A right-handle drag then materialises `out` on the node.
-  const out = clipOut(child);
-  const rate = playbackRate(child, out);
-  const sourceDelta = deltaSec * rate;
+  // The span in playback order (`out` may be omitted = in + duration; a
+  // right-handle drag then materialises it on the node).
+  const { start, end, reverse } = clipPlayRange(child);
+  // Which authored field holds the playback start: `in`, except for the
+  // redundant `{in < out, duration < 0}` spelling (plays out → in).
+  const startKey: "in" | "out" = !reverse || clipOut(child) < child.in ? "in" : "out";
+  const endKey: "in" | "out" = startKey === "in" ? "out" : "in";
+  const rate = playbackRate(child, Math.abs(end - start));
+  // Signed along the source axis: reversed playback runs it downwards.
+  const signed = reverse ? -rate : rate;
+  const sourceDelta = deltaSec * signed;
+  const durSign = child.duration != null && child.duration < 0 ? -1 : 1;
+  const durLen = Math.abs(child.duration ?? 0);
   if (side === "left") {
-    const newIn = Math.max(0, Math.min(out, child.in + sourceDelta));
+    const moved = start + sourceDelta;
+    // Can't cross the playback end; a forward start also stops at source 0.
+    const newStart = reverse ? Math.max(end, moved) : Math.max(0, Math.min(end, moved));
     // Applied output delta after clamping — keeps `duration` consistent when
     // the drag ran out of source headroom.
-    const applied = (newIn - child.in) / rate;
-    const next = { ...child, in: newIn };
+    const applied = (newStart - start) / signed;
+    const next = { ...child, [startKey]: newStart };
     if (child.duration != null) {
-      next.duration = Math.max(0, child.duration - applied);
+      next.duration = durSign * Math.max(0, durLen - applied);
     }
     return next;
   }
-  const newOut = Math.max(child.in, out + sourceDelta);
-  const applied = (newOut - out) / rate;
-  const next = { ...child, out: newOut };
+  const moved = end + sourceDelta;
+  const newEnd = reverse ? Math.max(0, Math.min(start, moved)) : Math.max(start, moved);
+  const applied = (newEnd - end) / signed;
+  const next = { ...child, [endKey]: newEnd };
   if (child.duration != null) {
-    next.duration = Math.max(0, child.duration + applied);
+    next.duration = durSign * Math.max(0, durLen + applied);
   }
   return next;
 }

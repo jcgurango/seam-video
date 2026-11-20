@@ -8,7 +8,14 @@ import type {
   ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
-import { isKeyframed, sampleVolume, loopIterations, unrollLoops } from "@seam/core";
+import {
+  isKeyframed,
+  sampleVolume,
+  loopIterations,
+  unrollLoops,
+  resolvedPlayStart,
+  resolvedSignedRate,
+} from "@seam/core";
 import type { RenderCommand } from "@seam/compositor";
 import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
@@ -54,9 +61,14 @@ interface FlatClip {
   source: string;
   audioId: string | null;
   toSourceTime: (absoluteTime: number) => number;
-  /** d(sourceTime)/d(outputTime): clip `speed` × enclosing comp speeds.
+  /** |d(sourceTime)/d(outputTime)|: clip `speed` × enclosing comp speeds.
    *  Static per clip (speeds aren't animatable), so buffer mode is too. */
   sourceRate: number;
+  /** The clip plays its source backwards (`out < in` / negative `duration`):
+   *  `toSourceTime` falls as output time advances. Video needs no special
+   *  decode (the buffer's window is a source range either way, refilled at
+   *  its low edge); audio decodes in reversed chunks. */
+  reverse: boolean;
   /** Product of every enclosing composition's `volume` at a global output
    *  time (each comp sampled in its own output time). `1` when none. */
   compVolumeAt: (globalTime: number) => number;
@@ -258,7 +270,8 @@ export class FrameCoordinator {
           audioSink,
           flat.sourceRate,
           initialVolume,
-          flat.pitch
+          flat.pitch,
+          flat.reverse
         );
       }
     });
@@ -475,12 +488,19 @@ export class FrameCoordinator {
           // High effective speed: buffer only the source times the display
           // will sample, on a stable quantized grid.
           buffer.setWantedTimes(
-            sparseTargetGrid(
-              pivotSource,
-              Math.max(sourceStart, sourceEnd),
-              rate
-            ),
-            pivotSource
+            flat.reverse
+              ? sparseTargetGridReverse(
+                  pivotSource,
+                  Math.min(sourceStart, sourceEnd),
+                  rate
+                )
+              : sparseTargetGrid(
+                  pivotSource,
+                  Math.max(sourceStart, sourceEnd),
+                  rate
+                ),
+            pivotSource,
+            flat.reverse
           );
         } else {
           buffer.setWantedRange(
@@ -581,6 +601,23 @@ function sparseTargetGrid(
   return out;
 }
 
+/** Mirror of {@link sparseTargetGrid} for a reversed clip: the same quantized
+ *  grid, from just above the pivot DOWN to the low end of the wanted window
+ *  (the direction playback is heading). Returned ascending. */
+function sparseTargetGridReverse(
+  pivotSource: number,
+  sourceMin: number,
+  rate: number
+): number[] {
+  const spacing = rate / SPARSE_FPS;
+  const top = Math.ceil((pivotSource + 2 * spacing) / spacing);
+  const out: number[] = [];
+  for (let n = top; n >= 0 && n * spacing >= sourceMin && out.length < 90; n--) {
+    out.push(n * spacing);
+  }
+  return out.reverse();
+}
+
 function collectClips(
   children: ResolvedChild[],
   toLocalTime: (t: number) => number,
@@ -605,7 +642,9 @@ function collectClips(
       // cycle maps its own slice of the clip's source range.
       for (const it of loopIterations(child.loop, span)) {
         const iterLocalStart = child.timelineStart + it.start;
-        const srcBase = child.sourceIn + it.offset * child.speed;
+        // Signed: a reversed clip starts at `sourceOut` and counts down.
+        const signedRate = resolvedSignedRate(child);
+        const srcBase = resolvedPlayStart(child) + it.offset * signedRate;
         result.push({
           clip: child,
           absoluteStart: toAbsoluteTime(iterLocalStart),
@@ -617,9 +656,10 @@ function collectClips(
           toSourceTime: (t: number) => {
             const local = capturedToLocal(t);
             const clipLocal = Math.max(0, local - iterLocalStart);
-            return srcBase + clipLocal * capturedChild.speed;
+            return srcBase + clipLocal * signedRate;
           },
           sourceRate: parentRate * child.speed,
+          reverse: capturedChild.reverse === true,
           compVolumeAt: volumeAt,
           hasCompVolume: hasVol,
           pitch: parentPitch + (child.pitch ?? 0),
