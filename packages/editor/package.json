@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "electron-vite build",
-    "dev": "electron-vite dev",
+    "dev": "install-electron && electron-vite dev",
     "test": "vitest run",
     "test:watch": "vitest"
   },
