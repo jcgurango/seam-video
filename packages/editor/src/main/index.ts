@@ -81,9 +81,14 @@ function createWindow() {
   });
 }
 
-// Intercept file:// to add Content-Length (required by mediabunny's UrlSource)
+// Intercept file:// to add Content-Length (required by mediabunny's UrlSource).
+// `corsEnabled` keeps file:// fetchable from the http://localhost dev-server
+// origin: since Chromium 156 (Electron ≥ 45) the CORS-enabled-schemes list is
+// enforced even with `webSecurity: false`, and `supportFetchAPI` alone no
+// longer puts `file` on it ("Cross origin requests are only supported for
+// protocol schemes: chrome, …, http, https").
 protocol.registerSchemesAsPrivileged([
-  { scheme: "file", privileges: { supportFetchAPI: true } },
+  { scheme: "file", privileges: { supportFetchAPI: true, corsEnabled: true } },
 ]);
 
 app.whenReady().then(() => {
