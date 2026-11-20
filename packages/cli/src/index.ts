@@ -47,6 +47,10 @@ program
     },
     [] as string[],
   )
+  .option(
+    "--agc [lufs]",
+    "Automatic gain control on the final mix: ride uneven levels toward a loudness target, normalise the integrated loudness onto it exactly, and true-peak limit at -1 dBTP. Default target -14 LUFS (what Instagram Reels / YouTube Shorts / TikTok normalise to); pass a number to target something else as --agc=-16 (the '=' form, since a bare -16 reads as a flag).",
+  )
   .action(renderCommand);
 
 program

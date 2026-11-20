@@ -39,6 +39,19 @@ from the root composition's `contentWidth`/`contentHeight`, or override with
 `--width`/`--height`. Quality presets (`--quality`) range `very-low` →
 `very-high`.
 
+```
+seam render test.seam --agc
+```
+
+`--agc` masters the final mix for short-form platforms: a slow automatic gain
+control evens out quiet and loud passages, the integrated loudness is
+normalised to **−14 LUFS** (what Instagram Reels, YouTube Shorts and TikTok
+normalise to, so your clip plays at the same level as the next one) and a
+true-peak limiter keeps peaks under **−1 dBTP**. Pass another target as
+`--agc=-16` (use the `=` form for negative numbers). The before/after
+loudness, peak, gain range and limiter depth are printed when the render
+finishes.
+
 ### Resolve
 
 ```
