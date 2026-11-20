@@ -7,6 +7,14 @@
  */
 export { renderSeamToFile, QUALITY_PRESETS, DEFAULT_QUALITY } from "./render.js";
 export type { RenderOptions, RenderResult, QualityPreset } from "./render.js";
+export {
+  applyAgc,
+  limitTruePeak,
+  measureIntegratedLoudness,
+  measureTruePeak,
+  LoudnessAnalyzer,
+} from "./loudness.js";
+export type { AgcOptions, AgcReport, LimiterOptions } from "./loudness.js";
 export { createGpuDevice } from "./gpu.js";
 export { NodeBackend, parseColor } from "./NodeBackend.js";
 export type { NodeFrame } from "./NodeBackend.js";

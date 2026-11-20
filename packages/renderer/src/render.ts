@@ -42,6 +42,8 @@ import { createGpuDevice } from "./gpu.js";
 import { NodeBackend } from "./NodeBackend.js";
 import { FrameSource, collectDrawables } from "./frameSource.js";
 import { renderAudioMix, timelineHasAudio } from "./audio.js";
+import { applyAgc, type AgcOptions, type AgcReport } from "./loudness.js";
+import { AudioBuffer as NWAudioBufferCtor } from "node-web-audio-api";
 import { BlockStores, CutPlanner, cutsFromTimeline } from "@seam/media-source";
 import type { AudioBuffer as NWAudioBuffer } from "node-web-audio-api";
 
@@ -88,6 +90,11 @@ export interface RenderOptions {
    *  `source` exactly equals a key renders the mapped value instead. Verbatim
    *  match, no path resolution. */
   proxies?: Map<string, string>;
+  /** Automatic gain control on the final mix (`--agc`): ride the short-term
+   *  loudness toward the target, trim the integrated loudness onto it exactly
+   *  and true-peak limit — defaults land on −14 LUFS / −1 dBTP, what Instagram
+   *  Reels, YouTube Shorts and TikTok normalise to. `true` = defaults. */
+  agc?: boolean | AgcOptions;
   onProgress?: (frame: number, total: number) => void;
 }
 
@@ -97,6 +104,25 @@ export interface RenderResult {
   width: number;
   height: number;
   duration: number;
+  /** What `agc` measured and did (only when it ran and there was audio). */
+  loudness?: AgcReport;
+}
+
+/** Run `applyAgc` over a rendered mix buffer, returning a fresh buffer. */
+function agcBuffer(
+  buf: NWAudioBuffer,
+  options: AgcOptions,
+): { buffer: NWAudioBuffer; report: AgcReport } {
+  const channels: Float32Array[] = [];
+  for (let c = 0; c < buf.numberOfChannels; c++) channels.push(buf.getChannelData(c));
+  const { channels: out, report } = applyAgc(channels, buf.sampleRate, options);
+  const buffer = new NWAudioBufferCtor({
+    length: buf.length,
+    numberOfChannels: buf.numberOfChannels,
+    sampleRate: buf.sampleRate,
+  });
+  out.forEach((ch, c) => buffer.copyToChannel(ch, c));
+  return { buffer, report };
 }
 
 /** Swap clip/static/audio/map `source`s that exactly equal a proxy key,
@@ -316,8 +342,18 @@ export async function renderSeamToFile(
     // here is just the residual — the mix has usually finished mid-loop.
     const audioResult = await audioMixSettled;
     if ("err" in audioResult) throw audioResult.err;
-    if (audioSource && audioResult.buf) await audioSource.add(audioResult.buf);
     mark("audio residual");
+    let loudness: AgcReport | undefined;
+    if (audioSource && audioResult.buf) {
+      let mix = audioResult.buf;
+      if (options.agc) {
+        const agc = agcBuffer(mix, options.agc === true ? {} : options.agc);
+        mix = agc.buffer;
+        loudness = agc.report;
+        mark("agc");
+      }
+      await audioSource.add(mix);
+    }
 
     await output.finalize();
     compositor.dispose();
@@ -329,6 +365,7 @@ export async function renderSeamToFile(
       width,
       height,
       duration: timeline.duration,
+      loudness,
     };
   } catch (err) {
     // Close the half-written output so its FileHandle doesn't get collected
