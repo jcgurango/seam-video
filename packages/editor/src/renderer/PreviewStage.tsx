@@ -1,12 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { VideoCanvas, useTimeline } from "@seam/preview";
-import type { VideoCanvasView } from "@seam/preview";
+import type { GizmoSurface, VideoCanvasView } from "@seam/preview";
+import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import type { History } from "./useHistory.js";
+import TransformGizmo from "./TransformGizmo.js";
 import { Scan, ZoomIn, Maximize, Minimize2, Play, Pause } from "lucide-react";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 
 interface PreviewStageProps {
   contentWidth: number;
   contentHeight: number;
+  /** Viewport transform gizmo: shown for a single selected node when all of
+   *  these are given (omitted in modes where the document isn't the thing on
+   *  screen, e.g. CC cut). */
+  document?: SeamFile;
+  selection?: string[];
+  /** The editor timeline (scripts off, root `uncropped`). */
+  timeline?: ResolvedTimeline | null;
+  history?: History<SeamFile>;
 }
 
 /**
@@ -25,6 +36,10 @@ interface PreviewStageProps {
 export default function PreviewStage({
   contentWidth,
   contentHeight,
+  document: doc,
+  selection,
+  timeline,
+  history,
 }: PreviewStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"fit" | "zoom">("fit");
@@ -73,6 +88,26 @@ export default function PreviewStage({
     setScale(v.scale);
   }, []);
 
+  // One selected node (multi-select comes later), never in fullscreen.
+  const gizmoKey =
+    !isFullscreen && doc && timeline && history && selection?.length === 1
+      ? selection[0]
+      : null;
+  const overlay =
+    gizmoKey != null && doc && timeline && history
+      ? (surface: GizmoSurface) => (
+          <TransformGizmo
+            surface={surface}
+            canvasWidth={contentWidth}
+            canvasHeight={contentHeight}
+            document={doc}
+            selectedKey={gizmoKey}
+            timeline={timeline}
+            history={history}
+          />
+        )
+      : undefined;
+
   return (
     <div
       ref={containerRef}
@@ -92,6 +127,7 @@ export default function PreviewStage({
         onViewChange={onViewChange}
         resetSignal={resetSignal}
         style={{ background: isFullscreen ? "#000" : "#111" }}
+        overlay={overlay}
       />
 
       {/* Mode overlay, top-right. */}

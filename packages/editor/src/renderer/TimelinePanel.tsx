@@ -45,6 +45,7 @@ import { layoutTree, type TreeGroup } from "./timelineTree.js";
 import type { KeyframeLane } from "./keyframeLanes.js";
 import KeyframeDiamond, { KEYFRAME_DIAMOND_SIZE } from "./KeyframeDiamond.js";
 import { setKeyframeTime, timeExprForLocal } from "./keyframeEdit.js";
+import { keyframeMoment, nodeClock } from "./playheadKeyframe.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
 import { timeAfterLift } from "./dropTime.js";
 import { resizeChild, resizeChildInPlace } from "./resizeTool.js";
@@ -490,8 +491,15 @@ function TimelineSurface({
 
   const onKeyframeDragStart = editHistory ? startKeyframeDrag : null;
 
+  const { seek } = useTimeline();
+  const seekToKeyframe: KeyframeSeek = useEvent((path: NodePath, timeExpr: TimeExpr) => {
+    if (!docRoot) return;
+    const clock = nodeClock(timeline, docRoot as SeamFile, path, 0);
+    if (clock) seek(clock.toGlobal(keyframeMoment(timeExpr, clock.duration)));
+  });
+
   return (
-    <>
+    <KeyframeSeekContext.Provider value={seekToKeyframe}>
       <RulerLayer pxPerSec={pxPerSec} ticks={rulerTicks} />
       <TimelineGroup
         group={rootGroup}
@@ -533,7 +541,7 @@ function TimelineSurface({
           }}
         />
       )}
-    </>
+    </KeyframeSeekContext.Provider>
   );
 }
 
@@ -1153,6 +1161,11 @@ const LANE_TRACK_Y = 21;
 
 /** Args for a diamond's pointer press. The handler distinguishes a click
  *  (→ jump to JSON) from a drag (→ retime) via a small threshold. */
+/** Snap the playhead onto a keyframe of the node at `path` (double-click on
+ *  a lane diamond). Provided by the surface, read by the lane rows. */
+type KeyframeSeek = (path: NodePath, timeExpr: TimeExpr) => void;
+const KeyframeSeekContext = React.createContext<KeyframeSeek | null>(null);
+
 export interface KeyframeDragArgs {
   path: NodePath;
   prop: string;
@@ -1208,6 +1221,7 @@ function KeyframeLaneRow({
   /** Begin a diamond drag (editable timelines only). */
   onKeyframeDragStart?: KeyframeDragStart | null;
 }) {
+  const seekToKeyframe = React.useContext(KeyframeSeekContext);
   const left = toX(lane.outputStart);
   const right = toX(lane.outputStart + lane.outputSpan);
   const width = Math.max(right - left, 2);
@@ -1280,6 +1294,14 @@ function KeyframeLaneRow({
                   ? (e) => {
                       e.stopPropagation();
                       onJump(jumpKey);
+                    }
+                  : undefined
+              }
+              onDoubleClick={
+                seekToKeyframe
+                  ? (e) => {
+                      e.stopPropagation();
+                      seekToKeyframe(nodePath, d.timeExpr);
                     }
                   : undefined
               }

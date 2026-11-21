@@ -68,3 +68,28 @@ export function useTimelineFrame(): TimelineFrameContextValue {
   }
   return ctx;
 }
+
+// Intrinsic media sizes, by authored source. The compositor lays clips and
+// statics out against their probed display dims; tools that reproduce that
+// layout outside the render loop (the editor's viewport transform gizmo) read
+// the same numbers here. Sizes land asynchronously — `subscribeMediaSizes`
+// fires whenever one becomes known.
+export interface TimelineMediaContextValue {
+  getMediaSize: (node: {
+    type: "clip" | "static";
+    source: string;
+    orientation?: number;
+  }) => { w: number; h: number } | null;
+  subscribeMediaSizes: (cb: () => void) => () => void;
+}
+
+export const TimelineMediaContext =
+  createContext<TimelineMediaContextValue | null>(null);
+
+export function useTimelineMedia(): TimelineMediaContextValue {
+  const ctx = useContext(TimelineMediaContext);
+  if (!ctx) {
+    throw new Error("useTimelineMedia must be used within a <Timeline>");
+  }
+  return ctx;
+}

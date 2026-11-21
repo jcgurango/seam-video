@@ -17,12 +17,15 @@ export {
   useTimeline,
   TimelineFrameContext,
   useTimelineFrame,
+  TimelineMediaContext,
+  useTimelineMedia,
 } from "./components/TimelineContext.js";
 export type {
   TimelineContextValue,
   TimelineFrameContextValue,
   TimelineFrameCallback,
   TimelineFramePixels,
+  TimelineMediaContextValue,
 } from "./components/TimelineContext.js";
 export {
   resolveSource,

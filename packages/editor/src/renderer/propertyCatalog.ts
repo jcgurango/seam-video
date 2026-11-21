@@ -10,14 +10,17 @@
 //
 // Deliberately NOT here: `children` (the timeline owns them), `filters`
 // (being absorbed into first-party properties), and the structured bags
-// (`pin`, `inset`, `distort`, `paths`, `data`, `metadata`, `bin`, `script`,
-// `macros`) — those stay in the JSON panel for now.
+// (`pin`, `paths`, `data`, `metadata`, `bin`, `script`, `macros`) — those
+// stay in the JSON panel for now. (`inset` and `distort` have their own
+// kinds: four edge lengths / four corner points.)
 
 import {
   isKeyframed,
   parseLength,
   validate as validateSeamFile,
   type Child,
+  type Distort,
+  type Inset,
   type Keyframe,
   type Keyframed,
   type Length,
@@ -42,6 +45,11 @@ export type PropKind =
   | "text"
   /** One of `options`. */
   | "enum"
+  /** `Inset`: per-edge `Length`s (top / right / bottom / left), authored in
+   *  the padding shorthand. */
+  | "inset"
+  /** `Distort`: an X and a Y `Length` per corner. */
+  | "distort"
   /** Number OR string: a numeric-looking entry is stored as a number,
    *  anything else as typed (clip `volume` accepts `"-6dB"`, `start` an
    *  anchor like `"intro@50%"`). */
@@ -409,12 +417,28 @@ const COMPOSITION_PROPS: PropDef[] = [
   ...SPATIAL,
   ...CONTENT_DIMS,
   {
+    key: "inset",
+    label: "Inset",
+    group: "Layout",
+    kind: "inset",
+    animatable: true,
+    hint: "Per-edge crop of the content box. Percent of the box's width (left / right) or height (top / bottom).",
+  },
+  {
     key: "insetMode",
     label: "Inset mode",
     group: "Layout",
     kind: "enum",
     options: ["window", "center", "fit", "cover"],
     placeholder: "window",
+  },
+  {
+    key: "distort",
+    label: "Distort",
+    group: "Layout",
+    kind: "distort",
+    animatable: true,
+    hint: "Corner pin: where each corner of the inner canvas lands. Percent of the inner canvas; a bare number is a px offset from the corner.",
   },
   {
     key: "backgroundColor",
@@ -666,6 +690,56 @@ export function withPointAxis(
     ...(axis === "x" ? { x: next } : { y: next }),
     ...(otherVal != null ? { [other]: otherVal } : {}),
   } as Point2D;
+}
+
+// ── Inset / distort ────────────────────────────────────────────────
+
+export const INSET_EDGES = ["top", "right", "bottom", "left"] as const;
+
+/** An `Inset` shorthand (`L` | `[v, h]` | `[t, r, b, l]`) as its four edges,
+ *  top / right / bottom / left. `undefined` → all unset. */
+export function insetEdges(value: Inset | undefined): (Length | undefined)[] {
+  if (value == null) return [undefined, undefined, undefined, undefined];
+  if (!Array.isArray(value)) return [value, value, value, value];
+  if (value.length === 2) return [value[0], value[1], value[0], value[1]];
+  return [...value];
+}
+
+/** Replace one edge and re-collapse to the shortest shorthand. Unset edges of
+ *  a partly-set inset are `0`; all unset → `undefined`. */
+export function withInsetEdge(
+  value: Inset | undefined,
+  edge: number,
+  next: Length | undefined,
+): Inset | undefined {
+  const edges = insetEdges(value);
+  edges[edge] = next;
+  if (edges.every((e) => e == null)) return undefined;
+  const [t, r, b, l] = edges.map((e) => e ?? 0);
+  if (t === r && t === b && t === l) return t;
+  if (t === b && r === l) return [t, r];
+  return [t, r, b, l];
+}
+
+/** Corners clockwise from top-left, with the percent each coordinate sits at
+ *  when unset (its own corner). */
+export const DISTORT_CORNERS = [
+  { label: "Top left", x: "x0", y: "y0", homeX: 0, homeY: 0 },
+  { label: "Top right", x: "x1", y: "y1", homeX: 100, homeY: 0 },
+  { label: "Bottom right", x: "x2", y: "y2", homeX: 100, homeY: 100 },
+  { label: "Bottom left", x: "x3", y: "y3", homeX: 0, homeY: 100 },
+] as const;
+
+/** Set / unset one coordinate of a `Distort`. All unset → `undefined`. */
+export function withDistortCoord(
+  value: Distort | undefined,
+  key: keyof Distort,
+  next: Length | undefined,
+): Distort | undefined {
+  const out: Distort = { ...(value ?? {}) };
+  if (next == null) delete out[key];
+  else out[key] = next;
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
 // ── Keyframes ──────────────────────────────────────────────────────

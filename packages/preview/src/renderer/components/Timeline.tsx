@@ -4,6 +4,8 @@ import {
   TimelineContext,
   TimelineCanvasContext,
   TimelineFrameContext,
+  TimelineMediaContext,
+  type TimelineMediaContextValue,
   type TimelineCanvasContextValue,
   type TimelineFrameContextValue,
   type TimelineFrameCallback,
@@ -85,13 +87,19 @@ export default function Timeline({
   // this canvas, we're done — width/height changes flow through
   // `renderer.resize` per frame and don't need a fresh device.
   const initCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const gpuRenderRef = useRef<((time: number) => void) | null>(null);
   useEffect(() => {
     if (!canvasMount) return;
     if (initCanvasRef.current === canvasMount.canvas) return;
     initCanvasRef.current = canvasMount.canvas;
-    void renderer.init(canvasMount.canvas).catch((err) => {
-      console.error("WebGPU init failed:", err);
-    });
+    void renderer
+      .init(canvasMount.canvas)
+      // First paint: content that needs no async frame (shapes, text) has
+      // nothing else to trigger it once the device is ready.
+      .then(() => gpuRenderRef.current?.(currentTimeRef.current))
+      .catch((err) => {
+        console.error("WebGPU init failed:", err);
+      });
   }, [renderer, canvasMount]);
 
   // Ref for latest currentTime — used by setTimeline to prime buffers at the
@@ -222,6 +230,8 @@ export default function Timeline({
     [renderer, coordinator, emitFrame],
   );
 
+  gpuRenderRef.current = gpuRender;
+
   // Wire up frame-available callback for re-renders on async seek / reload
   useEffect(() => {
     coordinator.onFrameAvailable = () => {
@@ -231,6 +241,17 @@ export default function Timeline({
       coordinator.onFrameAvailable = null;
     };
   }, [coordinator, gpuRender]);
+
+  // A new timeline made only of synchronous content (shapes, text, maps)
+  // has no frame arriving to trigger a repaint, so paint it now — otherwise
+  // an edit to such a document stays invisible until the next seek. With
+  // async media in play we wait for its first frame instead (painting now
+  // would flash the clips out while their buffers re-prime). Declared after
+  // the `setTimeline` effect, so it runs once the coordinator has the new
+  // timeline.
+  useEffect(() => {
+    if (!coordinator.hasAsyncFrames) gpuRender(currentTimeRef.current);
+  }, [timeline, coordinator, gpuRender]);
 
   // Re-render when the canvas (re)mounts or its dimensions change.
   useEffect(() => {
@@ -345,6 +366,28 @@ export default function Timeline({
     [subscribeFrame],
   );
 
+  const mediaSubsRef = useRef<Set<() => void>>(new Set());
+  useEffect(() => {
+    coordinator.onMediaSize = () => {
+      for (const cb of mediaSubsRef.current) cb();
+    };
+    return () => {
+      coordinator.onMediaSize = null;
+    };
+  }, [coordinator]);
+  const mediaCtx = useMemo<TimelineMediaContextValue>(
+    () => ({
+      getMediaSize: (node) => coordinator.getMediaSize(node),
+      subscribeMediaSizes: (cb) => {
+        mediaSubsRef.current.add(cb);
+        return () => {
+          mediaSubsRef.current.delete(cb);
+        };
+      },
+    }),
+    [coordinator],
+  );
+
   const canvasCtx = useMemo<TimelineCanvasContextValue>(
     () => ({
       registerCanvas: (canvas, width, height) => {
@@ -360,9 +403,11 @@ export default function Timeline({
   return (
     <TimelineContext.Provider value={ctx}>
       <TimelineFrameContext.Provider value={frameCtx}>
-        <TimelineCanvasContext.Provider value={canvasCtx}>
-          {children}
-        </TimelineCanvasContext.Provider>
+        <TimelineMediaContext.Provider value={mediaCtx}>
+          <TimelineCanvasContext.Provider value={canvasCtx}>
+            {children}
+          </TimelineCanvasContext.Provider>
+        </TimelineMediaContext.Provider>
       </TimelineFrameContext.Provider>
     </TimelineContext.Provider>
   );

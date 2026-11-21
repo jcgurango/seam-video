@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { useTimeline } from "@seam/preview";
 import type {
   BinEntry,
@@ -51,9 +51,6 @@ interface InspectorAccordionProps {
   onJsonNodeSave: (next: unknown) => string[] | null;
   /** Path key inside `jsonNode` to reveal in the JSON editor (e.g. "children.3"). */
   jsonJumpPath: string | null;
-  /** Bumped each time a keyframe diamond is clicked — forces the JSON
-   *  section open so the deep keyframe path can be revealed. */
-  jsonRevealToken?: number;
   /** The composition the Script section targets — null in clip view. */
   scriptComposition: Composition | null;
   /** Last script-execution error from the active composition (or null). */
@@ -89,7 +86,6 @@ export default function InspectorAccordion({
   jsonNode,
   onJsonNodeSave,
   jsonJumpPath,
-  jsonRevealToken,
   scriptComposition,
   scriptError,
   onScriptApply,
@@ -114,13 +110,6 @@ export default function InspectorAccordion({
       return next;
     });
 
-  // A keyframe diamond click bumps `jsonRevealToken` — open the JSON section
-  // (if collapsed) so JsonNodePanel mounts and reveals the keyframe path.
-  useEffect(() => {
-    if (!jsonRevealToken) return;
-    setOpen((prev) => (prev.has("json") ? prev : new Set(prev).add("json")));
-  }, [jsonRevealToken]);
-
   const renderContent = (id: SectionId): React.ReactNode => {
     switch (id) {
       case "new":
@@ -131,6 +120,7 @@ export default function InspectorAccordion({
             document={rootDocument}
             selection={selection}
             onDocumentEdit={onDocumentEdit}
+            timeline={timeline}
           />
         );
       case "filters":

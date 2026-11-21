@@ -21,6 +21,8 @@ import { resolveSource } from "../components/resolveSource.js";
 export class StaticStore {
   private bitmaps = new Map<ResolvedStatic, HTMLCanvasElement | OffscreenCanvas>();
   private sizes = new Map<ResolvedStatic, { w: number; h: number }>();
+  /** Sizes by authored `source`; kept across `setTimeline` (see FrameCoordinator). */
+  private sizesBySource = new Map<string, { w: number; h: number }>();
   /** Fires when a static's frame has finished decoding so the render
    *  loop can repaint while paused. */
   onFrameAvailable: (() => void) | null = null;
@@ -45,6 +47,7 @@ export class StaticStore {
           if (!result) return;
           this.bitmaps.set(node, result.canvas);
           this.sizes.set(node, { w: result.width, h: result.height });
+          this.sizesBySource.set(node.source, { w: result.width, h: result.height });
           this.onFrameAvailable?.();
         } catch (err) {
           console.error(`Static node failed to decode "${node.source}":`, err);
@@ -58,7 +61,11 @@ export class StaticStore {
   }
 
   getIntrinsicSize(node: ResolvedStatic): { w: number; h: number } | null {
-    return this.sizes.get(node) ?? null;
+    return this.sizes.get(node) ?? this.sizesBySource.get(node.source) ?? null;
+  }
+
+  getSizeBySource(source: string): { w: number; h: number } | null {
+    return this.sizesBySource.get(source) ?? null;
   }
 
   dispose(): void {

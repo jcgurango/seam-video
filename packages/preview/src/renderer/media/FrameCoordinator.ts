@@ -95,6 +95,14 @@ export class FrameCoordinator {
   /** Every entry of a resolved node — several when it loops. */
   private flatByClip = new Map<ResolvedClip | ResolvedAudio, FlatClip[]>();
   private sizes = new Map<ResolvedClip, { w: number; h: number }>();
+  /** Display dims by `source` + orientation. Survives `setTimeline` (media
+   *  dims don't change), so layout stays stable while buffers re-prime and
+   *  tools holding a different resolved tree (the editor's viewport gizmo)
+   *  can ask by source instead of by node identity. */
+  private sizesBySource = new Map<string, { w: number; h: number }>();
+  private hasStatics = false;
+  /** Fires when a clip/static's intrinsic size becomes known. */
+  onMediaSize: (() => void) | null = null;
   private playingClips = new Set<FlatClip>();
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
@@ -167,7 +175,11 @@ export class FrameCoordinator {
     // Static nodes decode asynchronously — fire and forget so the
     // initial reconcile doesn't block on them. The first frame
     // available callback will repaint when each decode lands.
-    this.staticStore.onFrameAvailable = () => this.onFrameAvailable?.();
+    this.staticStore.onFrameAvailable = () => {
+      this.onFrameAvailable?.();
+      this.onMediaSize?.();
+    };
+    this.hasStatics = containsStatic(timeline.children);
     void this.staticStore.setTimeline(timeline, basePath, mediaStore);
 
     // Maps rasterize per frame from the render list (applyContentSizes); the
@@ -212,10 +224,10 @@ export class FrameCoordinator {
           // A 90/270 pre-transform orientation swaps the display dims
           // objectFit sees (mirrors the renderer's intrinsicSize).
           const o = flat.clip.orientation ?? 0;
-          this.sizes.set(
-            flat.clip,
-            o === 90 || o === 270 ? { w: size.h, h: size.w } : size,
-          );
+          const oriented = o === 90 || o === 270 ? { w: size.h, h: size.w } : size;
+          this.sizes.set(flat.clip, oriented);
+          this.sizesBySource.set(clipSizeKey(flat.clip.source, o), oriented);
+          this.onMediaSize?.();
         }
       }
 
@@ -366,7 +378,31 @@ export class FrameCoordinator {
     clip: ResolvedClip | ResolvedStatic,
   ): { w: number; h: number } | null {
     if (clip.type === "static") return this.staticStore.getIntrinsicSize(clip);
-    return this.sizes.get(clip) ?? null;
+    return (
+      this.sizes.get(clip) ??
+      this.sizesBySource.get(clipSizeKey(clip.source, clip.orientation ?? 0)) ??
+      null
+    );
+  }
+
+  /** True when the current timeline has video clips or statics — media whose
+   *  frames decode asynchronously and announce themselves through
+   *  `onFrameAvailable`. Without any, nothing would ever ask for a repaint
+   *  after `setTimeline`. */
+  get hasAsyncFrames(): boolean {
+    return this.hasStatics || this.flatClips.some((flat) => flat.clip.type === "clip");
+  }
+
+  /** Intrinsic display size of a clip/static by its authored `source` (and a
+   *  clip's `orientation`) — for callers that don't hold this timeline's
+   *  resolved node objects. Null until the media has been probed. */
+  getMediaSize(node: {
+    type: "clip" | "static";
+    source: string;
+    orientation?: number;
+  }): { w: number; h: number } | null {
+    if (node.type === "static") return this.staticStore.getSizeBySource(node.source);
+    return this.sizesBySource.get(clipSizeKey(node.source, node.orientation ?? 0)) ?? null;
   }
 
   dispose(): void {
@@ -661,4 +697,16 @@ function collectClips(
   }
 
   return result;
+}
+
+function clipSizeKey(source: string, orientation: number): string {
+  return `${orientation}\n${source}`;
+}
+
+function containsStatic(children: ResolvedChild[]): boolean {
+  return children.some(
+    (c) =>
+      c.type === "static" ||
+      ((c.type === "composition" || c.type === "map") && containsStatic(c.children)),
+  );
 }
