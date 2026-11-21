@@ -131,13 +131,37 @@ describe("shiftOffsets — clamped (Shift-drag)", () => {
   const offsets = (out: Child[]) => out.slice(1).map((c) => (c as { offset?: number }).offset ?? 0);
 
   it("an offset never crosses zero within the operation", () => {
-    expect(offsets(shiftOffsets(kids, all, -5, -1))).toEqual([0, -7, -5]);
-    expect(offsets(shiftOffsets(kids, all, 5, 1))).toEqual([7, 0, 5]);
+    expect(offsets(shiftOffsets(kids, all, -5, { direction: -1 }))).toEqual([0, -7, -5]);
+    expect(offsets(shiftOffsets(kids, all, 5, { direction: 1 }))).toEqual([7, 0, 5]);
   });
 
   it("a zero offset only moves in the drag's first direction", () => {
-    expect(offsets(shiftOffsets(kids, all, 1, -1))).toEqual([3, -1, 0]);
-    expect(offsets(shiftOffsets(kids, all, -1, 1))).toEqual([1, -3, 0]);
+    expect(offsets(shiftOffsets(kids, all, 1, { direction: -1 }))).toEqual([3, -1, 0]);
+    expect(offsets(shiftOffsets(kids, all, -1, { direction: 1 }))).toEqual([1, -3, 0]);
+  });
+});
+
+describe("shiftOffsets — end clamp (Shift-drag)", () => {
+  // One 5s node at index 1; its end sits on the reference point at offset −5.
+  const at = (offset: number) => [clip("a"), clip("n", offset ? { offset } : {})];
+  const durations = new Map([[1, 5]]);
+  const go = (offset: number, delta: number, direction: 1 | -1) =>
+    (shiftOffsets(at(offset), new Set([1]), delta, { direction, durations })[1] as { offset?: number })
+      .offset ?? 0;
+
+  it("between the two boundaries: stops at 0 and at −duration", () => {
+    expect(go(-2, 10, 1)).toBe(0);
+    expect(go(-2, -10, -1)).toBe(-5);
+  });
+  it("past the end boundary: cannot come back through it", () => {
+    expect(go(-7, 10, 1)).toBe(-5);
+    expect(go(-7, -1, -1)).toBe(-8);
+  });
+  it("on a boundary: the drag's first direction picks the side", () => {
+    expect(go(0, -10, -1)).toBe(-5);
+    expect(go(0, 3, 1)).toBe(3);
+    expect(go(-5, -3, -1)).toBe(-8);
+    expect(go(-5, 10, 1)).toBe(0);
   });
 });
 
@@ -170,30 +194,56 @@ describe("moveNodesTracked", () => {
   });
 });
 
-describe("applyAttach", () => {
-  it("starts each secondary at the playhead, source-anchored to a clip primary", () => {
-    const d = doc([clip("a", { in: 10, out: 20 }), clip("b"), clip("c")]);
-    const tl = resolveComposition(d, { uncropped: true });
-    const r = applyAttach(d, tl, 3, "children.0", ["children.1", "children.2"])!;
-    expect(names(r.doc.children!)).toEqual(["a", "b", "c"]);
+describe("applyAttach — anchors without moving", () => {
+  const at = (d: SeamFile, t: number, primary: string, secondaries: string[]) =>
+    applyAttach(d, resolveComposition(d, { uncropped: true }), t, primary, secondaries)!;
+
+  it("point at the playhead, offset back to where the secondary already is", () => {
+    // a plays source [10,20] at 0..10; o sits at 2..7; playhead at 4.
+    const d = doc([clip("a", { in: 10, out: 20 }), clip("o", { start: 2 })]);
+    const r = at(d, 4, "children.0", ["children.1"]);
     expect((r.doc.children![0] as { id?: string }).id).toBe("anchor");
-    expect(r.doc.children!.map(placement)).toEqual([{}, { start: "anchor@13" }, { start: "anchor@13" }]);
-    expect(starts(r.doc)).toEqual([0, 3, 3]);
+    expect(placement(r.doc.children![1])).toEqual({ start: "anchor@14", offset: -2 });
+    expect(starts(r.doc)).toEqual(starts(d));
+  });
+
+  it("pulls the point inside the secondary when the playhead is before or past it", () => {
+    const d = doc([clip("a", { in: 10, out: 30 }), clip("o", { start: 6 })]);
+    // Playhead before o (o spans 6..11) → point at o's start, no offset.
+    expect(placement(at(d, 1, "children.0", ["children.1"]).doc.children![1])).toEqual({
+      start: "anchor@16",
+    });
+    // Playhead past o → point at o's end.
+    const past = at(d, 15, "children.0", ["children.1"]);
+    expect(placement(past.doc.children![1])).toEqual({ start: "anchor@21", offset: -5 });
+    expect(starts(past.doc)).toEqual(starts(d));
+  });
+
+  it("keeps the point on what the primary plays", () => {
+    // a spans 0..5; o sits at 8..13 entirely after it → point at a's out.
+    const d = doc([clip("a", { in: 10, out: 15 }), clip("o", { start: 8 })]);
+    const r = at(d, 9, "children.0", ["children.1"]);
+    expect(placement(r.doc.children![1])).toEqual({ start: "anchor@15", offset: 3 });
+    expect(starts(r.doc)).toEqual(starts(d));
+  });
+
+  it("each secondary keeps its own place; run members become their own heads", () => {
+    const d = doc([clip("a", { in: 10, out: 30 }), clip("b"), clip("c")]);
+    const r = at(d, 3, "children.0", ["children.1", "children.2"]);
+    expect(names(r.doc.children!)).toEqual(["a", "b", "c"]);
+    expect(starts(r.doc)).toEqual([0, 20, 25]);
     expect(r.secondaryKeys).toEqual(["children.1", "children.2"]);
   });
 
   it("uses the bare id + offset for a primary with no source axis", () => {
-    const d = doc([
-      { type: "text", text: "hi", duration: 4, id: "t" } as Child,
-      clip("b"),
-    ]);
-    const r = applyAttach(d, resolveComposition(d, { uncropped: true }), 1.5, "children.0", ["children.1"])!;
+    const d = doc([{ type: "text", text: "hi", duration: 4, id: "t" } as Child, clip("b", { start: 1.5 })]);
+    const r = at(d, 3, "children.0", ["children.1"]);
     expect(placement(r.doc.children![1])).toEqual({ start: "t", offset: 1.5 });
   });
 
   it("a secondary lifted from before the primary shifts the primary's key", () => {
-    const d = doc([clip("b"), clip("a", { start: 0 })]);
-    const r = applyAttach(d, resolveComposition(d, { uncropped: true }), 2, "children.1", ["children.0"])!;
+    const d = doc([clip("b", { start: 2 }), clip("a", { start: 0 })]);
+    const r = at(d, 3, "children.1", ["children.0"]);
     expect(r.primaryKey).toBe("children.0");
     expect(names(r.doc.children!)).toEqual(["a", "b"]);
     expect(starts(r.doc)).toEqual([0, 2]);
@@ -283,6 +333,21 @@ describe("layout + drop targets", () => {
     expect(
       dropTargetAt(regions, 196, strip, px, { thresholdPx: 10, exclude: new Set(["children.3"]) }),
     ).toMatchObject({ time: 19.6, snapped: false });
+  });
+
+  it("snaps to the playhead, but a node edge in reach wins", () => {
+    const strip = row0 + ROW_HEIGHT + 2;
+    // Playhead at 15s (x=150), nothing else near.
+    expect(dropTargetAt(regions, 146, strip, px, { thresholdPx: 10, playheadX: 150 })).toMatchObject({
+      time: 15,
+      x: 150,
+      snapped: true,
+    });
+    // Playhead at 10.3s, b's end at 10s: the cursor is nearer the playhead, the edge still wins.
+    expect(dropTargetAt(regions, 104, strip, px, { thresholdPx: 10, playheadX: 103 })).toMatchObject({
+      time: 10,
+      x: 100,
+    });
   });
 
   it("ruler drop: a new run at the front", () => {

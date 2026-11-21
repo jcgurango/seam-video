@@ -641,7 +641,13 @@ function DesktopTimeline({
   // the session must not be re-captured from the already-shifted doc.
   const offsetDragRef = useRef<{
     initialDoc: SeamFile;
-    groups: { path: NodePath; indices: Set<number>; scale: number }[];
+    groups: {
+      path: NodePath;
+      indices: Set<number>;
+      scale: number;
+      /** Each node's output length at the grab (for the end clamp). */
+      durations: Map<number, number>;
+    }[];
     pushed: boolean;
     /** The drag's first direction — the only way a zero offset may move. */
     direction: 1 | -1 | null;
@@ -741,18 +747,25 @@ function DesktopTimeline({
       const mode = e.shiftKey && editHistory ? "offset" : "move";
       offsetDragRef.current = null;
       if (mode === "offset" && editHistory) {
-        const groups = new Map<string, { path: NodePath; indices: Set<number>; scale: number }>();
+        const groups = new Map<
+          string,
+          { path: NodePath; indices: Set<number>; scale: number; durations: Map<number, number> }
+        >();
         for (const p of paths) {
           const sp = splitLast(p);
           if (!sp || sp.last.field === "bin") continue;
           const k = pathKey(sp.parent);
           if (!groups.has(k)) {
-            groups.set(k, {
-              path: sp.parent,
-              indices: new Set(),
-              // A nested group compresses time by its window scale.
-              scale: regions.find((r) => samePath(r.path, sp.parent))?.scale ?? 1,
-            });
+            const region = regions.find((r) => samePath(r.path, sp.parent));
+            // A nested group compresses time by its window scale.
+            const scale = region?.scale ?? 1;
+            const durations = new Map<number, number>();
+            for (const run of region?.runs ?? []) {
+              for (const m of run.members) {
+                durations.set(m.index, ((m.endX - m.startX) / pxPerSec) * scale);
+              }
+            }
+            groups.set(k, { path: sp.parent, indices: new Set(), scale, durations });
           }
           groups.get(k)!.indices.add(sp.last.index);
         }
@@ -772,7 +785,7 @@ function DesktopTimeline({
         snap: false,
       });
     },
-    [onMoveNodes, selection, editHistory, regions],
+    [onMoveNodes, selection, editHistory, regions, pxPerSec],
   );
 
   /** Edge snapping for a new-run drop: Shift pressed AFTER the grab (Shift at
@@ -780,6 +793,7 @@ function DesktopTimeline({
   const snapFor = (paths: NodePath[]) => ({
     thresholdPx: SNAP_THRESHOLD_PX,
     exclude: new Set(paths.map(pathKey)),
+    playheadX: currentTime * pxPerSec,
   });
 
   /** True when dropping `paths` on `target` would put them back where they
@@ -814,7 +828,8 @@ function DesktopTimeline({
 
     // Offset mode: each tick is `grab-time offset + (cursor − grab x)`,
     // rewritten from the grab-time document; one undo step for the drag.
-    // An offset never crosses zero within the drag (see `shiftOffsets`).
+    // Neither edge of a node crosses its reference point within the drag
+    // (see `shiftOffsets`).
     const applyOffsets = (x: number) => {
       const session = offsetDragRef.current;
       if (!editHistory || !session) return;
@@ -828,7 +843,10 @@ function DesktopTimeline({
         const delta = Math.round(((x - dragRef.startX) / pxPerSec) * g.scale * 1000) / 1000;
         next = updateCompAtPath(next, g.path, (comp) => ({
           ...comp,
-          children: shiftOffsets(comp.children ?? [], g.indices, delta, direction),
+          children: shiftOffsets(comp.children ?? [], g.indices, delta, {
+            direction,
+            durations: g.durations,
+          }),
         }));
       }
       if (!session.pushed) {
@@ -888,7 +906,7 @@ function DesktopTimeline({
     // change identity as the doc changes) is harmless: the offset session
     // lives in `offsetDragRef`, and a move reads `regions` fresh at drop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemDrag !== null, onMoveNodes, regions, pxPerSec]);
+  }, [itemDrag !== null, onMoveNodes, regions, pxPerSec, currentTime]);
 
   // ── Run z-drag (dotted underline, vertical) ────────────────────
   const startRunDrag = useCallback(

@@ -310,8 +310,8 @@ export default function ControlsBar({
   // Attach: needs 2+ selected and a resolvable primary (first selection).
   // The primary and secondaries can each be any node type (the file format
   // lets you anchor to anything) at any level: each secondary is lifted into
-  // the primary's container as the head of its own run, starting at the
-  // playhead and anchored to the primary there. Bin-rooted primaries are out
+  // the primary's container as the head of its own run, anchored to the
+  // primary at the playhead but left where it is. Bin-rooted primaries are out
   // (the per-reference playhead is ambiguous).
   const canAttach = (() => {
     if (selection.length < 2) return false;
@@ -539,7 +539,7 @@ export default function ControlsBar({
               onClick={handleAttach}
               style={{ ...BTN_STYLE, opacity: canAttach ? 1 : 0.3 }}
               disabled={!canAttach}
-              title="Attach: start each secondary at the playhead, anchored to the primary there"
+              title="Attach: anchor each secondary to the primary at the playhead, keeping it where it is"
             >
               <AlignStartVertical size={ICON_SIZE} />
             </button>

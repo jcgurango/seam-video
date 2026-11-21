@@ -151,18 +151,40 @@ export function runBoundaryAtOrAfter(children: Child[], index: number): number {
   return i;
 }
 
+/** Clamping for a Shift-drag (see `shiftOffsets`). */
+export interface OffsetClamp {
+  /** The drag's first direction — decides which way an offset sitting
+   *  exactly on a boundary may go. */
+  direction: 1 | -1;
+  /** Output length (seconds) of each node, by index. A node with a length
+   *  also gets the end boundary. */
+  durations?: ReadonlyMap<number, number>;
+}
+
+/** The interval `[lo, hi]` an offset starting at `initial` may move in. The
+ *  boundaries are 0 (the node's START sits on its reference point — the
+ *  anchor point / the previous node's end) and `−duration` (its END does). */
+function offsetBounds(initial: number, duration: number | undefined, direction: 1 | -1): [number, number] {
+  if (duration == null || !(duration > 0)) {
+    const side = initial > 0 ? 1 : initial < 0 ? -1 : direction;
+    return side > 0 ? [0, Infinity] : [-Infinity, 0];
+  }
+  if (initial > 0 || (initial === 0 && direction > 0)) return [0, Infinity];
+  if (initial < -duration || (initial === -duration && direction < 0)) return [-Infinity, -duration];
+  return [-duration, 0];
+}
+
 /** Add `delta` seconds to the `offset` of each node at `indices`. Dumb on
  *  purpose: adjacent selected run members each get the delta.
  *
- *  With `clampDirection` (a Shift-drag) an offset never crosses zero within
- *  the operation: one that starts positive stops at 0 going down, one that
- *  starts negative stops at 0 going up, and one that starts at 0 may only
- *  move in `clampDirection` (the drag's first direction). */
+ *  With `clamp` (a Shift-drag) neither edge of a node crosses its reference
+ *  point within the operation: the offset stops at 0 (start on the point)
+ *  and at `−duration` (end on the point) — let go and drag again to go on. */
 export function shiftOffsets(
   children: Child[],
   indices: ReadonlySet<number>,
   delta: number,
-  clampDirection?: 1 | -1,
+  clamp?: OffsetClamp,
 ): Child[] {
   if (delta === 0) return children;
   return children.map((node, i) => {
@@ -170,9 +192,9 @@ export function shiftOffsets(
     const p = node as Child & Placed;
     const initial = p.offset ?? 0;
     let offset = +(initial + delta).toFixed(6);
-    if (clampDirection != null) {
-      const side = initial > 0 ? 1 : initial < 0 ? -1 : clampDirection;
-      offset = side > 0 ? Math.max(0, offset) : Math.min(0, offset);
+    if (clamp) {
+      const [lo, hi] = offsetBounds(initial, clamp.durations?.get(i), clamp.direction);
+      offset = Math.max(lo, Math.min(hi, offset));
     }
     return offset === initial ? node : withPlacement(node, p.start, offset);
   });
