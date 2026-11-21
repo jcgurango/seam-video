@@ -14,6 +14,7 @@ import { dragAnchorPoint, toggleAnchorPoint, type AnchorEditCtx } from "../ancho
 import { layoutTree } from "../timelineTree.js";
 import { dropTargetAt, flattenDropRegions, runZIndexAt } from "../dropRegions.js";
 import { ROW_GAP, ROW_HEIGHT, RULER_HEIGHT } from "../timelineLayout.js";
+import { timeAfterLift } from "../dropTime.js";
 
 const clip = (name: string, extra: Record<string, unknown> = {}): Child =>
   ({ type: "clip", source: `${name}.mp4`, in: 0, out: 5, ...extra }) as Child;
@@ -265,6 +266,25 @@ describe("layout + drop targets", () => {
     });
   });
 
+  it("snapped new run: lands exactly on the nearest node edge, else stays free", () => {
+    const strip = row0 + ROW_HEIGHT + 2;
+    // b ends at 10s (x=100); `later` starts at 20s (x=200).
+    expect(dropTargetAt(regions, 104, strip, px, { thresholdPx: 10 })).toMatchObject({
+      kind: "newRun",
+      time: 10,
+      x: 100,
+      snapped: true,
+    });
+    expect(dropTargetAt(regions, 150, strip, px, { thresholdPx: 10 })).toMatchObject({
+      time: 15,
+      snapped: false,
+    });
+    // The dragged node's own edges are ignored.
+    expect(
+      dropTargetAt(regions, 196, strip, px, { thresholdPx: 10, exclude: new Set(["children.3"]) }),
+    ).toMatchObject({ time: 19.6, snapped: false });
+  });
+
   it("ruler drop: a new run at the front", () => {
     expect(dropTargetAt(regions, 30, 4, px)).toMatchObject({ kind: "newRun", index: 0, time: 3 });
   });
@@ -272,5 +292,39 @@ describe("layout + drop targets", () => {
   it("z-drag: lands before the first other run below the cursor", () => {
     expect(runZIndexAt(regions[0], 4, 0)).toBe(0);
     expect(runZIndexAt(regions[0], 0, 9999)).toBe(5);
+  });
+});
+
+describe("timeAfterLift — a new-run drop follows what the cursor pointed at", () => {
+  const abc = doc([clip("a"), clip("b"), clip("c")]);
+  const A = [parsePath("children.0")];
+
+  it("dragging A onto C's start lands where C ends up", () => {
+    expect(timeAfterLift(abc, A, [], 10)).toBe(5);
+    const moved = moveNodesTracked(abc, A, [], 3, { start: timeAfterLift(abc, A, [], 10) })!;
+    expect(names(moved.doc.children!)).toEqual(["b", "c", "a"]);
+    expect(starts(moved.doc)).toEqual([0, 5, 5]);
+  });
+
+  it("a free drop keeps its distance from the edge before it", () => {
+    expect(timeAfterLift(abc, A, [], 12)).toBe(7);
+    // Before every surviving edge: nothing to follow.
+    expect(timeAfterLift(abc, A, [], 1)).toBe(1);
+  });
+
+  it("nothing moves when the lifted node rippled nothing", () => {
+    const d = doc([clip("a"), clip("b"), clip("o", { start: 2 })]);
+    expect(timeAfterLift(d, [parsePath("children.2")], [], 5)).toBe(5);
+    // Lifting the last member of a run leaves earlier edges alone.
+    expect(timeAfterLift(abc, [parsePath("children.2")], [], 5)).toBe(5);
+  });
+
+  it("follows a nested composition that shrinks when a node is dragged out of it", () => {
+    const d = doc([
+      { type: "composition", children: [clip("x"), clip("y")] } as Child,
+      clip("b"),
+    ]);
+    // b starts at 10; pulling x out of the comp leaves it 5s long → b at 5.
+    expect(timeAfterLift(d, [parsePath("children.0.children.0")], [], 10)).toBe(5);
   });
 });
