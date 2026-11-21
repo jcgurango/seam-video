@@ -59,6 +59,7 @@ import type { NodePath } from "./nodePath.js";
 import {
   activeKeyframeIndex,
   insertKeyframeAtPlayhead,
+  interpolatedValue,
   keyframeMoment,
   nodeClock,
 } from "./playheadKeyframe.js";
@@ -567,12 +568,15 @@ function KeyframeStack({
   const kept = (v: unknown) =>
     v !== undefined ? v : def.kind === "distort" ? {} : def.kind === "inset" ? 0 : v;
   // Insert at the playhead, per node (each has its own clock). With no clock,
-  // or a keyframe already at the playhead, fall back to appending.
-  const add = () =>
+  // or a keyframe already at the playhead, fall back to appending. The new
+  // keyframe copies its nearest neighbour; Shift takes the interpolated value
+  // instead, so the motion through it is unchanged.
+  const add = (interpolate: boolean) =>
     onEdit((cur, node) => {
       const list = cur as AnyKeyframe[];
       const at = clockAt(source?.pathOf.get(node));
-      const inserted = at ? insertKeyframeAtPlayhead(list, at) : null;
+      const value = at && interpolate ? interpolatedValue(list, at, def) : undefined;
+      const inserted = at ? insertKeyframeAtPlayhead(list, at, value) : null;
       return inserted ? inserted.keyframes : addKeyframe(list);
     });
   return (
@@ -646,8 +650,8 @@ function KeyframeStack({
         </div>
       ))}
       <button
-        onClick={add}
-        title="Add a keyframe at the playhead"
+        onClick={(e) => add(e.shiftKey)}
+        title="Add a keyframe at the playhead (copies the nearest keyframe). Shift-click: use the interpolated value at the playhead."
         style={{
           ...fieldStyle,
           cursor: "pointer",

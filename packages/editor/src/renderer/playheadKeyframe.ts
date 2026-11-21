@@ -7,8 +7,33 @@
 // node-local output time (`containerTime − timelineStart`), so everything
 // here works on a `NodeClock`: the playhead expressed in that time.
 
-import { parseTimeExpr, resolveTimeExpr } from "@seam/core";
-import type { ResolvedTimeline, SeamFile, TimeExpr } from "@seam/core";
+import {
+  parseTimeExpr,
+  resolveEasing,
+  resolveTimeExpr,
+  sampleColor,
+  sampleNumber,
+  sampleVolume,
+  sampleZoom,
+} from "@seam/core";
+import type {
+  Distort,
+  Inset,
+  Keyframed,
+  Length,
+  Point2D,
+  ResolvedTimeline,
+  SeamFile,
+  TimeExpr,
+} from "@seam/core";
+import {
+  DISTORT_CORNERS,
+  insetEdges,
+  joinLength,
+  pointAxis,
+  splitLength,
+  type PropDef,
+} from "./propertyCatalog.js";
 import type { NodePath } from "./nodePath.js";
 import { descendToContainer, globalSpanOf } from "./resolveLocal.js";
 import { classifyTimeExpr } from "./keyframeEdit.js";
@@ -141,21 +166,142 @@ function nearestKeyframe(
 
 /**
  * Insert a keyframe at the playhead, in time order. It starts as a copy of
- * the nearest keyframe's value (no easing). Returns null when a keyframe
- * already sits at that instant — nothing to add.
+ * the nearest keyframe's value (no easing) unless `value` is given (see
+ * {@link interpolatedValue}). Returns null when a keyframe already sits at
+ * that instant — nothing to add.
  */
 export function insertKeyframeAtPlayhead<K extends AnyKeyframe>(
   kfs: readonly K[],
   clock: Pick<NodeClock, "t" | "duration">,
+  given?: unknown,
 ): { keyframes: K[]; index: number } | null {
   const time = timeExprAtPlayhead(kfs, clock);
   const at = resolveTime(time, clock.duration);
   if (kfs.some((kf) => Math.abs(resolveTime(kf[0], clock.duration) - at) < 1e-6)) return null;
   const near = nearestKeyframe(kfs, clock);
-  const value = near == null ? undefined : structuredClone(kfs[near][1]);
+  const value =
+    given !== undefined ? given : near == null ? undefined : structuredClone(kfs[near][1]);
   let index = kfs.findIndex((kf) => resolveTime(kf[0], clock.duration) > at);
   if (index < 0) index = kfs.length;
   const keyframes = [...kfs];
   keyframes.splice(index, 0, [time, value] as unknown as K);
   return { keyframes, index };
+}
+
+// ── The animated value at the playhead ─────────────────────────────
+
+/** The two keyframes around `t` and the EASED fraction between them (the
+ *  arriving keyframe's easing, as the samplers apply it). Before the first /
+ *  after the last keyframe both ends are that keyframe. */
+function segmentAt(
+  kfs: readonly AnyKeyframe[],
+  clock: Pick<NodeClock, "t" | "duration">,
+): { a: unknown; b: unknown; f: number } {
+  const frames = kfs
+    .map((kf) => ({ time: resolveTime(kf[0], clock.duration), value: kf[1], ease: kf[2] }))
+    .sort((x, y) => x.time - y.time);
+  const first = frames[0];
+  const last = frames[frames.length - 1];
+  if (clock.t <= first.time) return { a: first.value, b: first.value, f: 0 };
+  if (clock.t >= last.time) return { a: last.value, b: last.value, f: 0 };
+  for (let i = 0; i < frames.length - 1; i++) {
+    const a = frames[i];
+    const b = frames[i + 1];
+    if (clock.t >= a.time && clock.t <= b.time) {
+      if (b.time === a.time) return { a: b.value, b: b.value, f: 0 };
+      const f = resolveEasing(b.ease)((clock.t - a.time) / (b.time - a.time));
+      return { a: a.value, b: b.value, f };
+    }
+  }
+  return { a: last.value, b: last.value, f: 0 };
+}
+
+const round = (n: number, places: number): number => {
+  const k = 10 ** places;
+  const r = Math.round(n * k) / k;
+  return r === 0 ? 0 : r;
+};
+
+/** Blend two authored lengths part by part (percent with percent, pixels
+ *  with pixels — which is exactly the blend of their resolved values, for
+ *  any reference size). Two bare numbers stay a bare number; `undefined`
+ *  stands for `percentDefault`%. */
+function mixLength(
+  a: Length | undefined,
+  b: Length | undefined,
+  f: number,
+  percentDefault: number,
+): Length | undefined {
+  if (a === b || f === 0) return a;
+  const pa = splitLength(a);
+  const pb = splitLength(b);
+  const px = round((pa.px ?? 0) + ((pb.px ?? 0) - (pa.px ?? 0)) * f, 2);
+  if (a != null && b != null && pa.percent == null && pb.percent == null) return px;
+  const ca = pa.percent ?? percentDefault;
+  const cb = pb.percent ?? percentDefault;
+  return joinLength({ percent: round(ca + (cb - ca) * f, 2), px: px === 0 ? null : px });
+}
+
+/**
+ * The value an animated property has at the playhead, written the way an
+ * author would (percent / pixel parts blended separately, shorthands
+ * re-collapsed) — what a keyframe added there must hold to leave the motion
+ * unchanged. Kinds with nothing to blend take the nearest keyframe's value.
+ */
+export function interpolatedValue(
+  kfs: readonly AnyKeyframe[],
+  clock: Pick<NodeClock, "t" | "duration">,
+  def: Pick<PropDef, "key" | "kind" | "percentDefault">,
+): unknown {
+  const { t, duration } = clock;
+  const { a, b, f } = segmentAt(kfs, clock);
+  const pct = def.percentDefault ?? 0;
+  try {
+    switch (def.kind) {
+      case "number":
+        return round(
+          def.key === "zoom"
+            ? sampleZoom(kfs as Keyframed<number>, t, duration)
+            : sampleNumber(kfs as Keyframed<number>, t, duration),
+          4,
+        );
+      case "scalar":
+        // A decibel string blends as linear gain.
+        return a === b ? a : round(sampleVolume(kfs as Keyframed<number | string>, t, duration), 4);
+      case "color":
+        return a === b ? a : sampleColor(kfs as Keyframed<string>, t, duration);
+      case "length":
+        return mixLength(a as Length, b as Length, f, pct);
+      case "point": {
+        const x = mixLength(pointAxis(a as Point2D, "x"), pointAxis(b as Point2D, "x"), f, pct);
+        const y = mixLength(pointAxis(a as Point2D, "y"), pointAxis(b as Point2D, "y"), f, pct);
+        if (x != null && x === y) return x;
+        return { ...(x != null ? { x } : {}), ...(y != null ? { y } : {}) };
+      }
+      case "inset": {
+        const ea = insetEdges(a as Inset);
+        const eb = insetEdges(b as Inset);
+        const [top, right, bottom, left] = ea.map((e, i) => mixLength(e, eb[i], f, 0) ?? 0);
+        if (top === right && top === bottom && top === left) return top;
+        if (top === bottom && right === left) return [top, right];
+        return [top, right, bottom, left];
+      }
+      case "distort": {
+        const da = (a ?? {}) as Distort;
+        const db = (b ?? {}) as Distort;
+        const out: Distort = {};
+        for (const c of DISTORT_CORNERS) {
+          for (const [key, home] of [[c.x, c.homeX], [c.y, c.homeY]] as const) {
+            const v = mixLength(da[key], db[key], f, home);
+            if (v != null) out[key] = v;
+          }
+        }
+        return out;
+      }
+    }
+  } catch {
+    /* an unparsable value — fall through to the nearest keyframe */
+  }
+  const near = nearestKeyframe(kfs, clock);
+  return near == null ? undefined : structuredClone(kfs[near][1]);
 }

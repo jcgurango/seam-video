@@ -4,6 +4,7 @@ import {
   LAST_FRAME,
   activeKeyframeIndex,
   insertKeyframeAtPlayhead,
+  interpolatedValue,
   keyframeMoment,
   nodeClock,
   timeExprAtPlayhead,
@@ -99,6 +100,40 @@ describe("insertKeyframeAtPlayhead", () => {
   it("is null when a keyframe is already there", () => {
     expect(insertKeyframeAtPlayhead(kfs, clock(0))).toBeNull();
     expect(insertKeyframeAtPlayhead(kfs, clock(15))).toBeNull();
+  });
+});
+
+describe("interpolatedValue", () => {
+  const point = { key: "translation", kind: "point", percentDefault: 50 } as const;
+  it("blends numbers through the arriving keyframe's easing", () => {
+    const def = { key: "rotation", kind: "number" } as const;
+    expect(interpolatedValue([[0, 0], ["100%", 90]], clock(2.5), def)).toBe(22.5);
+    expect(interpolatedValue([[0, 0], ["100%", 90, "discrete"]], clock(2.5), def)).toBe(0);
+    // Outside the keyframes it holds the end value.
+    expect(interpolatedValue([[2, 5], [4, 9]], clock(1), def)).toBe(5);
+  });
+  it("blends length parts separately and keeps the authored form", () => {
+    const kfs: [number | string, unknown][] = [[0, { x: "30%", y: "50%" }], ["100%", { x: "70%", y: "50% + 40" }]];
+    expect(interpolatedValue(kfs, clock(5), point)).toEqual({ x: "50%", y: "50% + 20" });
+    // Two bare numbers stay bare; a bare number against a percentage uses the default percent.
+    expect(interpolatedValue([[0, 0], ["100%", 100]], clock(2.5), point)).toBe(25);
+    expect(interpolatedValue([[0, 10], ["100%", "70%"]], clock(5), point)).toBe("60% + 5");
+  });
+  it("blends colours, insets and distort corners", () => {
+    expect(
+      interpolatedValue([[0, "#000000"], ["100%", "#ffffff"]], clock(5), { key: "fill", kind: "color" }),
+    ).toBe("rgb(128, 128, 128)");
+    expect(
+      interpolatedValue([[0, 0], ["100%", [100, 0]]], clock(5), { key: "inset", kind: "inset" }),
+    ).toEqual([50, 0]);
+    expect(
+      interpolatedValue([[0, {}], ["100%", { x1: "50%", y2: -40 }]], clock(5), { key: "distort", kind: "distort" }),
+    ).toEqual({ x1: "75%", y2: "100% - 20" });
+  });
+  it("feeds the inserted keyframe", () => {
+    const kfs: [number | string, unknown][] = [["0%", 0], ["100%", 10]];
+    const value = interpolatedValue(kfs, clock(7), { key: "opacity", kind: "number" });
+    expect(insertKeyframeAtPlayhead(kfs, clock(7), value)!.keyframes[1]).toEqual(["100% - 3", 7]);
   });
 });
 
