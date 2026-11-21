@@ -11,16 +11,14 @@ import {
   type ResolvedComposition,
 } from "../index.js";
 
-// `underflow: "loop"` — an attachment whose anchored span exceeds its natural
-// length replays its content from the start until the span is filled. The
+// `underflow: "loop"` — a node whose `duration` exceeds its natural length
+// replays its content from the start until the duration is filled. The
 // resolved node keeps ONE cycle (source range / inner window) plus a `loop`
 // marker; consumers wrap content time with `loopLocalTime` or enumerate the
 // cycles with `loopIterations` / `unrollLoops`.
 
-const span10 = {
-  start: { anchor: "target", timeSource: "output" as const, anchorPoint: "0%" },
-  end: { anchor: "target", timeSource: "output" as const, anchorPoint: "100%" },
-};
+/** Overlay `target` from its start for `duration` output seconds. */
+const over = (duration: number) => ({ start: "target", duration });
 
 function comp(fields: Partial<Composition>): Composition {
   return { type: "composition", ...fields } as Composition;
@@ -30,9 +28,9 @@ describe("underflow: loop — resolver", () => {
   it("marks a looping clip with its single cycle and the full target span", () => {
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 }],
-        attachments: [
-          { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...span10 },
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+          { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...over(10) },
         ],
       }),
     );
@@ -51,9 +49,10 @@ describe("underflow: loop — resolver", () => {
   it("keeps the clip's own rate: the period is the sped cycle length", () => {
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 5 }],
-        attachments: [
-          { type: "audio", source: "b.wav", in: 0, out: 4, duration: 2, underflow: "loop", ...span10 },
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 5 },
+          // With loop, `speed` is the per-cycle rate (`duration` is the span).
+          { type: "audio", source: "b.wav", in: 0, out: 4, speed: 2, underflow: "loop", ...over(5) },
         ],
       }),
     );
@@ -72,13 +71,13 @@ describe("underflow: loop — resolver", () => {
     // show that second over and over.
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 }],
-        attachments: [
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
           {
             type: "composition",
             underflow: "loop",
             children: [{ type: "clip", in: 0.5, out: 1.5, source: "video.mp4" }],
-            ...span10,
+            ...over(10),
           },
         ],
       }),
@@ -102,16 +101,16 @@ describe("underflow: loop — resolver", () => {
     });
   });
 
-  it("does not loop when the span fits (no underflow)", () => {
+  it("does not loop when the duration fits (no underflow)", () => {
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 2 }],
-        attachments: [
-          { type: "clip", source: "b.mp4", in: 0, out: 4, underflow: "loop", ...span10 },
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 2 },
+          { type: "clip", source: "b.mp4", in: 0, out: 4, underflow: "loop", ...over(2) },
         ],
       }),
     );
-    // 4s natural into a 2s span is an OVERFLOW → default stretch, no loop.
+    // 4s natural into a 2s duration is an OVERFLOW → default stretch, no loop.
     const c = result.children[1] as ResolvedClip;
     expect(c.loop).toBeUndefined();
     expect(c.speed).toBe(2);
@@ -119,7 +118,7 @@ describe("underflow: loop — resolver", () => {
 
   it("a window crop advances the phase instead of trimming the cycle", () => {
     // Outer comp windows the inner one from 1s..9s (in/out). The looping
-    // attachment inside spans 0..10 with period 3, so the visible part starts
+    // clip inside spans 0..10 with period 3, so the visible part starts
     // 1s into its first cycle.
     const result = resolveComposition(
       comp({
@@ -128,9 +127,9 @@ describe("underflow: loop — resolver", () => {
             type: "composition",
             in: 1,
             out: 9,
-            children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 }],
-            attachments: [
-              { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...span10 },
+            children: [
+              { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+              { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...over(10) },
             ],
           },
         ],
@@ -151,12 +150,35 @@ describe("underflow: loop — resolver", () => {
     const r = parseSeamFile(
       JSON.stringify(
         comp({
-          children: [{ id: "t", type: "clip", source: "a.mp4", in: 0, out: 10 }],
-          attachments: [{ type: "clip", source: "b.mp4", in: 0, out: 1, underflow: "loop", ...span10 }],
+          children: [
+            { id: "target", type: "clip", source: "a.mp4", in: 0, out: 10 },
+            { type: "clip", source: "b.mp4", in: 0, out: 1, underflow: "loop", ...over(10) },
+            // speed + duration is fine once the strategy isn't stretch.
+            { type: "clip", source: "c.mp4", in: 0, out: 1, speed: 2, underflow: "loop", ...over(10) },
+          ],
         }),
       ),
     );
-    expect(r.success).toBe(true);
+    expect(r.success, r.success ? "" : r.errors.join("\n")).toBe(true);
+  });
+
+  it("a crop at 0 advances the phase too", () => {
+    const result = resolveComposition(
+      comp({
+        children: [
+          { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", start: -4, duration: 10 },
+        ],
+      }),
+    );
+    // Spans [-4, 6]; the visible part starts 4s in = 1s into the 2nd cycle.
+    expect(result.children[0]).toMatchObject({
+      sourceIn: 5,
+      sourceOut: 8,
+      timelineStart: 0,
+      timelineEnd: 6,
+      loop: { period: 3, phase: 1 },
+    });
+    expect(result.duration).toBe(6);
   });
 });
 
@@ -188,9 +210,9 @@ describe("loop helpers", () => {
   it("unrollLoops expands a looping clip into trimmed plain clips", () => {
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 7 }],
-        attachments: [
-          { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...span10 },
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 7 },
+          { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...over(7) },
         ],
       }),
     );
@@ -208,13 +230,13 @@ describe("loop helpers", () => {
   it("unrollLoops crops a looping composition's children per cycle", () => {
     const result = resolveComposition(
       comp({
-        children: [{ id: "target", type: "clip", source: "a.mp4", in: 0, out: 2.5 }],
-        attachments: [
+        children: [
+          { id: "target", type: "clip", source: "a.mp4", in: 0, out: 2.5 },
           {
             type: "composition",
             underflow: "loop",
             children: [{ type: "clip", in: 0.5, out: 1.5, source: "video.mp4" }],
-            ...span10,
+            ...over(2.5),
           },
         ],
       }),

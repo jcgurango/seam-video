@@ -113,7 +113,7 @@ describe("Compositor — rect / circle / cornerRadius", () => {
           backgroundColor: "#ff0000",
           size: 100,
           cornerRadius: "50%",
-          children: [{ type: "empty", duration: 1 }],
+          children: [{ type: "data", data: null, duration: 1 }],
         },
       ],
     };
@@ -210,8 +210,6 @@ describe("Compositor — rect / circle / cornerRadius", () => {
           origin: "0%",
           translation: "0%",
         },
-      ],
-      attachments: [
         {
           type: "circle",
           duration: 1,
@@ -219,7 +217,7 @@ describe("Compositor — rect / circle / cornerRadius", () => {
           size: 40,
           origin: "0%",
           translation: { x: "0% + 80", y: "0% + 80" },
-          start: { anchor: "anchor", timeSource: "output", anchorPoint: "50%" },
+          start: "anchor@50%",
         },
       ],
     };

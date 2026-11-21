@@ -1,33 +1,47 @@
 // Split tool: slice the child currently under the playhead into two
 // halves. Clips/audio split by source time; compositions split by
-// inner timeline. Anchors in the rest of the document that reference
-// the split node are rewritten so they keep pointing at the half they
-// originally landed on.
+// inner timeline.
+//
+// Placement: the left half keeps the original's `id`/`start`/`offset`; the
+// right half is a plain run member directly after it (no `start`, no
+// `offset`), so whatever followed the original in the array now follows the
+// right half. Sibling `start` anchors that referenced the split node are
+// rewritten so they keep landing on the same moment:
+//   • bare `"id"`      → unchanged (the left half starts where the node did);
+//   • `"id@<sec>"`     → retargeted to the right half when the source point
+//                        falls after the split;
+//   • `"id@<p>%"`      → re-expressed as a fraction of whichever half
+//                        contains that moment.
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import { clipOut, compileSeamFile, resolveComposition } from "@seam/core";
-import type { Child, Composition, SeamFile, TimeAnchor } from "@seam/core";
-
-function clipBaseSpeed(clip: {
-  in: number;
-  out?: number;
-  speed?: number;
-  duration?: number;
-}): number {
-  if (clip.duration != null) return (clipOut(clip) - clip.in) / clip.duration;
-  return clip.speed ?? 1;
-}
+import {
+  compileSeamFile,
+  formatStart,
+  parseStart,
+  resolveComposition,
+} from "@seam/core";
+import type {
+  Audio,
+  Child,
+  Clip,
+  Composition,
+  Overflow,
+  ResolvedChild,
+  ResolvedComposition,
+  SeamFile,
+  Start,
+  Underflow,
+} from "@seam/core";
+import { withPlacement } from "./runEdit.js";
 
 /** Collect every `id` appearing anywhere in the document tree. */
 function collectAllIds(doc: SeamFile): Set<string> {
   const out = new Set<string>();
   const visit = (child: Child) => {
-    const id = (child as { id?: string }).id;
-    if (id != null) out.add(id);
-    if (child.type === "composition") {
+    if (child.id != null) out.add(child.id);
+    if (child.type === "composition" || child.type === "map") {
       (child.children ?? []).forEach(visit);
-      if (child.attachments) child.attachments.forEach(visit);
     }
   };
   visit(doc);
@@ -48,250 +62,224 @@ function uniqueSplitId(existingIds: Set<string>, origId: string): string {
 
 /**
  * Context needed to rewrite an anchor that points at a node which just got
- * split in half. All time values are in the ORIGINAL target's local output
- * timeline (the pre-split node's timelineStart-origin coords).
+ * split in half. Output values are in the ORIGINAL target's local output
+ * timeline (0 = its start).
  */
 interface SplitContext {
   origId: string;
   rightId: string;
   splitOffset: number; // split point, target-local output seconds
-  origLen: number;     // original target's output duration
-  baseSourceTime: number; // for source-mode: clip.in
-  speed: number;       // for source-mode: source-secs-per-output-sec at the target level
-}
-
-function parsePercentStr(s: string): number {
-  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
-  return m ? parseFloat(m[1]) / 100 : 0;
-}
-
-function formatPercentStr(fraction: number): string {
-  return `${Math.round(fraction * 1000000) / 10000}%`;
-}
-
-/** Natural output duration of a node — used by the anchor rewriter to expand
- *  %-offsets, which are sized against the *attachment's own length*. */
-function nodeNaturalDuration(node: Child): number {
-  if (node.type === "clip" || node.type === "audio") {
-    if (node.duration != null) return node.duration;
-    const speed = node.speed ?? 1;
-    return (clipOut(node) - node.in) / speed;
-  }
-  if (node.type === "empty") return node.duration;
-  if (node.type === "data") return node.duration ?? 0;
-  if (node.type === "text") return node.duration ?? 0;
-  if (node.type === "composition") {
-    if (node.in != null && node.out != null) return node.out - node.in;
-    try {
-      return resolveComposition(node).duration;
-    } catch {
-      return 0;
-    }
-  }
-  return 0;
+  origLen: number; // original target's output duration
+  /** Source time the resolver measures `id@<sec>` from on the ORIGINAL node. */
+  origBase: number;
+  /** Same, for each half after the split. */
+  leftBase: number;
+  rightBase: number;
+  speed: number; // source seconds per output second
 }
 
 /**
- * Rewrite a single anchor spec so it still resolves to the same absolute
- * output time, pointing at whichever half of the split contains it.
- * Returns the original spec if it doesn't reference `origId`.
+ * Rewrite one `start` so it still resolves to the same moment, pointing at
+ * whichever half of the split contains it. Returns the original value when
+ * it doesn't reference `origId` (or needs no change).
  */
-function rewriteAnchor(
-  spec: TimeAnchor | undefined,
-  ctx: SplitContext,
-  attachmentNatDur: number,
-): TimeAnchor | undefined {
-  if (!spec || spec.anchor !== ctx.origId) return spec;
+function rewriteStart(start: Start | undefined, ctx: SplitContext): Start | undefined {
+  if (typeof start !== "string") return start;
+  const parsed = parseStart(start);
+  if (parsed.kind !== "node" || parsed.id !== ctx.origId || !parsed.point) return start;
 
-  let offsetSeconds = 0;
-  if (spec.offset != null) {
-    offsetSeconds =
-      typeof spec.offset === "number"
-        ? spec.offset
-        : parsePercentStr(spec.offset) * attachmentNatDur;
+  // The anchored moment, in target-local output seconds.
+  const moment =
+    parsed.point.kind === "source"
+      ? (parsed.point.value - ctx.origBase) / ctx.speed
+      : parsed.point.value * ctx.origLen;
+  const onLeft = moment <= ctx.splitOffset;
+  const id = onLeft ? ctx.origId : ctx.rightId;
+  const local = onLeft ? moment : moment - ctx.splitOffset;
+
+  if (parsed.point.kind === "source") {
+    const base = onLeft ? ctx.leftBase : ctx.rightBase;
+    return formatStart({
+      kind: "node",
+      id,
+      point: { kind: "source", value: base + local * ctx.speed },
+    });
   }
-
-  let pointOnTarget: number;
-  if (spec.timeSource === "source") {
-    const sourceTime =
-      typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
-    pointOnTarget = (sourceTime - ctx.baseSourceTime) / ctx.speed;
-  } else {
-    const pct =
-      typeof spec.anchorPoint === "string"
-        ? parsePercentStr(spec.anchorPoint)
-        : 0;
-    pointOnTarget = pct * ctx.origLen;
-  }
-
-  const targetLocalTime = pointOnTarget + offsetSeconds;
-  const onLeft = targetLocalTime <= ctx.splitOffset;
-  const newAnchorId = onLeft ? ctx.origId : ctx.rightId;
-
-  if (spec.timeSource === "source") {
-    const rewritten: TimeAnchor = {
-      anchor: newAnchorId,
-      timeSource: "source",
-      anchorPoint: spec.anchorPoint,
-    };
-    if (spec.offset != null) rewritten.offset = spec.offset;
-    return rewritten;
-  }
-
-  const leftLen = ctx.splitOffset;
-  const rightLen = ctx.origLen - ctx.splitOffset;
-  const newLen = onLeft ? leftLen : rightLen;
-  const localOnNew = onLeft
-    ? targetLocalTime
-    : targetLocalTime - ctx.splitOffset;
-  const newFraction = newLen !== 0 ? localOnNew / newLen : 0;
-  return {
-    anchor: newAnchorId,
-    timeSource: "output",
-    anchorPoint: formatPercentStr(newFraction),
-  };
+  const len = onLeft ? ctx.splitOffset : ctx.origLen - ctx.splitOffset;
+  return formatStart({
+    kind: "node",
+    id,
+    point: { kind: "percent", value: len !== 0 ? local / len : 0 },
+  });
 }
 
-/** Recursively rewrite all `start`/`end` anchors in the tree. */
-function rewriteAnchorsInNode(node: Child, ctx: SplitContext): Child {
-  const natDur = nodeNaturalDuration(node);
-  let next: Child = node;
-  const newStart = rewriteAnchor(node.start, ctx, natDur);
-  const newEnd = rewriteAnchor(node.end, ctx, natDur);
-  if (newStart !== node.start || newEnd !== node.end) {
-    next = { ...node };
-    if (newStart !== undefined) next.start = newStart;
-    if (newEnd !== undefined) next.end = newEnd;
+/** Start of a composition's visible inner window. `[in, out]` unless a
+ *  `duration` is filled by a non-stretch strategy, which trims / extends the
+ *  window (mirrors the resolver's overflow / underflow strategies). */
+function compWindowIn(
+  comp: { overflow?: Overflow; underflow?: Underflow },
+  compIn: number,
+  compOut: number,
+  windowLen: number,
+): number {
+  const span = compOut - compIn;
+  const strategy =
+    windowLen < span ? comp.overflow ?? "stretch" : comp.underflow ?? "stretch";
+  switch (strategy) {
+    case "trim-start":
+    case "extend-start":
+      return compOut - windowLen;
+    case "trim-center":
+    case "extend-center":
+      return compIn + (span - windowLen) / 2;
+    default:
+      return compIn;
   }
-
-  if (next.type === "composition") {
-    const rewrittenChildren = (next.children ?? []).map((c) =>
-      rewriteAnchorsInNode(c, ctx),
-    );
-    const rewrittenAttachments = next.attachments?.map((c) =>
-      rewriteAnchorsInNode(c, ctx),
-    );
-    const updated: Composition = { ...next, children: rewrittenChildren };
-    if (rewrittenAttachments) updated.attachments = rewrittenAttachments;
-    return updated;
-  }
-  return next;
 }
 
-function rewriteSplitAnchors(doc: SeamFile, ctx: SplitContext): SeamFile {
-  return rewriteAnchorsInNode(doc, ctx) as SeamFile;
+/** True for the node types a slice applies to — splitting static / text /
+ *  data / shapes / map has no clear meaning. */
+function isSplittable(type: string | undefined): boolean {
+  return type === "clip" || type === "audio" || type === "composition";
 }
 
-/** Slice the child currently under the playhead. Returns null if no
- *  splittable child contains the playhead. */
+/**
+ * Slice every splittable child (clip / audio / composition) under the
+ * playhead, in one operation. With `only`, just the children at those indices
+ * (the selection). Looping nodes are skipped — they replay their content, so
+ * there is no single source point under the playhead to cut at. Returns null
+ * when nothing was split.
+ */
 export function sliceAtPlayhead(
   doc: SeamFile,
   currentTime: number,
+  only?: ReadonlySet<number>,
 ): SeamFile | null {
   // Resolve the COMPILED doc (bins inflated, scripts skipped) so `binItem`
   // references have their real body + duration — otherwise they resolve as
   // empty zero-width compositions and the playhead hit-test below never
-  // matches them. `runScripts: false` keeps children 1:1 with the authored
-  // tree, so `targetIdx` still indexes `doc.children` (the array we mutate).
+  // matches them. `runScripts: false` + `uncropped` keep resolved children
+  // 1:1 with the authored array, so indices address `doc.children` (the
+  // array we mutate).
   const resolved = resolveComposition(
     compileSeamFile(doc, { runScripts: false }).doc,
+    { uncropped: true },
   );
   const children = doc.children ?? [];
 
-  let targetIdx = -1;
-  let timelineStart = 0;
-
+  const targets: number[] = [];
   for (let i = 0; i < resolved.children.length; i++) {
+    if (only && !only.has(i)) continue;
     const rc = resolved.children[i];
-    if (currentTime > rc.timelineStart && currentTime < rc.timelineEnd) {
-      targetIdx = i;
-      timelineStart = rc.timelineStart;
-      break;
-    }
+    if (!isSplittable(children[i]?.type)) continue;
+    if (currentTime > rc.timelineStart && currentTime < rc.timelineEnd) targets.push(i);
   }
 
-  if (targetIdx === -1) return null;
+  // Highest index first: each split inserts its right half just after the
+  // node, so lower indices (and their resolved entries — a split never moves
+  // anything in time) stay valid.
+  let next = doc;
+  for (let k = targets.length - 1; k >= 0; k--) {
+    next = splitChildAt(next, targets[k], resolved.children[targets[k]], currentTime) ?? next;
+  }
+  return next === doc ? null : next;
+}
 
-  const child = children[targetIdx];
+/** Split `doc.children[targetIdx]` (resolving to `rChild`) at `currentTime`. */
+function splitChildAt(
+  doc: SeamFile,
+  targetIdx: number,
+  rChild: ResolvedChild,
+  currentTime: number,
+): SeamFile | null {
+  const children = doc.children ?? [];
+  const child = children[targetIdx] as Clip | Audio | Composition;
   if (
-    child.type !== "clip" &&
-    child.type !== "audio" &&
-    child.type !== "composition"
+    (rChild.type !== "clip" && rChild.type !== "audio" && rChild.type !== "composition") ||
+    rChild.loop
   ) {
-    // Splitting empty/data/text has no clear meaning — bail.
     return null;
   }
 
-  const offset = currentTime - timelineStart;
-  const origLen =
-    resolved.children[targetIdx].timelineEnd -
-    resolved.children[targetIdx].timelineStart;
-  const newChildren = [...children];
+  const offset = currentTime - rChild.timelineStart;
+  const origLen = rChild.timelineEnd - rChild.timelineStart;
+  const speed = rChild.speed;
 
   // Both halves of a split can't share the original id — left keeps it,
   // right gets a generated `${id}_split` variant (de-duplicated against
   // everything else already in the document).
-  const existingIds = collectAllIds(doc);
-  const origId = (child as { id?: string }).id;
-  const rightId = origId != null ? uniqueSplitId(existingIds, origId) : undefined;
+  const origId = child.id;
+  const rightId = origId != null ? uniqueSplitId(collectAllIds(doc), origId) : undefined;
 
-  let first: Child;
-  let second: Child;
-  let splitContext: SplitContext | null = null;
-
-  if (child.type === "clip" || child.type === "audio") {
-    const speed = clipBaseSpeed(child);
-    const splitSource = child.in + offset * speed;
-    // Dropping `duration` leaves both halves on the plain [in, out] axis, so an
-    // omitted `out` (= in + duration) must be materialised on the right half.
-    const out = clipOut(child);
-    const { duration: _d, ...base } = child;
-    first = { ...base, out: splitSource } as typeof child;
-    second = { ...base, in: splitSource, out } as typeof child;
-    if (rightId != null) (second as { id?: string }).id = rightId;
-    else delete (second as { id?: string }).id;
-    if (origId != null && rightId != null) {
-      splitContext = {
-        origId,
-        rightId,
-        splitOffset: offset,
-        origLen,
-        baseSourceTime: child.in,
-        speed,
-      };
-    }
-  } else {
+  // The source window the node actually plays ([in, out], or what a
+  // non-stretch overflow/underflow made of it) and the source time anchors
+  // are measured from.
+  let windowIn: number;
+  let windowOut: number;
+  let origBase: number;
+  if (rChild.type === "composition") {
     // Composition (incl. a `binItem` reference, whose body comes from the
-    // bin entry): both halves share the same node (children/attachments or
-    // the `binItem` ref + spatial/metadata/filters/script/bin), differing
-    // only in the inner-timeline window — first keeps [compIn..innerSplit],
-    // second takes [innerSplit..compOut]. A reference with no authored
-    // `in`/`out` windows the whole adopted body ([0..origLen]). Child
-    // compositions always run at unit speed (overflow/underflow stretching
-    // only kicks in for anchored attachments), so the output-offset
-    // translates 1:1 to inner-timeline coordinates and `origLen` (the
-    // resolved output span) is the inner end.
-    const compIn = child.in ?? 0;
-    const compOut = child.out ?? compIn + origLen;
-    const innerSplit = compIn + offset;
-    first = { ...child, in: compIn, out: innerSplit };
-    second = { ...child, in: innerSplit, out: compOut };
-    if (rightId != null) (second as { id?: string }).id = rightId;
-    else delete (second as { id?: string }).id;
-    if (origId != null && rightId != null) {
-      splitContext = {
-        origId,
-        rightId,
-        splitOffset: offset,
-        origLen,
-        baseSourceTime: compIn,
-        speed: 1,
-      };
-    }
+    // bin entry): both halves share the same node, differing only in the
+    // inner-timeline window. A reference with no authored `in`/`out` windows
+    // the whole adopted body.
+    const comp = child as Composition;
+    const windowLen = (rChild as ResolvedComposition).duration * speed;
+    const compIn = comp.in ?? 0;
+    const compOut = comp.out ?? compIn + windowLen;
+    windowIn = compWindowIn(comp, compIn, compOut, windowLen);
+    windowOut = windowIn + windowLen;
+    origBase = compIn;
+  } else {
+    windowIn = rChild.sourceIn;
+    windowOut = rChild.sourceOut;
+    origBase = rChild.sourceIn;
   }
+  const splitSource = windowIn + offset * speed;
 
-  newChildren.splice(targetIdx, 1, first, second);
-  let nextDoc: SeamFile = { ...doc, children: newChildren };
-  if (splitContext) nextDoc = rewriteSplitAnchors(nextDoc, splitContext);
-  return nextDoc;
+  // An authored `duration` is split along with the window, so each half
+  // keeps the original's playback rate (and `out` is always materialised).
+  const first = {
+    ...child,
+    in: windowIn,
+    out: splitSource,
+    ...(child.duration != null ? { duration: offset } : {}),
+  } as Child;
+  const { id: _id, ...rightBase } = child;
+  const second = withPlacement(
+    {
+      ...rightBase,
+      ...(rightId != null ? { id: rightId } : {}),
+      in: splitSource,
+      out: windowOut,
+      ...(child.duration != null ? { duration: origLen - offset } : {}),
+    } as Child,
+    undefined,
+    undefined,
+  );
+
+  const ctx: SplitContext | null =
+    origId != null && rightId != null
+      ? {
+          origId,
+          rightId,
+          splitOffset: offset,
+          origLen,
+          origBase,
+          leftBase: windowIn,
+          rightBase: splitSource,
+          speed,
+        }
+      : null;
+
+  const newChildren: Child[] = [];
+  children.forEach((c, i) => {
+    if (i === targetIdx) {
+      newChildren.push(first, second);
+      return;
+    }
+    // Anchors are sibling-scoped, so only this array can reference the node.
+    const start = ctx ? rewriteStart(c.start, ctx) : c.start;
+    newChildren.push(start !== c.start ? ({ ...c, start } as Child) : c);
+  });
+  return { ...doc, children: newChildren };
 }

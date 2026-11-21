@@ -200,7 +200,7 @@ describe("buildRenderList — distort (corner pin)", () => {
         duration: 2,
         distort,
         ...extra,
-        children: [{ type: "empty", duration: 2 }],
+        children: [{ type: "data", data: null, duration: 2 }],
       } as never,
     ],
   });

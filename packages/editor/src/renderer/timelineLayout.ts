@@ -5,27 +5,16 @@
 // AnchorLinesLayer can sit in its own file without importing back into
 // TimelinePanel.
 
-import type { ResolvedChild } from "@seam/core";
 
 export const ROW_HEIGHT = 32;
-export const ROW_GAP = 2;
+/** Gap under each row. It holds the run's dotted underline (the z-order drag
+ *  handle) and, during a drag, is the "new run here" drop strip. */
+export const ROW_GAP = 8;
 export const RULER_HEIGHT = 24;
 
 /** Vertical inset (px) per nesting level applied to nested blocks so they
  *  read as "inside" their parent without breaking x-axis time alignment. */
 export const DEPTH_INSET = 2;
-
-/** A laid-out block in the timeline panel: which resolved child it
- *  came from, its index in the (children-then-attachments) array, and
- *  the row it was packed into. (The recursive layout in `timelineTree`
- *  uses its own `TreeBlock`; this remains for `AnchorLinesLayer`'s
- *  root-level index→row map.) */
-export interface ChildBlock {
-  child: ResolvedChild;
-  index: number;
-  row: number;
-  isAttachment: boolean;
-}
 
 /** Top-edge y-coordinate (in container pixels) of a block on the given
  *  row, measured from the timeline content top (below the ruler). Nested

@@ -1,237 +1,154 @@
-// Pure logic for the anchor-line editor (the SVG overlay in
-// TimelinePanel that lets the user drag attachment anchors). All
-// functions here operate on schema objects and a small per-line
-// context — no React, no DOM, no timeline-pixel constants.
+// Pure logic for the anchor-line editor (the SVG overlay in TimelinePanel
+// that lets the user drag a run head's `start` anchor). All functions here
+// operate on schema values and a small per-line context — no React, no DOM,
+// no timeline-pixel constants.
 //
-// The React layer (AnchorLinesLayer in TimelinePanel) measures pointer
-// motion in pixels, converts to seconds via the panel's pxPerSec, and
-// hands deltas to `dragAnchorPoint` / `dragOffset`. Clicks-to-toggle go
-// through `toggleAnchorPoint` / `toggleOffset`. Commit goes through
-// `setAttachmentSpec`.
+// A head's position is `anchor point + offset`. The line's top handle is the
+// point (`"id"`, `"id@50%"`, `"id@10"`); its bottom handle is the node's own
+// `offset`. The React layer measures pointer motion in pixels, converts to
+// seconds via the panel's pxPerSec, and hands deltas to `dragAnchorPoint` /
+// `dragOffset`; a click on the top handle goes through `toggleAnchorPoint`.
 
-import { clipOut, resolveComposition } from "@seam/core";
-import type {
-  Child,
-  ResolvedChild,
-  ResolvedTimeline,
-  SeamFile,
-  TimeAnchor,
-} from "@seam/core";
+import { formatStart, parseStart } from "@seam/core";
+import type { Child, Composition, ParsedStart, ResolvedChild, Start } from "@seam/core";
+import { withPlacement } from "./runEdit.js";
 
 export interface AnchorEditCtx {
-  attIdx: number;
-  side: "start" | "end";
+  /** Index of the anchored node in its container's `children`. */
+  index: number;
+  /** Resolved time of the anchor point (no offset). */
   pointTime: number;
   anchorStart: number;
   anchorEnd: number;
+  /** Source time at the target's start, and its source-per-output rate. */
   anchorBase: number;
   anchorSpeed: number;
-  attNatDur: number;
 }
 
 const SEC_DECIMALS = 1000;
-const PCT_DECIMALS = 10000;
+const PCT_DECIMALS = 1000000;
 
-export const fmtSec = (s: number) =>
-  Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
-export const fmtPct = (frac: number) =>
-  `${Math.round(frac * 100 * PCT_DECIMALS) / PCT_DECIMALS}%`;
+export const fmtSec = (s: number) => Math.round(s * SEC_DECIMALS) / SEC_DECIMALS;
+const fmtFrac = (frac: number) => Math.round(frac * PCT_DECIMALS) / PCT_DECIMALS;
 
-export function parsePct(s: string): number {
-  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
-  return m ? parseFloat(m[1]) / 100 : 0;
+type NodeStart = Extract<ParsedStart, { kind: "node" }>;
+
+/** `start` parsed as a node anchor, or null (unset / absolute). */
+export function nodeAnchor(start: Start | undefined): NodeStart | null {
+  if (typeof start !== "string") return null;
+  const parsed = parseStart(start);
+  return parsed.kind === "node" ? parsed : null;
 }
 
-/**
- * Resolved-output time of the anchor *point* (no offset applied). Mirrors
- * the resolver's source/output formulas so the dot lands exactly where the
- * resolver would put it; the attachment's edge is `pointTime + offsetSec`,
- * which we already have on the resolved attachment as `timelineStart` /
- * `timelineEnd`.
- */
-export function computePointTime(
-  spec: TimeAnchor,
+/** The target's source mapping, mirroring the resolver: clip/audio use the
+ *  resolved `sourceIn` + speed, a composition its authored `in` + speed,
+ *  a static its freeze time, everything else plain output seconds. */
+export function anchorSource(
   anchorDoc: Child,
   anchorResolved: ResolvedChild,
-): number | null {
+): { base: number; speed: number } {
+  if (anchorResolved.type === "clip" || anchorResolved.type === "audio") {
+    return { base: anchorResolved.sourceIn, speed: anchorResolved.speed };
+  }
+  if (anchorResolved.type === "composition") {
+    return {
+      base: anchorDoc.type === "composition" ? (anchorDoc.in ?? 0) : 0,
+      speed: anchorResolved.speed,
+    };
+  }
+  if (anchorResolved.type === "static") return { base: anchorResolved.sourceTime, speed: 1 };
+  return { base: 0, speed: 1 };
+}
+
+/** Resolved-output time of the anchor *point* (no offset applied) — the same
+ *  formulas as the resolver, so the handle lands exactly where it resolves. */
+export function computePointTime(
+  anchor: NodeStart,
+  anchorDoc: Child,
+  anchorResolved: ResolvedChild,
+): number {
   const start = anchorResolved.timelineStart;
   const end = anchorResolved.timelineEnd;
-
-  let baseSourceTime = 0;
-  let speed = 1;
-  if (anchorResolved.type === "clip" || anchorResolved.type === "audio") {
-    baseSourceTime = anchorResolved.sourceIn;
-    speed = anchorResolved.speed;
-  } else if (anchorResolved.type === "composition") {
-    baseSourceTime =
-      anchorDoc.type === "composition" ? (anchorDoc.in ?? 0) : 0;
-    speed = anchorResolved.speed;
-  }
-
-  const timeSource = spec.timeSource ?? "output";
-  if (timeSource === "source") {
-    const sourceTime =
-      typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
-    return start + (sourceTime - baseSourceTime) / speed;
-  }
-  const pct =
-    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
-  return start + (end - start) * pct;
+  if (!anchor.point) return start;
+  if (anchor.point.kind === "percent") return start + (end - start) * anchor.point.value;
+  const { base, speed } = anchorSource(anchorDoc, anchorResolved);
+  return start + (anchor.point.value - base) / speed;
 }
 
 export function findAnchorById(
   id: string,
-  docRoot: { children?: Child[]; attachments?: Child[] },
-  timeline: ResolvedTimeline,
-): { doc: Child; resolved: ResolvedChild; blockIndex: number } | null {
-  const docChildren = docRoot.children ?? [];
-  const childCount = docChildren.length;
-  for (let i = 0; i < docChildren.length; i++) {
-    if ((docChildren[i] as { id?: string }).id === id) {
-      return {
-        doc: docChildren[i],
-        resolved: timeline.children[i],
-        blockIndex: i,
-      };
-    }
-  }
-  const atts = docRoot.attachments ?? [];
-  for (let j = 0; j < atts.length; j++) {
-    if ((atts[j] as { id?: string }).id === id) {
-      return {
-        doc: atts[j],
-        resolved: timeline.children[childCount + j],
-        blockIndex: childCount + j,
-      };
+  children: Child[],
+  resolved: ResolvedChild[],
+): { doc: Child; resolved: ResolvedChild; index: number } | null {
+  for (let i = 0; i < children.length; i++) {
+    if ((children[i] as { id?: string }).id === id && resolved[i]) {
+      return { doc: children[i], resolved: resolved[i], index: i };
     }
   }
   return null;
 }
 
-export function anchorPointKind(spec: TimeAnchor): "s" | "%" {
-  if (typeof spec.anchorPoint === "string") return "%";
-  if (typeof spec.anchorPoint === "number") return "s";
-  // Omitted: follow the timeSource-implied default (source → 0sec, output → "0%")
-  return spec.timeSource === "source" ? "s" : "%";
+/** `"s"` for a source-seconds point, `"%"` for a percent / bare-id one. */
+export function anchorPointKind(anchor: NodeStart): "s" | "%" {
+  return anchor.point?.kind === "source" ? "s" : "%";
 }
 
-export function offsetKind(spec: TimeAnchor): "s" | "%" {
-  return typeof spec.offset === "string" ? "%" : "s";
-}
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export function naturalDurOf(node: Child): number {
-  if (node.type === "clip" || node.type === "audio") {
-    if (node.duration != null) return node.duration;
-    const speed = node.speed ?? 1;
-    return (clipOut(node) - node.in) / speed;
-  }
-  if (node.type === "empty") return node.duration;
-  if (node.type === "data") return node.duration ?? 0;
-  if (node.type === "composition") {
-    if (node.in != null && node.out != null) return node.out - node.in;
-    try {
-      return resolveComposition(node).duration;
-    } catch {
-      return 0;
-    }
-  }
-  return 0;
+function percentStart(id: string, frac: number): Start {
+  const value = fmtFrac(frac);
+  return value === 0 ? id : formatStart({ kind: "node", id, point: { kind: "percent", value } });
 }
-
-const clamp = (v: number, lo: number, hi: number) =>
-  Math.max(lo, Math.min(hi, v));
 
 /**
- * Drag the anchorPoint to shift the resolved point time by `deltaSec`.
- *
- * The drag clamps to the anchor's real bounds — percentage to 0–100%,
- * source-seconds to the anchor's [sourceStart, sourceEnd]. Clamping lives
- * only here (the drag path); editing the property directly can still
- * overshoot, since overshooting is the degenerate case.
+ * Drag the anchor point so its resolved time shifts by `deltaSec`. An absolute
+ * (numeric) start is clamped at 0; an anchored one to the target's real bounds — percent to 0–100%, source seconds to the
+ * target's `[sourceStart, sourceEnd]`. (Typing a value can still overshoot.)
  */
-export function dragAnchorPoint(
-  spec: TimeAnchor,
-  deltaSec: number,
-  ctx: AnchorEditCtx,
-): TimeAnchor {
-  if (spec.timeSource === "source") {
-    const oldVal = typeof spec.anchorPoint === "number" ? spec.anchorPoint : 0;
+export function dragAnchorPoint(start: Start, deltaSec: number, ctx: AnchorEditCtx): Start {
+  // An absolute start just moves along the container's time axis (not before 0).
+  if (typeof start === "number") return Math.max(0, fmtSec(start + deltaSec));
+  const anchor = nodeAnchor(start);
+  if (!anchor) return start;
+  if (anchor.point?.kind === "source") {
     const sourceStart = ctx.anchorBase;
-    const sourceEnd =
-      ctx.anchorBase + (ctx.anchorEnd - ctx.anchorStart) * ctx.anchorSpeed;
-    const next = clamp(oldVal + deltaSec * ctx.anchorSpeed, sourceStart, sourceEnd);
-    return { ...spec, anchorPoint: fmtSec(next), timeSource: "source" };
+    const sourceEnd = ctx.anchorBase + (ctx.anchorEnd - ctx.anchorStart) * ctx.anchorSpeed;
+    const next = clamp(anchor.point.value + deltaSec * ctx.anchorSpeed, sourceStart, sourceEnd);
+    return formatStart({ ...anchor, point: { kind: "source", value: fmtSec(next) } });
   }
-  // output / undefined → output mode (percentage of anchor's output range)
   const range = ctx.anchorEnd - ctx.anchorStart;
-  const oldPct =
-    typeof spec.anchorPoint === "string" ? parsePct(spec.anchorPoint) : 0;
-  const newPct = clamp(oldPct + (range > 0 ? deltaSec / range : 0), 0, 1);
-  return { ...spec, anchorPoint: fmtPct(newPct), timeSource: "output" };
+  const old = anchor.point?.value ?? 0;
+  return percentStart(anchor.id, clamp(old + (range > 0 ? deltaSec / range : 0), 0, 1));
 }
 
-/**
- * Drag offset by `deltaSec` (output seconds). Clamped by side: an `end`
- * anchor's offset can't go negative and a `start` anchor's can't go
- * positive (the offset would push the edge the wrong way). The opposite
- * sign is the degenerate case — reachable by editing the property, not by
- * dragging.
- */
-export function dragOffset(
-  spec: TimeAnchor,
-  deltaSec: number,
-  ctx: AnchorEditCtx,
-): TimeAnchor {
-  const clampSide = (v: number) =>
-    ctx.side === "end" ? Math.max(0, v) : Math.min(0, v);
-  if (typeof spec.offset === "string") {
-    const oldPct = parsePct(spec.offset);
-    const newPct =
-      oldPct + (ctx.attNatDur > 0 ? deltaSec / ctx.attNatDur : 0);
-    return { ...spec, offset: fmtPct(clampSide(newPct)) };
-  }
-  const oldSec = typeof spec.offset === "number" ? spec.offset : 0;
-  return { ...spec, offset: fmtSec(clampSide(oldSec + deltaSec)) };
+/** Drag the node's `offset` by `deltaSec` (output seconds). */
+export function dragOffset(offset: number | undefined, deltaSec: number): number {
+  return fmtSec((offset ?? 0) + deltaSec);
 }
 
-/**
- * Toggle anchorPoint between source-seconds and output-percent. Recomputes
- * from `pointTime` so the dot stays put on the timeline through the toggle.
- */
-export function toggleAnchorPoint(
-  spec: TimeAnchor,
-  ctx: AnchorEditCtx,
-): TimeAnchor {
-  if (anchorPointKind(spec) === "s") {
+/** Toggle the point between source seconds and output percent, recomputed
+ *  from `pointTime` so the handle stays put on the timeline. */
+export function toggleAnchorPoint(start: Start, ctx: AnchorEditCtx): Start {
+  const anchor = nodeAnchor(start);
+  if (!anchor) return start;
+  if (anchorPointKind(anchor) === "s") {
     const range = ctx.anchorEnd - ctx.anchorStart;
-    const pct = range > 0 ? (ctx.pointTime - ctx.anchorStart) / range : 0;
-    return { ...spec, anchorPoint: fmtPct(pct), timeSource: "output" };
+    return percentStart(anchor.id, range > 0 ? (ctx.pointTime - ctx.anchorStart) / range : 0);
   }
-  const sourceTime =
-    ctx.anchorBase + (ctx.pointTime - ctx.anchorStart) * ctx.anchorSpeed;
-  return { ...spec, anchorPoint: fmtSec(sourceTime), timeSource: "source" };
+  const sourceTime = ctx.anchorBase + (ctx.pointTime - ctx.anchorStart) * ctx.anchorSpeed;
+  return formatStart({ ...anchor, point: { kind: "source", value: fmtSec(sourceTime) } });
 }
 
-/** Toggle offset between seconds and percent of attachment natural duration. */
-export function toggleOffset(spec: TimeAnchor, ctx: AnchorEditCtx): TimeAnchor {
-  if (offsetKind(spec) === "s") {
-    const sec = typeof spec.offset === "number" ? spec.offset : 0;
-    const pct = ctx.attNatDur > 0 ? sec / ctx.attNatDur : 0;
-    return { ...spec, offset: fmtPct(pct) };
-  }
-  const pct = typeof spec.offset === "string" ? parsePct(spec.offset) : 0;
-  return { ...spec, offset: fmtSec(pct * ctx.attNatDur) };
-}
-
-export function setAttachmentSpec(
-  doc: SeamFile,
-  attIdx: number,
-  side: "start" | "end",
-  newSpec: TimeAnchor,
-): SeamFile {
-  const atts = [...(doc.attachments ?? [])];
-  const att = atts[attIdx];
-  if (!att) return doc;
-  atts[attIdx] = { ...att, [side]: newSpec } as Child;
-  return { ...doc, attachments: atts };
+/** Replace the placement (`start` + `offset`) of `comp.children[index]`. */
+export function setPlacement(
+  comp: Composition,
+  index: number,
+  start: Start | undefined,
+  offset: number | undefined,
+): Composition {
+  const children = [...(comp.children ?? [])];
+  const node = children[index];
+  if (!node) return comp;
+  children[index] = withPlacement(node, start, offset);
+  return { ...comp, children };
 }

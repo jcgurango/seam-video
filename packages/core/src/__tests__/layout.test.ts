@@ -43,43 +43,42 @@ describe("resolveComposition", () => {
       });
     });
 
-    it("handles empty segments", () => {
+    it("expresses a gap with a positive offset", () => {
       const result = resolveComposition(
         comp({
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 3 },
-            { type: "empty", duration: 2 },
-            { type: "clip", source: "b.mp4", in: 0, out: 3 },
+            { type: "clip", source: "b.mp4", in: 0, out: 3, offset: 2 },
           ],
         })
       );
 
       expect(result.duration).toBe(8);
+      expect(result.children).toHaveLength(2);
       expect(result.children[1]).toMatchObject({
-        type: "empty",
-        timelineStart: 3,
-        timelineEnd: 5,
-      });
-      expect(result.children[2]).toMatchObject({
         timelineStart: 5,
         timelineEnd: 8,
       });
     });
   });
 
-  describe("transition (crossfade overlap)", () => {
+  describe("negative offset (crossfade overlap)", () => {
     it("overlaps a child with its previous sibling and shrinks the total", () => {
-      // A (5s) + B (5s, 1s transition) = 9s; B starts at 4, overlap [4,5].
+      // A (5s) + B (5s, pulled back 1s) = 9s; B starts at 4, overlap [4,5].
       const result = resolveComposition(
         comp({
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5 },
-            { type: "clip", source: "b.mp4", in: 0, out: 5, transition: 1 },
+            { type: "clip", source: "b.mp4", in: 0, out: 5, offset: -1 },
           ],
         })
       );
       expect(result.duration).toBe(9);
-      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      expect(result.children[0]).toMatchObject({
+        timelineStart: 0,
+        timelineEnd: 5,
+        transitionOut: 1,
+      });
       expect(result.children[1]).toMatchObject({
         timelineStart: 4,
         timelineEnd: 9,
@@ -89,36 +88,47 @@ describe("resolveComposition", () => {
       expect((result.children[0] as { transition?: number }).transition).toBeUndefined();
     });
 
-    it("ignores transition on the first child", () => {
+    it("a negative offset on the first child is a crop, never a transition", () => {
       const result = resolveComposition(
         comp({
           children: [
-            { type: "clip", source: "a.mp4", in: 0, out: 5, transition: 2 },
+            { type: "clip", source: "a.mp4", in: 0, out: 5, offset: -2 },
             { type: "clip", source: "b.mp4", in: 0, out: 5 },
           ],
         })
       );
-      expect(result.duration).toBe(10);
-      expect(result.children[0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+      // A lands at [-2, 3] → cropped to [0, 3] (source [2, 5]); B follows.
+      expect(result.duration).toBe(8);
+      expect(result.children[0]).toMatchObject({
+        sourceIn: 2,
+        sourceOut: 5,
+        timelineStart: 0,
+        timelineEnd: 3,
+      });
+      expect(result.children[1]).toMatchObject({ timelineStart: 3, timelineEnd: 8 });
       expect((result.children[0] as { transition?: number }).transition).toBeUndefined();
+      expect((result.children[1] as { transition?: number }).transition).toBeUndefined();
     });
 
-    it("clamps the overlap to the shorter of the two neighbours", () => {
-      // B asks for 10s overlap but A is only 3s and B is 4s → clamp to 3.
+    it("clamps the fade (not the position) to the shorter of the two neighbours", () => {
+      // B is pulled back 2.5s over a 2s A: the fade clamps to A's 2s, but B's
+      // position uses the raw offset (3 + 2 − 2.5 = 2.5).
       const result = resolveComposition(
         comp({
           children: [
-            { type: "clip", source: "a.mp4", in: 0, out: 3 },
-            { type: "clip", source: "b.mp4", in: 0, out: 4, transition: 10 },
+            { type: "clip", source: "lead.mp4", in: 0, out: 3 },
+            { type: "clip", source: "a.mp4", in: 0, out: 2 },
+            { type: "clip", source: "b.mp4", in: 0, out: 4, offset: -2.5 },
           ],
         })
       );
-      expect(result.children[1]).toMatchObject({
-        timelineStart: 0,
-        timelineEnd: 4,
-        transition: 3,
+      expect(result.children[1]).toMatchObject({ timelineStart: 3, timelineEnd: 5, transitionOut: 2 });
+      expect(result.children[2]).toMatchObject({
+        timelineStart: 2.5,
+        timelineEnd: 6.5,
+        transition: 2,
       });
-      expect(result.duration).toBe(4);
+      expect(result.duration).toBe(6.5);
     });
 
     it("chains overlaps across several children", () => {
@@ -127,8 +137,8 @@ describe("resolveComposition", () => {
         comp({
           children: [
             { type: "clip", source: "a.mp4", in: 0, out: 5 },
-            { type: "clip", source: "b.mp4", in: 0, out: 5, transition: 1 },
-            { type: "clip", source: "c.mp4", in: 0, out: 5, transition: 1 },
+            { type: "clip", source: "b.mp4", in: 0, out: 5, offset: -1 },
+            { type: "clip", source: "c.mp4", in: 0, out: 5, offset: -1 },
           ],
         })
       );
@@ -250,35 +260,56 @@ describe("resolveComposition", () => {
       }
     });
 
-    it("a both-ends-pinned anchor with stretch composes on top of base speed", () => {
-      // Composition speed 2 → natural output 3s; an attachment anchored
-      // start→0 / end→6 forces a 6s target, so underflow=stretch slows it
-      // back down. Net speed = stretchSpeed * baseSpeed.
+    it("an explicit duration shorter than the window speeds it up", () => {
+      const result = resolveComposition(
+        comp({
+          children: [{ type: "composition", children: inner(), duration: 2 }],
+        })
+      );
+      const nested = result.children[0];
+      expect(nested.type).toBe("composition");
+      if (nested.type === "composition") {
+        expect(nested.duration).toBe(2);
+        expect(nested.speed).toBe(3);
+        expect(nested.children).toHaveLength(2);
+      }
+      expect(result.duration).toBe(2);
+    });
+
+    it("a non-stretch strategy layers on top of the base speed", () => {
+      // speed 2 → natural output 3s; `duration: 2` with trim-end keeps the
+      // rate and cuts the window to the first 4 inner seconds.
       const result = resolveComposition(
         comp({
           children: [
             { type: "clip", source: "bg.mp4", in: 0, out: 6, id: "bg" },
-          ],
-          attachments: [
             {
               type: "composition",
               children: inner(),
               speed: 2,
-              underflow: "stretch",
-              start: { anchor: "bg", anchorPoint: "0%", timeSource: "output" },
-              end: { anchor: "bg", anchorPoint: "100%", timeSource: "output" },
+              duration: 2,
+              overflow: "trim-end",
+              start: "bg",
             },
           ],
         })
       );
-      const att = result.children[1];
-      if (att.type === "composition") {
-        expect(att.timelineStart).toBe(0);
-        expect(att.timelineEnd).toBe(6);
-        expect(att.duration).toBe(6);
-        // 6s window stretched to 6s output → net speed 1.
-        expect(att.speed).toBeCloseTo(1, 5);
+      const over = result.children[1];
+      expect(over.type).toBe("composition");
+      if (over.type === "composition") {
+        expect(over.timelineStart).toBe(0);
+        expect(over.timelineEnd).toBe(2);
+        expect(over.duration).toBe(2);
+        expect(over.speed).toBe(2);
+        expect(over.children).toHaveLength(2);
+        expect(over.children[1]).toMatchObject({
+          sourceIn: 0,
+          sourceOut: 1,
+          timelineStart: 3,
+          timelineEnd: 4,
+        });
       }
+      expect(result.duration).toBe(6);
     });
   });
 

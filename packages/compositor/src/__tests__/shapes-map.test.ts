@@ -181,11 +181,11 @@ describe("buildRenderList — map", () => {
     paths: [
       { id: "r", color: "red", points: [[0, 0], [90, 0]], progress: [[0, 0], [4, 1]] },
     ],
-    attachments: [
+    children: [
       { type: "rect", id: "geo", duration: 4, fill: "red", size: 10, pin: { latitude: 0, longitude: 90 } },
-      { type: "rect", duration: 4, fill: "blue", size: 10, pin: { path: "r" } },
-      { type: "rect", duration: 4, fill: "green", size: 10, pin: { path: "r", position: 0.5 }, translation: { x: 7, y: -3 } },
-      { type: "rect", duration: 4, fill: "white", size: 10 },
+      { type: "rect", start: 0, duration: 4, fill: "blue", size: 10, pin: { path: "r" } },
+      { type: "rect", start: 0, duration: 4, fill: "green", size: 10, pin: { path: "r", position: 0.5 }, translation: { x: 7, y: -3 } },
+      { type: "rect", start: 0, duration: 4, fill: "white", size: 10 },
     ],
   } as never;
 

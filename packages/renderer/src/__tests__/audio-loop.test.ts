@@ -66,10 +66,8 @@ async function rmsWindows(
   });
 }
 
-const over = (id: string) => ({
-  start: { anchor: id, timeSource: "output" as const, anchorPoint: "0%" },
-  end: { anchor: id, timeSource: "output" as const, anchorPoint: "100%" },
-});
+/** Start with `id` and fill 3.5s (the bed's length) — `underflow` says how. */
+const over = (id: string) => ({ start: id, duration: 3.5 });
 
 describe("renderAudioMix — underflow: loop", () => {
   let dir: string;
@@ -79,13 +77,13 @@ describe("renderAudioMix — underflow: loop", () => {
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  const bed = { id: "bed", type: "empty" as const, duration: 3.5 };
+  const bed = { id: "bed", type: "data" as const, data: null, duration: 3.5 };
 
   it("a looping audio node sounds across the whole anchored span", async () => {
     const doc: Composition = {
       type: "composition",
-      children: [bed],
-      attachments: [
+      children: [
+        bed,
         { type: "audio", source: "tone.wav", in: 0, out: 1, underflow: "loop", ...over("bed") },
       ],
     };
@@ -103,8 +101,8 @@ describe("renderAudioMix — underflow: loop", () => {
   it("without loop the default stretch slows the tone instead", async () => {
     const doc: Composition = {
       type: "composition",
-      children: [bed],
-      attachments: [{ type: "audio", source: "tone.wav", in: 0, out: 1, ...over("bed") }],
+      children: [
+        bed,{ type: "audio", source: "tone.wav", in: 0, out: 1, ...over("bed") }],
     };
     // Stretched to 3.5s at 1/3.5 rate: still sounds throughout (sanity that
     // the span is covered either way) — the loop test above is what pins the
@@ -117,14 +115,14 @@ describe("renderAudioMix — underflow: loop", () => {
   it("a looping composition replays its inner audio each cycle", async () => {
     const doc: Composition = {
       type: "composition",
-      children: [bed],
-      attachments: [
+      children: [
+        bed,
         {
           type: "composition",
           underflow: "loop",
           children: [
             { type: "audio", source: "tone.wav", in: 0, out: 0.5 },
-            { type: "empty", duration: 0.5 },
+            { type: "data", data: null, duration: 0.5 },
           ],
           ...over("bed"),
         },
@@ -149,8 +147,8 @@ describe("renderAudioMix — underflow: loop", () => {
   it("the looping node's keyframed volume runs over the full span", async () => {
     const doc: Composition = {
       type: "composition",
-      children: [bed],
-      attachments: [
+      children: [
+        bed,
         {
           type: "audio",
           source: "tone.wav",

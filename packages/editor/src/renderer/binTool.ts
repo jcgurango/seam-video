@@ -2,9 +2,9 @@
 // the root composition's `bin` field, and replace the selected node
 // with a bin reference (`binItem: "<id>"`). Instance-level fields
 // (spatial, in/out, filters, metadata) stay on the reference; only the
-// structural body (children + attachments) moves into the bin. The
-// reference drops its own children/attachments — the compile pass
-// inlines the bin entry's body at render time.
+// structural body (`children`) moves into the bin. The reference drops
+// its own children — the compile pass inlines the bin entry's body at
+// render time.
 
 import type {
   BaseComposition,
@@ -56,12 +56,11 @@ export function applyBin(doc: SeamFile, index: number): BinResult | null {
   const newId = pickFreshBinId(existingBin);
 
   const newEntry: BinEntry = { id: newId, children: child.children ?? [] };
-  if (child.attachments) newEntry.attachments = child.attachments;
 
   // The reference keeps every authored field except the structural
-  // body — children/attachments come from the bin entry at compile
-  // time, so storing them on the reference would just go stale.
-  const { children: _c, attachments: _a, ...rest } = child;
+  // body — children come from the bin entry at compile time, so storing
+  // them on the reference would just go stale.
+  const { children: _c, ...rest } = child;
   const newReference: Composition = {
     ...(rest as BaseComposition),
     binItem: newId,

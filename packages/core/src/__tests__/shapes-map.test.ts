@@ -35,25 +35,24 @@ describe("rect / circle schema", () => {
     expect(r.success, r.success ? "" : r.errors.join("\n")).toBe(true);
   });
 
-  it("accepts a circle pinned by start/end anchors without a duration", () => {
-    const r = parse({
+  it("accepts an anchored circle, but always requires a duration", () => {
+    const doc = (circle: object) => ({
       type: "composition",
-      children: [{ type: "clip", id: "c", source: "a.mp4", in: 0, out: 5 }],
-      attachments: [
-        {
-          type: "circle",
-          fill: "white",
-          size: 120,
-          start: { anchor: "c", timeSource: "output", anchorPoint: "0%" },
-          end: { anchor: "c", timeSource: "output", anchorPoint: "100%" },
-        },
+      children: [
+        { type: "clip", id: "c", source: "a.mp4", in: 0, out: 5 },
+        { type: "circle", fill: "white", size: 120, start: "c", ...circle },
       ],
     });
+    const r = parse(doc({ duration: 5 }));
     expect(r.success, r.success ? "" : r.errors.join("\n")).toBe(true);
+    expect(parse(doc({})).success).toBe(false);
   });
 
-  it("rejects a rect without duration or anchors, and unknown fields", () => {
+  it("rejects a rect without duration, and unknown fields", () => {
     expect(parse({ type: "composition", children: [{ type: "rect" }] }).success).toBe(false);
+    expect(
+      parse({ type: "composition", children: [{ type: "rect", start: 0, offset: 1 }] }).success,
+    ).toBe(false);
     expect(
       parse({ type: "composition", children: [{ type: "rect", duration: 1, radius: 4 }] }).success,
     ).toBe(false);
@@ -81,7 +80,7 @@ describe("map schema", () => {
     paths: [
       { id: "route", color: "red", points: [[132.9, 34.0], [133.1, 34.2]], progress: [[0, 0], [6, 1]] },
     ],
-    attachments: [
+    children: [
       {
         type: "static",
         source: "avatar.jpg",
@@ -94,12 +93,13 @@ describe("map schema", () => {
         type: "text",
         text: "Start",
         duration: 6,
+        start: 0,
         pin: [[0, { latitude: 34.0, longitude: 132.9 }], [6, { latitude: 34.2, longitude: 133.1 }]],
       },
     ],
   };
 
-  it("accepts a map with camera keyframes, paths and pinned attachments", () => {
+  it("accepts a map with camera keyframes, paths and pinned children", () => {
     const r = parse({ type: "composition", children: [map] });
     expect(r.success, r.success ? "" : r.errors.join("\n")).toBe(true);
   });
@@ -119,27 +119,38 @@ describe("map schema", () => {
     ).toBe(false);
   });
 
-  it("resolves attachments in map-local time and keeps pins + content dims", () => {
+  it("rejects the legacy `attachments` array on a map", () => {
+    const { children, ...rest } = map;
+    expect(
+      parse({ type: "composition", children: [{ ...rest, attachments: children }] }).success,
+    ).toBe(false);
+  });
+
+  it("resolves children in map-local time and keeps pins + content dims", () => {
     const doc: Composition = {
       type: "composition",
       contentWidth: 1080,
       contentHeight: 1920,
       children: [
-        { type: "empty", duration: 2 },
-        { ...(map as unknown as Composition["children"] extends (infer C)[] | undefined ? C : never) },
+        {
+          ...(map as unknown as Composition["children"] extends (infer C)[] | undefined ? C : never),
+          offset: 2,
+        },
       ],
     };
     const timeline = resolveSpatial(resolveComposition(doc), 1080, 1920);
-    const m = timeline.children[1] as ResolvedMap;
+    const m = timeline.children[0] as ResolvedMap;
     expect(m.type).toBe("map");
     expect(m.timelineStart).toBe(2);
     expect(m.timelineEnd).toBe(8);
     expect(m.children).toHaveLength(2);
     expect(m.children[0].timelineStart).toBe(0);
     expect(m.children[0].timelineEnd).toBe(6);
+    // `start: 0` heads a second run alongside the first, in array (z) order.
+    expect(m.children[1]).toMatchObject({ type: "text", timelineStart: 0, timelineEnd: 6 });
     expect((m.children[0] as { pin?: unknown }).pin).toEqual({ path: "route" });
     expect((m.children[0] as { cornerRadius?: unknown }).cornerRadius).toBe("50%");
-    // Default inner canvas = 100% of the parent; attachments lay out against it.
+    // Default inner canvas = 100% of the parent; children lay out against it.
     expect(m.intrinsicWidth).toBe(1080);
     expect(m.intrinsicHeight).toBe(1920);
     expect((m.children[0] as ResolvedRect).spatial).toEqual({ x: 495, y: 915, width: 90, height: 90 });
@@ -147,28 +158,26 @@ describe("map schema", () => {
     expect(m.zoom).toEqual([[0, 14], [6, 11]]);
   });
 
-  it("lets a map attachment anchor to an earlier attachment's id", () => {
+  it("lets a map child anchor to a sibling's id", () => {
     const doc = {
       type: "composition",
       children: [
         {
           ...map,
-          attachments: [
-            { type: "rect", id: "a", duration: 2, fill: "red" },
-            {
-              type: "rect",
-              duration: 1,
-              fill: "blue",
-              start: { anchor: "a", timeSource: "output", anchorPoint: "100%" },
-            },
+          children: [
+            { type: "rect", duration: 1, fill: "blue", start: "a@100%" },
+            { type: "rect", id: "a", duration: 2, fill: "red", start: 0 },
           ],
         },
       ],
     } as unknown as Composition;
     const timeline = resolveComposition(doc);
     const m = timeline.children[0] as ResolvedMap;
-    expect(m.children[1].timelineStart).toBe(2);
-    expect(m.children[1].timelineEnd).toBe(3);
+    expect(m.children[0]).toMatchObject({ fill: "blue", timelineStart: 2, timelineEnd: 3 });
+    expect(m.children[1]).toMatchObject({ fill: "red", timelineStart: 0, timelineEnd: 2 });
+    // Children never extend (or shrink) the map.
+    expect(m.timelineEnd - m.timelineStart).toBe(6);
+    expect(timeline.duration).toBe(6);
   });
 });
 

@@ -8,11 +8,10 @@
 // panel shows both inputs side by side), and how an edit is written back to
 // every selected node immutably.
 //
-// Deliberately NOT here: `children` / `attachments` (the timeline owns them),
-// `filters` (being absorbed into first-party properties), `start` / `end`
-// anchors (anchor lines), and the structured bags (`pin`, `inset`, `distort`,
-// `paths`, `data`, `metadata`, `bin`, `script`, `macros`) — those stay in the
-// JSON panel for now.
+// Deliberately NOT here: `children` (the timeline owns them), `filters`
+// (being absorbed into first-party properties), and the structured bags
+// (`pin`, `inset`, `distort`, `paths`, `data`, `metadata`, `bin`, `script`,
+// `macros`) — those stay in the JSON panel for now.
 
 import {
   isKeyframed,
@@ -43,7 +42,9 @@ export type PropKind =
   | "text"
   /** One of `options`. */
   | "enum"
-  /** Number OR string (clip `volume` accepts `"-6dB"`). */
+  /** Number OR string: a numeric-looking entry is stored as a number,
+   *  anything else as typed (clip `volume` accepts `"-6dB"`, `start` an
+   *  anchor like `"intro@50%"`). */
   | "scalar";
 
 export type PropGroup =
@@ -89,27 +90,38 @@ const ID: PropDef = timing({
   kind: "string",
   hint: "Anchor target name within the enclosing composition.",
 });
-const TRANSITION: PropDef = timing({
-  key: "transition",
-  label: "Transition",
+const START: PropDef = timing({
+  key: "start",
+  label: "Start",
+  kind: "scalar",
+  placeholder: "after previous",
+  hint: "Heads a new run: absolute seconds, or an anchor — \"id\", \"id@50%\" (fraction of its span), \"id@10\" (its source second 10). Empty = continue after the previous node.",
+});
+const OFFSET: PropDef = timing({
+  key: "offset",
+  label: "Offset",
   kind: "number",
   unit: "s",
   placeholder: "0",
-  hint: "Crossfade overlap with the previous sequential sibling.",
+  hint: "Seconds added to the position. After a previous node: positive = gap, negative = overlap + crossfade. With Start: a plain shift.",
 });
+/** Where the node sits in its container — every child type has these. */
+const PLACEMENT: PropDef[] = [START, OFFSET, ID];
 const OVERFLOW: PropDef = timing({
   key: "overflow",
   label: "Overflow",
   kind: "enum",
   options: ["trim-end", "trim-start", "trim-center", "stretch"],
-  placeholder: "trim-end · stretch on attachments",
+  placeholder: "stretch",
+  hint: "How content longer than Duration is fitted.",
 });
 const UNDERFLOW: PropDef = timing({
   key: "underflow",
   label: "Underflow",
   kind: "enum",
   options: ["extend-end", "extend-start", "extend-center", "stretch", "loop"],
-  placeholder: "stretch on attachments",
+  placeholder: "stretch",
+  hint: "How content shorter than Duration fills it.",
 });
 const IN_OUT: PropDef[] = [
   timing({ key: "in", label: "In", kind: "number", unit: "s" }),
@@ -128,7 +140,7 @@ const SPEED: PropDef = timing({
   kind: "number",
   unit: "×",
   placeholder: "1",
-  hint: "Mutually exclusive with Duration.",
+  hint: "With Duration, needs a non-stretch Overflow / Underflow (stretch derives the rate from Duration).",
 });
 const DURATION_REQ: PropDef = timing({ key: "duration", label: "Duration", kind: "number", unit: "s" });
 const DURATION_OPT: PropDef = timing({
@@ -137,14 +149,7 @@ const DURATION_OPT: PropDef = timing({
   kind: "number",
   unit: "s",
   placeholder: "natural",
-  hint: "Output length; the rate derives from it. Mutually exclusive with Speed.",
-});
-const DURATION_SHAPE: PropDef = timing({
-  key: "duration",
-  label: "Duration",
-  kind: "number",
-  unit: "s",
-  placeholder: "required unless start+end",
+  hint: "Output length. Overflow / Underflow say how the content fills it (default: stretch, the rate derives from it).",
 });
 
 const SOURCE: PropDef = { key: "source", label: "Source", group: "Media", kind: "string" };
@@ -400,8 +405,7 @@ const COMPOSITION_PROPS: PropDef[] = [
   DURATION_OPT,
   OVERFLOW,
   UNDERFLOW,
-  TRANSITION,
-  ID,
+  ...PLACEMENT,
   ...SPATIAL,
   ...CONTENT_DIMS,
   {
@@ -431,8 +435,7 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
     DURATION_OPT,
     OVERFLOW,
     UNDERFLOW,
-    TRANSITION,
-    ID,
+    ...PLACEMENT,
     {
       key: "orientation",
       label: "Orientation",
@@ -446,7 +449,7 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
     VOLUME,
     PITCH,
   ],
-  audio: [SOURCE, ...IN_OUT, SPEED, DURATION_OPT, OVERFLOW, UNDERFLOW, TRANSITION, ID, VOLUME, PITCH],
+  audio: [SOURCE, ...IN_OUT, SPEED, DURATION_OPT, OVERFLOW, UNDERFLOW, ...PLACEMENT, VOLUME, PITCH],
   static: [
     SOURCE,
     DURATION_REQ,
@@ -458,16 +461,17 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
       placeholder: "0",
       hint: "Video sources only: the timestamp to freeze on.",
     }),
-    TRANSITION,
-    ID,
+    ...PLACEMENT,
     ...SPATIAL,
   ],
-  empty: [DURATION_REQ, ID],
-  data: [timing({ key: "duration", label: "Duration", kind: "number", unit: "s", placeholder: "0" }), ID],
-  text: [DURATION_SHAPE, TRANSITION, ID, ...TEXT_PROPS, ...SPATIAL, ...CONTENT_DIMS],
-  rect: [DURATION_SHAPE, TRANSITION, ID, ...SHAPE_PROPS, ...SPATIAL],
-  circle: [DURATION_SHAPE, TRANSITION, ID, ...SHAPE_PROPS, ...SPATIAL],
-  map: [SOURCE, DURATION_REQ, TRANSITION, ID, ...MAP_PROPS, ...SPATIAL, ...CONTENT_DIMS],
+  data: [
+    timing({ key: "duration", label: "Duration", kind: "number", unit: "s", placeholder: "0" }),
+    ...PLACEMENT,
+  ],
+  text: [DURATION_REQ, ...PLACEMENT, ...TEXT_PROPS, ...SPATIAL, ...CONTENT_DIMS],
+  rect: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
+  circle: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
+  map: [SOURCE, DURATION_REQ, ...PLACEMENT, ...MAP_PROPS, ...SPATIAL, ...CONTENT_DIMS],
   composition: COMPOSITION_PROPS,
 };
 

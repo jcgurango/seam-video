@@ -3,39 +3,43 @@
 //
 //   clip / audio                      → `in` (left)  / `out` (right)
 //   composition (with `in` & `out`)   → `in` (left)  / `out` (right)
-//   static / text / empty / data      → `duration` (left shrinks, right grows)
+//   everything else (static / text / data / rect / circle / map)
+//                                     → `duration` (left shrinks, right grows)
 //
 // `in`/`out` are SOURCE seconds while the cursor delta is OUTPUT seconds, so
-// nodes with a `speed` (or a `duration` override, whose rate is derived as
-// `(out - in) / duration`) scale the delta by that rate — one second of
-// cursor travel consumes `rate` seconds of source. A `duration` override is
-// also adjusted by the applied output delta so the edge tracks the cursor at
-// a constant playback rate.
+// the delta is scaled by the node's playback rate — one second of cursor
+// travel consumes `rate` seconds of source. The rate is `speed` (default 1),
+// except when a `duration` is being filled by the `stretch` strategy (the
+// default for both `overflow` and `underflow`), where it is derived as
+// `(out - in) / duration`. With a non-stretch strategy `duration` is just the
+// output length and the rate stays `speed`. Either way an authored `duration`
+// is adjusted by the applied output delta so the edge tracks the cursor at a
+// constant playback rate.
+//
+// Only the node's own span changes — its `start`/`offset` are untouched, so
+// a left-handle trim keeps the node's start in place and whatever follows it
+// in the run moves with its end.
 //
 // Clamped at 0 lower bound; the upper bound (source media length) isn't
 // known during a timeline drag, so it's left to the schema validator
 // or to a later UX polish pass that probes media.
 
 import { clipOut, resolveComposition } from "@seam/core";
-import type { Child, Composition, SeamFile } from "@seam/core";
+import type { Child, Composition, Overflow, Underflow, SeamFile } from "@seam/core";
 
 export function resizeChild(
   doc: SeamFile,
   index: number,
-  isAttachment: boolean,
   side: "left" | "right",
   deltaSec: number,
 ): SeamFile {
-  const arr = (isAttachment ? doc.attachments : doc.children) ?? [];
+  const arr = doc.children ?? [];
   const child = arr[index];
   if (!child) return doc;
   const next = mutateChild(child, side, deltaSec);
   if (next === child) return doc;
   const newArr = [...arr];
   newArr[index] = next;
-  if (isAttachment) {
-    return { ...doc, attachments: newArr };
-  }
   return { ...doc, children: newArr };
 }
 
@@ -56,7 +60,7 @@ function mutateChild(
     const outVal = child.out ?? innerDuration(child);
     return resizeInOut({ ...child, in: inVal, out: outVal }, side, deltaSec);
   }
-  // Static / text / empty / data: no source axis. Both handles just
+  // Static / text / data / shapes / map: no source axis. Both handles just
   // adjust `duration` — left handle shrinks (drag right ⇒ shorter),
   // right handle grows (drag right ⇒ longer).
   const old = (child as { duration?: number }).duration ?? 0;
@@ -76,19 +80,44 @@ function innerDuration(comp: Composition): number {
   }
 }
 
+/** Source seconds consumed per output second. `speed` (default 1), unless a
+ *  `duration` that differs from the natural length is filled by `stretch` —
+ *  then the window is squeezed/stretched into it. */
+function playbackRate(
+  child: {
+    in: number;
+    speed?: number;
+    duration?: number;
+    overflow?: Overflow;
+    underflow?: Underflow;
+  },
+  out: number,
+): number {
+  const speed = child.speed != null && child.speed > 0 ? child.speed : 1;
+  if (child.duration == null || !(child.duration > 0)) return speed;
+  const natural = (out - child.in) / speed;
+  if (child.duration === natural) return speed;
+  const strategy =
+    child.duration < natural ? child.overflow ?? "stretch" : child.underflow ?? "stretch";
+  if (strategy !== "stretch") return speed;
+  const rate = (out - child.in) / child.duration;
+  return rate > 0 ? rate : speed;
+}
+
 function resizeInOut<
-  T extends { in: number; out?: number; speed?: number; duration?: number },
+  T extends {
+    in: number;
+    out?: number;
+    speed?: number;
+    duration?: number;
+    overflow?: Overflow;
+    underflow?: Underflow;
+  },
 >(child: T, side: "left" | "right", deltaSec: number): T {
   // `out` may be omitted on clips/audio (= in + duration); resolve it once.
   // A right-handle drag then materialises `out` on the node.
   const out = clipOut(child);
-  // Source seconds consumed per output second. With a `duration` override
-  // the rate is implied by the window; otherwise it's `speed` (default 1).
-  const rawRate =
-    child.duration != null && child.duration > 0
-      ? (out - child.in) / child.duration
-      : child.speed ?? 1;
-  const rate = rawRate > 0 ? rawRate : 1;
+  const rate = playbackRate(child, out);
   const sourceDelta = deltaSec * rate;
   if (side === "left") {
     const newIn = Math.max(0, Math.min(out, child.in + sourceDelta));

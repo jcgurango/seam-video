@@ -72,7 +72,7 @@ function collectAudioNodes(
 ): void {
   for (const c of children) {
     if (c.type === "map") {
-      // A map's attachments live in map-local time at speed 1 and inherit
+      // A map's children live in map-local time at speed 1 and inherit
       // every enclosing volume/pitch unchanged (maps have neither).
       collectAudioNodes(
         c.children,

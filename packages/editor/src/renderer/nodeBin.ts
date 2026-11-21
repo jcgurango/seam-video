@@ -74,14 +74,8 @@ function rewriteBinReferences(
       ? rewriteBinReferences(child, oldId, newId)
       : child,
   );
-  const newAttachments = next.attachments?.map((child: Child) =>
-    child.type === "composition"
-      ? rewriteBinReferences(child, oldId, newId)
-      : child,
-  );
   return {
     ...next,
     ...(newChildren ? { children: newChildren } : {}),
-    ...(newAttachments ? { attachments: newAttachments } : {}),
   };
 }

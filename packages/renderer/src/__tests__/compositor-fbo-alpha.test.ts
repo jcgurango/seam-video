@@ -61,7 +61,7 @@ describe("Compositor — FBO transparent clear", () => {
         type: "composition",
         opacity,
         duration: 1,
-        children: [{ type: "empty", duration: 1 }],
+        children: [{ type: "data", data: null, duration: 1 }],
       },
     ],
   });

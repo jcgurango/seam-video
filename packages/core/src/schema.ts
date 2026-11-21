@@ -104,37 +104,43 @@ export const FilterSchema = z.discriminatedUnion("type", [
 
 export const FiltersArraySchema = z.array(FilterSchema).optional();
 
-export const TimeAnchorSchema = z.object({
-  anchor: z.string().min(1).optional(),
-  anchorPoint: z.union([PercentStringSchema, z.number()]).optional(),
-  offset: z.union([z.number(), PercentStringSchema]).optional(),
-  timeSource: z.enum(["output", "source"]).optional(),
-}).refine(
-  (data) => !(data.anchor == null && data.anchorPoint != null),
-  { message: "'anchorPoint' requires an 'anchor'" }
-).refine(
-  (data) => !(data.anchor == null && data.timeSource != null),
-  { message: "'timeSource' requires an 'anchor'" }
-).refine(
-  (data) => !(data.anchor != null && data.timeSource == null),
-  { message: "'timeSource' is required when 'anchor' is provided" }
-).refine(
-  (data) => {
-    if (data.anchorPoint == null) return true;
-    const isSource = data.timeSource === "source";
-    if (isSource) return typeof data.anchorPoint === "number";
-    return typeof data.anchorPoint === "string";
-  },
-  {
-    message:
-      "anchorPoint must be a number (seconds) when timeSource is 'source', or a percentage string (e.g. '50%') otherwise",
-  }
+// ── Timing: `id`, `start`, `offset` ────────────────────────────────
+//
+// Every node in a `children` array is placed at
+//   (start ?? end of the previous node, 0 for the first) + offset
+// so a node WITHOUT `start` continues the previous node's *run*, and a node
+// WITH `start` heads a new one. See `layout/anchor.ts` for the grammar.
+
+/** Node id, referenced by sibling `start` anchors. Must not contain `@` (the
+ *  anchor-point separator) and must not read as a number (a numeric `start`
+ *  is an absolute position). */
+export const NodeIdSchema = z.string().min(1).refine(
+  (s) => !s.includes("@") && !NUMERIC_RE.test(s.trim()) && s.trim() === s,
+  { message: "An id cannot contain '@', be a number, or have surrounding whitespace" },
 );
 
+const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
+
+/** `start`: a bare number (absolute seconds in the container), or an anchor
+ *  string — `"id"` (start of `id`), `"id@50%"` (that fraction of `id`'s output
+ *  span), `"id@10"` (source-time second 10 of `id`). */
+export const StartSchema = z.union([
+  z.number(),
+  z.string().regex(
+    /^[^@\s](?:[^@]*[^@\s])?(?:@-?\d+(?:\.\d+)?%?)?$/,
+    "Must be a number, 'id', 'id@<n>%' or 'id@<seconds>'",
+  ).refine((s) => !NUMERIC_RE.test(s.trim()), {
+    message: "A numeric start must be a number, not a string",
+  }),
+]);
+
 const AnchorFieldsSchema = {
-  id: z.string().min(1).optional(),
-  start: TimeAnchorSchema.optional(),
-  end: TimeAnchorSchema.optional(),
+  id: NodeIdSchema.optional(),
+  start: StartSchema.optional(),
+  /** Seconds added to the node's position. On a run member (no `start`) it
+   *  is the gap after the previous node; negative overlaps it and
+   *  cross-fades. On a run head it shifts off the anchor (no fade). */
+  offset: z.number().optional(),
 };
 
 // Free-form per-node bag for editor / tooling concerns that travel with
@@ -175,7 +181,7 @@ const DistortSchema = z.object({
   y3: LengthSchema.optional(),
 }).strict();
 
-// Where a node's `origin` lands when it is an attachment of a `map`: either a
+// Where a node's `origin` lands when it is a child of a `map`: either a
 // geographic coordinate or a fraction along one of the map's `paths` (by index
 // or path `id`; `position` defaults to that path's current `progress`, so the
 // node rides the head of the reveal). Ignored outside a map. Keyframes
@@ -206,15 +212,8 @@ const SpatialFieldsSchema = {
   // resolves against the SHORTER side of the rect, so `"50%"` turns a square
   // into a circle and a rectangle into a pill. Animatable.
   cornerRadius: keyframed(LengthSchema).optional(),
-  // Geo / path anchor — only meaningful on a `map`'s attachments. See PinSchema.
+  // Geo / path anchor — only meaningful on a `map`'s children. See PinSchema.
   pin: keyframed(PinSchema).optional(),
-};
-
-/** Crossfade overlap (seconds) with the previous sequential sibling.
- *  Only meaningful for producing elements used as sequential `children`;
- *  ignored on the first child and on attachments. */
-const TransitionFieldSchema = {
-  transition: z.number().nonnegative().optional(),
 };
 
 /** Pre-transform source orientation (clockwise degrees). Bakes into the
@@ -267,12 +266,14 @@ export const ClipSchema = z.object({
   underflow: UnderflowSchema.optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
-  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict().refine(
-  (data) => !(data.speed != null && data.duration != null),
-  { message: "Cannot specify both 'speed' and 'duration' on a clip" }
+  (data) =>
+    !(data.speed != null && data.duration != null) ||
+    (data.overflow != null && data.overflow !== "stretch") ||
+    (data.underflow != null && data.underflow !== "stretch"),
+  { message: "'speed' and 'duration' together need a non-stretch 'overflow'/'underflow' (stretch derives the speed from 'duration')" }
 ).refine(
   (data) => data.out != null || data.duration != null,
   { message: "A clip needs 'out' or 'duration' (out defaults to in + duration)" }
@@ -287,14 +288,6 @@ export const StaticSchema = z.object({
   in: z.number().nonnegative().optional(),
   filters: FiltersArraySchema,
   ...SpatialFieldsSchema,
-  ...TransitionFieldSchema,
-  ...AnchorFieldsSchema,
-  ...MetadataFieldsSchema,
-}).strict();
-
-export const EmptySchema = z.object({
-  type: z.literal("empty"),
-  duration: z.number().positive(),
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 }).strict();
@@ -312,7 +305,6 @@ export const AudioSchema = z.object({
   pitch: z.number().gte(-48).lte(48).optional(),
   overflow: OverflowSchema.optional(),
   underflow: UnderflowSchema.optional(),
-  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
 })
@@ -321,8 +313,11 @@ export const AudioSchema = z.object({
   // get a clear signal when they put visual props on an audio node.
   .strict()
   .refine(
-    (data) => !(data.speed != null && data.duration != null),
-    { message: "Cannot specify both 'speed' and 'duration' on audio" }
+    (data) =>
+    !(data.speed != null && data.duration != null) ||
+    (data.overflow != null && data.overflow !== "stretch") ||
+    (data.underflow != null && data.underflow !== "stretch"),
+  { message: "'speed' and 'duration' together need a non-stretch 'overflow'/'underflow' (stretch derives the speed from 'duration')" }
   )
   .refine(
     (data) => data.out != null || data.duration != null,
@@ -391,21 +386,13 @@ export const TextSchema = z.object({
   padding: TextPaddingSchema.optional(),
   contentWidth: keyframed(LengthSchema).optional(),
   contentHeight: keyframed(LengthSchema).optional(),
-  duration: z.number().positive().optional(),
+  duration: z.number().positive(),
   filters: FiltersArraySchema,
   ...TextStyleFieldsSchema,
   ...SpatialFieldsSchema,
-  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
-}).strict().refine(
-  (data) =>
-    data.duration != null || (data.start != null && data.end != null),
-  {
-    message:
-      "'duration' is required unless both 'start' and 'end' anchors are set",
-  }
-);
+}).strict();
 
 // ── Shapes ─────────────────────────────────────────────────────────
 //
@@ -427,45 +414,36 @@ const ShapeFieldsSchema = {
   strokeWidth: keyframed(z.number().nonnegative()).optional(),
 };
 
-const shapeDurationRefine = {
-  check: (data: { duration?: number; start?: unknown; end?: unknown }) =>
-    data.duration != null || (data.start != null && data.end != null),
-  message:
-    "'duration' is required unless both 'start' and 'end' anchors are set",
-};
-
 export const RectSchema = z.object({
   type: z.literal("rect"),
-  duration: z.number().positive().optional(),
+  duration: z.number().positive(),
   filters: FiltersArraySchema,
   ...ShapeFieldsSchema,
   ...SpatialFieldsSchema,
-  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
-}).strict().refine(shapeDurationRefine.check, { message: shapeDurationRefine.message });
+}).strict();
 
 export const CircleSchema = z.object({
   type: z.literal("circle"),
-  duration: z.number().positive().optional(),
+  duration: z.number().positive(),
   filters: FiltersArraySchema,
   ...ShapeFieldsSchema,
   ...SpatialFieldsSchema,
-  ...TransitionFieldSchema,
   ...AnchorFieldsSchema,
   ...MetadataFieldsSchema,
-}).strict().refine(shapeDurationRefine.check, { message: shapeDurationRefine.message });
+}).strict();
 
 // ── Map ────────────────────────────────────────────────────────────
 //
 // A basemap rasterized from a pmtiles archive (see @seam/map), used like a
 // `static` with a camera: `latitude` / `longitude` / `zoom` / `mapOpacity`
-// are animatable, `paths` draw geo polylines over it, and `attachments` are
+// are animatable, `paths` draw geo polylines over it, and `children` are
 // ordinary nodes (any type) composited over the map — a node carrying a `pin`
 // has its `origin` placed at the pin's projected point (its `translation`
 // then acts as a pixel offset from there). The map's inner canvas
 // (`contentWidth`/`contentHeight`, default 100% of the parent) is both the
-// raster size and the layout space its attachments resolve against.
+// raster size and the layout space its children resolve against.
 
 export const MapPathSchema = z.object({
   // Referenced by a `pin: { path: "<id>" }`; else pins address paths by index.
@@ -490,20 +468,20 @@ export const MapSchema: z.ZodType<any> = z.lazy(() =>
     // maplibre-512 convention. Interpolates in scale space (linear in 2^-zoom).
     zoom: keyframed(z.number().nonnegative()).optional(),
     // Opacity of the basemap layers only (tiles: fills/lines/labels) — paths
-    // and attachments are unaffected. Distinct from the node's `opacity`.
+    // and children are unaffected. Distinct from the node's `opacity`.
     mapOpacity: keyframed(z.number().min(0).max(1)).optional(),
     theme: z.enum(["light", "dark"]).optional(),
     paths: z.array(MapPathSchema).optional(),
-    /** Nodes composited over the map, resolved like a composition's
-     *  attachments (anchors may reference earlier attachments' ids; time 0 is
-     *  the map's start). A `pin` places a node geographically. */
-    attachments: z.array(ChildSchema).optional(),
+    /** Nodes composited over the map, placed exactly like a composition's
+     *  children (runs + `start` anchors; time 0 is the map's start) but they
+     *  never extend the map — its `duration` is authoritative. A `pin` places
+     *  a node geographically. */
+    children: z.array(ChildSchema).optional(),
     contentWidth: keyframed(LengthSchema).optional(),
     contentHeight: keyframed(LengthSchema).optional(),
     filters: FiltersArraySchema,
     ...SpatialFieldsSchema,
-    ...TransitionFieldSchema,
-    ...AnchorFieldsSchema,
+      ...AnchorFieldsSchema,
     ...MetadataFieldsSchema,
   }).strict()
 );
@@ -513,7 +491,6 @@ const ChildSchema: z.ZodType<any> = z.lazy(() =>
     ClipSchema,
     AudioSchema,
     StaticSchema,
-    EmptySchema,
     DataSchema,
     TextSchema,
     RectSchema,
@@ -532,7 +509,6 @@ export const BinEntrySchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     id: z.string().min(1),
     children: z.array(ChildSchema).optional().default([]),
-    attachments: z.array(ChildSchema).optional(),
   }).strict()
 );
 
@@ -540,15 +516,13 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     type: z.literal("composition"),
     children: z.array(ChildSchema).optional(),
-    attachments: z.array(ChildSchema).optional(),
     /** Bin entries scoped to this composition's subtree. A descendant
      *  composition with `binItem: "<id>"` resolves to the nearest
      *  enclosing bin entry with that id (this composition's own
      *  entries win over any inherited from ancestors). */
     bin: z.array(BinEntrySchema).optional(),
     /** Names a bin entry whose body this composition adopts at compile
-     *  time. The reference's own `children`/`attachments` are ignored
-     *  in favour of the bin entry's. */
+     *  time. A reference carries no `children` of its own. */
     binItem: z.string().min(1).optional(),
     /** JavaScript source — body of an anonymous function that takes
      *  `currentNode` (this composition, with bins already resolved) and
@@ -567,8 +541,8 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     out: z.number().positive().optional(),
     /** Playback rate of the inner window; mirrors clip `speed`. */
     speed: z.number().positive().optional(),
-    /** Explicit output duration of the inner window; mirrors clip
-     *  `duration`. Mutually exclusive with `speed`. */
+    /** Output duration; `overflow`/`underflow` say how the inner window
+     *  fills it (default stretch = derived rate). Mirrors clip `duration`. */
     duration: z.number().positive().optional(),
     overflow: OverflowSchema.optional(),
     underflow: UnderflowSchema.optional(),
@@ -593,19 +567,20 @@ export const CompositionSchema: z.ZodType<any> = z.lazy(() =>
     // Corner-pin (perspective) distortion — composition-only. See DistortSchema.
     distort: keyframed(DistortSchema).optional(),
     ...SpatialFieldsSchema,
-    ...TransitionFieldSchema,
-    ...AnchorFieldsSchema,
+      ...AnchorFieldsSchema,
     ...MetadataFieldsSchema,
   }).strict().refine(
-    (data) => !(data.speed != null && data.duration != null),
-    { message: "Cannot specify both 'speed' and 'duration' on a composition" }
+    (data) =>
+    !(data.speed != null && data.duration != null) ||
+    (data.overflow != null && data.overflow !== "stretch") ||
+    (data.underflow != null && data.underflow !== "stretch"),
+  { message: "'speed' and 'duration' together need a non-stretch 'overflow'/'underflow' (stretch derives the speed from 'duration')" }
   ).refine(
     (data) =>
-      data.binItem == null ||
-      (data.children == null && data.attachments == null),
+      data.binItem == null || data.children == null,
     {
       message:
-        "A 'binItem' reference cannot carry its own 'children'/'attachments' — it adopts the bin entry's body",
+        "A 'binItem' reference cannot carry its own 'children' — it adopts the bin entry's body",
     }
   )
 );

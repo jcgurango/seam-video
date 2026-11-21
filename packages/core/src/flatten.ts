@@ -3,7 +3,6 @@ import type {
   ResolvedClip,
   ResolvedAudio,
   ResolvedStatic,
-  ResolvedEmpty,
   ResolvedData,
   ResolvedText,
   ResolvedRect,
@@ -16,7 +15,6 @@ export type FlatLeaf =
   | ResolvedClip
   | ResolvedAudio
   | ResolvedStatic
-  | ResolvedEmpty
   | ResolvedData
   | ResolvedText
   | ResolvedRect
@@ -25,7 +23,7 @@ export type FlatLeaf =
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
- * empties, data). Compounds speed and offsets through nested compositions.
+ * data, …). Compounds speed and offsets through nested compositions.
  * Looping nodes are unrolled into the cycles they play (see `unrollLoops`),
  * so every leaf here is a plain span.
  */
@@ -68,12 +66,6 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
       });
-    } else if (child.type === "empty") {
-      result.push({
-        type: "empty",
-        timelineStart: start,
-        timelineEnd: end,
-      });
     } else if (child.type === "data") {
       result.push({
         type: "data",
@@ -95,7 +87,7 @@ export function flattenResolved(
         timelineEnd: end,
       });
     } else if (child.type === "map") {
-      // The map itself is a leaf (basemap + camera); its attachments live in
+      // The map itself is a leaf (basemap + camera); its children live in
       // map-local time at speed 1, so they flatten like a composition's
       // children offset by the map's start.
       result.push({

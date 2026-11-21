@@ -79,10 +79,9 @@ export interface ResolvedClip {
    *  into the decoded frame (composing with container-metadata rotation)
    *  before the spatial transform. Absent means 0. */
   orientation?: Orientation;
-  /** Effective crossfade overlap (s) with the previous sequential sibling,
-   *  clamped to what fits. Present (>0) only on a non-first child that set
-   *  `transition`. Renderers fade this element in over its first
-   *  `transition` seconds. */
+  /** Effective crossfade (s) with the previous node of its run, clamped to
+   *  what fits. Present (>0) only on a run member with a negative `offset`.
+   *  Renderers fade this element in over its first `transition` seconds. */
   transition?: number;
   /** Effective crossfade overlap (s) with the *next* sibling — the previous
    *  side of that overlap. Audio renderers fade this element out over its
@@ -144,12 +143,6 @@ export interface ResolvedStatic {
   intrinsicHeight?: number;
   naturalWidth?: number;
   naturalHeight?: number;
-}
-
-export interface ResolvedEmpty {
-  type: "empty";
-  timelineStart: number;
-  timelineEnd: number;
 }
 
 export interface ResolvedAudio {
@@ -311,7 +304,7 @@ export interface ResolvedMapPath {
   lineWidth?: Keyframed<number>;
 }
 
-/** A map after resolution. Its `children` are the resolved attachments, in
+/** A map after resolution. Its `children` are its resolved children, in
  *  map-local time (0 = the map's start, speed 1), laid out against the map's
  *  inner canvas; a child's `pin` overrides its translation at render time. */
 export interface ResolvedMap {
@@ -349,7 +342,6 @@ export type ResolvedChild =
   | ResolvedClip
   | ResolvedAudio
   | ResolvedStatic
-  | ResolvedEmpty
   | ResolvedData
   | ResolvedText
   | ResolvedRect

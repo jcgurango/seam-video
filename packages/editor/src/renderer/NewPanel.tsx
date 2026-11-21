@@ -19,12 +19,6 @@ interface NewItem {
 
 const NEW_ITEMS: NewItem[] = [
   {
-    label: "Empty",
-    icon: "⬚",
-    hint: "A 1s gap / spacer.",
-    node: { type: "empty", duration: 1 } as Child,
-  },
-  {
     label: "Rect",
     icon: "▬",
     hint: "A solid rectangle (fill / stroke / cornerRadius).",
@@ -50,7 +44,7 @@ const NEW_ITEMS: NewItem[] = [
   {
     label: "Data",
     icon: "{ }",
-    hint: "A metadata marker (no visuals/audio).",
+    hint: "A metadata marker / spacer (no visuals/audio).",
     node: { type: "data", duration: 1, data: {}, tags: [] } as Child,
   },
 ];

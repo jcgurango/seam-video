@@ -1,12 +1,11 @@
 /**
  * JSON.stringify(_, null, 2)-compatible formatter that also records the
  * character offset of every array element it encounters (the
- * "children" / "attachments" arrays that locate timeline nodes, but also
+ * "children" arrays that locate timeline nodes, but also
  * every other array — so a keyframe can be jumped to), keyed by its dotted
  * JSON path:
  *
  *   children.<i>
- *   attachments.<i>
  *   bin.<i>.children.<i>
  *   children.<i>.opacity.<k>      ← a keyframe of an animated property
  *   …
@@ -92,12 +91,9 @@ export function formatJsonWithLocations(
         emitString(k);
         append(": ");
         const childPath = path === "" ? k : `${path}.${k}`;
-        // Capture per-element offsets for any "children" / "attachments"
-        // array we encounter, regardless of depth.
-        if (
-          (k === "children" || k === "attachments") &&
-          Array.isArray(val)
-        ) {
+        // Capture per-element offsets for any "children" array we
+        // encounter, regardless of depth.
+        if (k === "children" && Array.isArray(val)) {
           if (val.length === 0) {
             append("[]");
             continue;

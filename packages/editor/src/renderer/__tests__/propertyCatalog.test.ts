@@ -35,7 +35,7 @@ const nodesAt = (...keys: string[]): Child[] => selectedNodes(doc, keys).map((s)
 
 describe("catalog + multi-selection", () => {
   it("every type has a catalog; shared props are the intersection in first-node order", () => {
-    for (const t of ["clip", "audio", "static", "empty", "data", "text", "rect", "circle", "map", "composition"] as const) {
+    for (const t of ["clip", "audio", "static", "data", "text", "rect", "circle", "map", "composition"] as const) {
       expect(catalogFor(t).length).toBeGreaterThan(0);
     }
     const keys = sharedProps(nodesAt("children.0", "children.2")).map((d) => d.key);
@@ -46,6 +46,18 @@ describe("catalog + multi-selection", () => {
     expect(keys.indexOf("in")).toBe(-1); // text has no in/out
     // Catalog order of the first node (clip): timing before layout.
     expect(keys.indexOf("id")).toBeLessThan(keys.indexOf("opacity"));
+  });
+
+  it("every child type exposes start + offset (no transition); the root does not", () => {
+    for (const t of ["clip", "audio", "static", "data", "text", "rect", "circle", "map", "composition"] as const) {
+      const defs = catalogFor(t);
+      expect(defs.find((d) => d.key === "start")).toMatchObject({ group: "Timing", kind: "scalar" });
+      const offset = defs.find((d) => d.key === "offset");
+      expect(offset).toMatchObject({ group: "Timing", kind: "number", placeholder: "0" });
+      expect(offset?.animatable).toBeFalsy();
+      expect(defs.some((d) => d.key === "transition")).toBe(false);
+    }
+    expect(ROOT_PROPS.some((d) => d.key === "start" || d.key === "offset")).toBe(false);
   });
 
   it("summarizes the selection by type", () => {
@@ -88,7 +100,7 @@ describe("catalog + multi-selection", () => {
   });
 
   it("drops stale selection keys", () => {
-    expect(selectedNodes(doc, ["children.0", "children.9", "attachments.0"]).map((s) => s.key)).toEqual([
+    expect(selectedNodes(doc, ["children.0", "children.9", "children.2.children.0"]).map((s) => s.key)).toEqual([
       "children.0",
     ]);
   });
@@ -151,6 +163,18 @@ describe("keyframes", () => {
 });
 
 describe("applyPropertyEdit", () => {
+  it("start: a number or a valid anchor is written; a malformed anchor is rejected", () => {
+    const withId = applyPropertyEdit(doc, [parsePath("children.0")], "id", () => "a").doc;
+    const paths = [parsePath("children.2")];
+    expect(applyPropertyEdit(withId, paths, "start", () => 1.5).doc.children?.[2]).toMatchObject({ start: 1.5 });
+    expect(applyPropertyEdit(withId, paths, "start", () => "a@50%").doc.children?.[2]).toMatchObject({
+      start: "a@50%",
+    });
+    const bad = applyPropertyEdit(withId, paths, "start", () => "a@x");
+    expect(bad.errors?.length).toBeGreaterThan(0);
+    expect(bad.doc).toBe(withId);
+  });
+
   const paths = ["children.0", "children.1"].map(parsePath);
 
   it("writes to every selected node, deletes on undefined, validates", () => {

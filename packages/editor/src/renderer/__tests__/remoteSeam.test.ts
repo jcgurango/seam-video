@@ -27,9 +27,7 @@ const doc: SeamFile = {
     },
     { type: "clip", source: "https://elsewhere.test/x.mp4", in: 0, out: 1 },
     { type: "clip", source: "blob:http://app/123", in: 0, out: 1 },
-  ],
-  attachments: [
-    { type: "static", source: "logo.png", duration: 2, start: { anchor: "x" } },
+    { type: "static", source: "logo.png", duration: 2, start: 0 },
   ],
 } as SeamFile;
 
@@ -38,7 +36,6 @@ const sourcesOf = (d: SeamFile): string[] => {
   const walk = (c: any) => {
     if (c.source) out.push(c.source);
     c.children?.forEach(walk);
-    c.attachments?.forEach(walk);
     c.bin?.forEach(walk);
   };
   walk(d);

@@ -11,7 +11,7 @@ import { parsePath } from "../nodePath.js";
 
 const resolve = (doc: SeamFile): ResolvedTimeline =>
   resolveSpatial(
-    resolveComposition(doc),
+    resolveComposition(doc, { uncropped: true }),
     DEFAULT_CANVAS_WIDTH,
     DEFAULT_CANVAS_HEIGHT,
   );
@@ -52,20 +52,31 @@ describe("playheadAfterDelete — root children", () => {
     expect(after(flat, ["children.0", "children.2"], 7)).toBe(2);
   });
 
-  it("deleting an attachment never moves the playhead", () => {
+  it("deleting a stand-alone overlay (a run of one) never moves the playhead", () => {
     const doc: SeamFile = {
-      ...flat,
-      attachments: [
-        clip({
-          in: 0,
-          out: 2,
-          start: { anchor: "A", timeSource: "source", anchorPoint: 0 },
-        }),
+      type: "composition",
+      children: [...flat.children!, clip({ in: 0, out: 2, start: "A@0" })],
+    };
+    expect(after(doc, ["children.3"], 12)).toBe(12);
+    // Mixed: only the sequence item contributes.
+    expect(after(doc, ["children.3", "children.0"], 12)).toBe(7);
+  });
+
+  it("the last item of a run still counts (it is part of a sequence)", () => {
+    expect(after(flat, ["children.2"], 12)).toBe(10);
+  });
+
+  it("a run head with members behind it counts — its successor takes its place", () => {
+    // Overlay run: T1 [3,5) T2 [5,7), on top of the main run.
+    const doc: SeamFile = {
+      type: "composition",
+      children: [
+        ...flat.children!,
+        clip({ in: 0, out: 2, start: 3 }),
+        clip({ in: 0, out: 2 }),
       ],
     };
-    expect(after(doc, ["attachments.0"], 12)).toBe(12);
-    // Mixed: only the child contributes.
-    expect(after(doc, ["attachments.0", "children.0"], 12)).toBe(7);
+    expect(after(doc, ["children.3"], 6)).toBe(4);
   });
 });
 
@@ -125,14 +136,14 @@ describe("playheadAfterDelete — nested children", () => {
   });
 });
 
-// Attached comp anchored to A's start: A [0,10) ; att comp [2,12) { P [0,5) Q [5,10) }
-const attached = (compFields: Record<string, unknown>): SeamFile => ({
+// Overlay comp anchored into A: A [0,10) ; comp [2,12) { P [0,5) Q [5,10) }
+const overlay = (compFields: Record<string, unknown>): SeamFile => ({
   type: "composition",
-  children: [clip({ id: "A", in: 0, out: 10 })],
-  attachments: [
+  children: [
+    clip({ id: "A", in: 0, out: 10 }),
     {
       type: "composition",
-      start: { anchor: "A", timeSource: "source", anchorPoint: 2 },
+      start: "A@2",
       ...compFields,
       children: [
         clip({ id: "P", in: 0, out: 5 }),
@@ -142,28 +153,26 @@ const attached = (compFields: Record<string, unknown>): SeamFile => ({
   ],
 });
 
-describe("playheadAfterDelete — children inside an attached composition", () => {
-  it("the attachment itself: untouched", () => {
-    expect(after(attached({}), ["attachments.0"], 9)).toBe(9);
+describe("playheadAfterDelete — children inside an overlay composition", () => {
+  it("the overlay itself: untouched", () => {
+    expect(after(overlay({}), ["children.1"], 9)).toBe(9);
   });
 
-  it("a child inside it: moves (the attachment shrinks)", () => {
-    expect(after(attached({}), ["attachments.0.children.0"], 9)).toBe(4);
-    expect(after(attached({}), ["attachments.0.children.0"], 1)).toBe(1);
+  it("a child inside it: moves (the overlay shrinks)", () => {
+    expect(after(overlay({}), ["children.1.children.0"], 9)).toBe(4);
+    expect(after(overlay({}), ["children.1.children.0"], 1)).toBe(1);
   });
 
-  it("fixed `duration` on the attachment: moves only while the playhead is on it", () => {
-    expect(after(attached({ duration: 10 }), ["attachments.0.children.0"], 9)).toBe(4);
-    expect(after(attached({ duration: 10 }), ["attachments.0.children.0"], 13)).toBe(13);
+  it("fixed `duration` on the overlay: moves only while the playhead is on it", () => {
+    expect(after(overlay({ duration: 10 }), ["children.1.children.0"], 9)).toBe(4);
+    expect(after(overlay({ duration: 10 }), ["children.1.children.0"], 13)).toBe(13);
   });
 
-  it("both ends anchored (fixed length): same gating", () => {
-    // Attachments default to `stretch`: 10 s of content in an 8 s slot
-    // plays at 1.25×, so P spans [2, 6) and the shift is 4 s.
-    const doc = attached({
-      end: { anchor: "A", timeSource: "source", anchorPoint: 10 },
-    });
-    expect(after(doc, ["attachments.0.children.0"], 9)).toBe(5);
-    expect(after(doc, ["attachments.0.children.0"], 11)).toBe(11);
+  it("a stretched fixed duration scales the shift", () => {
+    // 10 s of content in an 8 s `duration` plays at 1.25×, so P spans
+    // [2, 6) and the shift is 4 s.
+    const doc = overlay({ duration: 8 });
+    expect(after(doc, ["children.1.children.0"], 9)).toBe(5);
+    expect(after(doc, ["children.1.children.0"], 11)).toBe(11);
   });
 });

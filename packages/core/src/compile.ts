@@ -57,7 +57,7 @@ export interface CompileOptions {
  *       every `"$$NAME"` reference). Failures land in `errors` and
  *       bin/script processing is skipped.
  *    2. Splice bin references.
- *    3. Recurse into children/attachments.
+ *    3. Recurse into children.
  *    4. Run scripts on each composition. */
 export function compileSeamFile(
   doc: SeamFile,
@@ -106,15 +106,14 @@ function compileComposition(
 ): Composition {
   // 1. Bin reference: replace body with the looked-up entry's body.
   //    The reference's own bin/script/spatial/timing fields stay; only
-  //    `children` + `attachments` come from the entry.
+  //    `children` comes from the entry.
   //
   //    `staged` is a working shape that — unlike the authored `Composition`
-  //    union — may transiently hold `binItem` alongside `children`/
-  //    `attachments` (the splice below adds them before step 5 strips
-  //    `binItem`). Cast back to `Composition` at the return.
+  //    union — may transiently hold `binItem` alongside `children` (the
+  //    splice below adds them before step 5 strips `binItem`). Cast back to
+  //    `Composition` at the return.
   let staged: BaseComposition & {
     children?: Child[];
-    attachments?: Child[];
     binItem?: string;
   } = comp;
   if (staged.binItem != null) {
@@ -129,8 +128,6 @@ function compileComposition(
         ...staged,
         children: entry.children,
       };
-      if (entry.attachments) staged.attachments = entry.attachments;
-      else delete (staged as { attachments?: unknown }).attachments;
     }
   }
 
@@ -138,7 +135,7 @@ function compileComposition(
   //    win over inherited ones with the same id (nearest-enclosing).
   const innerStack = staged.bin ? [staged.bin, ...callerBinStack] : callerBinStack;
 
-  // 3. Recurse children/attachments with the inner stack. Tolerate a
+  // 3. Recurse children with the inner stack. Tolerate a
   //    missing `children` field — a bin-ref or empty composition can
   //    legitimately omit it. The output always has `children` populated
   //    so the resolver downstream doesn't need to defensive-check.
@@ -146,14 +143,7 @@ function compileComposition(
   const newChildren = inputChildren.map((c) =>
     compileChild(c, innerStack, errors, runScripts),
   );
-  const newAttachments = staged.attachments?.map((c) =>
-    compileChild(c, innerStack, errors, runScripts),
-  );
-  staged = {
-    ...staged,
-    children: newChildren,
-    ...(newAttachments ? { attachments: newAttachments } : {}),
-  };
+  staged = { ...staged, children: newChildren };
 
   // 4. Script (last): runs against `staged` with bins+descendants
   //    already resolved. Output replaces us; recompile in the caller's

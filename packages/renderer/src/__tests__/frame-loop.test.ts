@@ -103,16 +103,14 @@ describe("underflow: loop — renderer video path", () => {
       type: "composition",
       contentWidth: W,
       contentHeight: H,
-      children: [{ id: "bed", type: "empty", duration: 5 }],
-      attachments: [
+      children: [
         {
           type: "clip",
           source: "src.mp4",
           in: 1,
           out: 2.5,
           underflow: "loop",
-          start: { anchor: "bed", timeSource: "output", anchorPoint: "0%" },
-          end: { anchor: "bed", timeSource: "output", anchorPoint: "100%" },
+          duration: 5,
         },
       ],
     };

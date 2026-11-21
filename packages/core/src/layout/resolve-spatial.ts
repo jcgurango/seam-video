@@ -119,7 +119,7 @@ function resolveNode(
   // to its own children.
   parentDimsAnimated: boolean,
 ): ResolvedChild {
-  if (node.type === "empty" || node.type === "audio" || node.type === "data") {
+  if (node.type === "audio" || node.type === "data") {
     return node;
   }
 

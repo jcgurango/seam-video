@@ -17,8 +17,8 @@ describe("validate", () => {
       type: "composition",
       children: [
         { type: "clip", source: "a.mp4", in: 0, out: 3 },
-        { type: "empty", duration: 1 },
-        { type: "clip", source: "b.mp4", in: 2, out: 7 },
+        { type: "data", data: null, duration: 1 },
+        { type: "clip", source: "b.mp4", in: 2, out: 7, offset: 1 },
       ],
     });
     expect(result.success).toBe(true);
@@ -275,14 +275,30 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects clip with both speed and duration", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        { type: "clip", source: "v.mp4", in: 0, out: 5, speed: 2, duration: 10 },
-      ],
-    });
-    expect(result.success).toBe(false);
+  it("rejects clip with both speed and duration (stretch derives the speed)", () => {
+    const clip = (extra: object) =>
+      validate({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5, speed: 2, duration: 10, ...extra },
+        ],
+      });
+    expect(clip({}).success).toBe(false);
+    expect(clip({ underflow: "stretch" }).success).toBe(false);
+    expect(clip({ overflow: "stretch", underflow: "stretch" }).success).toBe(false);
+  });
+
+  it("accepts clip speed + duration once a non-stretch strategy is set", () => {
+    const clip = (extra: object) =>
+      validate({
+        type: "composition",
+        children: [
+          { type: "clip", source: "v.mp4", in: 0, out: 5, speed: 2, duration: 10, ...extra },
+        ],
+      });
+    expect(clip({ underflow: "loop" }).success).toBe(true);
+    expect(clip({ underflow: "extend-end" }).success).toBe(true);
+    expect(clip({ overflow: "trim-end" }).success).toBe(true);
   });
 
   it("accepts composition with speed", () => {
@@ -309,16 +325,20 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects composition with both speed and duration", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        { type: "composition", speed: 2, duration: 10, children: [
-          { type: "clip", source: "v.mp4", in: 0, out: 5 },
-        ] },
-      ],
-    });
-    expect(result.success).toBe(false);
+  it("rejects composition with both speed and duration unless a non-stretch strategy is set", () => {
+    const nested = (extra: object) =>
+      validate({
+        type: "composition",
+        children: [
+          { type: "composition", speed: 2, duration: 10, ...extra, children: [
+            { type: "clip", source: "v.mp4", in: 0, out: 5 },
+          ] },
+        ],
+      });
+    expect(nested({}).success).toBe(false);
+    expect(nested({ underflow: "stretch" }).success).toBe(false);
+    expect(nested({ underflow: "loop" }).success).toBe(true);
+    expect(nested({ overflow: "trim-start" }).success).toBe(true);
   });
 
   it("accepts filters on clips", () => {
@@ -616,7 +636,7 @@ describe("validate — verbose error messages", () => {
       type: "composition",
       children: [{ type: "clip", source: "v.mp4", in: 0, out: 0 }],
     });
-    expect(messages.some((m) => /audio|static|empty|rect|circle|map/.test(m))).toBe(
+    expect(messages.some((m) => /audio|static|rect|circle|map/.test(m))).toBe(
       false
     );
   });
@@ -658,7 +678,7 @@ describe("validate — verbose error messages", () => {
       ],
     });
     expect(
-      messages.some((m) => /both 'speed' and 'duration'/.test(m))
+      messages.some((m) => /'speed' and 'duration' together need a non-stretch/.test(m))
     ).toBe(true);
   });
 
@@ -752,7 +772,7 @@ describe("validate — macro expansion runs before schema checks", () => {
   });
 
   // A `binItem` reference adopts the named entry's body at compile time, so it
-  // carries no `children`/`attachments` of its own — only instance-level
+  // carries no `children` of its own — only instance-level
   // overrides. The schema models this as a discriminated union.
   it("accepts a bin reference with no children of its own", () => {
     const result = validate({
@@ -779,18 +799,30 @@ describe("validate — macro expansion runs before schema checks", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a bin reference that also carries its own attachments", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "composition",
-          binItem: "intro",
-          attachments: [{ type: "empty", duration: 1 }],
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
+  it("rejects the legacy `attachments` array on a bin reference and a bin entry", () => {
+    const overlay = [{ type: "clip", source: "o.mp4", in: 0, out: 1 }];
+    expect(
+      validate({
+        type: "composition",
+        bin: [
+          { id: "intro", children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }] },
+        ],
+        children: [{ type: "composition", binItem: "intro", attachments: overlay }],
+      }).success
+    ).toBe(false);
+    expect(
+      validate({
+        type: "composition",
+        bin: [
+          {
+            id: "intro",
+            children: [{ type: "clip", source: "v.mp4", in: 0, out: 5 }],
+            attachments: overlay,
+          },
+        ],
+        children: [{ type: "composition", binItem: "intro" }],
+      }).success
+    ).toBe(false);
   });
 });
 
