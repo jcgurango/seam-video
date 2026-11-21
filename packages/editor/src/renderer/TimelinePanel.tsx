@@ -46,7 +46,7 @@ import type { KeyframeLane } from "./keyframeLanes.js";
 import KeyframeDiamond, { KEYFRAME_DIAMOND_SIZE } from "./KeyframeDiamond.js";
 import { setKeyframeTime, timeExprForLocal } from "./keyframeEdit.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
-import { resizeChild } from "./resizeTool.js";
+import { resizeChild, resizeChildInPlace } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 
@@ -343,7 +343,7 @@ function TimelineSurface({
     [rootGroup, pxPerSec],
   );
 
-  // Per-block drag-resize. Stable identity via useEvent so re-renders
+  // Per-block drag-resize (Shift = in place, no ripple). Stable identity via useEvent so re-renders
   // (and rAF ticks of currentTime) don't churn the prop on every block.
   // The latest editHistory / pxPerSec / currentTime / seek are read
   // inside the closure when a handle is pressed.
@@ -364,6 +364,9 @@ function TimelineSurface({
       const split = splitLast(path);
       if (!split) return;
       const { parent, last } = split;
+      // Shift held at the press: resize in place — an `offset` absorbs the
+      // length change so nothing downstream moves (see `resizeChildInPlace`).
+      const resize = e.shiftKey ? resizeChildInPlace : resizeChild;
 
       try {
         target.setPointerCapture(pointerId);
@@ -388,7 +391,7 @@ function TimelineSurface({
         }
         editHistory.replace(
           editContainer(initialDoc, parent, rootBin, (sub) =>
-            resizeChild(sub, last.index, side, deltaSec),
+            resize(sub, last.index, side, deltaSec),
           ),
         );
         // (Resizing a block does not move the playhead — follow-the-cursor was
