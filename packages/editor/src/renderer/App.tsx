@@ -445,9 +445,9 @@ export default function App({ platform }: AppProps) {
   const jsonNode = document;
 
   // A keyframe diamond click reveals a deeper path than the selection
-  // (`children.3.opacity.2`). It's transient state, reset whenever the
-  // selection changes so node selection still drives the jump otherwise.
-  // The token forces the JSON section open + re-reveals on repeat clicks.
+  // (`children.3.opacity.2`) in the JSON editor — when that section is open;
+  // it does NOT open it. Transient state, reset whenever the selection
+  // changes so node selection still drives the jump otherwise.
   const [jsonReveal, setJsonReveal] = useState<{ path: string; token: number } | null>(
     null,
   );
@@ -1068,7 +1068,6 @@ export default function App({ platform }: AppProps) {
                 jsonNode={jsonNode}
                 onJsonNodeSave={handleJsonNodeSave}
                 jsonJumpPath={jsonJumpPath}
-                jsonRevealToken={jsonReveal?.token ?? 0}
                 scriptComposition={scriptComposition}
                 scriptError={scriptError}
                 onScriptApply={handleScriptApply}
@@ -1100,6 +1099,10 @@ export default function App({ platform }: AppProps) {
             <PreviewStage
               contentWidth={playerTimeline.contentWidth}
               contentHeight={playerTimeline.contentHeight}
+              document={ccCut ? undefined : document}
+              selection={selection}
+              timeline={editorTimeline}
+              history={history}
             />
             <ControlsBar
               document={document}

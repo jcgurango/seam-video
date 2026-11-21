@@ -5,15 +5,30 @@
 // every node. Omitted keys show their effective default as a placeholder.
 // `Length` properties get a percent input and a pixel input side by side.
 // Animatable properties carry a diamond toggle that turns the control into a
-// stack of [time] [value] [easing] rows.
+// stack of [time] [value] [easing] rows. The stack is playhead-aware: the
+// keyframe the playhead sits on is highlighted (that is the one the viewport
+// gizmo edits), each row has a go-to that snaps the playhead onto it, and
+// "+ keyframe" inserts at the playhead, in time order.
 //
 // All the data logic (catalog, mixed detection, length splitting, keyframe
 // patching, multi-node write-back + validation) lives in propertyCatalog.ts.
 
-import React, { useEffect, useMemo, useState } from "react";
-import { isKeyframed, type Child, type Length, type SeamFile, type TimeExpr } from "@seam/core";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
+  isKeyframed,
+  type Child,
+  type Distort,
+  type Inset,
+  type Length,
+  type ResolvedTimeline,
+  type SeamFile,
+  type TimeExpr,
+} from "@seam/core";
+import { useTimeline } from "@seam/preview";
+import {
+  DISTORT_CORNERS,
   GROUP_ORDER,
+  INSET_EDGES,
   ROOT_PROPS,
   addKeyframe,
   applyPropertyEdit,
@@ -30,6 +45,9 @@ import {
   summarizeSelection,
   toAnimated,
   toStatic,
+  insetEdges,
+  withDistortCoord,
+  withInsetEdge,
   withPointAxis,
   type AnyKeyframe,
   type Axis,
@@ -38,6 +56,12 @@ import {
   type PropGroup,
 } from "./propertyCatalog.js";
 import type { NodePath } from "./nodePath.js";
+import {
+  activeKeyframeIndex,
+  insertKeyframeAtPlayhead,
+  keyframeMoment,
+  nodeClock,
+} from "./playheadKeyframe.js";
 
 interface PropertiesPanelProps {
   document: SeamFile;
@@ -45,7 +69,22 @@ interface PropertiesPanelProps {
   selection: string[];
   /** Commit an edited document WITHOUT clearing the selection. */
   onDocumentEdit: (next: SeamFile) => void;
+  /** The editor timeline (scripts off, root `uncropped`) — maps the playhead
+   *  into each node's keyframe time. Without it the keyframe stacks lose
+   *  their playhead features (highlight, go-to, insert-at-playhead). */
+  timeline?: ResolvedTimeline | null;
 }
+
+/** What a keyframe stack needs to place the playhead in a node's own time. */
+interface PlayheadSource {
+  timeline: ResolvedTimeline | null;
+  document: SeamFile;
+  /** Authored node → its path (the updater receives the node). */
+  pathOf: Map<Child, NodePath>;
+  /** The first selected node — drives the highlight and go-to. */
+  primary: NodePath | null;
+}
+const PlayheadContext = createContext<PlayheadSource | null>(null);
 
 const EASINGS = [
   "linear",
@@ -59,7 +98,12 @@ const EASINGS = [
 
 const MIXED = "—";
 
-export default function PropertiesPanel({ document, selection, onDocumentEdit }: PropertiesPanelProps) {
+export default function PropertiesPanel({
+  document,
+  selection,
+  onDocumentEdit,
+  timeline = null,
+}: PropertiesPanelProps) {
   // No selection → the root composition itself (its own, parentless catalog).
   const isRoot = selection.length === 0;
   const selected = useMemo(() => selectedNodes(document, selection), [document, selection]);
@@ -69,6 +113,15 @@ export default function PropertiesPanel({ document, selection, onDocumentEdit }:
   const summary = useMemo(() => summarizeSelection(nodes), [nodes]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setError(null), [selection]);
+  const playhead = useMemo<PlayheadSource>(
+    () => ({
+      timeline,
+      document,
+      pathOf: new Map(selected.map((s) => [s.node, s.path])),
+      primary: selected[0]?.path ?? null,
+    }),
+    [timeline, document, selected],
+  );
 
   const edit = (key: string, update: (current: unknown, node: Child) => unknown) => {
     const result = applyPropertyEdit(document, paths, key, update);
@@ -96,6 +149,7 @@ export default function PropertiesPanel({ document, selection, onDocumentEdit }:
   }
 
   return (
+    <PlayheadContext.Provider value={playhead}>
     <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "8px 12px 16px" }}>
       <div style={{ color: "#999", fontSize: 11, marginBottom: 8 }}>
         {isRoot
@@ -148,6 +202,7 @@ export default function PropertiesPanel({ document, selection, onDocumentEdit }:
         <div style={{ color: "#777" }}>These node types share no editable properties.</div>
       )}
     </div>
+    </PlayheadContext.Provider>
   );
 }
 
@@ -254,6 +309,10 @@ function defaultValueFor(def: PropDef): unknown {
     case "mapOpacity":
     case "zoom":
       return 1;
+    case "inset":
+      return 0;
+    case "distort":
+      return {};
     case "fontSize":
       return 16;
     case "lineHeight":
@@ -411,6 +470,54 @@ function ValueControl({ def, value, mixed, onChange, onAxis, onLength }: ValueCo
           onPart={(parts) => onLength?.(parts)}
         />
       );
+    case "inset": {
+      const inset = mixed ? undefined : (value as Inset | undefined);
+      const edges = insetEdges(inset);
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {INSET_EDGES.map((edge, i) => (
+            <div key={edge} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, color: "#777", fontSize: 10 }} title={edge}>
+                {edge[0].toUpperCase()}
+              </span>
+              <LengthInput
+                value={edges[i]}
+                mixed={mixed}
+                percentPlaceholder="0"
+                pxPlaceholder="0"
+                onPart={(parts) => onChange(withInsetEdge(inset, i, mergeLength(edges[i], parts)))}
+              />
+            </div>
+          ))}
+        </div>
+      );
+    }
+    case "distort": {
+      const distort = mixed ? undefined : (value as Distort | undefined);
+      const coord = (key: keyof Distort, label: string, home: number) => (
+        <div key={key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 10, color: "#777", fontSize: 10 }}>{label}</span>
+          <LengthInput
+            value={distort?.[key]}
+            mixed={mixed}
+            percentPlaceholder={String(home)}
+            pxPlaceholder="0"
+            onPart={(parts) => onChange(withDistortCoord(distort, key, mergeLength(distort?.[key], parts)))}
+          />
+        </div>
+      );
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {DISTORT_CORNERS.map((c) => (
+            <React.Fragment key={c.x}>
+              <div style={{ color: "#777", fontSize: 10 }}>{c.label}</div>
+              {coord(c.x, "X", c.homeX)}
+              {coord(c.y, "Y", c.homeY)}
+            </React.Fragment>
+          ))}
+        </div>
+      );
+    }
     case "point": {
       const row = (axis: Axis) => (
         <div key={axis} style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -443,34 +550,71 @@ function KeyframeStack({
 }: {
   def: PropDef;
   kfs: AnyKeyframe[];
-  onEdit: (update: (current: unknown) => unknown) => void;
+  onEdit: (update: (current: unknown, node: Child) => unknown) => void;
 }) {
+  const source = useContext(PlayheadContext);
+  const { currentTime, seek } = useTimeline();
+  const clockAt = (path: NodePath | null | undefined) =>
+    source?.timeline && path ? nodeClock(source.timeline, source.document, path, currentTime) : null;
+  // Highlight + go-to follow the first selected node.
+  const clock = clockAt(source?.primary);
+  const active = activeKeyframeIndex(kfs, clock);
+
   const patch = (i: number, p: Parameters<typeof patchKeyframe>[2]) =>
     onEdit((cur) => patchKeyframe(cur as AnyKeyframe[], i, p));
+  // A keyframe's value can't be unset: clearing a structured control leaves
+  // its empty form.
+  const kept = (v: unknown) =>
+    v !== undefined ? v : def.kind === "distort" ? {} : def.kind === "inset" ? 0 : v;
+  // Insert at the playhead, per node (each has its own clock). With no clock,
+  // or a keyframe already at the playhead, fall back to appending.
+  const add = () =>
+    onEdit((cur, node) => {
+      const list = cur as AnyKeyframe[];
+      const at = clockAt(source?.pathOf.get(node));
+      const inserted = at ? insertKeyframeAtPlayhead(list, at) : null;
+      return inserted ? inserted.keyframes : addKeyframe(list);
+    });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {kfs.map((kf, i) => (
         <div
           key={i}
+          title={i === active ? "The playhead is on this keyframe" : undefined}
           style={{
             display: "flex",
             alignItems: "flex-start",
             gap: 4,
-            background: "#1c1c1c",
-            border: "1px solid #333",
+            background: i === active ? "#2b2614" : "#1c1c1c",
+            border: `1px solid ${i === active ? "#e8c45a" : "#333"}`,
             borderRadius: 4,
             padding: 4,
           }}
         >
-          <div style={{ width: 118, flexShrink: 0 }}>
+          <div style={{ width: 118, flexShrink: 0, display: "flex", flexDirection: "column", gap: 3 }}>
             <TimeInput value={kf[0]} onCommit={(t) => patch(i, { time: t })} />
+            <button
+              disabled={!clock || i === active}
+              title="Move the playhead onto this keyframe"
+              onClick={() => clock && seek(clock.toGlobal(keyframeMoment(kf[0], clock.duration)))}
+              style={{
+                ...fieldStyle,
+                cursor: !clock || i === active ? "default" : "pointer",
+                color: i === active ? "#e8c45a" : clock ? "#aaa" : "#555",
+                padding: "2px 6px",
+                fontSize: 10,
+                textAlign: "left",
+              }}
+            >
+              {i === active ? "◆ at playhead" : "→ go to"}
+            </button>
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <ValueControl
               def={def}
               value={kf[1]}
               mixed={false}
-              onChange={(v) => patch(i, { value: v })}
+              onChange={(v) => patch(i, { value: kept(v) })}
               onAxis={(axis, parts) =>
                 patch(i, {
                   value: withPointAxis(kf[1] as never, axis, mergeLength(pointAxis(kf[1] as never, axis), parts)),
@@ -502,7 +646,8 @@ function KeyframeStack({
         </div>
       ))}
       <button
-        onClick={() => onEdit((cur) => addKeyframe(cur as AnyKeyframe[]))}
+        onClick={add}
+        title="Add a keyframe at the playhead"
         style={{
           ...fieldStyle,
           cursor: "pointer",
