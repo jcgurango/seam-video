@@ -241,21 +241,26 @@ export type DropTarget =
       x: number;
       top: number;
       height: number;
-      /** True when `x`/`time` were snapped onto a node edge. */
+      /** True when `x`/`time` were snapped onto a node edge or the playhead. */
       snapped: boolean;
     };
 
 /** Snapping for a new-run drop (Shift held mid-drag): the run's start jumps
- *  to the nearest node start/end within `thresholdPx`. It is NOT an anchor —
- *  just an authored absolute time that happens to coincide with that edge. */
+ *  to the nearest node start/end (or the playhead) within `thresholdPx`. It
+ *  is NOT an anchor — just an authored absolute time that happens to
+ *  coincide with that spot. */
 export interface DropSnap {
   thresholdPx: number;
   /** Path keys whose edges don't count (the nodes being dragged). */
   exclude?: ReadonlySet<string>;
+  /** Content-x of the playhead — a snap point too, but a node edge in reach
+   *  always wins over it. */
+  playheadX?: number;
 }
 
-/** Content-x of the node edge nearest to `x` across every region (edges line
- *  up in content space at any nesting level), or null if none is in reach. */
+/** Content-x to snap `x` to: the nearest node edge across every region (edges
+ *  line up in content space at any nesting level), else the playhead, or
+ *  null if nothing is in reach. */
 function snapX(regions: DropRegion[], x: number, snap: DropSnap): number | null {
   let best: number | null = null;
   let bestDist = snap.thresholdPx;
@@ -273,7 +278,11 @@ function snapX(regions: DropRegion[], x: number, snap: DropSnap): number | null 
       }
     }
   }
-  return best;
+  if (best != null) return best;
+  if (snap.playheadX != null && Math.abs(snap.playheadX - x) <= snap.thresholdPx) {
+    return snap.playheadX;
+  }
+  return null;
 }
 
 /** The run row at content-y (the lowest run row starting at or above it). */
