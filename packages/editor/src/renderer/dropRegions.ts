@@ -30,7 +30,7 @@
 
 import { ROW_HEIGHT, ROW_GAP, RULER_HEIGHT, rowTop } from "./timelineLayout.js";
 import type { TreeGroup } from "./timelineTree.js";
-import type { NodePath } from "./nodePath.js";
+import { pathKey, type NodePath } from "./nodePath.js";
 
 export interface DropChild {
   /** Index within the container's `children` array. */
@@ -241,7 +241,40 @@ export type DropTarget =
       x: number;
       top: number;
       height: number;
+      /** True when `x`/`time` were snapped onto a node edge. */
+      snapped: boolean;
     };
+
+/** Snapping for a new-run drop (Shift held mid-drag): the run's start jumps
+ *  to the nearest node start/end within `thresholdPx`. It is NOT an anchor —
+ *  just an authored absolute time that happens to coincide with that edge. */
+export interface DropSnap {
+  thresholdPx: number;
+  /** Path keys whose edges don't count (the nodes being dragged). */
+  exclude?: ReadonlySet<string>;
+}
+
+/** Content-x of the node edge nearest to `x` across every region (edges line
+ *  up in content space at any nesting level), or null if none is in reach. */
+function snapX(regions: DropRegion[], x: number, snap: DropSnap): number | null {
+  let best: number | null = null;
+  let bestDist = snap.thresholdPx;
+  for (const region of regions) {
+    for (const run of region.runs) {
+      for (const m of run.members) {
+        if (snap.exclude?.has(pathKey(m.path))) continue;
+        for (const edge of [m.startX, m.endX]) {
+          const d = Math.abs(edge - x);
+          if (d <= bestDist) {
+            bestDist = d;
+            best = edge;
+          }
+        }
+      }
+    }
+  }
+  return best;
+}
 
 /** The run row at content-y (the lowest run row starting at or above it). */
 function runRowAt(region: DropRegion, y: number): number {
@@ -259,10 +292,28 @@ export function dropTargetAt(
   x: number,
   y: number,
   pxPerSec: number,
+  snap?: DropSnap,
 ): DropTarget {
   const region = regionAt(regions, x, y);
-  const time = Math.max(0, localTime(region, x, pxPerSec));
   const isRoot = region.path.length === 0;
+  // A new run starts at the cursor's local time — or, when snapping, at the
+  // local time of the nearest node edge (kept at full precision so the run
+  // really starts with that node).
+  const newRun = (index: number, top: number, height: number): DropTarget => {
+    const edge = snap ? snapX(regions, x, snap) : null;
+    const at = edge ?? x;
+    const t = Math.max(0, localTime(region, at, pxPerSec));
+    return {
+      kind: "newRun",
+      region,
+      index,
+      time: edge != null ? Math.round(t * 1e6) / 1e6 : Math.round(t * 1000) / 1000,
+      x: at,
+      top,
+      height,
+      snapped: edge != null,
+    };
+  };
 
   if (region.runs.length === 0) {
     return {
@@ -276,7 +327,7 @@ export function dropTargetAt(
     };
   }
   if (isRoot && y < region.rowsTop) {
-    return { kind: "newRun", region, index: 0, time, x, top: 0, height: RULER_HEIGHT };
+    return newRun(0, 0, RULER_HEIGHT);
   }
 
   const row = runRowAt(region, y);
@@ -284,15 +335,7 @@ export function dropTargetAt(
   const onRow = region.runs.filter((r) => r.row === row);
   if (y - rowY >= ROW_HEIGHT) {
     // The strip under the row: a new run, stacked after this row's runs.
-    return {
-      kind: "newRun",
-      region,
-      index: Math.max(...onRow.map((r) => r.end)),
-      time,
-      x,
-      top: rowY + ROW_HEIGHT,
-      height: ROW_GAP,
-    };
+    return newRun(Math.max(...onRow.map((r) => r.end)), rowY + ROW_HEIGHT, ROW_GAP);
   }
 
   // On the row: the run under the cursor, else the nearest one.

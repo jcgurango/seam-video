@@ -46,6 +46,7 @@ import type { KeyframeLane } from "./keyframeLanes.js";
 import KeyframeDiamond, { KEYFRAME_DIAMOND_SIZE } from "./KeyframeDiamond.js";
 import { setKeyframeTime, timeExprForLocal } from "./keyframeEdit.js";
 import AnchorLinesLayer from "./AnchorLinesLayer.js";
+import { timeAfterLift } from "./dropTime.js";
 import { resizeChild, resizeChildInPlace } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
@@ -79,6 +80,8 @@ const HANDLE_WIDTH = 10;
 /** Pixels of movement before a mouse press on a child block is treated
  *  as drag-to-reorder rather than a click. */
 const REORDER_THRESHOLD_PX = 6;
+/** How close (px) a Shift-snapped new-run drop must be to a node edge. */
+const SNAP_THRESHOLD_PX = 10;
 
 /** Stable empty bin so `layoutTree`'s memo doesn't bust each render when a
  *  document has no `bin`. */
@@ -86,9 +89,7 @@ const EMPTY_BIN: BinEntry[] = [];
 
 /** How a drop target lands in the array (see `InsertOptions`). */
 function insertOptionsFor(target: DropTarget): InsertOptions {
-  return target.kind === "newRun"
-    ? { start: Math.round(target.time * 1000) / 1000 }
-    : { before: target.before };
+  return target.kind === "newRun" ? { start: target.time } : { before: target.before };
 }
 
 function formatTime(s: number): string {
@@ -538,6 +539,8 @@ function TimelineSurface({
 
 const GHOST_COLOR = "#4a9eff";
 const GHOST_GLOW = "0 0 6px rgba(74, 158, 255, 0.8)";
+/** The new-run tick while it sits on a snapped node edge. */
+const SNAP_COLOR = "#ffcc00";
 
 /** Where a drag would land: a vertical line on one row (extend that run), or
  *  a highlighted strip / ruler band with a tick at the cursor (new run). */
@@ -580,7 +583,7 @@ function DropGhost({ target }: { target: DropTarget }) {
           top: target.top - 3,
           width: 2,
           height: target.height + 6,
-          background: GHOST_COLOR,
+          background: target.snapped ? SNAP_COLOR : GHOST_COLOR,
           boxShadow: GHOST_GLOW,
           zIndex: 8,
           pointerEvents: "none",
@@ -627,6 +630,8 @@ function DesktopTimeline({
     startX: number;
     cursorX: number;
     cursorY: number;
+    /** Shift held mid-move: a new-run drop snaps to node edges. */
+    snap: boolean;
   } | null>(null);
 
   // Offset-drag session, fixed at the grab: the document as it was, each
@@ -654,6 +659,7 @@ function DesktopTimeline({
   const [fileDrag, setFileDrag] = useState<{
     cursorContentX: number;
     cursorContentY: number;
+    snap: boolean;
   } | null>(null);
 
   // Every editable container, flattened to a content-space drop target.
@@ -763,10 +769,18 @@ function DesktopTimeline({
         startX: cursorX,
         cursorX,
         cursorY,
+        snap: false,
       });
     },
     [onMoveNodes, selection, editHistory, regions],
   );
+
+  /** Edge snapping for a new-run drop: Shift pressed AFTER the grab (Shift at
+   *  the grab is the offset drag). The dragged nodes' own edges don't count. */
+  const snapFor = (paths: NodePath[]) => ({
+    thresholdPx: SNAP_THRESHOLD_PX,
+    exclude: new Set(paths.map(pathKey)),
+  });
 
   /** True when dropping `paths` on `target` would put them back where they
    *  are: one contiguous slice of the target container, dropped on itself. */
@@ -829,8 +843,13 @@ function DesktopTimeline({
       const { x, y } = cursorFromEvent(e);
       if (dragRef.mode === "offset") applyOffsets(x);
       setItemDrag((prev) =>
-        prev ? { ...prev, cursorX: x, cursorY: y } : null,
+        prev ? { ...prev, cursorX: x, cursorY: y, snap: e.shiftKey } : null,
       );
+    };
+    // Shift can be pressed / released without moving the mouse.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Shift") return;
+      setItemDrag((prev) => (prev ? { ...prev, snap: e.type === "keydown" } : null));
     };
 
     const onUp = (e: PointerEvent) => {
@@ -838,7 +857,13 @@ function DesktopTimeline({
       if (dragRef.mode === "offset") {
         applyOffsets(x);
       } else {
-        const target = dropTargetAt(regions, x, y, pxPerSec);
+        const target = dropTargetAt(
+          regions,
+          x,
+          y,
+          pxPerSec,
+          e.shiftKey ? snapFor(dragRef.paths) : undefined,
+        );
         if (!isSelfDrop(dragRef.paths, target)) onMoveNodes(dragRef.paths, target);
       }
       setItemDrag(null);
@@ -849,10 +874,14 @@ function DesktopTimeline({
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
     };
     // Only the drag's *existence* drives subscribe/unsubscribe; cursor
     // updates come through setState. Re-subscribing mid-drag (callbacks
@@ -936,7 +965,7 @@ function DesktopTimeline({
     if (!isDraggablePayload(e)) return;
     e.preventDefault();
     const pos = cursorToContent(e);
-    if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y });
+    if (pos) setFileDrag({ cursorContentX: pos.x, cursorContentY: pos.y, snap: e.shiftKey });
   };
 
   const handleFileDragLeave = (e: React.DragEvent) => {
@@ -979,7 +1008,13 @@ function DesktopTimeline({
     }
     if (!sourceChildren && e.dataTransfer.files.length === 0) return;
 
-    const target = dropTargetAt(regions, pos.x, pos.y, pxPerSec);
+    const target = dropTargetAt(
+      regions,
+      pos.x,
+      pos.y,
+      pxPerSec,
+      e.shiftKey ? snapFor([]) : undefined,
+    );
     if (sourceChildren) {
       onInsertChildrenAt?.(target, sourceChildren);
     } else if (onImportAt) {
@@ -996,8 +1031,16 @@ function DesktopTimeline({
       : itemDrag != null && itemDrag.mode === "move"
         ? { x: itemDrag.cursorX, y: itemDrag.cursorY }
         : null;
+  const dragSnap =
+    fileDrag != null
+      ? fileDrag.snap
+        ? snapFor([])
+        : undefined
+      : itemDrag?.snap
+        ? snapFor(itemDrag.paths)
+        : undefined;
   const dropGhost =
-    dragPos != null ? dropTargetAt(regions, dragPos.x, dragPos.y, pxPerSec) : null;
+    dragPos != null ? dropTargetAt(regions, dragPos.x, dragPos.y, pxPerSec, dragSnap) : null;
   const runDragRegion =
     runDrag != null ? regions.find((r) => samePath(r.path, runDrag.containerPath)) : undefined;
   const runDragGhost =
@@ -1808,13 +1851,14 @@ export default function TimelinePanel({
   const onMoveNodes = useCallback(
     (fromPaths: NodePath[], target: DropTarget) => {
       if (!doc || !onDocumentChange) return;
-      const moved = moveNodesTracked(
-        doc,
-        fromPaths,
-        target.region.path,
-        target.index,
-        insertOptionsFor(target),
-      );
+      // A new run is aimed at the layout as it looks now; lifting the nodes
+      // can ripple what the cursor was pointing at, so carry the time over
+      // to where that spot ends up (see `dropTime.ts`).
+      const options: InsertOptions =
+        target.kind === "newRun"
+          ? { start: timeAfterLift(doc, fromPaths, target.region.path, target.time) }
+          : insertOptionsFor(target);
+      const moved = moveNodesTracked(doc, fromPaths, target.region.path, target.index, options);
       if (!moved) return;
       onDocumentChange(moved.doc);
       onSelectionChange(moved.paths.map(pathKey));
