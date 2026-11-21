@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Child, SeamFile } from "@seam/core";
-import { resizeChild } from "../resizeTool.js";
+import { resolveComposition } from "@seam/core";
+import { resizeChild, resizeChildInPlace } from "../resizeTool.js";
 
 const docWith = (child: Child): SeamFile => ({
   type: "composition",
@@ -211,5 +212,48 @@ describe("resizeChild leaves placement alone", () => {
     expect(next.children![1]).toEqual({ ...doc.children![1], in: 3 });
     expect(next.children![0]).toBe(doc.children![0]);
     expect(next.children![2]).toBe(doc.children![2]);
+  });
+});
+
+describe("resizeChildInPlace (Shift-drag): downstream stays put", () => {
+  const c = (extra: Record<string, unknown> = {}): Child =>
+    ({ type: "clip", source: "a.mp4", in: 2, out: 7, ...extra }) as Child;
+  const run = (...children: Child[]): SeamFile => ({ type: "composition", children });
+  const spans = (d: SeamFile) =>
+    resolveComposition(d, { uncropped: true }).children.map((r) => [r.timelineStart, r.timelineEnd]);
+  const offsets = (d: SeamFile) => d.children!.map((n) => (n as { offset?: number }).offset ?? 0);
+
+  it("left: the node's own offset absorbs the trim; its right edge holds", () => {
+    const d = run(c(), c(), c());
+    const next = resizeChildInPlace(d, 1, "left", 1);
+    expect(offsets(next)).toEqual([0, 1, 0]);
+    expect(spans(next)).toEqual([[0, 5], [6, 10], [10, 15]]);
+    // Extending left pulls the offset negative (an overlap with the previous).
+    expect(spans(resizeChildInPlace(d, 1, "left", -1))).toEqual([[0, 5], [4, 10], [10, 15]]);
+  });
+
+  it("right: the nearest earlier offset in the run absorbs it (itself first)", () => {
+    const d = run(c(), c({ offset: 2 }), c(), c());
+    // Node 2 has no offset → node 1's does the work.
+    const next = resizeChildInPlace(d, 2, "right", 1);
+    expect(offsets(next)).toEqual([0, 1, 0, 0]);
+    expect(spans(next)).toEqual([[0, 5], [6, 11], [11, 17], [17, 22]]);
+    // Node 1 has its own offset → it absorbs.
+    expect(offsets(resizeChildInPlace(d, 1, "right", -1))).toEqual([0, 3, 0, 0]);
+  });
+
+  it("right: with no offset in the run, the run head takes it", () => {
+    const d = run(c(), c({ start: 10 }), c(), c());
+    const next = resizeChildInPlace(d, 2, "right", -1);
+    expect(offsets(next)).toEqual([0, 1, 0, 0]);
+    expect(spans(next)).toEqual([[0, 5], [11, 16], [16, 20], [20, 25]]);
+  });
+
+  it("uses the applied (clamped, rate-scaled) change", () => {
+    // Left-extend runs out of source at in=0: only 2s of the 5s drag applies.
+    const d = run(c(), c({ speed: 2 }), c());
+    const next = resizeChildInPlace(d, 1, "left", -5);
+    expect(offsets(next)).toEqual([0, -1, 0]);
+    expect(spans(next)[2]).toEqual(spans(d)[2]);
   });
 });

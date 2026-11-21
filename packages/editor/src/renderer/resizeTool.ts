@@ -24,7 +24,8 @@
 // known during a timeline drag, so it's left to the schema validator
 // or to a later UX polish pass that probes media.
 
-import { clipOut, resolveComposition } from "@seam/core";
+import { clipOut, compileSeamFile, resolveComposition, runHeadIndex } from "@seam/core";
+import { withPlacement } from "./runEdit.js";
 import type { Child, Composition, Overflow, Underflow, SeamFile } from "@seam/core";
 
 export function resizeChild(
@@ -41,6 +42,62 @@ export function resizeChild(
   const newArr = [...arr];
   newArr[index] = next;
   return { ...doc, children: newArr };
+}
+
+/** Output length of `doc.children[index]` (bins inflated, scripts off, so
+ *  `binItem` references measure their real body). */
+function outputLength(doc: SeamFile, index: number): number | null {
+  try {
+    const r = resolveComposition(compileSeamFile(doc, { runScripts: false }).doc, {
+      uncropped: true,
+    }).children[index];
+    return r ? r.timelineEnd - r.timelineStart : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Shift-drag resize: the same edge trim as {@link resizeChild}, but the
+ * length change is taken up by an `offset` so everything downstream stays
+ * where it is (no ripple) — the dragged node's far edge included.
+ *
+ *  • **left** handle: the change goes onto the node's own `offset`, so its
+ *    right edge holds still while the left edge follows the cursor.
+ *  • **right** handle: walk backwards through the run from the node (itself
+ *    included) to the first node that already has an `offset` and put the
+ *    change there; with none, onto the run's head. The node's right edge —
+ *    and so every follower — holds still.
+ *
+ * The change is measured from the resolved timeline, so rate, clamping and
+ * `duration` handling all come from `resizeChild`.
+ */
+export function resizeChildInPlace(
+  doc: SeamFile,
+  index: number,
+  side: "left" | "right",
+  deltaSec: number,
+): SeamFile {
+  const resized = resizeChild(doc, index, side, deltaSec);
+  if (resized === doc) return doc;
+  const before = outputLength(doc, index);
+  const after = outputLength(resized, index);
+  if (before == null || after == null) return resized;
+  // Shorter ⇒ push later by what was lost; longer ⇒ pull earlier.
+  const shift = Math.round((before - after) * 1e6) / 1e6;
+  if (shift === 0) return resized;
+
+  const children = resized.children ?? [];
+  let target = index;
+  if (side === "right") {
+    const head = runHeadIndex(children, index);
+    while (target > head && !(children[target] as { offset?: number }).offset) target--;
+  }
+  const node = children[target] as Child & { start?: Child["start"]; offset?: number };
+  const offset = Math.round(((node.offset ?? 0) + shift) * 1e6) / 1e6;
+  const next = [...children];
+  next[target] = withPlacement(node, node.start, offset);
+  return { ...resized, children: next };
 }
 
 function mutateChild(
