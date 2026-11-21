@@ -75,7 +75,7 @@ const doc: Composition = {
           origin: "0%",
           translation: "0%",
           size: { x: "50%", y: "100%" },
-          children: [{ type: "empty", duration: 1 }],
+          children: [{ type: "data", data: null, duration: 1 }],
         },
       ],
     },

@@ -4,10 +4,10 @@
 //
 // Two views over the same walk:
 //   • drop regions — one rectangle per editable container, with its window
-//     transform and its sequential children's content-space extents (drag);
+//     transform and its runs' content-space extents (drag);
 //   • group placements — each editable group's content-space origin (the
-//     anchor-line overlay draws every selected attachment's plumb line in
-//     content coords).
+//     anchor-line overlay draws every selected head's plumb line in content
+//     coords).
 //
 // Geometry invariant: a block's content-x is
 //   containerLeft + ((localSec - originSec) / scale) * pxPerSec
@@ -16,17 +16,24 @@
 // output time at every level, and a container's local output time at a
 // cursor is `originSec + (contentX - containerLeft) / pxPerSec * scale`.
 //
-// `containerTop` is the true content-y of a group's row 0: the root's rows
-// start below the ruler (`RULER_HEIGHT + ROW_GAP`), and each nested group's
-// rows start at its clip-box top. (The root drop *region*'s rect still
-// starts at y=0 so it's the always-containing hit-test floor.)
+// `rowsTop` is the true content-y of a group's row 0: the root's rows start
+// below the ruler (`RULER_HEIGHT + ROW_GAP`), and each nested group's rows
+// start at its clip-box top. (The root drop *region*'s rect still starts at
+// y=0 so it's the always-containing hit-test floor.)
+//
+// Drop targets (`dropTargetAt`):
+//   • on a block row — extend a run: before/after any node (dropping before
+//     a run's head takes over its anchor);
+//   • on the strip under a row (where the dotted run underline lives) — a
+//     NEW run starting at the cursor's time, stacked after that row's runs;
+//   • on the ruler (root only) — a new run at the front of the array.
 
 import { ROW_HEIGHT, ROW_GAP, RULER_HEIGHT, rowTop } from "./timelineLayout.js";
 import type { TreeGroup } from "./timelineTree.js";
 import type { NodePath } from "./nodePath.js";
 
 export interface DropChild {
-  /** Field index within the container's `children` array. */
+  /** Index within the container's `children` array. */
   index: number;
   path: NodePath;
   /** Content-space px extents of the block. */
@@ -34,10 +41,20 @@ export interface DropChild {
   endX: number;
 }
 
+export interface DropRun {
+  /** `[head, end)` slice of the container's `children`. */
+  head: number;
+  end: number;
+  /** Local row within the group. */
+  row: number;
+  startX: number;
+  endX: number;
+  members: DropChild[];
+}
+
 export interface DropRegion {
   path: NodePath;
-  /** Content-space rectangle of the container (for cursor hit-testing and
-   *  the insertion ghost's vertical extent). */
+  /** Content-space rectangle of the container (for cursor hit-testing). */
   left: number;
   top: number;
   width: number;
@@ -46,8 +63,11 @@ export interface DropRegion {
   originSec: number;
   scale: number;
   containerLeft: number;
-  /** Sequential children band only (reorder/insert targets). */
-  children: DropChild[];
+  /** Content-y of row 0. */
+  rowsTop: number;
+  /** Runs in array (z) order. */
+  runs: DropRun[];
+  childCount: number;
 }
 
 /** An editable group placed in content space: its row-0 top and left edge. */
@@ -66,10 +86,6 @@ interface Placement {
   regionTop: number;
   width: number;
   height: number;
-}
-
-function lastIndex(path: NodePath): number {
-  return path.length > 0 ? path[path.length - 1].index : 0;
 }
 
 /** Depth-first walk producing one placement per group, outermost-first. */
@@ -117,15 +133,28 @@ export function flattenDropRegions(
     .map((p) => {
       const toX = (sec: number) =>
         p.left + ((sec - p.group.originSec) / p.group.scale) * pxPerSec;
-      const children: DropChild[] = p.group.blocks
-        .filter((b) => !b.isAttachment)
-        .sort((a, b) => a.index - b.index)
-        .map((b) => ({
-          index: lastIndex(b.path),
-          path: b.path,
-          startX: toX(b.child.timelineStart),
-          endX: toX(b.child.timelineEnd),
-        }));
+      const byIndex = new Map(p.group.blocks.map((b) => [b.index, b]));
+      const runs: DropRun[] = p.group.runs.map((run) => {
+        const members: DropChild[] = [];
+        for (let i = run.head; i < run.end; i++) {
+          const b = byIndex.get(i);
+          if (!b) continue;
+          members.push({
+            index: i,
+            path: b.path,
+            startX: toX(b.child.timelineStart),
+            endX: toX(b.child.timelineEnd),
+          });
+        }
+        return {
+          head: run.head,
+          end: run.end,
+          row: run.row,
+          startX: toX(run.startSec),
+          endX: toX(run.endSec),
+          members,
+        };
+      });
       return {
         path: p.group.path,
         left: p.left,
@@ -135,7 +164,9 @@ export function flattenDropRegions(
         originSec: p.group.originSec,
         scale: p.group.scale,
         containerLeft: p.left,
-        children,
+        rowsTop: p.trueTop,
+        runs,
+        childCount: p.group.blocks.length,
       };
     });
 }
@@ -176,24 +207,6 @@ export function regionAt(
   return best;
 }
 
-/** Insertion slot for cursor X within a region: `k` = before child `k`,
- *  `children.length` = append. Splits each child at its midpoint. */
-export function insertionIndexIn(region: DropRegion, x: number): number {
-  for (let k = 0; k < region.children.length; k++) {
-    const c = region.children[k];
-    if (x < (c.startX + c.endX) / 2) return k;
-  }
-  return region.children.length;
-}
-
-/** Content-space X of the insertion ghost for a slot in a region. */
-export function insertionXIn(region: DropRegion, slot: number): number {
-  const cs = region.children;
-  if (cs.length === 0) return region.containerLeft;
-  if (slot >= cs.length) return cs[cs.length - 1].endX;
-  return cs[slot].startX;
-}
-
 /** This region's local output seconds at a content-space X. */
 export function localTime(
   region: DropRegion,
@@ -204,4 +217,120 @@ export function localTime(
     region.originSec +
     ((contentX - region.containerLeft) / pxPerSec) * region.scale
   );
+}
+
+export type DropTarget =
+  | {
+      /** Extend a run: insert at `index`; `before` = take over the head slot
+       *  of the node at `index`. Ghost = a vertical line on one row. */
+      kind: "insert";
+      region: DropRegion;
+      index: number;
+      before: boolean;
+      x: number;
+      top: number;
+      height: number;
+    }
+  | {
+      /** Head a new run at local `time`, inserted at `index`. Ghost = a bar
+       *  on the strip (or the ruler) plus a tick at `x`. */
+      kind: "newRun";
+      region: DropRegion;
+      index: number;
+      time: number;
+      x: number;
+      top: number;
+      height: number;
+    };
+
+/** The run row at content-y (the lowest run row starting at or above it). */
+function runRowAt(region: DropRegion, y: number): number {
+  const rows = [...new Set(region.runs.map((r) => r.row))].sort((a, b) => a - b);
+  let row = rows[0] ?? 0;
+  for (const r of rows) {
+    if (region.rowsTop + rowTop(r) <= y) row = r;
+  }
+  return row;
+}
+
+/** Resolve the cursor to a drop target (see the header for the zones). */
+export function dropTargetAt(
+  regions: DropRegion[],
+  x: number,
+  y: number,
+  pxPerSec: number,
+): DropTarget {
+  const region = regionAt(regions, x, y);
+  const time = Math.max(0, localTime(region, x, pxPerSec));
+  const isRoot = region.path.length === 0;
+
+  if (region.runs.length === 0) {
+    return {
+      kind: "insert",
+      region,
+      index: 0,
+      before: false,
+      x: region.containerLeft,
+      top: region.rowsTop,
+      height: ROW_HEIGHT,
+    };
+  }
+  if (isRoot && y < region.rowsTop) {
+    return { kind: "newRun", region, index: 0, time, x, top: 0, height: RULER_HEIGHT };
+  }
+
+  const row = runRowAt(region, y);
+  const rowY = region.rowsTop + rowTop(row);
+  const onRow = region.runs.filter((r) => r.row === row);
+  if (y - rowY >= ROW_HEIGHT) {
+    // The strip under the row: a new run, stacked after this row's runs.
+    return {
+      kind: "newRun",
+      region,
+      index: Math.max(...onRow.map((r) => r.end)),
+      time,
+      x,
+      top: rowY + ROW_HEIGHT,
+      height: ROW_GAP,
+    };
+  }
+
+  // On the row: the run under the cursor, else the nearest one.
+  const dist = (r: DropRun) => (x < r.startX ? r.startX - x : x > r.endX ? x - r.endX : 0);
+  const run = onRow.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+  for (let k = 0; k < run.members.length; k++) {
+    const m = run.members[k];
+    if (x < (m.startX + m.endX) / 2) {
+      return {
+        kind: "insert",
+        region,
+        index: m.index,
+        before: k === 0,
+        x: m.startX,
+        top: rowY,
+        height: ROW_HEIGHT,
+      };
+    }
+  }
+  const last = run.members[run.members.length - 1];
+  return {
+    kind: "insert",
+    region,
+    index: run.end,
+    before: false,
+    x: last ? last.endX : run.endX,
+    top: rowY,
+    height: ROW_HEIGHT,
+  };
+}
+
+/** Where a run dragged vertically to content-y lands in the array: before
+ *  the head of the first OTHER run (array order) whose row lies below the
+ *  cursor, else at the end. */
+export function runZIndexAt(region: DropRegion, draggedHead: number, y: number): number {
+  for (const r of region.runs) {
+    if (r.head === draggedHead) continue;
+    if (region.rowsTop + rowTop(r.row) + ROW_HEIGHT / 2 > y) return r.head;
+  }
+  return region.childCount;
 }

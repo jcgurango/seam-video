@@ -640,7 +640,7 @@ function collectClips(
         );
       }
     } else if (child.type === "map") {
-      // Map attachments: map-local time (0 = map start) at speed 1; the map
+      // Map children: map-local time (0 = map start) at speed 1; the map
       // itself has no volume/pitch, so the enclosing multipliers pass through.
       const parentToLocal = toLocalTime;
       const parentToAbsolute = toAbsoluteTime;

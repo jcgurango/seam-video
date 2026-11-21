@@ -6,8 +6,8 @@ import { isMediaSource } from "./mediaSource.js";
 /**
  * Immutably map every media-source path in a document — clip/audio/static
  * `source` fields and a map's pmtiles `source` — through `fn`. Recurses
- * compositions' `children`, `attachments`, `bin` entry bodies (a clip living
- * only inside a bin entry is media too) AND a map's `attachments`. The single
+ * compositions' `children`, `bin` entry bodies (a clip living only inside a
+ * bin entry is media too) AND a map's `children`. The single
  * walk behind export planning, relative remapping, and import-time source
  * rewriting.
  */
@@ -23,9 +23,7 @@ export function mapDocumentSources(
       return {
         ...child,
         source: fn(child.source),
-        ...(child.attachments
-          ? { attachments: child.attachments.map(walkChild) }
-          : {}),
+        ...(child.children ? { children: child.children.map(walkChild) } : {}),
       };
     }
     if (child.type === "composition") {
@@ -36,15 +34,11 @@ export function mapDocumentSources(
   const walkComp = <T extends Composition>(comp: T): T => ({
     ...comp,
     ...(comp.children ? { children: comp.children.map(walkChild) } : {}),
-    ...(comp.attachments ? { attachments: comp.attachments.map(walkChild) } : {}),
     ...(comp.bin
       ? {
           bin: comp.bin.map((entry) => ({
             ...entry,
             children: entry.children.map(walkChild),
-            ...(entry.attachments
-              ? { attachments: entry.attachments.map(walkChild) }
-              : {}),
           })),
         }
       : {}),

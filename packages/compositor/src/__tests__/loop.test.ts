@@ -23,10 +23,8 @@ function renderAt(root: Composition, t: number): DrawCommand[] {
   return draws(buildRenderList(timeline, t, W, H, () => ({ w: W, h: H })));
 }
 
-const over = (id: string) => ({
-  start: { anchor: id, timeSource: "output" as const, anchorPoint: "0%" },
-  end: { anchor: id, timeSource: "output" as const, anchorPoint: "100%" },
-});
+/** Start with `id` and fill 10s (the bg's length) — `underflow` says how. */
+const over = (id: string) => ({ start: id, duration: 10 });
 
 const src = (d: DrawCommand) => (d.clip as { source?: string }).source;
 
@@ -36,8 +34,8 @@ describe("buildRenderList — underflow: loop", () => {
       type: "composition",
       contentWidth: W,
       contentHeight: H,
-      children: [{ id: "bg", type: "static", source: "bg.png", duration: 10 }],
-      attachments: [
+      children: [
+        { id: "bg", type: "static", source: "bg.png", duration: 10 },
         { type: "clip", source: "b.mp4", in: 5, out: 8, underflow: "loop", ...over("bg") },
       ],
     };
@@ -54,8 +52,8 @@ describe("buildRenderList — underflow: loop", () => {
       type: "composition",
       contentWidth: W,
       contentHeight: H,
-      children: [{ id: "bg", type: "static", source: "bg.png", duration: 10 }],
-      attachments: [
+      children: [
+        { id: "bg", type: "static", source: "bg.png", duration: 10 },
         {
           type: "composition",
           underflow: "loop",
@@ -79,8 +77,8 @@ describe("buildRenderList — underflow: loop", () => {
       type: "composition",
       contentWidth: W,
       contentHeight: H,
-      children: [{ id: "bg", type: "static", source: "bg.png", duration: 10 }],
-      attachments: [
+      children: [
+        { id: "bg", type: "static", source: "bg.png", duration: 10 },
         {
           type: "clip",
           source: "b.mp4",

@@ -9,11 +9,10 @@
 import {
   parseTimeExpr,
   type Child,
-  type Composition,
   type SeamFile,
   type TimeExpr,
 } from "@seam/core";
-import { splitLast, updateCompAtPath, type NodePath } from "./nodePath.js";
+import { updateNodeAtPath, type NodePath } from "./nodePath.js";
 
 export type TimeExprKind = "number" | "percent" | "mixed";
 
@@ -63,31 +62,18 @@ export function setKeyframeTime(
   kfIndex: number,
   newTime: TimeExpr,
 ): SeamFile {
-  const split = splitLast(path);
-  if (!split) return doc;
-  const { parent, last } = split;
-  if (last.field === "bin") return doc;
-  const field = last.field;
-  return updateCompAtPath(doc, parent, (comp) => {
-    const arr = field === "children" ? comp.children : comp.attachments;
-    if (!arr) return comp;
-    const child = arr[last.index] as (Child & Record<string, unknown>) | undefined;
-    if (!child) return comp;
+  if (path.length === 0 || path[path.length - 1].field === "bin") return doc;
+  return updateNodeAtPath(doc, path, (node) => {
+    const child = node as Child & Record<string, unknown>;
     const kfs = child[prop];
-    if (!Array.isArray(kfs)) return comp;
+    if (!Array.isArray(kfs)) return node;
     const kf = kfs[kfIndex];
-    if (!Array.isArray(kf)) return comp;
+    if (!Array.isArray(kf)) return node;
 
     const newKf = [...kf];
     newKf[0] = newTime;
     const newKfs = [...kfs];
     newKfs[kfIndex] = newKf;
-    const newChild = { ...child, [prop]: newKfs } as Child;
-
-    const newArr = [...arr];
-    newArr[last.index] = newChild;
-    return field === "children"
-      ? ({ ...comp, children: newArr } as Composition)
-      : ({ ...comp, attachments: newArr } as Composition);
+    return { ...child, [prop]: newKfs } as Child;
   });
 }

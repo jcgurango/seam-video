@@ -2,12 +2,17 @@
 // word, and (inversely) regroup adjusted word items back into a single
 // phrase data item with freshly-derived timings.
 //
-// Pure transformations on a SeamFile — no React, no platform deps. Mirror
-// the attach/compose tool convention: selection indices are block-indices
-// into the resolved timeline (children first, then attachments).
+// A phrase / word item is a `data` node heading its own run: `start` is a
+// source-point anchor on the transcribed node (`"<id>@<sec>"`, plus any
+// `offset` the user gave it) and `duration` its output length.
+//
+// Pure transformations on a SeamFile — no React, no platform deps. Selection
+// indices are root child indices (the resolved timeline is 1:1 with
+// `doc.children`).
 
-import { resolveComposition } from "@seam/core";
-import type { Child, Data, SeamFile, TimeAnchor } from "@seam/core";
+import { formatStart, parseStart, resolveComposition } from "@seam/core";
+import type { Child, Data, SeamFile, Start } from "@seam/core";
+import { removeFromRuns } from "./runEdit.js";
 
 /** One whisper word inside a transcription `data` payload. */
 interface RawWord {
@@ -27,19 +32,14 @@ export type WordToolResult =
   | { ok: true; doc: SeamFile }
   | { ok: false; error: string };
 
-const MALFORMED = "malformed start and end";
+const MALFORMED = "malformed start and duration";
 
-/** Resolve a selection block-index to the underlying authored child.
- *  `index ∈ [0, children.length)` → children[index];
- *  `index ∈ [children.length, total)` → attachments[index − children.length]. */
+/** The authored root child at a selection index. */
 export function childAtBlockIndex(
   doc: SeamFile,
   index: number,
 ): Child | undefined {
-  const docChildren = doc.children ?? [];
-  const childCount = docChildren.length;
-  if (index < childCount) return docChildren[index];
-  return (doc.attachments ?? [])[index - childCount];
+  return (doc.children ?? [])[index];
 }
 
 /** A transcription data item carrying a whisper `words` array — the shape
@@ -61,42 +61,55 @@ export function isWordItem(child: Child | undefined): child is Data {
   );
 }
 
-function isSourceAnchor(a: TimeAnchor | undefined): a is TimeAnchor {
-  return (
-    !!a && a.timeSource === "source" && typeof a.anchorPoint === "number"
-  );
+/** The anchored id + source second of a `"<id>@<sec>"` start, or null for
+ *  any other form (unset, absolute, bare id, percent). */
+function sourceStart(start: Start | undefined): { id: string; value: number } | null {
+  if (typeof start !== "string") return null;
+  let parsed;
+  try {
+    parsed = parseStart(start);
+  } catch {
+    return null;
+  }
+  if (parsed.kind !== "node" || parsed.point?.kind !== "source") return null;
+  return { id: parsed.id, value: parsed.point.value };
 }
 
 /** Expand one transcription item into a per-word data item list. Returns
- *  null when start/end aren't both present source-mode anchors. */
+ *  null when it isn't a source-anchored item with a `duration`. */
 function wordsFromData(node: Data): Data[] | null {
-  const { start, end } = node;
-  if (!isSourceAnchor(start) || !isSourceAnchor(end)) return null;
+  const anchor = sourceStart(node.start);
+  if (!anchor || node.duration == null) return null;
   const payload = node.data as TranscriptionPayload | null;
   if (!payload || !Array.isArray(payload.words)) return null;
 
-  const startPoint = start.anchorPoint as number;
-  const endPoint = end.anchorPoint as number;
-  // Source-time span of the phrase. Each word's source in/out is the
-  // phrase start plus the word's phrase-local offset. We re-express the
-  // end relative to the original `end` anchor so its other fields (anchor
-  // id, timeSource, offset) carry over verbatim.
-  const span = endPoint - startPoint;
+  // Word times are phrase-local source seconds: each word anchors at the
+  // phrase's source start plus its own. The node's `duration` is OUTPUT
+  // seconds, so word lengths scale by the phrase's output/source ratio.
+  const scale =
+    payload.duration != null && payload.duration > 0
+      ? node.duration / payload.duration
+      : 1;
 
   return payload.words.map((w) => ({
     type: "data" as const,
     data: w.text,
     tags: ["transcription", "word"],
-    start: { ...start, anchorPoint: startPoint + w.start },
-    end: { ...end, anchorPoint: endPoint - span + w.end },
+    start: formatStart({
+      kind: "node",
+      id: anchor.id,
+      point: { kind: "source", value: anchor.value + w.start },
+    }),
+    ...(node.offset ? { offset: node.offset } : {}),
+    duration: (w.end - w.start) * scale,
   }));
 }
 
 /**
  * Replace every selected transcription data item with one data item per
- * word, in place. Children stay children; attachments stay attachments.
+ * word, in place (each word heads its own run, like the phrase did).
  * Returns an error result (for an alert) when any selected item lacks the
- * required source-mode `start`/`end`.
+ * required source-point `start` / `duration`.
  */
 export function separateByWord(
   doc: SeamFile,
@@ -124,29 +137,12 @@ export function separateByWord(
   }
   if (expansions.size === 0) return { ok: false, error: MALFORMED };
 
-  const docChildren = doc.children ?? [];
-  const childCount = docChildren.length;
   const newChildren: Child[] = [];
-  docChildren.forEach((c, i) => {
+  (doc.children ?? []).forEach((c, i) => {
     const exp = expansions.get(i);
     if (exp) newChildren.push(...exp);
     else newChildren.push(c);
   });
-
-  const atts = doc.attachments ?? [];
-  const newAttachments: Child[] = [];
-  atts.forEach((c, j) => {
-    const exp = expansions.get(childCount + j);
-    if (exp) newAttachments.push(...exp);
-    else newAttachments.push(c);
-  });
-
-  if (atts.length > 0) {
-    return {
-      ok: true,
-      doc: { ...doc, children: newChildren, attachments: newAttachments },
-    };
-  }
   return { ok: true, doc: { ...doc, children: newChildren } };
 }
 
@@ -155,9 +151,10 @@ export function separateByWord(
  *
  * Word positions may have been adjusted since the split, so timings are
  * re-derived from the *resolved* timeline rather than the source anchors:
- * the phrase's `start` anchor is taken verbatim from the chronologically
- * first word, its `end` anchor from the last, and each word's `start`/`end`
- * inside the payload is its timeline offset from the phrase start.
+ * the phrase's placement (`start` + `offset`) is taken verbatim from the
+ * chronologically first word, its `duration` runs to the end of the word
+ * that finishes last, and each word's `start`/`end` inside the payload is
+ * its timeline offset from the phrase start.
  */
 export function groupWords(
   doc: SeamFile,
@@ -169,7 +166,8 @@ export function groupWords(
 
   let resolved;
   try {
-    resolved = resolveComposition(doc);
+    // `uncropped` keeps resolved children 1:1 with `doc.children`.
+    resolved = resolveComposition(doc, { uncropped: true });
   } catch {
     return { ok: false, error: "Could not resolve the timeline." };
   }
@@ -186,9 +184,7 @@ export function groupWords(
     if (!isWordItem(node)) {
       return { ok: false, error: "Select only word items to group." };
     }
-    if (!isSourceAnchor(node.start) || !isSourceAnchor(node.end)) {
-      return { ok: false, error: MALFORMED };
-    }
+    if (!sourceStart(node.start)) return { ok: false, error: MALFORMED };
     const rc = resolved.children[idx];
     if (!rc) return { ok: false, error: MALFORMED };
     items.push({
@@ -222,45 +218,18 @@ export function groupWords(
     },
     tags: ["transcription", "phrase"],
     start: first.node.start,
-    end: last.node.end,
+    ...(first.node.offset ? { offset: first.node.offset } : {}),
+    duration: last.tEnd - base,
   };
 
   // Remove every selected word, then drop the grouped phrase into the slot
-  // the earliest-selected word occupied (preserving children/attachment
-  // membership). Inserting before the same index is removed lands it in
-  // place.
-  const docChildren = doc.children ?? [];
-  const childCount = docChildren.length;
+  // the earliest-selected word occupied. Every word heads its own run, so
+  // `removeFromRuns` hands a removed word's placement to any node that was
+  // following it — which leaves the node at that slot a run head, and the
+  // phrase (a head itself) can be spliced in front without joining or
+  // splitting a run.
   const insertAt = Math.min(...selectedIndices);
-  const insertInChildren = insertAt < childCount;
-  const removeChild = new Set<number>();
-  const removeAtt = new Set<number>();
-  for (const idx of selectedIndices) {
-    if (idx < childCount) removeChild.add(idx);
-    else removeAtt.add(idx - childCount);
-  }
-
-  const newChildren: Child[] = [];
-  docChildren.forEach((c, i) => {
-    if (insertInChildren && i === insertAt) newChildren.push(grouped);
-    if (!removeChild.has(i)) newChildren.push(c);
-  });
-
-  const atts = doc.attachments ?? [];
-  const newAttachments: Child[] = [];
-  atts.forEach((c, j) => {
-    if (!insertInChildren && j === insertAt - childCount) {
-      newAttachments.push(grouped);
-    }
-    if (!removeAtt.has(j)) newAttachments.push(c);
-  });
-
-  if (newAttachments.length > 0) {
-    return {
-      ok: true,
-      doc: { ...doc, children: newChildren, attachments: newAttachments },
-    };
-  }
-  const { attachments: _omit, ...rest } = doc;
-  return { ok: true, doc: { ...rest, children: newChildren } };
+  const newChildren = removeFromRuns(doc.children ?? [], new Set(selectedIndices));
+  newChildren.splice(insertAt, 0, grouped);
+  return { ok: true, doc: { ...doc, children: newChildren } };
 }

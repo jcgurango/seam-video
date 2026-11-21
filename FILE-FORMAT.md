@@ -26,8 +26,7 @@ Here's a slightly richer example — two clips with a half-second gap between th
   "type": "composition",
   "children": [
     { "type": "clip", "source": "intro.mp4", "in": 0, "out": 5 },
-    { "type": "empty", "duration": 0.5 },
-    { "type": "clip", "source": "interview.mp4", "in": 12, "out": 30 }
+    { "type": "clip", "source": "interview.mp4", "in": 12, "out": 30, "offset": 0.5 }
   ]
 }
 ```
@@ -36,7 +35,7 @@ This plays seconds 0-5 of `intro.mp4`, then half a second of silence/black, then
 
 ## Node Types
 
-There are eight node types: **clip**, **audio**, **static**, **empty**, **data**, **text**, **graphic**, and **composition**.
+There are nine node types: **clip**, **audio**, **static**, **data**, **text**, **rect**, **circle**, **map**, and **composition**. Every one of them can be a child of a composition and carries the same three [placement](#placement) fields: `id`, `start`, `offset`.
 
 ### Clip
 
@@ -51,30 +50,30 @@ A clip references a segment of a source video file.
 | `type` | `"clip"` | yes | Must be `"clip"` |
 | `source` | string | yes | Path to the media file |
 | `in` | number | yes | Start point in the source file (seconds, >= 0) |
-| `out` | number | yes | End point in the source file (seconds, > 0) |
-| `speed` | number | no | Playback speed multiplier (e.g. `2` for 2x speed). Mutually exclusive with `duration` |
-| `duration` | number | no | Explicit duration in seconds — stretches the clip to fit. Mutually exclusive with `speed` |
+| `out` | number | yes¹ | End point in the source file (seconds, > 0) |
+| `speed` | number | no | Playback speed multiplier (e.g. `2` for 2x speed) |
+| `duration` | number | no | Output length in seconds. `overflow`/`underflow` decide how `[in, out]` fills it — by default the clip stretches to fit (see [Overflow & Underflow](#overflow--underflow)) |
 | `orientation` | `0` \| `90` \| `180` \| `270` | no | Pre-transform source rotation (clockwise degrees, default `0`). Baked into the decoded frame before the spatial transform — to the compositor the clip looks as if it arrived already rotated by this amount (a `90`/`270` orientation swaps its width/height). Composes with any rotation declared in the file's container metadata. Not animatable; distinct from the spatial `rotation` field below. |
 | `volume` | number | no | Audio gain multiplier (default `1`). `0` mutes; values up to `4` are accepted for amplification. |
 | `pitch` | number | no | Length-preserving pitch shift in semitones (default `0`; fractional ok, clamped ±48). Independent of `speed`; adds with enclosing compositions' `pitch`. Not animatable (see [Pitch](#pitch)) |
-| `overflow` | string | no | Strategy when the clip is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
-| `underflow` | string | no | Strategy when the clip is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
+| `overflow` | string | no | Strategy when `duration` is shorter than the clip's natural duration (default `"stretch"`) |
+| `underflow` | string | no | Strategy when `duration` is longer than the clip's natural duration (default `"stretch"`) |
 | `objectFit` | string | no | `"center"`, `"fit"`, or `"cover"` (see [Spatial Layout](#spatial-layout)) |
 | `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
 | `rotation` | number | no | Degrees clockwise about `origin` (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
-| `id` | string | no | Identifier within the enclosing composition; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `id` | string | no | Identifier within the enclosing composition; other nodes' `start` can anchor to it (see [Placement](#placement)) |
+| `start` | number \| string | no | Heads a new run at an absolute time or an anchor (see [Placement](#placement)) |
+| `offset` | number | no | Seconds added to the position: a gap, a crossfade overlap, or a shift (see [Placement](#placement)) |
 | `metadata` | object | no | Free-form bag of arbitrary JSON keyed by string. Preserved through resolution; doesn't affect rendering (see [Metadata](#metadata)) |
+
+¹ `out` may be omitted when `duration` is set: it defaults to `in + duration`.
 
 The **natural duration** of a clip is `(out - in) / speed`. The `in` and `out` values are timecodes into the source file, not positions on the output timeline.
 
-Setting `speed` or `duration` changes the natural duration:
-
 - `speed: 2` plays the clip at 2x speed, halving its natural duration to `(out - in) / 2`
-- `duration: 20` stretches the clip to exactly 20 seconds, implying `speed = (out - in) / 20`
+- `duration: 20` makes the clip occupy exactly 20 seconds. With the default `"stretch"` strategies that implies `speed = (out - in) / 20`, so `speed` and `duration` can't both be set — unless a non-stretch `overflow`/`underflow` is chosen, in which case the clip plays at `speed` and is trimmed, extended or looped to fill `duration`
 
 ### Audio
 
@@ -88,19 +87,18 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 |-------|------|----------|-------------|
 | `type` | `"audio"` | yes | Must be `"audio"` |
 | `source` | string | yes | Path to the audio file |
-| `in`, `out` | number | yes | Source-time window (same shape as on a clip) |
+| `in`, `out` | number | yes | Source-time window (same shape as on a clip; `out` optional with `duration`) |
 | `speed`, `duration`, `overflow`, `underflow` | — | no | Same shape as on a clip |
 | `volume` | number | no | Audio gain multiplier (default `1`). Same shape as on a clip. |
 | `pitch` | number | no | Length-preserving pitch shift in semitones. Same shape as on a clip (see [Pitch](#pitch)) |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
-| `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
 Visual props (`filters`, `opacity`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
 
 ### Static
 
-A frozen frame held for `duration` seconds. The `source` can be an image file (PNG/JPG/WebP/etc.) or a video file — in the video case `in` picks the source timestamp to freeze on. Visual only; no audio. Like `text`, there's no temporal source to overflow or underflow against, so `overflow`/`underflow` don't apply and the frame is held regardless of `target`.
+A frozen frame held for `duration` seconds. The `source` can be an image file (PNG/JPG/WebP/etc.) or a video file — in the video case `in` picks the source timestamp to freeze on. Visual only; no audio. Like `text`, there's no temporal source to overflow or underflow against, so `overflow`/`underflow` don't apply.
 
 ```json
 { "type": "static", "source": "logo.png", "duration": 5 }
@@ -119,24 +117,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `filters` | array | no | See [Filters](#filters) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | See [Spatial Layout](#spatial-layout) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
-| `id`, `start`, `end` | — | no | [Attachment](#attachments)/anchor fields |
-| `metadata` | object | no | See [Metadata](#metadata) |
-
-### Empty
-
-A gap — silence and black for a given duration.
-
-```json
-{ "type": "empty", "duration": 2 }
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `"empty"` | yes | Must be `"empty"` |
-| `duration` | number | yes | Length of the gap in seconds (> 0) |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
 ### Data
@@ -153,17 +134,30 @@ A free-form JSON payload that occupies a span of time. Renders nothing — it's 
 | `data` | any JSON | yes | Arbitrary payload — preserved unchanged through resolution |
 | `duration` | number | no | Length of the slot in seconds (>= 0). Defaults to `0`, useful for point-in-time markers |
 | `tags` | string[] | no | Free-form classifier tags. Editor-side filtering / grouping fodder; preserved through resolution |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-As a child, a `data` node takes up `duration` seconds of sequential time. As an attachment, its on-timeline length is whatever the anchors imply: with both `start` and `end` pinned, `end − start` wins regardless of `duration`. With only `start` (and no `end`/`duration`) it acts as an instantaneous marker.
+A `data` node takes up `duration` seconds like any other node, so it can be anchored anywhere as a marker:
 
 ```json
 {
-  "type": "data",
-  "data": { "kind": "cue", "label": "punchline" },
-  "start": { "anchor": "intro", "timeSource": "output", "anchorPoint": "100%", "offset": -3 }
+  "type": "composition",
+  "children": [
+    { "id": "intro", "type": "clip", "source": "intro.mp4", "in": 0, "out": 10 },
+    { "type": "data", "data": { "kind": "cue", "label": "punchline" }, "start": "intro@100%", "offset": -3 }
+  ]
+}
+```
+
+It is also the **spacer**. A gap *between* two nodes is just an `offset` on the second one, but nothing except a node can extend a composition past its last child — so trailing silence/black is a `data` node with a `duration`:
+
+```json
+{
+  "type": "composition",
+  "children": [
+    { "type": "clip", "source": "outro.mp4", "in": 0, "out": 5 },
+    { "type": "data", "data": null, "duration": 2 }
+  ]
 }
 ```
 
@@ -181,7 +175,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 |-------|------|----------|-------------|
 | `type` | `"text"` | yes | Must be `"text"` |
 | `text` | string \| array | yes | Plain string, or an array of strings/`TextRun` objects for inline formatting (see below). `\n` inserts a hard line break |
-| `duration` | number | no¹ | Display duration in seconds (> 0) |
+| `duration` | number | yes | Display duration in seconds (> 0) |
 | `fontFamily` | string | no | Font family. Default `"sans-serif"` |
 | `fontSize` | number | no | Font size in pixels. Default `16` |
 | `color` | string | no | Any SVG `fill` value. Default `"black"` |
@@ -194,16 +188,12 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `textAlign` | `"left"` \| `"center"` \| `"right"` | no | Horizontal alignment within the inner box. Default `"center"` |
 | `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
-
-¹ `duration` is required unless both `start` and `end` are pinned (the anchor span dictates the timeline span).
 
 #### Inline runs
 
@@ -241,94 +231,79 @@ Text mirrors composition sizing: `contentWidth`/`contentHeight` define the SVG's
 
 Both the editor preview and the headless renderer share Pretext for layout. The preview measures + draws on `OffscreenCanvas`; the renderer does the same on `@napi-rs/canvas` (Skia) by polyfilling `OffscreenCanvas` server-side. Glyph metrics are very close but not pixel-identical between the two engines; line breaks land in the same places for typical Latin/CJK content.
 
-### Graphic
+### Rect and Circle
 
-A motion-graphics layer with its own internal keyframe timeline. The inner content is described in **fabric.js** terms (`Rect`, `Circle`, `Path`, `Polygon`, `Textbox`, `Image`, `Group`, plus seam-specific `Clip` and `Map`); each keyframe is a snapshot of that object tree, and the runtime tweens between adjacent keyframes.
+Solid shapes. They have no intrinsic size — their natural box is the parent — so `size` *is* the shape: a bare number is pixels, a percentage is of the parent. A `circle` is the ellipse inscribed in its box.
+
+```json
+{ "type": "rect", "duration": 3, "fill": "tomato", "size": { "x": 400, "y": 120 }, "cornerRadius": 24 }
+```
+
+```json
+{ "type": "circle", "duration": 3, "fill": "none", "stroke": "white", "strokeWidth": 8, "size": 240 }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"rect"` \| `"circle"` | yes | |
+| `duration` | number | yes | Display duration in seconds (> 0) |
+| `fill` | string \| keyframes | no | Any CSS colour. Default `"black"`; `"none"` / `"transparent"` skips the fill |
+| `stroke` | string \| keyframes | no | Stroke colour; drawn only when `strokeWidth` > 0 |
+| `strokeWidth` | number \| keyframes | no | Stroke width in pixels, drawn **inside** the box |
+| `filters` | array | no | See [Filters](#filters) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation`, `cornerRadius` | — | no | See [Spatial Layout](#spatial-layout) |
+| `opacity` | number \| keyframes | no | See [Opacity](#opacity) |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
+| `metadata` | object | no | See [Metadata](#metadata) |
+
+### Map
+
+A basemap rasterized from a pmtiles archive, used like a `static` with a camera.
 
 ```json
 {
-  "type": "graphic",
-  "duration": 3,
-  "contentWidth": 1080, "contentHeight": 1920,
-  "frames": [
-    [0,    [{ "id": "r", "type": "Rect", "left": 0,   "top": 200, "width": 200, "height": 200, "fill": "tomato" }]],
-    ["50%",[{ "id": "r", "type": "Rect", "left": 400, "top": 800, "width": 200, "height": 200, "fill": "tomato" }], "ease-out"],
-    [3,    [{ "id": "r", "type": "Rect", "left": 800, "top": 200, "width": 200, "height": 200, "fill": "tomato", "angle": 360 }]]
+  "type": "map",
+  "source": "world.pmtiles",
+  "duration": 6,
+  "latitude": 14.6, "longitude": 121.0,
+  "zoom": [[0, 4], ["100%", 11, "ease-in-out"]],
+  "paths": [
+    { "id": "route", "color": "#ff5533", "points": [[120.98, 14.6], [121.05, 14.65]], "progress": [[0, 0], ["100%", 1]] }
+  ],
+  "children": [
+    { "type": "circle", "duration": 6, "fill": "#ff5533", "size": 24, "pin": { "path": "route" } },
+    { "type": "text", "text": "Manila", "duration": 3, "start": 1, "pin": { "latitude": 14.6, "longitude": 120.98 }, "translation": { "x": 0, "y": -30 } }
   ]
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | `"graphic"` | yes | Must be `"graphic"` |
-| `frames` | array | yes | Keyframe tuples: `[stamp, objectTree]` or `[stamp, objectTree, easing]`. At least one entry. `stamp` is a `Length` (number of seconds or `"50%"` of `duration`). Easing applies to the segment leading into this keyframe |
-| `duration` | `Length` | no¹ | Internal timeline length in seconds. Defaults to the last keyframe's stamp. Required for percent-stamped frames |
-| `loop` | boolean | no | When `true`, the animation wraps from the last keyframe back to the first via a ghost-keyframe pair at the seam |
-| `contentWidth`, `contentHeight` | `Length` | no | Design canvas dimensions for the inner objects. Inner-object `left`/`top`/`width`/`height` resolve against this rect (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
-| `clips` | array | no | Reusable sub-clips referenced from inside `frames` by `Clip` objects. See [Sub-clips](#sub-clips) |
-| `in`, `out`, `overflow`, `underflow` | — | no | Window into the internal timeline. Same shape as Composition. Defaults: full internal duration |
-| `filters` | array | no | Visual effects applied to the rasterized graphic (see [Filters](#filters)) |
-| `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties for placing the graphic onto its parent (see [Spatial Layout](#spatial-layout)) |
-| `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `type` | `"map"` | yes | Must be `"map"` |
+| `source` | string | yes | Path to the pmtiles archive |
+| `duration` | number | yes | How long the map is shown (> 0) |
+| `latitude`, `longitude`, `zoom` | number \| keyframes | no | Camera. `zoom` tweens in scale space |
+| `mapOpacity` | number \| keyframes | no | Opacity of the basemap tiles only — paths and children are unaffected |
+| `theme` | `"light"` \| `"dark"` | no | Basemap style. Default `"light"` |
+| `paths` | array | no | Geo polylines: `{ id?, color, points: [[lng, lat], …], progress?, lineWidth? }`. `color`, `progress` (0–1 of the line drawn) and `lineWidth` are animatable |
+| `children` | array | no | Nodes composited over the map (see below) |
+| `contentWidth`, `contentHeight` | `Length` | no | Inner canvas: the raster size and the layout space of `children` (default: 100% of the parent) |
+| `filters` | array | no | See [Filters](#filters) |
+| `objectFit`, `origin`, `translation`, `size`, `rotation`, `cornerRadius` | — | no | See [Spatial Layout](#spatial-layout) |
+| `opacity` | number \| keyframes | no | See [Opacity](#opacity) |
+| `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-¹ `duration` is required unless `start` and `end` are both pinned, or every keyframe stamp is an absolute number (then it defaults to the last stamp).
+A map's `children` are ordinary nodes of any type, placed exactly like a composition's children ([runs, `start`, `offset`](#placement); time 0 is the map's start). Two differences:
 
-#### Inner-object boundary
+- They **never extend the map** — its authored `duration` is authoritative.
+- A child may carry a **`pin`** that places it geographically: `{ "latitude", "longitude" }`, or `{ "path": index | id, "position"? }` for a point along a path (`position` defaults to the path's live `progress`, so the node rides the reveal head). The node's `origin` lands on the projected point and `translation` becomes a pixel offset from it. `pin` is animatable.
 
-Inside `frames[i][1]` is **fabric's domain**, not seam's. The numeric props on inner objects (`left`, `top`, `width`, `height`, `scaleX`, `radius`, `strokeWidth`, etc.) are plain numbers — the `Length` system (`"50%"`, `"100% - 5"`) stops at the graphic boundary. Inner-object `left: "10%"` is rejected by the schema. Treat each graphic as a single compositable contained sub-scene.
-
-Identity is path-based: across keyframes, an object at the same hierarchical path (its `id`, or its positional index when `id` is omitted) is the same object. Different paths between two adjacent keyframes are not tweened — the prev-side structure holds until the next keyframe replaces it.
-
-#### Object types
-
-| `type` | Notes |
-|--------|-------|
-| `Rect`, `Circle`, `Polygon`, `Path`, `Textbox`, `Image`, `Group` | Standard fabric.js classes; consult the fabric docs for the full prop list |
-| `Clip` | References a sub-clip from `clips`. Fields: `clipId` (required), `startPosition` (sub-clip-local seconds, optional), `repeat` (integer or `-1` for infinite), plus the usual fabric transform props |
-| `Map` | Pmtiles-backed map. Fields: `source` (pmtiles filename), `latitude`, `longitude`, `zoom`, `width`, `height`, optionally `paths` (array of `{ color, points: [[lng, lat], …], progress?, lineWidth? }`) for route overlays |
-
-#### Sub-clips
-
-A graphic can declare reusable inner animations under `clips`. Each clip is itself a self-contained sub-animation with its own `frames` array; references from outer keyframes use `{ type: "Clip", clipId, startPosition, repeat }`. Anchors are tracked per outer `Clip` instance — an outer keyframe that re-asserts `startPosition` re-anchors that instance's local clock at that outer time. `repeat: -1` (the default) loops the clip indefinitely.
-
-```json
-{
-  "type": "graphic",
-  "duration": 3,
-  "clips": [{
-    "id": "pulse",
-    "duration": 1,
-    "loop": true,
-    "contentWidth": 300, "contentHeight": 300,
-    "frames": [
-      [0, [{ "id": "c", "type": "Circle", "left": 50,  "top": 50, "radius": 50,  "fill": "magenta" }]],
-      [1, [{ "id": "c", "type": "Circle", "left": 50,  "top": 50, "radius": 120, "fill": "magenta" }]]
-    ]
-  }],
-  "frames": [
-    [0, [{ "id": "p1", "type": "Clip", "clipId": "pulse", "startPosition": 0, "left": 100, "top": 200 }]],
-    [3, [{ "id": "p1", "type": "Clip", "clipId": "pulse",                     "left": 700, "top": 1400 }]]
-  ]
-}
-```
-
-#### Maps
-
-`Map` elements composite an OpenLayers-rendered pmtiles view. `source` resolves the same way as clip sources (relative filename → platform-specific lookup). On web the pmtiles file lives in OPFS; reads are byte-range only — multi-GB pmtiles never fully materialise. Rendering is pure Canvas2D (no maplibre, no WebGL): OpenLayers runs off-screen purely as an on-demand rasterizer, `ol-mapbox-style` applies the bundled OSM Bright style, and the layer canvas is composited over a cream base. The `paths` array overlays geojson lines with optional `progress` (0..1, partial line draw) and `lineWidth`.
-
-Animating a Map across keyframes pans + zooms the same OpenLayers instance (path-id pooling), so a 30s animated map reuses one map instance and its warm tile cache across all frames. There's no flush throttle — OL's canvas→canvas blit has no WebGL readback stall, so frames redraw only when the camera moves or async tile loads complete.
-
-#### Renderer support
-
-Both the editor preview and the headless renderer rasterize the same way: fill defaults via fabric's round-trip, interpolate between flattened keyframes, then walk the resulting snapshot onto a fabric `StaticCanvas`. The preview goes to an `HTMLCanvasElement`; the renderer goes to `fabric/node`, rendering each output frame on demand to an RGBA buffer that the WebGPU compositor uploads as a texture. Maps render via OpenLayers in both environments — Canvas2D in the browser, and the same OL pipeline run headlessly under jsdom + node-canvas server-side (no native code).
+Since every child without a `start` continues the previous child's run, overlays that should all begin with the map need `"start": 0` (the first child starts at 0 implicitly).
 
 ### Composition
 
-A container that holds other nodes in sequence. The root of every `.seam` file is a composition, and compositions can be nested.
+A container that places other nodes on its own timeline. The root of every `.seam` file is a composition, and compositions can be nested.
 
 ```json
 {
@@ -343,22 +318,20 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"composition"` | yes | Must be `"composition"` |
-| `children` | array | no | Child nodes (clip, audio, static, empty, data, text, graphic, composition) played sequentially. Optional; defaults to `[]` for bin-reference and script compositions whose body comes from elsewhere |
-| `attachments` | array | no | Anchored children rendered on top of `children` (see [Attachments](#attachments)) |
+| `children` | array | no | Child nodes of any type. Each plays after the previous one unless it sets `start`; array order is z-order, later on top (see [Placement](#placement)). Optional; defaults to `[]` for bin-reference and script compositions whose body comes from elsewhere |
 | `bin` | array | no | Reusable bodies addressable by id. See [Bin & Scripts](#bin--scripts) |
 | `binItem` | string | no | Names a bin entry whose body this composition adopts at compile time. See [Bin & Scripts](#bin--scripts) |
 | `script` | string | no | JavaScript source. The compile pass runs it against this composition; the return value replaces it in the rendered tree. See [Bin & Scripts](#bin--scripts) |
 | `in` | number | no | Window start into this composition's inner timeline (seconds, >= 0) |
 | `out` | number | no | Window end into this composition's inner timeline (seconds, > 0) |
-| `speed` | number | no | Playback rate of the inner window (the `[in, out]` slice); `>1` plays faster, shortening the output. Mutually exclusive with `duration`. Mirrors clip `speed` |
-| `duration` | number | no | Explicit output duration of the inner window (plays at the derived rate `windowSpan / duration`). Mutually exclusive with `speed`. Mirrors clip `duration` |
-| `overflow` | string | no | Strategy when the composition is over-constrained shorter than its natural duration (only fires for [attachments](#attachments) with both ends pinned) |
-| `underflow` | string | no | Strategy when the composition is over-constrained longer than its natural duration (only fires for attachments with both ends pinned) |
+| `speed` | number | no | Playback rate of the inner window (the `[in, out]` slice); `>1` plays faster, shortening the output. Mirrors clip `speed` |
+| `duration` | number | no | Output length. `overflow`/`underflow` decide how the inner window fills it — by default it stretches (derived rate `windowSpan / duration`). Mirrors clip `duration` |
+| `overflow` | string | no | Strategy when `duration` is shorter than the composition's natural duration (default `"stretch"`) |
+| `underflow` | string | no | Strategy when `duration` is longer than the composition's natural duration (default `"stretch"`) |
 | `volume` | number \| keyframes | no | Uniform gain applied to every audio-bearing descendant; multiplies through nesting and with each clip's own `volume`. Animatable, sampled in the composition's output time |
 | `pitch` | number | no | Length-preserving pitch shift in semitones applied to every audio-bearing descendant; adds through nesting and with each clip's own `pitch`. Not animatable (see [Pitch](#pitch)) |
 | `contentWidth` | `Length` | no | Inner canvas width (default: parent's content width). Percentages resolve against the parent; the **root composition** must use a pixel number. See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
-| `transition` | number | no | Crossfade overlap (seconds) with the previous sequential sibling (see [Transitions](#transitions)) |
 | `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
@@ -366,11 +339,12 @@ A container that holds other nodes in sequence. The root of every `.seam` file i
 | `inset` | `Length` \| `[v,h]` \| `[t,r,b,l]` \| keyframes | no | Per-edge crop of the content box; animatable. **Composition-only** (see [Inset](#inset)) |
 | `insetMode` | string | no | `"window"` (default) \| `"center"` \| `"fit"` \| `"cover"` — how the cropped window maps within the placed content box (see [Inset](#inset)) |
 | `distort` | object \| keyframes | no | Corner-pin (perspective) warp of the composited content: `{ x0, y0, x1, y1, x2, y2, x3, y3 }`, each a `Length` against `contentWidth`/`contentHeight`, clockwise from top-left; every corner optional. Purely visual — the layout box is unchanged. Animatable as one value. **Composition-only** (see [Distort](#distort)) |
-| `id` | string | no | Identifier; referenceable by [attachments](#attachments) |
-| `start`, `end` | object | no | Time anchors; only meaningful on [attachments](#attachments) |
+| `id` | string | no | Identifier within the enclosing composition; other nodes' `start` can anchor to it (see [Placement](#placement)) |
+| `start` | number \| string | no | Heads a new run at an absolute time or an anchor (see [Placement](#placement)) |
+| `offset` | number | no | Seconds added to the position: a gap, a crossfade overlap, or a shift (see [Placement](#placement)) |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-A composition's natural duration is the sum of its children's natural durations (its inner timeline). `speed` and `duration` rescale the inner window exactly like a clip's — `duration: 10` plays the window at `windowSpan / 10`. There's no flex, no justify, no gap — those are higher-order layout concerns that belong in the editor, not the spec. The resolved output length is the windowed span (`out − in`, defaulting to the whole inner timeline) divided by the effective speed.
+A composition's inner timeline runs from 0 to the **latest end of any child** — for a plain sequence that's the sum of the children's durations. Anything placed before 0 is cropped (a child wholly before 0 is dropped). `speed` and `duration` rescale the inner window exactly like a clip's — `duration: 10` plays the window at `windowSpan / 10`. There's no flex, no justify — those are higher-order layout concerns that belong in the editor, not the spec. The natural output length is the windowed span (`out − in`, defaulting to the whole inner timeline) divided by `speed`.
 
 #### Nested Compositions and Windowing
 
@@ -397,15 +371,100 @@ The inner composition has two 3-second clips (6 seconds total). Setting `in: 1, 
 
 If `in` and `out` are omitted, the full inner timeline is used.
 
-To stack content visually — multiple things playing at the same time — use a composition's [`attachments`](#attachments) array. Each attachment is a child whose position on the timeline is anchored by id to another node rather than appended sequentially.
+To stack content visually — multiple things playing at the same time — give a child a `start`. It then heads its own run instead of following the previous child (see [Placement](#placement)).
+
+## Placement
+
+Every node in a `children` array lands at
+
+```
+(start ?? end of the previous node, 0 for the first) + offset
+```
+
+A node **without** `start` continues the previous node's **run** — it plays right after it. A node **with** `start` heads a new run, positioned independently of whatever precedes it in the array. The first child is always a run head (implicitly at 0). Array order only decides **z-order**: later nodes draw on top.
+
+```json
+{
+  "type": "composition",
+  "children": [
+    { "id": "intro", "type": "clip", "source": "intro.mp4", "in": 0, "out": 10 },
+    { "type": "clip", "source": "body.mp4", "in": 0, "out": 30 },
+    { "type": "clip", "source": "lower_third.mp4", "in": 0, "out": 3, "start": "intro@100%", "offset": -3 },
+    { "type": "text", "text": "Thanks for watching", "duration": 2 }
+  ]
+}
+```
+
+`intro` runs from 0 to 10 and `body` follows it (10–40): one run. The lower third heads a second run, 3 seconds before the end of `intro` (t=7), drawn on top; the text continues *that* run, so it shows at t=10 for 2 seconds. The composition lasts 40 seconds — the latest end.
+
+### IDs
+
+Any node can set an `id`. IDs must be unique within their `children` array, can't contain `@`, and can't look like a number.
+
+### start
+
+| Form | Meaning |
+|------|---------|
+| `5` (a number) | Absolute seconds on the container's timeline |
+| `"id"` | The start of sibling `id` |
+| `"id@50%"` | That fraction of `id`'s output span — `0%` is its start, `100%` its end |
+| `"id@10"` | Second 10 of `id`'s **source** timeline |
+
+Anchors reference siblings in the same `children` array, anywhere in it — forward references are fine, cycles throw. There is no arithmetic in the expression: to shift off an anchor, use `offset`.
+
+**Source-time anchors** (`"id@10"`) measure in the target's own media time. For a clip or audio that's the raw file time, before `in`/`out`/`speed`; for a composition it's the inner timeline before any `in`/`out` window (for everything else, plain seconds from its start). The resolver inverts the target's source→output mapping:
+
+```
+output_time = target.start + (seconds − target.sourceIn) / target.speed
+```
+
+The result can land before the target starts or after it ends — useful for "start a caption 2 seconds into the original footage, even if the first second of the clip was trimmed". If `myclip` has `in: 2, out: 4` and occupies output `[0, 2]`, then `"myclip@3"` resolves to output `1`.
+
+### offset
+
+`offset` is a number of seconds added to the node's position. What it means depends on where the node sits:
+
+| On | `offset > 0` | `offset < 0` |
+|----|--------------|--------------|
+| A run member (no `start`) | A gap after the previous node | Overlaps the previous node and **crossfades** with it (see [Crossfades](#crossfades)) |
+| A run head (has `start`, or is the first child) | A plain shift later | A plain shift earlier |
+
+Nodes after it in the same run shift along with it.
+
+### Cropping and duration
+
+A container's duration is the latest end of any child; a gap in the middle is black/silent. Time before 0 doesn't exist: a node that starts before 0 loses its head, and a node that ends before 0 is dropped. To leave room at the *end*, add a [`data`](#data) spacer.
+
+A node placed with neither `start` nor a previous node (the first child) starts at 0. An overlay meant to start with the composition therefore needs an explicit `"start": 0` unless it is the first child — without it, it would play *after* the node before it.
+
+### Crossfades
+
+A negative `offset` on a run member starts it that many seconds before the previous node ends and cross-dissolves over the overlap, so the run shortens by the same amount:
+
+```json
+{
+  "type": "composition",
+  "children": [
+    { "type": "clip", "source": "a.mp4", "in": 0, "out": 5 },
+    { "type": "clip", "source": "b.mp4", "in": 0, "out": 5, "offset": -1 }
+  ]
+}
+```
+
+Clip A (5s) + Clip B (5s, `offset: -1`) → a **9s** composition: B starts at t=4 and the two crossfade over `[4, 5]`.
+
+- Only a **run member** crossfades. A negative `offset` on a run head (a node with `start`, or the first child) just moves it — no fade.
+- The fade length is **clamped** to the shorter of the two neighbours.
+- It **chains**: each node fades against whichever node precedes it in the run.
+- `data` nodes never fade (they produce nothing).
+- Crossfade only — there's no transition *type* yet (no wipes/pushes).
+- **Video** dissolves by fading the incoming element in over the outgoing one (the outgoing one is simply occluded as the incoming ramps up). **Audio** ramps both sides (incoming up, outgoing down) since audio sums. The fade is linear and matches between the live preview and the exported render.
 
 ## Overflow & Underflow
 
-Sequential children always play at their natural duration, so overflow/underflow are no-ops there. They kick in for [attachments](#attachments) whose `start` *and* `end` are both pinned: `end − start` defines a target span that may not match the attachment's natural duration, and the strategy decides how to make it fit.
+A `clip`, `audio` or `composition` normally occupies its natural duration. Setting `duration` gives it a different output length, and `overflow`/`underflow` decide how the content (`[in, out]` at `speed`) fills it. Both default to `"stretch"`: the playback rate adjusts so the content exactly spans `duration`.
 
-The default for both overflow and underflow on attachments is `"stretch"` — speed adjusts so the attachment exactly spans the anchored window. Setting an explicit strategy on the node itself (a `clip`, `audio`, or nested `composition`) overrides that default.
-
-### Overflow (target shorter than natural)
+### Overflow (duration shorter than natural)
 
 | Strategy | Effect |
 |----------|--------|
@@ -414,7 +473,7 @@ The default for both overflow and underflow on attachments is `"stretch"` — sp
 | `"trim-center"` | Cuts equal amounts from both ends |
 | `"stretch"` | Keeps the full source range but plays faster (default) |
 
-### Underflow (target longer than natural)
+### Underflow (duration longer than natural)
 
 | Strategy | Effect |
 |----------|--------|
@@ -422,105 +481,21 @@ The default for both overflow and underflow on attachments is `"stretch"` — sp
 | `"extend-start"` | Extends the source range before the original `in` point |
 | `"extend-center"` | Extends equally in both directions |
 | `"stretch"` | Keeps the original range but plays slower (default) |
+| `"loop"` | Replays the content from its start until `duration` is filled; the last cycle is cut short |
 
 ```json
-{
-  "type": "clip",
-  "source": "b.mp4",
-  "in": 0, "out": 6,
-  "overflow": "trim-end",
-  "start": { "anchor": "target", "timeSource": "output", "anchorPoint": "0%" },
-  "end":   { "anchor": "target", "timeSource": "output", "anchorPoint": "30%" }
-}
+{ "type": "clip", "source": "b.mp4", "in": 0, "out": 6, "duration": 3, "overflow": "trim-end" }
 ```
 
-A 6-second source pinned to a 3-second window. With `overflow: "trim-end"`, the resolver keeps the first 3 seconds at speed 1 instead of speeding the whole thing up.
+A 6-second source in a 3-second slot. With `overflow: "trim-end"`, the resolver keeps the first 3 seconds at speed 1 instead of speeding the whole thing up.
 
-## Attachments
-
-Attachments are a composition's stacked/overlapping children — they render on top of `children`, positioned by anchoring to other nodes via `id` instead of by sequential layout. Within `attachments`, array order sets z-order (last on top).
+With a non-stretch strategy the rate is no longer derived from `duration`, so `speed` may be set alongside it:
 
 ```json
-{
-  "type": "composition",
-  "children": [
-    { "id": "intro", "type": "clip", "source": "intro.mp4", "in": 0, "out": 10 },
-    { "type": "clip", "source": "body.mp4", "in": 0, "out": 30 }
-  ],
-  "attachments": [
-    {
-      "type": "clip",
-      "source": "lower_third.mp4",
-      "in": 0,
-      "out": 3,
-      "start": { "anchor": "intro", "timeSource": "output", "anchorPoint": "100%", "offset": -3 }
-    }
-  ]
-}
+{ "type": "clip", "source": "loop.mp4", "in": 0.5, "out": 1.5, "duration": 10, "underflow": "loop" }
 ```
 
-The `intro` clip runs from 0 to 10 seconds. The attachment starts 3 seconds before the end of `intro` (at t=7) and plays for its natural 3 seconds.
-
-### IDs
-
-Any child can set an `id`. IDs must be unique within a composition (including across `children` and `attachments`).
-
-### Time anchors
-
-Both `start` and `end` on an attachment are objects shaped like:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `anchor` | string | `id` of another node in the same composition. Optional. |
-| `timeSource` | `"output"` \| `"source"` | Coordinate space for `anchorPoint`. **Required when `anchor` is set; forbidden when it isn't.** See [timeSource](#timesource). |
-| `anchorPoint` | string \| number | Position within the anchor. In `"output"` mode: a percentage string (e.g. `"50%"`). In `"source"` mode: a number of seconds. Defaults to `"0%"` / `0` when `anchor` is set. Requires `anchor`. |
-| `offset` | number \| string | Shift in *output* time. A number is absolute seconds. A string like `"25%"` is that fraction of the *attachment's own natural duration* — independent of the anchor (and valid even when no anchor is given). When `anchor` is omitted, `offset` is measured from the composition's start. |
-
-The anchor's resolved duration is its `timelineEnd - timelineStart` on the output timeline.
-
-#### timeSource
-
-`timeSource` controls what coordinate space `anchorPoint` lives in. It must be provided whenever `anchor` is — there is no default, so the coordinate space is always explicit at the authoring site.
-
-- **`"output"`**: `anchorPoint` is a percentage string measuring into the anchor's output span — `"0%"` is `timelineStart`, `"100%"` is `timelineEnd`.
-- **`"source"`**: `anchorPoint` is a number of seconds in the anchor's *source* timeline. For a clip, that's the raw media-file time, ignoring `in`/`out`/`speed` trimming. For a composition, it's the pre-window inner timeline (before any `in`/`out`). The resolver inverts the anchor's source→output mapping to find the corresponding output time:
-
-  ```
-  output_time = anchor.timelineStart
-              + (anchorPoint − anchor.sourceBase) / anchor.outputSpeed
-  ```
-
-  where `sourceBase` is the clip's `sourceIn` (or the composition's windowed-in). The result can land *before* `timelineStart` or *after* `timelineEnd` — negative or past-end values are legal and useful for things like "start a caption 2 seconds into the original footage, even if the first second of the clip was trimmed."
-
-Example — if `myclip` has `in: 2, out: 4` (speed 1) and therefore occupies output `[0, 2]`, then `{ anchor: "myclip", timeSource: "source", anchorPoint: 1 }` resolves to output `-1` (source second 1 is 1 second before the clip's sourceIn).
-
-`offset` is always output-time regardless of `timeSource`.
-
-### How start and end interact
-
-| Given | Effect |
-|-------|--------|
-| Neither `start` nor `end` | The attachment starts at t=0 of the composition and plays for its natural duration. |
-| `start` only | The attachment starts at the resolved start time and plays for its natural duration. |
-| `end` only | The attachment ends at the resolved end time; its start is back-computed from natural duration. |
-| Both `start` and `end` | Timeline duration is `end - start`. The attachment's [overflow/underflow](#overflow--underflow) strategy decides how it fits — default `"stretch"`. |
-
-If `end` resolves before `start`, the resolver throws.
-
-### Cross-attachment anchors
-
-Attachments are resolved in array order. Each attachment's `id`, once resolved, is added to the id map, so a later attachment can anchor to an earlier one.
-
-```json
-{
-  "attachments": [
-    { "id": "a", "type": "clip", "source": "x.mp4", "in": 0, "out": 2, "start": { "offset": 5 } },
-    { "type": "clip", "source": "y.mp4", "in": 0, "out": 1, "start": { "anchor": "a", "timeSource": "output", "anchorPoint": "100%" } }
-  ]
-}
-```
-
-`a` starts at t=5 (from composition origin), running to t=7. The second attachment begins at t=7.
+One second of source shown ten times. Looping a composition replays its inner window the same way. The node's own keyframes (`opacity`, `volume`, spatial fields, …) run across the whole 10 seconds — only the content time loops.
 
 ## Bin & Scripts
 
@@ -548,9 +523,9 @@ A separate **compile pass** resolves these before the resolver runs. Both the re
 }
 ```
 
-A bin entry is `{ id, children, attachments? }` — strictly a reusable body, not a full composition. Instance-level fields (spatial, in/out, filters, metadata) live on each `binItem` reference, so swapping a bin entry can't reach out and overwrite a reference's authored properties.
+A bin entry is `{ id, children }` — strictly a reusable body, not a full composition. Instance-level fields (spatial, in/out, filters, metadata) live on each `binItem` reference, so swapping a bin entry can't reach out and overwrite a reference's authored properties.
 
-A composition with `binItem: "<id>"` adopts the named bin entry's `children` and `attachments` at compile time. The reference's own `children`/`attachments` are ignored.
+A composition with `binItem: "<id>"` adopts the named bin entry's `children` at compile time. The reference's own `children` are ignored.
 
 #### Scope
 
@@ -569,7 +544,7 @@ Bin entries are **lexically scoped**: a `binItem` reference resolves against the
 }
 ```
 
-`script` is the body of an anonymous function `(currentNode) => Composition`. At compile time the script receives the composition itself (with bins already resolved and descendants already compiled) and its return value replaces the composition in the rendered tree. The authored `children` / `attachments` stay on the original doc — they're the script's input.
+`script` is the body of an anonymous function `(currentNode) => Composition`. At compile time the script receives the composition itself (with bins already resolved and descendants already compiled) and its return value replaces the composition in the rendered tree. The authored `children` stay on the original doc — they're the script's input.
 
 The execution environment is a plain `new Function(...)` with `window` and `document` shadowed to `undefined`. This is a footgun-reducer, not a sandbox: never load untrusted scripts.
 
@@ -596,7 +571,7 @@ Use it for editor concerns that should round-trip through saves — review state
 
 ## Filters
 
-Filters apply visual effects to clips, static, text, graphic, and compositions. They are specified as an array on the node.
+Filters apply visual effects to clips, static, text, shapes, maps, and compositions. They are specified as an array on the node.
 
 **Array order does not determine application order.** Filters of the same type are *combined* (multiple `adjust` filters add their brightness and multiply their contrast/saturation/gamma; `colorbalance` offsets add; `colortemperature` scales multiply), and the combined result is applied in a fixed pipeline order:
 
@@ -670,7 +645,7 @@ Filters can also be applied to compositions, affecting all children as a group:
 
 ## Opacity
 
-`opacity` is a first-class field on every visual node (`clip`, `static`, `text`, `graphic`, `composition` — not `audio`). It's a multiplier from `0` (fully transparent) to `1` (fully opaque); the default (absent) is fully opaque. Unlike filters, **`opacity` is animatable** — it follows the keyframe-tuple syntax (see [Animation](#animation)):
+`opacity` is a first-class field on every visual node (`clip`, `static`, `text`, `rect`, `circle`, `map`, `composition` — not `audio`). It's a multiplier from `0` (fully transparent) to `1` (fully opaque); the default (absent) is fully opaque. Unlike filters, **`opacity` is animatable** — it follows the keyframe-tuple syntax (see [Animation](#animation)):
 
 ```json
 { "type": "clip", "source": "v.mp4", "in": 0, "out": 5,
@@ -756,7 +731,7 @@ Every key is optional; an absent corner stays where it is, so `{}` is the identi
 Semantics:
 
 - The warp is the **projective map** (homography) that sends the canvas's corners to the pinned points — straight lines stay straight and perspective foreshortening is correct, not a bilinear blend that creases along the diagonal. A corner set that isn't a convex quad (a "bow-tie") falls back to a plain two-triangle blend.
-- It is **purely visual**. The node's layout rect (`origin`/`translation`/`size`, what siblings and anchors see) is unchanged; the warped content may spill outside that rect. It composes with `rotation` (the pinned quad rotates about the authored `origin`), `opacity`, `filters`, and `inset` (the visible window is the matching sub-region of the warped canvas).
+- It is **purely visual**. The node's layout rect (`origin`/`translation`/`size`, what siblings see) is unchanged; the warped content may spill outside that rect. It composes with `rotation` (the pinned quad rotates about the authored `origin`), `opacity`, `filters`, and `inset` (the visible window is the matching sub-region of the warped canvas).
 - Order within [Spatial Layout](#spatial-layout): objectFit/`size` build the content box → `origin`/`translation`/`rotation` place it → `inset` picks the window → **`distort` warps where that content is drawn**.
 - Ignored on the root composition (there is no parent quad to draw into).
 
@@ -831,7 +806,7 @@ The pivot is whatever `origin` resolves to, so it composes with the placement mo
 `rotation` is animatable (a single number per keyframe — not a `Point2D`):
 
 ```json
-{ "type": "graphic", "rotation": [[0, 0], ["100%", 360, "ease-in-out"]], "frames": [] }
+{ "type": "rect", "duration": 2, "size": 200, "rotation": [[0, 0], ["100%", 360, "ease-in-out"]] }
 ```
 
 Rotating a composition spins the whole group (background + children) as one unit.
@@ -880,15 +855,13 @@ To stretch a composition past its aspect ratio, override `size` with explicit pe
 {
   "type": "composition",
   "children": [
-    { "id": "main", "type": "clip", "source": "main.mp4", "in": 0, "out": 30 }
-  ],
-  "attachments": [
+    { "id": "main", "type": "clip", "source": "main.mp4", "in": 0, "out": 30 },
     {
       "type": "clip",
       "source": "camera.mp4",
       "in": 0,
       "out": 30,
-      "start": { "anchor": "main", "timeSource": "output", "anchorPoint": "0%" },
+      "start": "main",
       "size": "25%",
       "origin": "100%",
       "translation": "100% - 20"
@@ -897,7 +870,7 @@ To stretch a composition past its aspect ratio, override `size` with explicit pe
 }
 ```
 
-The camera box is 25% of its natural fit-box. Its `origin: "100%"` is the bottom-right corner of the box itself. Its `translation: "100% - 20"` lands 20px in from the parent's bottom-right corner. Pinning origin-bottom-right to translation-bottom-right-minus-20 puts the PiP 20px inside the parent's bottom-right corner.
+`start: "main"` starts the camera with the main clip instead of after it, and its later array position draws it on top. The camera box is 25% of its natural fit-box. Its `origin: "100%"` is the bottom-right corner of the box itself. Its `translation: "100% - 20"` lands 20px in from the parent's bottom-right corner. Pinning origin-bottom-right to translation-bottom-right-minus-20 puts the PiP 20px inside the parent's bottom-right corner.
 
 ### Shifting an image without distortion
 
@@ -911,28 +884,6 @@ The camera box is 25% of its natural fit-box. Its `origin: "100%"` is the bottom
 ```
 
 Defaults take care of the rest: `size: "100%"` evaluates to the aspect-preserved fit-box of the image, `origin: "50%"` is the center of that box, and `translation: { x: 0, y: -150 }` reads as "parent center, shifted up 150px". The image is centered horizontally, shifted up 150px, with no squish.
-
-## Transitions
-
-Any producing element used as a sequential child — `clip`, `audio`, `static`, `text`, `graphic`, `composition` — can set `transition`: a crossfade **overlap in seconds with the previous sibling**. The element starts that many seconds before the previous one ends and cross-dissolves over the overlap, so the composition shrinks by the same amount:
-
-```json
-{
-  "type": "composition",
-  "children": [
-    { "type": "clip", "source": "a.mp4", "in": 0, "out": 5 },
-    { "type": "clip", "source": "b.mp4", "in": 0, "out": 5, "transition": 1 }
-  ]
-}
-```
-
-Clip A (5s) + Clip B (5s, `transition: 1`) → a **9s** composition: B starts at t=4 and the two crossfade over `[4, 5]`.
-
-- **First child / attachments** ignore `transition` (there's no previous sequential sibling to overlap).
-- The overlap is **clamped** to the shorter of the two neighbours, so it can't reach past the previous child's start or exceed the element's own length.
-- It **chains**: each child overlaps whichever child precedes it.
-- Crossfade only — there's no transition *type* yet (no wipes/pushes).
-- **Video** dissolves by fading the incoming element in over the outgoing one (the outgoing one is simply occluded as the incoming ramps up). **Audio** ramps both sides (incoming up, outgoing down) since audio sums. The fade is linear and matches between the live preview and the exported render.
 
 ## Animation
 
@@ -973,11 +924,13 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 | **Composition** | `opacity`, `inset`, `distort`, `origin`, `translation`, `size`, `rotation` |
 | **Static** | `opacity`, `origin`, `translation`, `size`, `rotation` |
 | **Text** (and per-run inside `text` array) | `opacity`, `fontSize`, `color`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `origin`, `translation`, `size`, `rotation` |
-| **Graphic** | Outer wrapper: `opacity`, `origin`, `translation`, `size`, `rotation`. Inner objects have their own keyframe system via `frames` (see [Graphic](#graphic)) — animated independently per-property by fabric's interpolation engine, not the keyframe-tuple syntax above |
+| **Rect** / **Circle** | `fill`, `stroke`, `strokeWidth`, `opacity`, `origin`, `translation`, `size`, `rotation` |
+| **Map** | `latitude`, `longitude`, `zoom`, `mapOpacity`, per-path `color` / `progress` / `lineWidth`, `opacity`, `origin`, `translation`, `size`, `rotation` |
+| **Any map child** | `pin` |
 | **Filters** | Nothing — filter parameters are static numbers (not animatable). |
 
 ### Renderer support
 
-The headless renderer honours every animatable field. It runs the same per-output-frame layout the editor preview uses (`buildRenderList`) and composites on WebGPU, so `origin`/`translation`/`size`, `rotation` (about the authored `origin`), `opacity`, `inset`, `distort`, and `volume` all animate identically to the preview. Text and graphics rasterize per frame (Skia for text; `fabric/node` + headless OpenLayers for graphics/maps), and `origin`/`translation`/`size` are re-resolved each frame against the parent's content dims and the node's natural box. Filter parameters are static (not animatable).
+The headless renderer honours every animatable field. It runs the same per-output-frame layout the editor preview uses (`buildRenderList`) and composites on WebGPU, so `origin`/`translation`/`size`, `rotation` (about the authored `origin`), `opacity`, `inset`, `distort`, and `volume` all animate identically to the preview. Text and maps rasterize per frame, shapes are drawn analytically on the GPU, and `origin`/`translation`/`size` are re-resolved each frame against the parent's content dims and the node's natural box. Filter parameters are static (not animatable).
 
 Easings (linear, ease, ease-in/out, cubic-bezier) are folded into the baked samples by the same engine the editor preview uses, so the curve shape matches.

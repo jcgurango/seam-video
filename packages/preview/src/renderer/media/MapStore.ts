@@ -6,7 +6,7 @@
 // bubble up via `subscribeMapWake` → `onFrameAvailable`, so the frame fills in
 // like a half-loaded image). The camera/paths are sampled with core's
 // `sampleMapState` at the map-local `drawTime` the render list computed — the
-// same sampler the compositor uses to project pinned attachments, so overlays
+// same sampler the compositor uses to project pinned children, so overlays
 // land exactly on the basemap. Driven per frame by `FrameCoordinator.
 // applyContentSizes` (which hands over each map draw's time + inner size), so
 // nested-composition time mapping never has to be duplicated here.
@@ -101,7 +101,7 @@ export class MapStore {
     const style = mapStyleFor(state.theme);
     // mapOpacity dims the basemap only. drawBasemap sets per-feature
     // globalAlpha itself, so composite a separate basemap layer at mapOpacity;
-    // paths draw at full alpha afterward (attachments are their own nodes).
+    // paths draw at full alpha afterward (children are their own nodes).
     if (state.mapOpacity < 1) {
       const layer = document.createElement("canvas");
       layer.width = W;

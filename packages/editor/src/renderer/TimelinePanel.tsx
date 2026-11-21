@@ -10,7 +10,6 @@ import type {
   TimeExpr,
 } from "@seam/core";
 import { buildItemsFromFiles, SOURCE_DRAG_MIME } from "./useImport.js";
-import { attachNewItems } from "./attachTool.js";
 import { playheadAfterDelete } from "./deletePlayhead.js";
 import { dirname } from "./pathUtils.js";
 import type { History } from "./useHistory.js";
@@ -20,23 +19,20 @@ import {
   pathKey,
   samePath,
   removeNodesAtPaths,
-  removeNodeAtPath,
-  insertNode,
-  moveNode,
-  getNodeAtPath,
-  getCompAtPath,
-  adjustPathAfterRemoval,
+  insertNodes,
+  moveNodesTracked,
+  updateCompAtPath,
   editContainer,
   splitLast,
   type NodePath,
 } from "./nodePath.js";
+import { moveRun, shiftOffsets, type InsertOptions } from "./runEdit.js";
 import {
   flattenDropRegions,
   flattenGroups,
-  regionAt,
-  insertionIndexIn,
-  insertionXIn,
-  localTime,
+  dropTargetAt,
+  runZIndexAt,
+  type DropTarget,
 } from "./dropRegions.js";
 import {
   ROW_HEIGHT,
@@ -57,15 +53,15 @@ import { isTypingInEditableSurface } from "./keyboardGuards.js";
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
   /**
-   * The authored document whose `children`/`attachments` correspond to the
+   * The authored document whose `children` correspond to the
    * timeline. When undefined the panel is read-only (e.g. the CC-cut
-   * preview) — editing, reorder, attach, delete, and import are all
+   * preview) — editing, reorder, delete, and import are all
    * disabled and block labels fall back to the resolved nodes.
    */
   document?: SeamFile;
   filePath?: string | null;
   /** Canonical selection: path keys (`children.0`,
-   *  `children.3.attachments.1`). See `nodePath.ts`. */
+   *  `children.3.children.1`). See `nodePath.ts`. */
   selection: string[];
   onSelectionChange: (keys: string[]) => void;
   onDocumentChange?: (doc: SeamFile) => void;
@@ -88,20 +84,11 @@ const REORDER_THRESHOLD_PX = 6;
  *  document has no `bin`. */
 const EMPTY_BIN: BinEntry[] = [];
 
-/**
- * Greedy row-packer. Items past `attachmentStartIndex` are laid out into a
- * separate band below the children band, each band packed independently —
- * attachments only collide (and thus stack onto a new row) with other
- * attachments, never with the sequential children above them.
- */
-/** Strip any `start`/`end` anchors off a node — used when moving a node
- *  into a sequential `children` band where anchors are meaningless. */
-function stripAnchors(child: Child): Child {
-  if (!("start" in child) && !("end" in child)) return child;
-  const next = { ...child } as Record<string, unknown>;
-  delete next.start;
-  delete next.end;
-  return next as unknown as Child;
+/** How a drop target lands in the array (see `InsertOptions`). */
+function insertOptionsFor(target: DropTarget): InsertOptions {
+  return target.kind === "newRun"
+    ? { start: Math.round(target.time * 1000) / 1000 }
+    : { before: target.before };
 }
 
 function formatTime(s: number): string {
@@ -141,7 +128,6 @@ function baseLabel(docChild: import("@seam/core").Child | undefined, resolved: R
       const stripped = flat.replace(/\s+/g, " ").trim();
       return stripped.length > 24 ? stripped.slice(0, 24) + "…" : stripped || "text";
     }
-    if (docChild.type === "empty") return "empty";
     if (docChild.type === "data") return "data";
     return docChild.type;
   }
@@ -150,7 +136,6 @@ function baseLabel(docChild: import("@seam/core").Child | undefined, resolved: R
     return (resolved.source ?? "").split("/").pop() || "untitled";
   }
   if (resolved.type === "text") return "text";
-  if (resolved.type === "empty") return "empty";
   if (resolved.type === "data") return "data";
   return resolved.type;
 }
@@ -159,7 +144,6 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   clip: { bg: "#3a6ea5", border: "#4a8ed0" },
   audio: { bg: "#3e7a5a", border: "#52a47a" },
   composition: { bg: "#6a5acd", border: "#8470ff" },
-  empty: { bg: "#555", border: "#666" },
   data: { bg: "#7a5a3a", border: "#a47a52" },
   text: { bg: "#a04060", border: "#c45582" },
   rect: { bg: "#b03a8f", border: "#d957b8" },
@@ -195,23 +179,11 @@ const SELECTED_BORDER = PRIMARY_BORDER;
 interface InnerProps {
   timeline: ResolvedTimeline;
   /**
-   * The document subtree whose `children` and `attachments` correspond 1:1
-   * to the first N and remaining entries of `timeline.children` (after the
-   * resolver appends resolved attachments to the children array). Used to
-   * recover the original document node — the real type of a child when it's
-   * a ref, the attachment-vs-child distinction for layout, etc.
+   * The document subtree whose `children` correspond 1:1 to the timeline's
+   * blocks. Used to recover the authored node behind each block (the real
+   * type of a bin reference, run heads, labels).
    */
-  docRoot?: {
-    children?: import("@seam/core").Child[];
-    attachments?: import("@seam/core").Child[];
-  };
-  /**
-   * Index into `timeline.children` at which resolved attachments begin. Items
-   * before this are sequential children (top band); items from this index
-   * onward are attachments (bottom band). When undefined everything is
-   * treated as children.
-   */
-  attachmentStartIndex?: number;
+  docRoot?: { children?: Child[] };
   selection: string[];
   onSelectionChange: (keys: string[]) => void;
   /** Set of expanded composition addresses (see `timelineTree`). */
@@ -220,65 +192,19 @@ interface InnerProps {
   onToggleExpand: (addr: string) => void;
   /** Root document's bin entries — for pairing `binItem` expansions. */
   rootBin: BinEntry[];
-  /** Provided only when the panel is editable, where attachment edits are
-   *  writable. */
+  /** Provided only when the panel is editable. */
   editHistory?: History<SeamFile>;
-  /** Move an existing node into a container's `children` band at insertion
-   *  index `to`. Handles both same-container reorder and cross-container
-   *  drag (in/out of a composition). Undefined when editing isn't
-   *  supported. */
-  onMoveNode?: (
-    fromPath: NodePath,
-    toContainer: NodePath,
-    toIndex: number,
-  ) => void;
-  /** Cursor-based file import into a specific container at a slot. */
-  onImportAt?: (
-    toContainer: NodePath,
-    toIndex: number,
-    files: FileList | File[],
-  ) => Promise<void>;
-  /** Insert prebuilt nodes (dragged from the media browser) into a container
-   *  at a slot. Mirrors `onImportAt` but skips file import — the source is
-   *  already stored. */
-  onInsertChildrenAt?: (
-    toContainer: NodePath,
-    toIndex: number,
-    children: Child[],
-  ) => void;
-  /** Receives a file drop on the attach zone — anchors new items to the
-   *  selected primary (at `containerPath`'s `field[fieldIndex]`, where
-   *  `field` is the primary's own band) at its container-local `localTime`
-   *  (the playhead). */
-  onAttachDropAt?: (
-    containerPath: NodePath,
-    field: "children" | "attachments",
-    fieldIndex: number,
-    side: "start" | "end",
-    localTime: number,
-    files: FileList,
-  ) => void;
-  /** Attach-zone drop of prebuilt nodes (media-browser drag). Mirrors
-   *  `onAttachDropAt` without file import. */
-  onAttachChildrenAt?: (
-    containerPath: NodePath,
-    field: "children" | "attachments",
-    fieldIndex: number,
-    side: "start" | "end",
-    localTime: number,
-    children: Child[],
-  ) => void;
-  /** Receives a grabbed-node drop on the attach zone — moves the node at
-   *  `fromPath` into the selected primary's container as an anchored
-   *  attachment. */
-  onAttachExistingAt?: (
-    containerPath: NodePath,
-    field: "children" | "attachments",
-    fieldIndex: number,
-    side: "start" | "end",
-    localTime: number,
-    fromPath: NodePath,
-  ) => void;
+  /** Move existing nodes (in the given order, landing contiguous) onto a
+   *  drop target — same-container reorder, cross-container drag, or a new
+   *  run. Undefined when editing isn't supported. */
+  onMoveNodes?: (fromPaths: NodePath[], target: DropTarget) => void;
+  /** Cursor-based file import onto a drop target. */
+  onImportAt?: (target: DropTarget, files: FileList | File[]) => Promise<void>;
+  /** Insert prebuilt nodes (dragged from the media browser) onto a drop
+   *  target. Mirrors `onImportAt` but skips file import. */
+  onInsertChildrenAt?: (target: DropTarget, children: Child[]) => void;
+  /** Re-stack a run: move `[head, end)` of the container before `index`. */
+  onMoveRun?: (containerPath: NodePath, head: number, end: number, index: number) => void;
   /** Reveal a dotted JSON path (keyframe diamond click). */
   onJumpToJson?: (pathKey: string) => void;
 }
@@ -292,7 +218,6 @@ interface InnerProps {
 interface TimelineSurfaceState {
   pxPerSec: number;
   setPxPerSec: React.Dispatch<React.SetStateAction<number>>;
-  splitIndex: number;
   /** The root composition body's layout group (nested expansions hang
    *  off its blocks). */
   rootGroup: TreeGroup;
@@ -306,8 +231,7 @@ interface TimelineSurfaceState {
  *  attached to the scroll container. */
 function useTimelineSurfaceState(
   timeline: ResolvedTimeline,
-  attachmentStartIndex: number | undefined,
-  authored: { children?: Child[]; attachments?: Child[] } | undefined,
+  authored: { children?: Child[] } | undefined,
   expanded: Set<string>,
   rootBin: BinEntry[],
   scrollRef: React.RefObject<HTMLDivElement | null>,
@@ -315,10 +239,9 @@ function useTimelineSurfaceState(
   const { totalDuration } = useTimeline();
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
 
-  const splitIndex = attachmentStartIndex ?? timeline.children.length;
   const rootGroup = useMemo(
-    () => layoutTree(timeline.children, authored, splitIndex, expanded, rootBin),
-    [timeline, authored, splitIndex, expanded, rootBin],
+    () => layoutTree(timeline.children, authored, expanded, rootBin),
+    [timeline, authored, expanded, rootBin],
   );
   const rowCount = rootGroup.rowCount;
   const contentHeight =
@@ -350,7 +273,6 @@ function useTimelineSurfaceState(
   return {
     pxPerSec,
     setPxPerSec,
-    splitIndex,
     rootGroup,
     rowCount,
     contentHeight,
@@ -364,10 +286,7 @@ interface TimelineSurfaceProps {
   /** The shell's scroll container — used to scrub the playhead (audio
    *  feedback) to the cursor's content time during a resize drag. */
   scrollRef: React.RefObject<HTMLDivElement | null>;
-  docRoot?: {
-    children?: import("@seam/core").Child[];
-    attachments?: import("@seam/core").Child[];
-  };
+  docRoot?: { children?: Child[] };
   selection: string[];
   onSelectionChange: (keys: string[]) => void;
   expanded: Set<string>;
@@ -376,21 +295,20 @@ interface TimelineSurfaceProps {
    *  an edit (resize/reorder) runs against a sub-composition. */
   rootBin: BinEntry[];
   editHistory?: History<SeamFile>;
-  /** Path key of the node currently being drag-moved (fades its block
-   *  view). Pass `null` when the shell doesn't support drag. */
-  reorderDragKey: string | null;
+  /** Path keys of the nodes currently being drag-moved (fades their
+   *  blocks). `null` when no move drag is in flight. */
+  reorderDragKeys: Set<string> | null;
   /** Hand-off callback when a block's mouse-press passes the drag
    *  threshold. Pass `null` to disable drag for this shell. */
   onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
-  /** Insertion-line ghost: content-X plus the target container's vertical
-   *  extent. Null hides it. */
-  insertionGhost?: { x: number; top: number; height: number } | null;
-  /** True when the attach zone should be rendered (shell-decided based
-   *  on dragOver + a clip selection). */
-  showAttachZone?: boolean;
-  /** Highlight state for the attach zone's two halves. Null when the
-   *  cursor isn't over the zone. */
-  attachHoverSide?: "start" | "end" | null;
+  /** Hand-off when a run's dotted underline is pressed (z-order drag). */
+  onRunDragStart:
+    | ((containerPath: NodePath, head: number, end: number, e: React.PointerEvent) => void)
+    | null;
+  /** Where the current drag would land. Null hides the ghost. */
+  dropGhost?: DropTarget | null;
+  /** Content-space bar shown while a run is dragged vertically. */
+  runDragGhost?: { left: number; width: number; y: number } | null;
   /** Reveal a dotted JSON path (e.g. a keyframe `children.3.opacity.2`)
    *  when a keyframe diamond is clicked. */
   onJumpToJson: ((pathKey: string) => void) | null;
@@ -410,17 +328,16 @@ function TimelineSurface({
   onToggleExpand,
   rootBin,
   editHistory,
-  reorderDragKey,
+  reorderDragKeys,
   onReorderDragStart,
-  insertionGhost,
-  showAttachZone,
-  attachHoverSide,
+  onRunDragStart,
+  dropGhost,
+  runDragGhost,
   onJumpToJson,
 }: TimelineSurfaceProps) {
-  const { pxPerSec, rootGroup, contentHeight, rulerTicks } = surface;
-  const { currentTime, totalDuration, seek } = useTimeline();
+  const { pxPerSec, rootGroup, rulerTicks } = surface;
   // Editable group placements drive the anchor-line overlay (it draws every
-  // selected attachment's line in content coords, at any nesting level).
+  // selected anchored node's line in content coords, at any nesting level).
   const groups = useMemo(
     () => flattenGroups(rootGroup, pxPerSec),
     [rootGroup, pxPerSec],
@@ -447,7 +364,6 @@ function TimelineSurface({
       const split = splitLast(path);
       if (!split) return;
       const { parent, last } = split;
-      const isAttachment = last.field === "attachments";
 
       try {
         target.setPointerCapture(pointerId);
@@ -472,7 +388,7 @@ function TimelineSurface({
         }
         editHistory.replace(
           editContainer(initialDoc, parent, rootBin, (sub) =>
-            resizeChild(sub, last.index, isAttachment, side, deltaSec),
+            resizeChild(sub, last.index, side, deltaSec),
           ),
         );
         // (Resizing a block does not move the playhead — follow-the-cursor was
@@ -582,8 +498,9 @@ function TimelineSurface({
         onSelectionChange={onSelectionChange}
         expanded={expanded}
         onToggleExpand={onToggleExpand}
-        reorderDragKey={reorderDragKey}
+        reorderDragKeys={reorderDragKeys}
         onReorderDragStart={onReorderDragStart}
+        onRunDragStart={onRunDragStart}
         onResizeDragStart={onResizeDragStart}
         onJumpToJson={onJumpToJson ?? null}
         onKeyframeDragStart={onKeyframeDragStart}
@@ -596,159 +513,99 @@ function TimelineSurface({
         pxPerSec={pxPerSec}
         history={editHistory}
       />
-      {insertionGhost != null && (
-        <InsertionGhost
-          x={insertionGhost.x}
-          top={insertionGhost.top}
-          height={insertionGhost.height}
-        />
-      )}
-      {showAttachZone && (
-        <AttachZone
-          top={contentHeight}
-          playheadX={currentTime * pxPerSec}
-          hoverSide={attachHoverSide ?? null}
+      {dropGhost != null && <DropGhost target={dropGhost} />}
+      {runDragGhost != null && (
+        <div
+          style={{
+            position: "absolute",
+            left: runDragGhost.left,
+            top: runDragGhost.y - 1,
+            width: runDragGhost.width,
+            height: 2,
+            background: GHOST_COLOR,
+            boxShadow: GHOST_GLOW,
+            zIndex: 8,
+            pointerEvents: "none",
+          }}
         />
       )}
     </>
   );
 }
 
-const ATTACH_ZONE_HEIGHT = 40;
+const GHOST_COLOR = "#4a9eff";
+const GHOST_GLOW = "0 0 6px rgba(74, 158, 255, 0.8)";
 
-function InsertionGhost({
-  x,
-  top,
-  height,
-}: {
-  x: number;
-  top: number;
-  height: number;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: x - 1,
-        top,
-        width: 2,
-        height,
-        background: "#4a9eff",
-        boxShadow: "0 0 6px rgba(74, 158, 255, 0.8)",
-        zIndex: 8,
-        pointerEvents: "none",
-      }}
-    />
-  );
-}
-
-/** Display-only strip rendered just below the timeline rows when a
- *  clip is selected and a file is being dragged. The shell owns the
- *  actual drop event — it computes `hoverSide` from cursor X relative
- *  to the playhead and routes the drop to `attachNewItems`. */
-function AttachZone({
-  top,
-  playheadX,
-  hoverSide,
-}: {
-  top: number;
-  playheadX: number;
-  hoverSide: "start" | "end" | null;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: 0,
-        top: top + 4,
-        right: 0,
-        height: ATTACH_ZONE_HEIGHT - 4,
-        zIndex: 9,
-        pointerEvents: "none",
-      }}
-    >
-      {/* Left half: end-anchor */}
+/** Where a drag would land: a vertical line on one row (extend that run), or
+ *  a highlighted strip / ruler band with a tick at the cursor (new run). */
+function DropGhost({ target }: { target: DropTarget }) {
+  if (target.kind === "insert") {
+    return (
       <div
         style={{
           position: "absolute",
-          left: 0,
-          top: 0,
-          width: playheadX,
-          height: "100%",
-          background:
-            hoverSide === "end"
-              ? "rgba(255, 204, 0, 0.35)"
-              : "rgba(255, 204, 0, 0.12)",
-          border: `1px ${hoverSide === "end" ? "solid" : "dashed"} #ffcc00`,
-          borderRadius: 3,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          paddingRight: 12,
-          color: "#ffcc00",
-          fontSize: 11,
-          fontWeight: 600,
-          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          left: target.x - 1,
+          top: target.top,
+          width: 2,
+          height: target.height,
+          background: GHOST_COLOR,
+          boxShadow: GHOST_GLOW,
+          zIndex: 8,
           pointerEvents: "none",
-          boxSizing: "border-box",
         }}
-      >
-        end-anchored ⟧
-      </div>
-      {/* Right half: start-anchor */}
+      />
+    );
+  }
+  return (
+    <>
       <div
         style={{
           position: "absolute",
-          left: playheadX,
-          top: 0,
-          right: 0,
-          height: "100%",
-          background:
-            hoverSide === "start"
-              ? "rgba(81, 207, 102, 0.35)"
-              : "rgba(81, 207, 102, 0.12)",
-          border: `1px ${hoverSide === "start" ? "solid" : "dashed"} #51cf66`,
-          borderRadius: 3,
-          display: "flex",
-          alignItems: "center",
-          paddingLeft: 12,
-          color: "#51cf66",
-          fontSize: 11,
-          fontWeight: 600,
-          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          left: target.region.left,
+          top: target.top,
+          width: target.region.width,
+          height: target.height,
+          background: "rgba(74, 158, 255, 0.28)",
+          zIndex: 8,
           pointerEvents: "none",
-          boxSizing: "border-box",
         }}
-      >
-        ⟦ start-anchored
-      </div>
-    </div>
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: target.x - 1,
+          top: target.top - 3,
+          width: 2,
+          height: target.height + 6,
+          background: GHOST_COLOR,
+          boxShadow: GHOST_GLOW,
+          zIndex: 8,
+          pointerEvents: "none",
+        }}
+      />
+    </>
   );
 }
 
 function DesktopTimeline({
   timeline,
   docRoot,
-  attachmentStartIndex,
   selection,
   onSelectionChange,
   expanded,
   onToggleExpand,
   rootBin,
   editHistory,
-  onMoveNode,
+  onMoveNodes,
   onImportAt,
   onInsertChildrenAt,
-  onAttachDropAt,
-  onAttachChildrenAt,
-  onAttachExistingAt,
+  onMoveRun,
   onJumpToJson,
 }: InnerProps) {
   const { currentTime, totalDuration, isPlaying, seek } = useTimeline();
   const scrollRef = useRef<HTMLDivElement>(null);
   const surface = useTimelineSurfaceState(
     timeline,
-    attachmentStartIndex,
     docRoot,
     expanded,
     rootBin,
@@ -757,17 +614,40 @@ function DesktopTimeline({
   const { pxPerSec, rootGroup, contentHeight } = surface;
   const contentWidth = Math.max(totalDuration * pxPerSec + 200, 200);
 
-  // Item-drag state: a grabbed node tracked in content (scroll-relative)
-  // px. The same position drives the insertion ghost and the attach-zone
-  // hover, just like a dropped file.
+  // Item-drag state: the grabbed nodes (the whole selection when the grabbed
+  // block is part of it, in selection order) tracked in content
+  // (scroll-relative) px. `offset` mode (Shift held at grab) nudges the
+  // nodes' `offset`s live instead of moving them in the array.
   const [itemDrag, setItemDrag] = useState<{
-    fromPath: NodePath;
+    paths: NodePath[];
+    mode: "move" | "offset";
+    startX: number;
     cursorX: number;
     cursorY: number;
   } | null>(null);
 
-  // File-drag state. cursorContentX drives the insertion ghost +
-  // cursor-based snap; cursorContentY decides attach zone vs main area.
+  // Offset-drag session, fixed at the grab: the document as it was, each
+  // dragged node's container (with its window scale), and whether the undo
+  // snapshot has been pushed. Lives in a ref because every tick rewrites the
+  // document, which re-renders (and re-subscribes) everything around it —
+  // the session must not be re-captured from the already-shifted doc.
+  const offsetDragRef = useRef<{
+    initialDoc: SeamFile;
+    groups: { path: NodePath; indices: Set<number>; scale: number }[];
+    pushed: boolean;
+    /** The drag's first direction — the only way a zero offset may move. */
+    direction: 1 | -1 | null;
+  } | null>(null);
+
+  // Run z-drag state: a run's dotted underline dragged vertically.
+  const [runDrag, setRunDrag] = useState<{
+    containerPath: NodePath;
+    head: number;
+    end: number;
+    cursorY: number;
+  } | null>(null);
+
+  // File-drag state. The cursor position drives the drop ghost.
   const [fileDrag, setFileDrag] = useState<{
     cursorContentX: number;
     cursorContentY: number;
@@ -775,7 +655,7 @@ function DesktopTimeline({
 
   // Every editable container, flattened to a content-space drop target.
   // A drag hit-tests these to find which composition (root or nested) the
-  // cursor is over and the insertion slot within it.
+  // cursor is over and where in it the drop lands.
   const regions = useMemo(
     () =>
       flattenDropRegions(rootGroup, pxPerSec, {
@@ -784,53 +664,6 @@ function DesktopTimeline({
       }),
     [rootGroup, pxPerSec, contentWidth, contentHeight],
   );
-
-  // The single selected node that's a valid anchor primary — any node type
-  // (the format lets you anchor to anything), as a sequential child or an
-  // existing attachment, at any editable level. (`attachNewItems` resolves
-  // its container un-windowed, so windowed containers are fine.)
-  const attachTarget = useMemo(() => {
-    if (!docRoot || selection.length !== 1) return null;
-    const key = selection[0];
-    const path = parsePath(key);
-    const last = path[path.length - 1];
-    if (!last || (last.field !== "children" && last.field !== "attachments")) {
-      return null;
-    }
-    const node = getNodeAtPath(docRoot as SeamFile, path);
-    if (!node) return null;
-    return {
-      key,
-      path,
-      containerPath: path.slice(0, -1),
-      field: last.field,
-      fieldIndex: last.index,
-    };
-  }, [docRoot, selection]);
-
-  // The attach zone is available during a file drag (drop files as
-  // attachments) and during a grabbed-node drag (re-attach an existing
-  // node) — both anchored to the selected primary, as long as the grabbed
-  // node isn't itself the primary.
-  const fileAttachActive =
-    fileDrag != null && attachTarget != null && !!onAttachDropAt;
-  const itemAttachActive =
-    itemDrag != null &&
-    attachTarget != null &&
-    pathKey(itemDrag.fromPath) !== attachTarget.key &&
-    !!onAttachExistingAt;
-  const showAttachZone = fileAttachActive || itemAttachActive;
-  const totalContentHeight = contentHeight + (showAttachZone ? ATTACH_ZONE_HEIGHT : 0);
-
-  // Local-output time on the attach primary's container at the playhead —
-  // the anchor point for an attach drop.
-  const attachLocalTime = (): number => {
-    if (!attachTarget) return currentTime;
-    const region = regions.find((r) =>
-      samePath(r.path, attachTarget.containerPath),
-    );
-    return region ? localTime(region, currentTime * pxPerSec, pxPerSec) : currentTime;
-  };
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -879,27 +712,77 @@ function DesktopTimeline({
     container.scrollLeft = playheadX - container.clientWidth / 2;
   }, [currentTime, pxPerSec, isPlaying]);
 
-  // ── Drag-to-move (reorder + in/out of compositions) ────────────
+  // ── Drag-to-move (reorder + in/out of compositions + new runs) ──
   // A block press that crosses the threshold hands off here. The cursor
   // is then tracked on window events (independent of the source block's
-  // capture) and the drop hit-tests the drop regions to find its target
-  // container + slot — so a node can move within its container or across
-  // composition boundaries.
+  // capture) and the drop hit-tests the drop regions for its target — so
+  // nodes can move within their container, across composition boundaries,
+  // or head a new run. With Shift held at the grab, the drag instead nudges
+  // the grabbed nodes' `offset`s (live, like a resize).
   const startReorderDrag = useCallback(
     (path: NodePath, e: PointerEvent) => {
-      if (!onMoveNode) return;
+      if (!onMoveNodes) return;
       const container = scrollRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const cursorX = e.clientX - rect.left + container.scrollLeft;
       const cursorY = e.clientY - rect.top + container.scrollTop;
-      setItemDrag({ fromPath: path, cursorX, cursorY });
+      const key = pathKey(path);
+      const paths = selection.includes(key) ? selection.map(parsePath) : [path];
+      const mode = e.shiftKey && editHistory ? "offset" : "move";
+      offsetDragRef.current = null;
+      if (mode === "offset" && editHistory) {
+        const groups = new Map<string, { path: NodePath; indices: Set<number>; scale: number }>();
+        for (const p of paths) {
+          const sp = splitLast(p);
+          if (!sp || sp.last.field === "bin") continue;
+          const k = pathKey(sp.parent);
+          if (!groups.has(k)) {
+            groups.set(k, {
+              path: sp.parent,
+              indices: new Set(),
+              // A nested group compresses time by its window scale.
+              scale: regions.find((r) => samePath(r.path, sp.parent))?.scale ?? 1,
+            });
+          }
+          groups.get(k)!.indices.add(sp.last.index);
+        }
+        offsetDragRef.current = {
+          initialDoc: editHistory.current,
+          groups: [...groups.values()],
+          pushed: false,
+          direction: null,
+        };
+      }
+      setItemDrag({
+        paths,
+        mode,
+        startX: cursorX,
+        cursorX,
+        cursorY,
+      });
     },
-    [onMoveNode],
+    [onMoveNodes, selection, editHistory, regions],
   );
 
+  /** True when dropping `paths` on `target` would put them back where they
+   *  are: one contiguous slice of the target container, dropped on itself. */
+  const isSelfDrop = (paths: NodePath[], target: DropTarget): boolean => {
+    if (target.kind !== "insert") return false;
+    const idx: number[] = [];
+    for (const p of paths) {
+      if (!samePath(p.slice(0, -1), target.region.path)) return false;
+      idx.push(p[p.length - 1].index);
+    }
+    const lo = Math.min(...idx);
+    const hi = Math.max(...idx);
+    if (hi - lo + 1 !== idx.length) return false;
+    if (idx.some((v, k) => k > 0 && v < idx[k - 1])) return false;
+    return target.index >= lo && target.index <= hi + 1;
+  };
+
   useEffect(() => {
-    if (!itemDrag || !onMoveNode) return;
+    if (!itemDrag || !onMoveNodes) return;
     const container = scrollRef.current;
     if (!container) return;
     const dragRef = itemDrag;
@@ -912,8 +795,36 @@ function DesktopTimeline({
       };
     };
 
+    // Offset mode: each tick is `grab-time offset + (cursor − grab x)`,
+    // rewritten from the grab-time document; one undo step for the drag.
+    // An offset never crosses zero within the drag (see `shiftOffsets`).
+    const applyOffsets = (x: number) => {
+      const session = offsetDragRef.current;
+      if (!editHistory || !session) return;
+      if (session.direction == null) {
+        if (x === dragRef.startX) return;
+        session.direction = x > dragRef.startX ? 1 : -1;
+      }
+      const direction = session.direction;
+      let next = session.initialDoc;
+      for (const g of session.groups) {
+        const delta = Math.round(((x - dragRef.startX) / pxPerSec) * g.scale * 1000) / 1000;
+        next = updateCompAtPath(next, g.path, (comp) => ({
+          ...comp,
+          children: shiftOffsets(comp.children ?? [], g.indices, delta, direction),
+        }));
+      }
+      if (!session.pushed) {
+        if (next === session.initialDoc) return;
+        editHistory.pushPast(session.initialDoc);
+        session.pushed = true;
+      }
+      editHistory.replace(next);
+    };
+
     const onMove = (e: PointerEvent) => {
       const { x, y } = cursorFromEvent(e);
+      if (dragRef.mode === "offset") applyOffsets(x);
       setItemDrag((prev) =>
         prev ? { ...prev, cursorX: x, cursorY: y } : null,
       );
@@ -921,28 +832,11 @@ function DesktopTimeline({
 
     const onUp = (e: PointerEvent) => {
       const { x, y } = cursorFromEvent(e);
-      const fromPath = dragRef.fromPath;
-      // Dropping a grabbed node on the attach zone attaches it to the
-      // selected primary — same handler intent as a dropped file.
-      const inAttachZone =
-        attachTarget != null &&
-        pathKey(fromPath) !== attachTarget.key &&
-        onAttachExistingAt != null &&
-        y >= contentHeight;
-      if (inAttachZone) {
-        const side = x >= currentTime * pxPerSec ? "start" : "end";
-        onAttachExistingAt(
-          attachTarget.containerPath,
-          attachTarget.field,
-          attachTarget.fieldIndex,
-          side,
-          attachLocalTime(),
-          fromPath,
-        );
+      if (dragRef.mode === "offset") {
+        applyOffsets(x);
       } else {
-        const region = regionAt(regions, x, y);
-        const slot = insertionIndexIn(region, x);
-        onMoveNode(fromPath, region.path, slot);
+        const target = dropTargetAt(regions, x, y, pxPerSec);
+        if (!isSelfDrop(dragRef.paths, target)) onMoveNodes(dragRef.paths, target);
       }
       setItemDrag(null);
     };
@@ -958,19 +852,65 @@ function DesktopTimeline({
       window.removeEventListener("pointercancel", onCancel);
     };
     // Only the drag's *existence* drives subscribe/unsubscribe; cursor
-    // updates come through setState. The other values are read fresh at
-    // drop time via the closure (re-subscription on change is harmless).
+    // updates come through setState. Re-subscribing mid-drag (callbacks
+    // change identity as the doc changes) is harmless: the offset session
+    // lives in `offsetDragRef`, and a move reads `regions` fresh at drop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    itemDrag !== null,
-    onMoveNode,
-    onAttachExistingAt,
-    regions,
-    attachTarget,
-    pxPerSec,
-    currentTime,
-    contentHeight,
-  ]);
+  }, [itemDrag !== null, onMoveNodes, regions, pxPerSec]);
+
+  // ── Run z-drag (dotted underline, vertical) ────────────────────
+  const startRunDrag = useCallback(
+    (containerPath: NodePath, head: number, end: number, e: React.PointerEvent) => {
+      if (!onMoveRun) return;
+      const container = scrollRef.current;
+      if (!container) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      setRunDrag({
+        containerPath,
+        head,
+        end,
+        cursorY: e.clientY - rect.top + container.scrollTop,
+      });
+    },
+    [onMoveRun],
+  );
+
+  useEffect(() => {
+    if (!runDrag || !onMoveRun) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const dragRef = runDrag;
+    const yOf = (e: PointerEvent) =>
+      e.clientY - container.getBoundingClientRect().top + container.scrollTop;
+    const onMove = (e: PointerEvent) => {
+      const y = yOf(e);
+      setRunDrag((prev) => (prev ? { ...prev, cursorY: y } : null));
+    };
+    const onUp = (e: PointerEvent) => {
+      const region = regions.find((r) => samePath(r.path, dragRef.containerPath));
+      if (region) {
+        onMoveRun(
+          dragRef.containerPath,
+          dragRef.head,
+          dragRef.end,
+          runZIndexAt(region, dragRef.head, yOf(e)),
+        );
+      }
+      setRunDrag(null);
+    };
+    const onCancel = () => setRunDrag(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runDrag !== null, onMoveRun, regions]);
 
   // ── File drag-and-drop ────────────────────────────────────────
   const cursorToContent = (e: React.DragEvent) => {
@@ -983,8 +923,8 @@ function DesktopTimeline({
     };
   };
 
-  // Both OS files and media-browser source drags drive the same ghost +
-  // attach-zone affordance; the payload only differs at drop time.
+  // Both OS files and media-browser source drags drive the same ghost; the
+  // payload only differs at drop time.
   const isDraggablePayload = (e: React.DragEvent) =>
     e.dataTransfer.types.includes("Files") ||
     e.dataTransfer.types.includes(SOURCE_DRAG_MIME);
@@ -1022,8 +962,8 @@ function DesktopTimeline({
     if (!pos) return;
 
     // Media-browser source drag carries prebuilt nodes; an OS drop carries
-    // files. Parse the source payload (if any) so both go through the same
-    // attach-zone / region branching below.
+    // files. Parse the source payload (if any) so both land on the same
+    // drop target below.
     const raw = e.dataTransfer.getData(SOURCE_DRAG_MIME);
     let sourceChildren: Child[] | null = null;
     if (raw) {
@@ -1036,74 +976,36 @@ function DesktopTimeline({
     }
     if (!sourceChildren && e.dataTransfer.files.length === 0) return;
 
-    const inAttachZone =
-      showAttachZone &&
-      pos.y >= contentHeight &&
-      attachTarget != null;
-    if (inAttachZone) {
-      const side = pos.x >= currentTime * pxPerSec ? "start" : "end";
-      if (sourceChildren) {
-        onAttachChildrenAt?.(
-          attachTarget!.containerPath,
-          attachTarget!.field,
-          attachTarget!.fieldIndex,
-          side,
-          attachLocalTime(),
-          sourceChildren,
-        );
-      } else if (onAttachDropAt) {
-        onAttachDropAt(
-          attachTarget!.containerPath,
-          attachTarget!.field,
-          attachTarget!.fieldIndex,
-          side,
-          attachLocalTime(),
-          e.dataTransfer.files,
-        );
-      }
-      return;
-    }
-
-    const region = regionAt(regions, pos.x, pos.y);
-    const slot = insertionIndexIn(region, pos.x);
+    const target = dropTargetAt(regions, pos.x, pos.y, pxPerSec);
     if (sourceChildren) {
-      onInsertChildrenAt?.(region.path, slot, sourceChildren);
+      onInsertChildrenAt?.(target, sourceChildren);
     } else if (onImportAt) {
-      void onImportAt(region.path, slot, e.dataTransfer.files);
+      void onImportAt(target, e.dataTransfer.files);
     }
   };
 
   const playheadX = currentTime * pxPerSec;
   // A grabbed node and a dragged-in file share the same drag position →
-  // the same insertion ghost (a move = "drop this node at the snapped
-  // slot in the targeted container") and the same attach-zone hover.
+  // the same drop ghost. (An offset drag has no target: the blocks move.)
   const dragPos: { x: number; y: number } | null =
     fileDrag != null
       ? { x: fileDrag.cursorContentX, y: fileDrag.cursorContentY }
-      : itemDrag != null
+      : itemDrag != null && itemDrag.mode === "move"
         ? { x: itemDrag.cursorX, y: itemDrag.cursorY }
         : null;
-  const inAttachZone =
-    showAttachZone && dragPos != null && dragPos.y >= contentHeight;
-  // Hit-test the targeted container and snap the ghost to its insertion
-  // slot, drawn over that container's vertical extent.
-  const insertionGhost =
-    dragPos != null && !inAttachZone
-      ? (() => {
-          const region = regionAt(regions, dragPos.x, dragPos.y);
-          const slot = insertionIndexIn(region, dragPos.x);
-          return {
-            x: insertionXIn(region, slot),
-            top: region.top,
-            height: region.height,
-          };
-        })()
+  const dropGhost =
+    dragPos != null ? dropTargetAt(regions, dragPos.x, dragPos.y, pxPerSec) : null;
+  const runDragRegion =
+    runDrag != null ? regions.find((r) => samePath(r.path, runDrag.containerPath)) : undefined;
+  const runDragGhost =
+    runDrag != null && runDragRegion
+      ? { left: runDragRegion.left, width: runDragRegion.width, y: runDrag.cursorY }
       : null;
-  const attachHoverSide: "start" | "end" | null = inAttachZone
-    ? dragPos!.x >= playheadX
-      ? "start"
-      : "end"
-    : null;
+  const reorderDragKeys = useMemo(
+    () =>
+      itemDrag && itemDrag.mode === "move" ? new Set(itemDrag.paths.map(pathKey)) : null,
+    [itemDrag?.paths, itemDrag?.mode],
+  );
 
   return (
     <div
@@ -1116,10 +1018,10 @@ function DesktopTimeline({
         flex: 1,
         overflow: "auto",
         position: "relative",
-        cursor: itemDrag ? "grabbing" : "crosshair",
+        cursor: runDrag ? "ns-resize" : itemDrag ? "grabbing" : "crosshair",
       }}
     >
-      <div style={{ width: contentWidth, height: totalContentHeight, position: "relative" }}>
+      <div style={{ width: contentWidth, height: contentHeight, position: "relative" }}>
         <TimelineSurface
           surface={surface}
           timeline={timeline}
@@ -1131,11 +1033,11 @@ function DesktopTimeline({
           onToggleExpand={onToggleExpand}
           rootBin={rootBin}
           editHistory={editHistory}
-          reorderDragKey={itemDrag ? pathKey(itemDrag.fromPath) : null}
-          onReorderDragStart={onMoveNode ? startReorderDrag : null}
-          insertionGhost={insertionGhost}
-          showAttachZone={showAttachZone}
-          attachHoverSide={attachHoverSide}
+          reorderDragKeys={reorderDragKeys}
+          onReorderDragStart={onMoveNodes ? startReorderDrag : null}
+          onRunDragStart={onMoveRun ? startRunDrag : null}
+          dropGhost={dropGhost}
+          runDragGhost={runDragGhost}
           onJumpToJson={onJumpToJson ?? null}
         />
         <Playhead x={playheadX} height={contentHeight} />
@@ -1348,8 +1250,9 @@ function TimelineGroup({
   onSelectionChange,
   expanded,
   onToggleExpand,
-  reorderDragKey,
+  reorderDragKeys,
   onReorderDragStart,
+  onRunDragStart,
   onResizeDragStart,
   onJumpToJson,
   onKeyframeDragStart,
@@ -1363,8 +1266,11 @@ function TimelineGroup({
   onSelectionChange: (keys: string[]) => void;
   expanded: Set<string>;
   onToggleExpand: (addr: string) => void;
-  reorderDragKey: string | null;
+  reorderDragKeys: Set<string> | null;
   onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
+  onRunDragStart:
+    | ((containerPath: NodePath, head: number, end: number, e: React.PointerEvent) => void)
+    | null;
   onResizeDragStart:
     | ((
         path: NodePath,
@@ -1385,18 +1291,47 @@ function TimelineGroup({
   const toX = (sec: number) => ((sec - group.originSec) / group.scale) * pxPerSec;
   return (
     <>
+      {group.runs.map((run) => {
+        // The run's dotted underline, in the strip below its row. Dragged
+        // vertically it re-stacks the run (z-order).
+        const left = toX(run.startSec);
+        const width = Math.max(toX(run.endSec) - left, 2);
+        const draggable = group.editable && onRunDragStart != null;
+        return (
+          <div
+            key={`run-${run.head}`}
+            onPointerDown={
+              draggable
+                ? (e) => onRunDragStart!(group.path, run.head, run.end, e)
+                : undefined
+            }
+            title={draggable ? "Drag up/down to change stacking order" : undefined}
+            style={{
+              position: "absolute",
+              left,
+              top: yBase + rowTop(run.row) + ROW_HEIGHT,
+              width,
+              height: ROW_GAP,
+              cursor: draggable ? "ns-resize" : "default",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <div style={{ width: "100%", borderTop: "2px dotted #777" }} />
+          </div>
+        );
+      })}
       {group.blocks.map((block) => {
-        const { child, index, row, isAttachment, docChild, addr } = block;
+        const { child, index, row, docChild, addr } = block;
         const isSelected = selection.includes(addr);
         // The first selected item (the attach primary) is always the
         // primary, regardless of type; the rest are secondaries.
         const isPrimary = isSelected && selection[0] === addr;
-        // Drag-to-move is for sequential children at any editable level
-        // (attachments are anchor-positioned, so they don't reorder); the
-        // drop pass routes it within or across containers. Resize also
-        // works at any editable level — nested deltas scale by the window.
+        // Drag-to-move works for any block at any editable level; the drop
+        // pass routes it within or across containers. Resize too — nested
+        // deltas scale by the window.
         const blockReorderStart =
-          group.editable && !isAttachment && onReorderDragStart
+          group.editable && onReorderDragStart
             ? onReorderDragStart
             : null;
         const blockResizeStart =
@@ -1417,7 +1352,6 @@ function TimelineGroup({
             depth={depth}
             scale={group.scale}
             editable={group.editable}
-            isAttachment={isAttachment}
             isSelected={isSelected}
             isPrimary={isPrimary}
             isRoot={isRoot}
@@ -1428,8 +1362,8 @@ function TimelineGroup({
             onToggleExpand={() => onToggleExpand(addr)}
             selection={selection}
             onSelectionChange={onSelectionChange}
-            isDraggingOut={reorderDragKey === addr}
-            reorderDragActive={reorderDragKey != null}
+            isDraggingOut={reorderDragKeys?.has(addr) ?? false}
+            reorderDragActive={reorderDragKeys != null}
             onReorderDragStart={blockReorderStart}
             onResizeDragStart={blockResizeStart}
           />
@@ -1461,8 +1395,9 @@ function TimelineGroup({
               onSelectionChange={onSelectionChange}
               expanded={expanded}
               onToggleExpand={onToggleExpand}
-              reorderDragKey={reorderDragKey}
+              reorderDragKeys={reorderDragKeys}
               onReorderDragStart={onReorderDragStart}
+              onRunDragStart={onRunDragStart}
               onResizeDragStart={onResizeDragStart}
               onJumpToJson={onJumpToJson}
               onKeyframeDragStart={onKeyframeDragStart}
@@ -1507,7 +1442,6 @@ function ChildBlockView({
   depth,
   scale,
   editable,
-  isAttachment,
   isSelected,
   isPrimary,
   isRoot,
@@ -1539,7 +1473,6 @@ function ChildBlockView({
   scale: number;
   /** Whether this block's container is editable (1:1 with the doc). */
   editable: boolean;
-  isAttachment: boolean;
   isSelected: boolean;
   isPrimary: boolean;
   /** depth === 0: the root level (drives reorder / scrub specifics). */
@@ -1562,7 +1495,7 @@ function ChildBlockView({
   reorderDragActive: boolean;
   /** When set, mouse-press + drag past the threshold hands off to the
    *  parent's drag tracker. `null` disables drag for this block (e.g.
-   *  attachments, non-editable blocks, or read-only previews). */
+   *  non-editable blocks or read-only previews). */
   onReorderDragStart: ((path: NodePath, e: PointerEvent) => void) | null;
   /** When set, pointer-down on a side handle hands off to the parent's
    *  resize tracker. `null` hides the handles. */
@@ -1711,12 +1644,12 @@ function ChildBlockView({
         boxSizing: "border-box",
         border,
         cursor: onReorderDragStart ? "grab" : editable ? "pointer" : "default",
-        opacity: isDraggingOut ? 0.3 : isAttachment ? 0.85 : depth > 0 ? 0.92 : 1,
-        // A `transition` crossfade overlaps the incoming block back over the
+        opacity: isDraggingOut ? 0.3 : depth > 0 ? 0.92 : 1,
+        // A negative-offset crossfade overlaps the incoming block back over the
         // previous one's tail, covering its right resize handle. Lift a
         // selected block above its siblings so its handles stay grabbable
         // (primary above secondaries when several overlap). Kept below the
-        // attach zone (9) / insertion ghost (8).
+        // drop ghost (8).
         zIndex: isPrimary ? 4 : isSelected ? 3 : undefined,
       }}
     >
@@ -1866,163 +1799,70 @@ export default function TimelinePanel({
   // `editContainer` runs the existing pure tools against the target
   // composition (root or nested), injecting the root bin for resolution.
 
-  // Move a node within its container or across composition boundaries,
-  // then re-select it at its new home.
-  const onMoveNode = useCallback(
-    (fromPath: NodePath, toContainer: NodePath, toIndex: number) => {
+  // Move nodes onto a drop target (within their container, across
+  // composition boundaries, or as a new run), then re-select them at their
+  // new home.
+  const onMoveNodes = useCallback(
+    (fromPaths: NodePath[], target: DropTarget) => {
       if (!doc || !onDocumentChange) return;
-      const next = moveNode(
+      const moved = moveNodesTracked(
         doc,
-        fromPath,
-        toContainer,
-        "children",
-        toIndex,
-        stripAnchors,
+        fromPaths,
+        target.region.path,
+        target.index,
+        insertOptionsFor(target),
       );
-      if (next === doc) return;
-      // Destination index after the splice (for selection-follow).
-      const last = fromPath[fromPath.length - 1];
-      const sameContainer = samePath(fromPath.slice(0, -1), toContainer);
-      let dest = toIndex;
-      if (sameContainer && last?.field === "children" && last.index < toIndex) {
-        dest = toIndex - 1;
-      }
-      const len = (getCompAtPath(next, toContainer)?.children ?? []).length;
-      dest = Math.max(0, Math.min(dest, len - 1));
-      onDocumentChange(next);
-      onSelectionChange([
-        pathKey([...toContainer, { field: "children", index: dest }]),
-      ]);
+      if (!moved) return;
+      onDocumentChange(moved.doc);
+      onSelectionChange(moved.paths.map(pathKey));
     },
     [doc, onDocumentChange, onSelectionChange],
   );
 
-  // Import dropped files into a specific container at a slot.
+  // Import dropped files onto a drop target.
   const onImportAt = useCallback(
-    async (
-      toContainer: NodePath,
-      toIndex: number,
-      files: FileList | File[],
-    ) => {
+    async (target: DropTarget, files: FileList | File[]) => {
       if (!doc || !onDocumentChange) return;
       const baseDir = filePath ? dirname(filePath) : null;
       const items = await buildItemsFromFiles(files, platform, baseDir);
       if (items.length === 0) return;
-      let next = doc;
-      for (let k = 0; k < items.length; k++) {
-        next = insertNode(next, toContainer, "children", toIndex + k, items[k]);
-      }
-      onDocumentChange(next);
+      onDocumentChange(
+        insertNodes(doc, target.region.path, target.index, items, insertOptionsFor(target)),
+      );
     },
     [doc, onDocumentChange, filePath, platform],
   );
 
-  // Anchor dropped files to the selected primary at `anchorTime` (its
-  // container-local playhead), adding them as attachments in the primary's
-  // container via the edit lens.
-  const handleAttachDropAt = useCallback(
-    async (
-      containerPath: NodePath,
-      field: "children" | "attachments",
-      fieldIndex: number,
-      side: "start" | "end",
-      anchorTime: number,
-      files: FileList,
-    ) => {
-      if (!doc || !onDocumentChange) return;
-      const baseDir = filePath ? dirname(filePath) : null;
-      const items = await buildItemsFromFiles(files, platform, baseDir);
-      if (items.length === 0) return;
-      const next = editContainer(doc, containerPath, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, field, fieldIndex, items, side),
-      );
-      if (next !== doc) onDocumentChange(next);
-    },
-    [doc, onDocumentChange, filePath, platform, rootBin],
-  );
-
-  // Media-browser drag: insert prebuilt nodes (already-stored sources) into a
-  // container at a slot. Mirrors `onImportAt` minus the file-import step.
+  // Media-browser drag: insert prebuilt nodes (already-stored sources) onto a
+  // drop target. Mirrors `onImportAt` minus the file-import step.
   const onInsertChildrenAt = useCallback(
-    (toContainer: NodePath, toIndex: number, children: Child[]) => {
+    (target: DropTarget, children: Child[]) => {
       if (!doc || !onDocumentChange || children.length === 0) return;
-      let next = doc;
-      for (let k = 0; k < children.length; k++) {
-        next = insertNode(
-          next,
-          toContainer,
-          "children",
-          toIndex + k,
-          children[k],
-        );
-      }
-      onDocumentChange(next);
+      onDocumentChange(
+        insertNodes(doc, target.region.path, target.index, children, insertOptionsFor(target)),
+      );
     },
     [doc, onDocumentChange],
   );
 
-  // Media-browser drag onto the attach zone: anchor prebuilt nodes to the
-  // selected primary. Mirrors `handleAttachDropAt` minus the file-import step.
-  const onAttachChildrenAt = useCallback(
-    (
-      containerPath: NodePath,
-      field: "children" | "attachments",
-      fieldIndex: number,
-      side: "start" | "end",
-      anchorTime: number,
-      children: Child[],
-    ) => {
-      if (!doc || !onDocumentChange || children.length === 0) return;
-      const next = editContainer(doc, containerPath, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, field, fieldIndex, children, side),
-      );
-      if (next !== doc) onDocumentChange(next);
-    },
-    [doc, onDocumentChange, rootBin],
-  );
-
-  // Move a grabbed node into the selected primary's container as a fresh
-  // single-(start|end)-anchored attachment. Strips any existing anchors so
-  // it can't end up pinned on both ends; clears selection since it moved.
-  const handleAttachExistingAt = useCallback(
-    (
-      containerPath: NodePath,
-      field: "children" | "attachments",
-      fieldIndex: number,
-      side: "start" | "end",
-      anchorTime: number,
-      fromPath: NodePath,
-    ) => {
+  // Re-stack a run (z-order). Indices shift, so the selection is dropped.
+  const onMoveRun = useCallback(
+    (containerPath: NodePath, head: number, end: number, index: number) => {
       if (!doc || !onDocumentChange) return;
-      const node = getNodeAtPath(doc, fromPath);
-      if (!node) return;
-      const item = stripAnchors({ ...node } as Child);
-      const removed = removeNodeAtPath(doc, fromPath);
-      const adjContainer = adjustPathAfterRemoval(containerPath, fromPath);
-      // Removing an earlier sibling in the primary's *own* band (same
-      // container, same field) shifts the primary's index down by one.
-      const last = fromPath[fromPath.length - 1];
-      let adjFieldIndex = fieldIndex;
-      if (
-        samePath(fromPath.slice(0, -1), containerPath) &&
-        last?.field === field &&
-        last.index < fieldIndex
-      ) {
-        adjFieldIndex -= 1;
-      }
-      const next = editContainer(removed, adjContainer, rootBin, (sub) =>
-        attachNewItems(sub, anchorTime, field, adjFieldIndex, [item], side),
-      );
-      if (next !== removed) {
-        onDocumentChange(next);
-        onSelectionChange([]);
-      }
+      const next = updateCompAtPath(doc, containerPath, (comp) => {
+        const children = comp.children ?? [];
+        const moved = moveRun(children, head, end, index);
+        return moved === children ? comp : { ...comp, children: moved };
+      });
+      if (next === doc) return;
+      onDocumentChange(next);
+      onSelectionChange([]);
     },
-    [doc, onDocumentChange, rootBin, onSelectionChange],
+    [doc, onDocumentChange, onSelectionChange],
   );
 
-  // Delete/Backspace to remove selected blocks — handles both `children`
-  // and `attachments` indices. Editable panels only (the CC-cut preview
+  // Delete/Backspace to remove selected blocks (runs anchored to a deleted
+  // node go with it). Editable panels only (the CC-cut preview
   // routes Delete through its own handler in App).
   useEffect(() => {
     if (!doc) return;
@@ -2049,14 +1889,12 @@ export default function TimelinePanel({
     return () => window.removeEventListener("keydown", handler);
   }, [selection, doc, timeline, currentTime, seek, onDocumentChange, onSelectionChange]);
 
-  // Only forward drag / drop / attach callbacks when editable; a read-only
-  // preview should no-op on drop.
-  const shellOnMoveNode = editable ? onMoveNode : undefined;
+  // Only forward drag / drop callbacks when editable; a read-only preview
+  // should no-op on drop.
+  const shellOnMoveNodes = editable ? onMoveNodes : undefined;
   const shellOnImportAt = editable ? onImportAt : undefined;
   const shellOnInsertChildrenAt = editable ? onInsertChildrenAt : undefined;
-  const shellOnAttachDropAt = editable ? handleAttachDropAt : undefined;
-  const shellOnAttachChildrenAt = editable ? onAttachChildrenAt : undefined;
-  const shellOnAttachExistingAt = editable ? handleAttachExistingAt : undefined;
+  const shellOnMoveRun = editable ? onMoveRun : undefined;
 
   return (
     <div
@@ -2072,36 +1910,21 @@ export default function TimelinePanel({
         position: "relative",
       }}
     >
-      {(() => {
-        // The panel renders the document's children (+ attachments) as
-        // blocks. A read-only preview has no doc, so labels fall back to
-        // the resolved nodes and editing is disabled.
-        const panelDoc = doc;
-        const splitIndex = panelDoc
-          ? (panelDoc.children ?? []).length
-          : undefined;
-        const editHistory = editable ? history : undefined;
-        return (
-          <DesktopTimeline
-            timeline={timeline}
-            docRoot={panelDoc}
-            attachmentStartIndex={splitIndex}
-            selection={selection}
-            onSelectionChange={onSelectionChange}
-            expanded={expanded}
-            onToggleExpand={onToggleExpand}
-            rootBin={rootBin}
-            editHistory={editHistory}
-            onMoveNode={shellOnMoveNode}
-            onImportAt={shellOnImportAt}
-            onInsertChildrenAt={shellOnInsertChildrenAt}
-            onAttachDropAt={shellOnAttachDropAt}
-            onAttachChildrenAt={shellOnAttachChildrenAt}
-            onAttachExistingAt={shellOnAttachExistingAt}
-            onJumpToJson={onJumpToJson}
-          />
-        );
-      })()}
+      <DesktopTimeline
+        timeline={timeline}
+        docRoot={doc}
+        selection={selection}
+        onSelectionChange={onSelectionChange}
+        expanded={expanded}
+        onToggleExpand={onToggleExpand}
+        rootBin={rootBin}
+        editHistory={editable ? history : undefined}
+        onMoveNodes={shellOnMoveNodes}
+        onImportAt={shellOnImportAt}
+        onInsertChildrenAt={shellOnInsertChildrenAt}
+        onMoveRun={shellOnMoveRun}
+        onJumpToJson={onJumpToJson}
+      />
     </div>
   );
 }

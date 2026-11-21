@@ -1,7 +1,7 @@
 // Centralized, position-path-keyed addressing for timeline nodes.
 //
 // A node is identified by a `NodePath`: a list of segments. Most paths root
-// at the document (`children.0`, `children.3.attachments.1`). A path may
+// at the document (`children.0`, `children.3.children.1`). A path may
 // instead root at a **bin entry** — a leading `bin.<id>` segment — so a
 // `binItem` expansion's children address the shared entry rather than the
 // reference site (`bin.<id>.children.0`). Editing such a path rewrites the
@@ -23,11 +23,18 @@
 
 import type { BinEntry, Child, Composition, SeamFile } from "@seam/core";
 import { findBinItem } from "./nodeBin.js";
+import {
+  insertIntoRuns,
+  removeFromRuns,
+  removeWithDependents,
+  runBoundaryAtOrAfter,
+  type InsertOptions,
+} from "./runEdit.js";
 
 export interface PathSeg {
   /** `bin` only ever appears as the first segment (a bin-entry root); its
    *  `id` names the entry and `index` is unused. */
-  field: "children" | "attachments" | "bin";
+  field: "children" | "bin";
   index: number;
   id?: string;
 }
@@ -38,9 +45,9 @@ export type NodePath = PathSeg[];
 
 /** A structural view of anything carrying child arrays (Composition or
  *  BinEntry). */
-type Body = { children?: Child[]; attachments?: Child[] };
+type Body = { children?: Child[] };
 
-/** Serialize to a dotted key: `children.3.attachments.1`, `bin.intro.children.0`. */
+/** Serialize to a dotted key: `children.3.children.1`, `bin.intro.children.0`. */
 export function pathKey(path: NodePath): string {
   return path
     .map((s) => (s.field === "bin" ? `bin.${s.id}` : `${s.field}.${s.index}`))
@@ -58,8 +65,7 @@ export function parsePath(key: string): NodePath {
     i = 2;
   }
   for (; i + 1 < parts.length; i += 2) {
-    const field = parts[i] === "attachments" ? "attachments" : "children";
-    segs.push({ field, index: Number(parts[i + 1]) });
+    segs.push({ field: "children", index: Number(parts[i + 1]) });
   }
   return segs;
 }
@@ -83,8 +89,8 @@ export function isPrefix(prefix: NodePath, path: NodePath): boolean {
   return true;
 }
 
-function childArray(node: Body, field: "children" | "attachments"): Child[] {
-  return (field === "children" ? node.children : node.attachments) ?? [];
+function childArray(node: Body): Child[] {
+  return node.children ?? [];
 }
 
 /** The node at `path`, or undefined if any segment is missing. Root path
@@ -109,7 +115,7 @@ export function getNodeAtPath(
   for (let i = start; i < path.length; i++) {
     const seg = path[i];
     if (seg.field === "bin") return undefined; // bin only valid as the root
-    const next = childArray(node, seg.field)[seg.index];
+    const next = childArray(node)[seg.index];
     if (!next) return undefined;
     node = next as Body;
   }
@@ -155,16 +161,14 @@ export function updateCompAtPath(
     newBin[idx] = entryFields as unknown as BinEntry;
     return { ...root, bin: newBin };
   }
-  const arr = childArray(root, seg.field);
+  const arr = childArray(root);
   const child = arr[seg.index];
   if (!child || child.type !== "composition") return root;
   const newChild = updateCompAtPath(child, rest, fn);
   if (newChild === child) return root;
   const newArr = [...arr];
   newArr[seg.index] = newChild;
-  return seg.field === "children"
-    ? { ...root, children: newArr }
-    : { ...root, attachments: newArr };
+  return { ...root, children: newArr };
 }
 
 /** Immutably replace the node at `path` with `fn`'s result. Unlike
@@ -193,7 +197,7 @@ export function updateNodeAtPath(
     newBin[idx] = entryFields as unknown as BinEntry;
     return { ...root, bin: newBin };
   }
-  const arr = childArray(root, seg.field);
+  const arr = childArray(root);
   const child = arr[seg.index];
   if (!child) return root;
   let newChild: Child;
@@ -210,9 +214,7 @@ export function updateNodeAtPath(
   if (newChild === child) return root;
   const newArr = [...arr];
   newArr[seg.index] = newChild;
-  return seg.field === "children"
-    ? { ...root, children: newArr }
-    : { ...root, attachments: newArr };
+  return { ...root, children: newArr };
 }
 
 /** Run a pure composition tool against the composition at `containerPath`,
@@ -239,206 +241,196 @@ export function editContainer(
   });
 }
 
-/** Ids a child references as time anchors (start/end). Only attachments
- *  carry meaningful anchors, but reading them off any node is harmless. */
-function anchorRefs(child: Child): string[] {
-  const c = child as { start?: { anchor?: string }; end?: { anchor?: string } };
-  const out: string[] = [];
-  if (c.start?.anchor) out.push(c.start.anchor);
-  if (c.end?.anchor) out.push(c.end.anchor);
-  return out;
-}
-
-function nodeId(child: Child): string | undefined {
-  return (child as { id?: string }).id;
-}
-
 /**
- * Remove the child/attachment slots named by `childIdx`/`attIdx` from a single
- * composition, *cascading* into dependent attachments: any attachment anchored
- * (via `start`/`end`) to a removed node is removed too, transitively (a removed
- * attachment may itself be another attachment's anchor). Deleting a child thus
- * takes its attachments with it — even when an attachment also anchors to a
- * surviving node (one dangling end is enough), and even across several
- * attachments. Anchors only ever point at siblings, so this stays per-comp.
+ * Remove the children at `indices` from one composition. Two run rules apply
+ * (see `runEdit.ts`): a removed run head hands its `start`/`offset` to its
+ * successor so the rest of the run stays put, and — with `cascade` (the
+ * default, i.e. a delete) — any run whose head anchors to a removed node's id
+ * goes with it, transitively.
  */
 export function removeFromComp(
   comp: Composition,
-  childIdx: ReadonlySet<number>,
-  attIdx: ReadonlySet<number>,
+  indices: ReadonlySet<number>,
+  cascade = true,
 ): Composition {
-  const attachments = comp.attachments ?? [];
-
-  // Seed removed-id set from the explicitly removed children + attachments.
-  const removedIds = new Set<string>();
-  (comp.children ?? []).forEach((c, i) => {
-    if (childIdx.has(i)) {
-      const id = nodeId(c);
-      if (id) removedIds.add(id);
-    }
-  });
-  const removedAtt = new Set<number>(attIdx);
-  attachments.forEach((a, i) => {
-    if (attIdx.has(i)) {
-      const id = nodeId(a);
-      if (id) removedIds.add(id);
-    }
-  });
-
-  // Fixpoint: pull in attachments anchored to any removed id, feeding their
-  // own ids back so chained anchors cascade.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    attachments.forEach((att, i) => {
-      if (removedAtt.has(i)) return;
-      if (anchorRefs(att).some((ref) => removedIds.has(ref))) {
-        removedAtt.add(i);
-        const id = nodeId(att);
-        if (id && !removedIds.has(id)) removedIds.add(id);
-        changed = true;
-      }
-    });
-  }
-
-  const newChildren = (comp.children ?? []).filter((_, i) => !childIdx.has(i));
-  const newAttachments = attachments.filter((_, i) => !removedAtt.has(i));
-  if (newAttachments.length > 0) {
-    return { ...comp, children: newChildren, attachments: newAttachments };
-  }
-  const { attachments: _drop, ...rest } = comp;
-  return { ...rest, children: newChildren } as Composition;
+  const children = comp.children ?? [];
+  return {
+    ...comp,
+    children: cascade
+      ? removeWithDependents(children, indices)
+      : removeFromRuns(children, indices),
+  };
 }
 
-/** Remove the node at `path`. No-op for the root path. */
+/** Remove the node at `path` (no dependent cascade — this is the "lift" half
+ *  of a move). No-op for the root path. */
 export function removeNodeAtPath(root: SeamFile, path: NodePath): SeamFile {
   const split = splitLast(path);
   if (!split) return root;
-  const { parent, last } = split;
-  return updateCompAtPath(root, parent, (comp) =>
-    spliceField(comp, last.field, (arr) => {
-      const next = [...arr];
-      next.splice(last.index, 1);
-      return next;
-    }),
+  return updateCompAtPath(root, split.parent, (comp) =>
+    removeFromComp(comp, new Set([split.last.index]), false),
   );
 }
 
-/** Remove many nodes at once, grouping by container and splicing each
- *  container's array in descending index order so earlier removals don't
- *  shift later ones. */
-export function removeNodesAtPaths(
-  root: SeamFile,
-  paths: NodePath[],
-): SeamFile {
-  // Group by *container* (both fields together) so the cascade in
-  // `removeFromComp` sees every removal in a composition at once — a child and
-  // its dependent attachments live in the same comp but different fields.
-  const groups = new Map<
-    string,
-    { path: NodePath; children: Set<number>; attachments: Set<number> }
-  >();
+function groupByContainer(paths: NodePath[]): { path: NodePath; indices: Set<number> }[] {
+  const groups = new Map<string, { path: NodePath; indices: Set<number> }>();
   for (const p of paths) {
     const split = splitLast(p);
-    if (!split) continue;
+    if (!split || split.last.field === "bin") continue;
     const key = pathKey(split.parent);
     let g = groups.get(key);
     if (!g) {
-      g = { path: split.parent, children: new Set(), attachments: new Set() };
+      g = { path: split.parent, indices: new Set() };
       groups.set(key, g);
     }
-    (split.last.field === "children" ? g.children : g.attachments).add(
-      split.last.index,
-    );
+    g.indices.add(split.last.index);
   }
-  // Apply deepest-container-first so a parent removal doesn't invalidate a
-  // child group's path. Deeper paths have longer keys → sort by path length
-  // descending.
-  const ordered = [...groups.values()].sort(
-    (a, b) => b.path.length - a.path.length,
-  );
+  // Deepest-container-first so a parent removal can't invalidate a child
+  // group's path.
+  return [...groups.values()].sort((a, b) => b.path.length - a.path.length);
+}
+
+/** Delete many nodes at once (grouped per container; dependents cascade). */
+export function removeNodesAtPaths(
+  root: SeamFile,
+  paths: NodePath[],
+  cascade = true,
+): SeamFile {
   let doc = root;
-  for (const g of ordered) {
-    doc = updateCompAtPath(doc, g.path, (comp) =>
-      removeFromComp(comp, g.children, g.attachments),
-    );
+  for (const g of groupByContainer(paths)) {
+    doc = updateCompAtPath(doc, g.path, (comp) => removeFromComp(comp, g.indices, cascade));
   }
   return doc;
 }
 
-/** Insert `node` into the composition at `containerPath`'s `field` array at
- *  `index`. */
+/** Insert `nodes` into the composition at `containerPath` at `index`, by the
+ *  run rules of `insertIntoRuns` (`options.start` = head a new run there;
+ *  `options.before` = take over the head slot of the node at `index`). */
+export function insertNodes(
+  root: SeamFile,
+  containerPath: NodePath,
+  index: number,
+  nodes: Child[],
+  options: InsertOptions = {},
+): SeamFile {
+  return updateCompAtPath(root, containerPath, (comp) => ({
+    ...comp,
+    children: insertIntoRuns(comp.children ?? [], index, nodes, options),
+  }));
+}
+
 export function insertNode(
   root: SeamFile,
   containerPath: NodePath,
-  field: PathSeg["field"],
   index: number,
   node: Child,
+  options: InsertOptions = {},
 ): SeamFile {
-  return updateCompAtPath(root, containerPath, (comp) =>
-    spliceField(comp, field, (arr) => {
-      const next = [...arr];
-      next.splice(Math.max(0, Math.min(index, next.length)), 0, node);
-      return next;
-    }),
-  );
+  return insertNodes(root, containerPath, index, [node], options);
 }
 
-/** Move the node at `from` into the composition at `toContainer`'s `toField`
- *  at `toIndex`. Indices in `toContainer`/`toIndex` are interpreted against
- *  the *pre-removal* tree; this compensates for the shift the removal causes.
- *  `transform` lets the caller adapt the node for its new home (e.g. strip
- *  anchors when moving into a sequential `children` band). No-ops when the
- *  destination is inside the moved node's own subtree. */
+/**
+ * Move the nodes at `from` (in the given order — they land contiguous, in
+ * that order) into the composition at `toContainer` at `toIndex`. Both are
+ * interpreted against the *pre-removal* tree; the shift the removals cause is
+ * compensated here. Run rules apply on both ends (a lifted head leaves its
+ * `start`/`offset` to its successor; see `InsertOptions` for the landing).
+ * Paths nested inside another moved node are ignored. No-ops when the
+ * destination is inside a moved node's own subtree.
+ *
+ * Returns the new document plus the moved nodes' new paths (null = no-op).
+ */
+export function moveNodesTracked(
+  root: SeamFile,
+  from: NodePath[],
+  toContainer: NodePath,
+  toIndex: number,
+  options: InsertOptions = {},
+): { doc: SeamFile; paths: NodePath[] } | null {
+  const paths = from.filter(
+    (p, i) =>
+      p.length > 0 &&
+      p[p.length - 1].field !== "bin" &&
+      !from.some((q, j) => j !== i && q.length < p.length && isPrefix(q, p)) &&
+      from.findIndex((q) => samePath(q, p)) === i,
+  );
+  if (paths.some((p) => isPrefix(p, toContainer))) return null;
+  const nodes: Child[] = [];
+  for (const p of paths) {
+    const node = getNodeAtPath(root, p);
+    if (!node) return null;
+    nodes.push(node);
+  }
+  if (nodes.length === 0) return null;
+
+  const removed = removeNodesAtPaths(root, paths, false);
+  const tc = adjustPathAfterRemovals(toContainer, paths);
+  const tcKey = pathKey(toContainer);
+  let ti = toIndex;
+  for (const p of paths) {
+    const split = splitLast(p)!;
+    if (pathKey(split.parent) === tcKey && split.last.index < toIndex) ti -= 1;
+  }
+  const target = getCompAtPath(removed, tc);
+  if (!target) return null;
+  const siblings = target.children ?? [];
+  ti = Math.max(0, Math.min(ti, siblings.length));
+  // A new run slides to the next run boundary (see `insertIntoRuns`).
+  if (options.start != null) ti = runBoundaryAtOrAfter(siblings, ti);
+  const doc = insertNodes(removed, tc, ti, nodes, options);
+  return {
+    doc,
+    paths: nodes.map((_, k) => [...tc, { field: "children" as const, index: ti + k }]),
+  };
+}
+
+export function moveNodes(
+  root: SeamFile,
+  from: NodePath[],
+  toContainer: NodePath,
+  toIndex: number,
+  options: InsertOptions = {},
+): SeamFile {
+  return moveNodesTracked(root, from, toContainer, toIndex, options)?.doc ?? root;
+}
+
 export function moveNode(
   root: SeamFile,
   from: NodePath,
   toContainer: NodePath,
-  toField: PathSeg["field"],
   toIndex: number,
-  transform?: (child: Child) => Child,
+  options: InsertOptions = {},
 ): SeamFile {
-  const node = getNodeAtPath(root, from);
-  if (!node) return root;
-  if (isPrefix(from, toContainer)) return root; // can't move into self
-  const moved = transform ? transform(node) : node;
-
-  const removed = removeNodeAtPath(root, from);
-  const fromSplit = splitLast(from)!;
-
-  // The target container path may shift if it sits after `from` in a shared
-  // parent array.
-  let tc = adjustPathAfterRemoval(toContainer, from);
-  let ti = toIndex;
-  // Same container + same field: removing an earlier sibling shifts the slot.
-  if (
-    samePath(tc, fromSplit.parent) &&
-    toField === fromSplit.last.field &&
-    toIndex > fromSplit.last.index
-  ) {
-    ti -= 1;
-  }
-  return insertNode(removed, tc, toField, ti, moved);
+  return moveNodes(root, [from], toContainer, toIndex, options);
 }
 
-/** Adjust a path for the removal of the node at `removed`: if `path` passes
- *  through `removed`'s parent at a later index in the same field, decrement
- *  that segment. */
+/** Adjust `path` for the removal of every node in `removed` (all given in
+ *  the same pre-removal coordinates): each segment drops by the number of
+ *  removed earlier siblings in its array. */
+export function adjustPathAfterRemovals(path: NodePath, removed: NodePath[]): NodePath {
+  const next = path.map((s) => ({ ...s }));
+  for (const r of removed) {
+    const split = splitLast(r);
+    if (!split) continue;
+    const { parent, last } = split;
+    if (path.length <= parent.length) continue;
+    let under = true;
+    for (let k = 0; k < parent.length; k++) {
+      if (!segEq(path[k], parent[k])) {
+        under = false;
+        break;
+      }
+    }
+    if (!under) continue;
+    const seg = path[parent.length];
+    if (seg.field === last.field && seg.index > last.index) next[parent.length].index -= 1;
+  }
+  return next;
+}
+
+/** Single-removal form of {@link adjustPathAfterRemovals}. */
 export function adjustPathAfterRemoval(path: NodePath, removed: NodePath): NodePath {
-  const split = splitLast(removed);
-  if (!split) return path;
-  const { parent, last } = split;
-  if (path.length <= parent.length) return path;
-  for (let k = 0; k < parent.length; k++) {
-    if (!segEq(path[k], parent[k])) return path;
-  }
-  const seg = path[parent.length];
-  if (seg.field === last.field && seg.index > last.index) {
-    const next = [...path];
-    next[parent.length] = { field: seg.field, index: seg.index - 1 };
-    return next;
-  }
-  return path;
+  return adjustPathAfterRemovals(path, [removed]);
 }
 
 export function splitLast(
@@ -448,51 +440,25 @@ export function splitLast(
   return { parent: path.slice(0, -1), last: path[path.length - 1] };
 }
 
-/** Replace a composition's `children`/`attachments` array, dropping the
- *  `attachments` field entirely when it ends up empty so saved JSON stays
- *  clean. */
-function spliceField(
-  comp: Composition,
-  field: PathSeg["field"],
-  fn: (arr: Child[]) => Child[],
-): Composition {
-  if (field === "children") {
-    return { ...comp, children: fn(comp.children ?? []) };
-  }
-  const next = fn(comp.attachments ?? []);
-  if (next.length > 0) return { ...comp, attachments: next };
-  const { attachments: _drop, ...rest } = comp;
-  return rest as Composition;
-}
-
 // ── Root-index adapters ──────────────────────────────────────────────
 //
-// The tools that predate nesting (attach, compose, bin, word, slice,
-// delete, transcribe, anchor lines) operate on flat *root* indices, where
-// `[0, childCount)` are children and `[childCount, …)` are attachments —
-// the same scheme the resolver uses when it appends attachments after
-// children. These map the path-key selection back and forth at the UI
-// boundary, ignoring (filtering out) any non-root selections.
+// A few tools that predate nesting (compose, bin, word, slice, transcribe)
+// operate on root child indices. These map the path-key selection back and
+// forth at the UI boundary, ignoring (filtering out) non-root selections.
 
-/** The path key for a root child / attachment at flat index `i`. */
-export function rootKeyFromIndex(i: number, childCount: number): string {
-  return i < childCount
-    ? `children.${i}`
-    : `attachments.${i - childCount}`;
+/** The path key for the root child at index `i`. */
+export function rootKeyFromIndex(i: number): string {
+  return `children.${i}`;
 }
 
-/** Flat root indices for the root-level keys in `keys`, in order. Nested
- *  keys (length > 1 segment) are dropped — root-only tools never see them. */
-export function rootIndicesFromKeys(
-  keys: string[],
-  childCount: number,
-): number[] {
+/** Root child indices for the root-level keys in `keys`, in order. Nested
+ *  keys (more than one segment) are dropped — root-only tools never see them. */
+export function rootIndicesFromKeys(keys: string[]): number[] {
   const out: number[] = [];
   for (const key of keys) {
     const path = parsePath(key);
-    if (path.length !== 1) continue;
-    const seg = path[0];
-    out.push(seg.field === "children" ? seg.index : childCount + seg.index);
+    if (path.length !== 1 || path[0].field === "bin") continue;
+    out.push(path[0].index);
   }
   return out;
 }

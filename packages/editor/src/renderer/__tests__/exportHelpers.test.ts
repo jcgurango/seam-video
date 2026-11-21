@@ -18,18 +18,19 @@ describe("mapDocumentSources", () => {
         type: "composition",
         children: [{ type: "audio", source: "media/voice.wav", in: 0, out: 3 }],
       },
-    ],
-    attachments: [
       {
-        type: "static",
-        source: "media/logo.png",
-        duration: 2,
-        start: { anchor: "x" },
+        type: "map",
+        source: "media/world.pmtiles",
+        duration: 4,
+        start: 0,
+        children: [
+          { type: "static", source: "media/logo.png", duration: 2, start: 1 },
+        ],
       },
     ],
   } as SeamFile;
 
-  it("maps sources across children, attachments, nested comps AND bin bodies", () => {
+  it("maps sources across children, nested comps, map children AND bin bodies", () => {
     const seen: string[] = [];
     const out = mapDocumentSources(doc, (src) => {
       seen.push(src);
@@ -40,13 +41,18 @@ describe("mapDocumentSources", () => {
       "media/a.mp4",
       "media/logo.png",
       "media/voice.wav",
+      "media/world.pmtiles",
     ]);
     expect(out.children?.[0]).toMatchObject({ source: "X/media/a.mp4" });
     const nested = out.children?.[1];
     expect(nested?.type === "composition" && nested.children?.[0]).toMatchObject({
       source: "X/media/voice.wav",
     });
-    expect(out.attachments?.[0]).toMatchObject({ source: "X/media/logo.png" });
+    const map = out.children?.[2];
+    expect(map).toMatchObject({ source: "X/media/world.pmtiles" });
+    expect(map?.type === "map" && map.children?.[0]).toMatchObject({
+      source: "X/media/logo.png",
+    });
     expect(out.bin?.[0].children[0]).toMatchObject({ source: "X/bins/intro.mp4" });
     // Immutability: the input document is untouched.
     expect(doc.children?.[0]).toMatchObject({ source: "media/a.mp4" });
@@ -60,7 +66,8 @@ describe("mapDocumentSources", () => {
       return renameMap.get(flat) ?? flat;
     });
     expect(out.children?.[0]).toMatchObject({ source: "a-1.mp4" });
-    expect(out.attachments?.[0]).toMatchObject({ source: "logo.png" });
+    const map = out.children?.[2];
+    expect(map?.type === "map" && map.children?.[0]).toMatchObject({ source: "logo.png" });
     expect(out.bin?.[0].children[0]).toMatchObject({ source: "intro.mp4" });
   });
 });

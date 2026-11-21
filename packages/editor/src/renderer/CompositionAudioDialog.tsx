@@ -95,14 +95,14 @@ export default function CompositionAudioDialog({
             Which audio should the mix for {noun} cover?
           </span>
           <Choice
-            title="Children only"
-            help="Render only the sequential children array."
-            onClick={() => onChoose("children")}
+            title="First run only"
+            help="Render only the composition's first child and the nodes that follow it in sequence."
+            onClick={() => onChoose("first-run")}
           />
           <Choice
-            title="Children and attachments"
-            help="Render the children plus the composition's anchored attachments."
-            onClick={() => onChoose("children-and-attachments")}
+            title="Everything"
+            help="Render every child, including the runs laid over the first one."
+            onClick={() => onChoose("all")}
           />
         </div>
 

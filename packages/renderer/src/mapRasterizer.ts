@@ -130,7 +130,7 @@ export class MapRasterizer {
     // mapOpacity dims the basemap only. drawBasemap sets per-feature
     // globalAlpha itself, so a single alpha on the shared ctx wouldn't stick —
     // rasterize the basemap onto its own layer and composite that layer at
-    // mapOpacity. Paths draw at full alpha afterward; attachments are separate
+    // mapOpacity. Paths draw at full alpha afterward; children are separate
     // nodes composited by the GPU.
     if (state.mapOpacity < 1) {
       const layer = createCanvas(W, H);

@@ -1,41 +1,36 @@
-// SVG overlay drawn on top of the timeline panel. For every selected
-// attachment — at any editable level — draws a labelled line from the
-// anchor point on its referenced sibling to the attachment's row. When
-// `history` is provided (editable), the line is interactive: drag halves
-// adjust anchorPoint / offset, click circles toggle units between
-// seconds and percent.
+// SVG overlay drawn on top of the timeline panel. For every selected run head
+// with an explicit `start` — at any editable level — draws a labelled plumb
+// line at its anchor point: from the point on the sibling it anchors to down
+// to the node's row, or, for an absolute (numeric) `start`, through the
+// node's own row at that time, in a different colour (its handle moves the
+// start along the time axis; there are no units to toggle). When
+// `history` is provided (editable), the line is interactive: the top half /
+// handle drags the anchor point (click the handle to toggle source seconds ↔
+// percent), the bottom half / handle drags the node's `offset`.
 //
-// Each editable container is resolved in its own (un-windowed) local
-// scope: the anchor math runs against that container's authored body +
-// local resolved children, and commits route through `editContainer` so a
-// nested attachment edits the right sub-composition. Lines are positioned
-// in content coordinates via each group's placement (containerLeft/Top +
-// window transform), so one SVG covers the whole tree without clipping.
+// Each editable container is handled in its own (un-windowed) local scope:
+// the anchor math runs against that container's authored body + local
+// resolved children, and commits route through `editContainer` so a nested
+// node edits the right sub-composition. Lines are positioned in content
+// coordinates via each group's placement (containerLeft/Top + window
+// transform), so one SVG covers the whole tree without clipping.
 //
 // Pure dependencies (computePointTime, dragAnchorPoint, etc.) live in
 // anchorEdit.ts. This file is the React-side glue.
 
 import React from "react";
-import type {
-  BinEntry,
-  Child,
-  ResolvedChild,
-  ResolvedTimeline,
-  SeamFile,
-  TimeAnchor,
-} from "@seam/core";
+import type { BinEntry, ResolvedChild, SeamFile, Start } from "@seam/core";
 import type { History } from "./useHistory.js";
 import {
   anchorPointKind,
+  anchorSource,
   computePointTime,
   dragAnchorPoint,
   dragOffset,
   findAnchorById,
-  naturalDurOf,
-  offsetKind,
-  setAttachmentSpec,
+  nodeAnchor,
+  setPlacement,
   toggleAnchorPoint,
-  toggleOffset,
   type AnchorEditCtx,
 } from "./anchorEdit.js";
 import { rowTop } from "./timelineLayout.js";
@@ -56,12 +51,15 @@ interface AnchorLineSpec {
   bottomX: number;
   bottomY: number;
   topLabel: "s" | "%";
-  bottomLabel: "s" | "%";
+  /** True for an absolute (numeric) `start` — no sibling, no unit toggle. */
+  absolute: boolean;
+  /** The container's window scale (output px → local seconds). */
+  scale: number;
   edit: AnchorEditCtx;
 }
 
 export interface AnchorLinesLayerProps {
-  /** Selection path keys; attachment keys (`…attachments.N`) draw lines. */
+  /** Selection path keys; nodes with an anchored `start` draw lines. */
   selection: string[];
   /** Full root document — containers are resolved by path. */
   docRoot?: SeamFile;
@@ -92,14 +90,13 @@ export default function AnchorLinesLayer({
     // children, reconstructed from the group's blocks.
     const authored = getCompAtPath(docRoot, group.path);
     if (!authored) continue;
-    const childCount = (authored.children ?? []).length;
+    const children = authored.children ?? [];
     const resolvedChildren: ResolvedChild[] = [];
     const rowByIndex = new Map<number, number>();
     for (const b of group.blocks) {
       resolvedChildren[b.index] = b.child;
       rowByIndex.set(b.index, b.row);
     }
-    const localTimeline = { children: resolvedChildren } as ResolvedTimeline;
     const toX = (t: number) =>
       containerLeft + ((t - group.originSec) / group.scale) * pxPerSec;
     const yTop = (row: number) => containerTop + rowTop(row);
@@ -107,89 +104,90 @@ export default function AnchorLinesLayer({
     for (const key of selection) {
       const path = parsePath(key);
       const last = path[path.length - 1];
-      if (!last || last.field !== "attachments") continue;
+      if (!last || last.field !== "children") continue;
       if (!samePath(path.slice(0, -1), group.path)) continue;
 
-      const attIdx = last.index;
-      const attDoc = authored.attachments?.[attIdx];
-      const flatAttIndex = childCount + attIdx;
-      const attResolved = resolvedChildren[flatAttIndex];
-      if (!attDoc || !attResolved) continue;
-      const attRow = rowByIndex.get(flatAttIndex);
-      if (attRow == null) continue;
+      const index = last.index;
+      const nodeDoc = children[index];
+      const nodeRow = rowByIndex.get(index);
+      if (!nodeDoc || nodeRow == null) continue;
+      const nodeStart = (nodeDoc as { start?: Start }).start;
+      if (typeof nodeStart === "number") {
+        // Absolute start: the "point" is that time on the container's axis.
+        const y0 = yTop(nodeRow);
+        const x = toX(nodeStart);
+        lines.push({
+          key,
+          containerPath: group.path,
+          topX: x,
+          topY: y0 - 10,
+          bottomX: x,
+          bottomY: y0 + 32 + 10,
+          topLabel: "s",
+          absolute: true,
+          scale: group.scale,
+          edit: {
+            index,
+            pointTime: nodeStart,
+            anchorStart: 0,
+            anchorEnd: 0,
+            anchorBase: 0,
+            anchorSpeed: 1,
+          },
+        });
+        continue;
+      }
+      const anchor = nodeAnchor(nodeStart);
+      if (!anchor) continue;
 
-      for (const side of ["start", "end"] as const) {
-        const spec = (attDoc as { start?: TimeAnchor; end?: TimeAnchor })[side];
-        if (!spec || spec.anchor == null) continue;
+      const found = findAnchorById(anchor.id, children, resolvedChildren);
+      if (!found) continue;
+      const anchorRow = rowByIndex.get(found.index);
+      if (anchorRow == null) continue;
 
-        const found = findAnchorById(spec.anchor, authored, localTimeline);
-        if (!found) continue;
-        const anchorRow = rowByIndex.get(found.blockIndex);
-        if (anchorRow == null) continue;
+      const pointTime = computePointTime(anchor, found.doc, found.resolved);
 
-        const pointTime = computePointTime(spec, found.doc, found.resolved);
-        if (pointTime == null) continue;
+      // The line is a plumb line dropped from the anchor point — always
+      // vertical at the point's content-x, regardless of where the node's
+      // start (point + offset) lands.
+      const anchorY0 = yTop(anchorRow);
+      const nodeY0 = yTop(nodeRow);
+      const EXT = 10;
+      const ROW_H = 32;
+      let anchorOuterY: number;
+      let nodeOuterY: number;
+      if (anchorRow < nodeRow) {
+        anchorOuterY = anchorY0 - EXT;
+        nodeOuterY = nodeY0 + ROW_H + EXT;
+      } else if (anchorRow > nodeRow) {
+        anchorOuterY = anchorY0 + ROW_H + EXT;
+        nodeOuterY = nodeY0 - EXT;
+      } else {
+        anchorOuterY = anchorY0 - EXT;
+        nodeOuterY = anchorY0 + ROW_H + EXT;
+      }
 
-        // The line is a plumb line dropped from the anchor point — always
-        // vertical at the point's content-x, regardless of where the
-        // attachment's resolved edge lands.
-        const anchorY0 = yTop(anchorRow);
-        const attY0 = yTop(attRow);
-        const EXT = 10;
-        const ROW_H = 32;
-        let anchorOuterY: number;
-        let attOuterY: number;
-        if (anchorRow < attRow) {
-          anchorOuterY = anchorY0 - EXT;
-          attOuterY = attY0 + ROW_H + EXT;
-        } else if (anchorRow > attRow) {
-          anchorOuterY = anchorY0 + ROW_H + EXT;
-          attOuterY = attY0 - EXT;
-        } else {
-          anchorOuterY = anchorY0 + ROW_H / 2;
-          attOuterY = anchorOuterY;
-        }
-
-        // Source-base/speed mirror what the resolver tracks; clip/audio use
-        // the resolved sourceIn + speed, composition uses the doc's `in`.
-        let anchorBase = 0;
-        let anchorSpeed = 1;
-        if (
-          found.resolved.type === "clip" ||
-          found.resolved.type === "audio"
-        ) {
-          anchorBase = found.resolved.sourceIn;
-          anchorSpeed = found.resolved.speed;
-        } else if (found.resolved.type === "composition") {
-          anchorBase =
-            found.doc.type === "composition" ? found.doc.in ?? 0 : 0;
-          anchorSpeed = found.resolved.speed;
-        }
-
-        const editCtx: AnchorEditCtx = {
-          attIdx,
-          side,
+      const { base, speed } = anchorSource(found.doc, found.resolved);
+      const lineX = toX(pointTime);
+      lines.push({
+        key,
+        containerPath: group.path,
+        topX: lineX,
+        topY: anchorOuterY,
+        bottomX: lineX,
+        bottomY: nodeOuterY,
+        topLabel: anchorPointKind(anchor),
+        absolute: false,
+        scale: group.scale,
+        edit: {
+          index,
           pointTime,
           anchorStart: found.resolved.timelineStart,
           anchorEnd: found.resolved.timelineEnd,
-          anchorBase,
-          anchorSpeed,
-          attNatDur: naturalDurOf(attDoc),
-        };
-
-        const lineX = toX(pointTime);
-        lines.push({
-          key: `${key}-${side}`,
-          containerPath: group.path,
-          topX: lineX,
-          topY: anchorOuterY,
-          bottomX: lineX,
-          bottomY: attOuterY,
-          topLabel: anchorPointKind(spec),
-          bottomLabel: offsetKind(spec),
-          edit: editCtx,
-        });
-      }
+          anchorBase: base,
+          anchorSpeed: speed,
+        },
+      });
     }
   }
 
@@ -197,13 +195,14 @@ export default function AnchorLinesLayer({
 
   const RADIUS = 9;
   const STROKE = "#ffcc00";
+  const ABSOLUTE_STROKE = "#4ad0ff";
   const HIT_THICKNESS = 14;
   const CLICK_THRESHOLD_PX = 4;
   const editable = history != null;
 
-  // Begin a drag (or click+drag from a circle). `kind` selects which field
-  // moves; `clickToggle` runs on pointerup if the user never crossed the
-  // movement threshold (used for circles, not for line halves).
+  // Begin a drag (or click+drag from the top handle). `kind` selects which
+  // field moves; `clickToggle` runs on pointerup if the user never crossed
+  // the movement threshold.
   //
   // Explicit pointer capture on the originating SVG element keeps the drag
   // alive across the state-driven re-renders each `replace` triggers.
@@ -212,7 +211,8 @@ export default function AnchorLinesLayer({
     containerPath: NodePath,
     ctx: AnchorEditCtx,
     kind: "anchorPoint" | "offset",
-    clickToggle: ((spec: TimeAnchor) => TimeAnchor) | null,
+    clickToggle: ((start: Start) => Start) | null,
+    scale = 1,
   ) => {
     e.stopPropagation();
     if (!history) return;
@@ -223,20 +223,19 @@ export default function AnchorLinesLayer({
     const startY = e.clientY;
     const initialDoc = history.current;
     const container = getCompAtPath(initialDoc, containerPath);
-    const initialAtt = container?.attachments?.[ctx.attIdx];
-    if (!initialAtt) return;
-    const initialSpec = (initialAtt as {
-      start?: TimeAnchor;
-      end?: TimeAnchor;
-    })[ctx.side];
-    if (!initialSpec) return;
+    const initialNode = container?.children?.[ctx.index] as
+      | { start?: Start; offset?: number }
+      | undefined;
+    const initialStart = initialNode?.start;
+    if (initialStart == null) return;
+    const initialOffset = initialNode?.offset;
 
-    // Commit a new spec for this attachment in its (possibly nested)
+    // Commit a new placement for this node in its (possibly nested)
     // container — `editContainer` injects the root bin so nested binItems
     // still resolve, then splices the result back at the path.
-    const commit = (newSpec: TimeAnchor): SeamFile =>
+    const commit = (start: Start, offset: number | undefined): SeamFile =>
       editContainer(initialDoc, containerPath, rootBin, (sub) =>
-        setAttachmentSpec(sub, ctx.attIdx, ctx.side, newSpec),
+        setPlacement(sub, ctx.index, start, offset),
       );
 
     try {
@@ -265,12 +264,13 @@ export default function AnchorLinesLayer({
         }
       }
       if (!dragging) return;
-      const deltaSec = dx / pxPerSec;
-      const newSpec =
+      // A nested group compresses time by its window scale.
+      const deltaSec = (dx / pxPerSec) * scale;
+      history.replace(
         kind === "anchorPoint"
-          ? dragAnchorPoint(initialSpec, deltaSec, ctx)
-          : dragOffset(initialSpec, deltaSec, ctx);
-      history.replace(commit(newSpec));
+          ? commit(dragAnchorPoint(initialStart, deltaSec, ctx), initialOffset)
+          : commit(initialStart, dragOffset(initialOffset, deltaSec)),
+      );
     };
     const onUp = (ev: Event) => {
       const me = ev as PointerEvent;
@@ -284,7 +284,7 @@ export default function AnchorLinesLayer({
         /* ignore */
       }
       if (!dragging && clickToggle) {
-        history.push(commit(clickToggle(initialSpec)));
+        history.push(commit(clickToggle(initialStart), initialOffset));
       }
     };
     target.addEventListener("pointermove", onMove);
@@ -308,6 +308,7 @@ export default function AnchorLinesLayer({
       {lines.map((l) => {
         const midX = (l.topX + l.bottomX) / 2;
         const midY = (l.topY + l.bottomY) / 2;
+        const stroke = l.absolute ? ABSOLUTE_STROKE : STROKE;
         return (
           <g key={l.key}>
             {/* Top-half hit area — drag anchorPoint. */}
@@ -323,7 +324,7 @@ export default function AnchorLinesLayer({
                 cursor: editable ? "grab" : "default",
               }}
               onPointerDown={(e) =>
-                startEdit(e, l.containerPath, l.edit, "anchorPoint", null)
+                startEdit(e, l.containerPath, l.edit, "anchorPoint", null, l.scale)
               }
             />
             {/* Bottom-half hit area — drag offset. */}
@@ -339,7 +340,7 @@ export default function AnchorLinesLayer({
                 cursor: editable ? "grab" : "default",
               }}
               onPointerDown={(e) =>
-                startEdit(e, l.containerPath, l.edit, "offset", null)
+                startEdit(e, l.containerPath, l.edit, "offset", null, l.scale)
               }
             />
             {/* Visible cosmetic line. */}
@@ -348,25 +349,32 @@ export default function AnchorLinesLayer({
               y1={l.topY}
               x2={l.bottomX}
               y2={l.bottomY}
-              stroke={STROKE}
+              stroke={stroke}
               strokeWidth={2}
               style={{ pointerEvents: "none" }}
             />
-            {/* Top circle — click to toggle anchorPoint units, drag to move. */}
+            {/* Top circle — drag to move the point; click toggles its units
+                (anchored starts only). */}
             <circle
               cx={l.topX}
               cy={l.topY}
               r={RADIUS}
-              fill={STROKE}
+              fill={stroke}
               stroke="#1e1e1e"
               strokeWidth={1}
               style={{
                 pointerEvents: editable ? "visiblePainted" : "none",
-                cursor: editable ? "pointer" : "default",
+                cursor: editable ? (l.absolute ? "grab" : "pointer") : "default",
               }}
               onPointerDown={(e) =>
-                startEdit(e, l.containerPath, l.edit, "anchorPoint", (spec) =>
-                  toggleAnchorPoint(spec, l.edit),
+                startEdit(
+                  e,
+                  l.containerPath,
+                  l.edit,
+                  "anchorPoint",
+                  // An absolute start has no units to toggle — drag only.
+                  l.absolute ? null : (start) => toggleAnchorPoint(start, l.edit),
+                  l.scale,
                 )
               }
             />
@@ -382,22 +390,20 @@ export default function AnchorLinesLayer({
             >
               {l.topLabel}
             </text>
-            {/* Bottom circle — click to toggle offset units, drag to move. */}
+            {/* Bottom circle — drag the node's offset. */}
             <circle
               cx={l.bottomX}
               cy={l.bottomY}
               r={RADIUS}
-              fill={STROKE}
+              fill={stroke}
               stroke="#1e1e1e"
               strokeWidth={1}
               style={{
                 pointerEvents: editable ? "visiblePainted" : "none",
-                cursor: editable ? "pointer" : "default",
+                cursor: editable ? "grab" : "default",
               }}
               onPointerDown={(e) =>
-                startEdit(e, l.containerPath, l.edit, "offset", (spec) =>
-                  toggleOffset(spec, l.edit),
-                )
+                startEdit(e, l.containerPath, l.edit, "offset", null, l.scale)
               }
             />
             <text
@@ -410,7 +416,7 @@ export default function AnchorLinesLayer({
               fontWeight={700}
               style={{ userSelect: "none", pointerEvents: "none" }}
             >
-              {l.bottomLabel}
+              s
             </text>
           </g>
         );

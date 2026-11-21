@@ -4,12 +4,7 @@
 // `useNormalize.ts`. Compositions are out of scope (no single source to read).
 
 import type { SeamFile, Clip, Audio } from "@seam/core";
-import {
-  getNodeAtPath,
-  splitLast,
-  updateCompAtPath,
-  type NodePath,
-} from "./nodePath.js";
+import { getNodeAtPath, updateNodeAtPath, type NodePath } from "./nodePath.js";
 
 /** Peak target for normalization, in dBFS. */
 export const TARGET_PEAK_DB = -1;
@@ -55,20 +50,10 @@ export function setNodeVolume(
   path: NodePath,
   volume: string,
 ): SeamFile {
-  const split = splitLast(path);
-  if (!split) return doc;
-  const { parent, last } = split;
-  return updateCompAtPath(doc, parent, (comp) => {
-    const arr =
-      last.field === "children" ? comp.children ?? [] : comp.attachments ?? [];
-    const node = arr[last.index];
-    if (!node || !isNormalizable(node)) return comp;
-    const newArr = arr.slice();
-    newArr[last.index] = { ...node, volume };
-    return last.field === "children"
-      ? { ...comp, children: newArr }
-      : { ...comp, attachments: newArr };
-  });
+  if (path.length === 0) return doc;
+  return updateNodeAtPath(doc, path, (node) =>
+    isNormalizable(node) ? { ...node, volume } : node,
+  );
 }
 
 /** The subset of `selectionKeys` (as paths) pointing at clip/audio nodes —

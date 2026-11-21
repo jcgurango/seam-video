@@ -12,7 +12,6 @@ import {
   Undo2,
   Redo2,
   AlignStartVertical,
-  AlignEndVertical,
   ArrowLeftToLine,
   ArrowRightToLine,
   Captions,
@@ -35,12 +34,7 @@ import { descendToContainer } from "./resolveLocal.js";
 import type { Platform } from "./platform/index.js";
 import { removeSelected } from "./selection.js";
 import { playheadAfterDelete } from "./deletePlayhead.js";
-import {
-  applyCompose,
-  composeAttachments,
-  isComposableSelection,
-  walkComposeDependencies,
-} from "./composeTool.js";
+import { applyCompose } from "./composeTool.js";
 import { applyBin, canBin } from "./binTool.js";
 import { normalizeTargets } from "./normalizeTool.js";
 import { sliceAtPlayhead } from "./splitTool.js";
@@ -65,6 +59,8 @@ interface ControlsBarProps {
    *  primary's source. */
   timeline: ResolvedTimeline;
   onSelectionChange: (indices: number[]) => void;
+  /** Path-key selection setter (attach / compose re-select moved nodes). */
+  onPathSelectionChange: (keys: string[]) => void;
   onDocumentChange: (doc: SeamFile) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -96,16 +92,6 @@ interface ControlsBarProps {
  *  deepest-nested selected node ([] = root). Null when the deepest selection
  *  is bin-rooted (its per-reference playhead is ambiguous) — the caller falls
  *  back to the root. */
-function sliceContainerPath(selection: string[]): NodePath | null {
-  if (selection.length === 0) return [];
-  let deepest = parsePath(selection[0]);
-  for (const key of selection) {
-    const p = parsePath(key);
-    if (p.length > deepest.length) deepest = p;
-  }
-  if (deepest.some((s) => s.field === "bin")) return null;
-  return deepest.slice(0, -1);
-}
 
 
 // ── Styles ───────────────────────────────────────────────────────────
@@ -202,6 +188,7 @@ export default function ControlsBar({
   selection,
   timeline,
   onSelectionChange,
+  onPathSelectionChange,
   onDocumentChange,
   onUndo,
   onRedo,
@@ -235,22 +222,38 @@ export default function ControlsBar({
   // ── Slice ──────────────────────────────────────────────────────
 
   const handleSlice = useCallback(() => {
-    // Deepest selected level wins: slice inside the container of the
-    // deepest-nested selection (don't bubble up). Empty / root selection
-    // slices the root. Bin-rooted selections fall back to the root (their
-    // per-reference playhead is ambiguous).
-    const containerPath = sliceContainerPath(selection);
-    if (containerPath == null || containerPath.length === 0) {
+    // Nothing selected: split everything splittable under the playhead at
+    // the root. With a selection: split only the selected nodes, each in its
+    // own container (bin-rooted selections are skipped — their per-reference
+    // playhead is ambiguous).
+    if (selection.length === 0) {
       const nextDoc = sliceAtPlayhead(doc, currentTime);
       if (nextDoc) onDocumentChange(nextDoc);
       return;
     }
-    const desc = descendToContainer(timeline, doc, containerPath, currentTime);
-    if (!desc) return;
+    const groups = new Map<string, { path: NodePath; indices: Set<number> }>();
+    for (const key of selection) {
+      const p = parsePath(key);
+      if (p.length === 0 || p.some((s) => s.field === "bin")) continue;
+      const parent = p.slice(0, -1);
+      const k = parent.map((s) => s.index).join(".");
+      if (!groups.has(k)) groups.set(k, { path: parent, indices: new Set() });
+      groups.get(k)!.indices.add(p[p.length - 1].index);
+    }
+    // Deepest container first: a split shifts later siblings, which would
+    // invalidate the paths of containers nested under them.
+    const ordered = [...groups.values()].sort((a, b) => b.path.length - a.path.length);
     const rootBin = doc.bin ?? [];
-    const next = editContainer(doc, containerPath, rootBin, (sub) =>
-      sliceAtPlayhead(sub, desc.localTime),
-    );
+    let next = doc;
+    for (const g of ordered) {
+      // Local time is read off the ORIGINAL doc/timeline (splits don't move
+      // anything in time); the edit lands on the accumulated one.
+      const desc = descendToContainer(timeline, doc, g.path, currentTime);
+      if (!desc) continue;
+      next = editContainer(next, g.path, rootBin, (sub) =>
+        sliceAtPlayhead(sub, desc.localTime, g.indices),
+      );
+    }
     if (next !== doc) onDocumentChange(next);
   }, [doc, timeline, currentTime, selection, onDocumentChange]);
 
@@ -306,10 +309,10 @@ export default function ControlsBar({
 
   // Attach: needs 2+ selected and a resolvable primary (first selection).
   // The primary and secondaries can each be any node type (the file format
-  // lets you anchor to anything — empties included) and can each be a child
-  // OR an attachment, at any level: secondaries are pulled into the primary's
-  // container and anchored/re-anchored on the chosen side. Bin-rooted
-  // primaries are out (the per-reference playhead is ambiguous).
+  // lets you anchor to anything) at any level: each secondary is lifted into
+  // the primary's container as the head of its own run, starting at the
+  // playhead and anchored to the primary there. Bin-rooted primaries are out
+  // (the per-reference playhead is ambiguous).
   const canAttach = (() => {
     if (selection.length < 2) return false;
     const pp = parsePath(selection[0]);
@@ -317,25 +320,16 @@ export default function ControlsBar({
     return getNodeAtPath(doc, pp) != null;
   })();
 
-  const handleAttach = useCallback(
-    (side: "start" | "end") => {
-      if (selection.length < 2) return;
-      const [primaryKey, ...secondaryKeys] = selection;
-      const next = applyAttach(
-        doc,
-        timeline,
-        currentTime,
-        primaryKey,
-        secondaryKeys,
-        side,
-      );
-      if (next) {
-        onDocumentChange(next);
-        onSelectionChange([]);
-      }
-    },
-    [doc, timeline, currentTime, selection, onDocumentChange, onSelectionChange]
-  );
+  const handleAttach = useCallback(() => {
+    if (selection.length < 2) return;
+    const [primaryKey, ...secondaryKeys] = selection;
+    const result = applyAttach(doc, timeline, currentTime, primaryKey, secondaryKeys);
+    if (result) {
+      onDocumentChange(result.doc);
+      // Keep the roles selected so the anchor lines show immediately.
+      onPathSelectionChange([result.primaryKey, ...result.secondaryKeys]);
+    }
+  }, [doc, timeline, currentTime, selection, onDocumentChange, onPathSelectionChange]);
 
   // ── Bracket ────────────────────────────────────────────────────
   // Selection shape mirrors attach (primary + secondaries, any level,
@@ -367,64 +361,39 @@ export default function ControlsBar({
   );
 
   // ── Compose ────────────────────────────────────────────────────
-  // Two distinct selections enable Compose:
-  //   • a non-empty, contiguous run of *children* (the original tool —
-  //     clubs them, plus their dependent attachments, into one comp);
-  //   • one or more *attachments* (wrap each in a composition that takes
-  //     over its slot — see `composeAttachments`).
-  // Mixed child/attachment selections are not composable.
-  const childCount = (doc.children ?? []).length;
-  const composeChildrenOk =
-    selectedIndices.length > 0 &&
-    selectedIndices.every((i) => i < childCount) &&
-    isComposableSelection(selectedIndices, childCount);
-  const composeAttachmentsOk =
-    selectedIndices.length > 0 &&
-    selectedIndices.every((i) => i >= childCount);
-  const canCompose = composeChildrenOk || composeAttachmentsOk;
+  // Any selection that sits in ONE editable container composes: the nodes
+  // (plus any runs anchored to them) are wrapped in a composition that takes
+  // the first one's slot — see `composeTool.ts`.
+  const composeTarget = (() => {
+    if (selection.length === 0) return null;
+    const paths = selection.map(parsePath);
+    if (paths.some((p) => p.length === 0 || p[p.length - 1].field === "bin")) return null;
+    const container = paths[0].slice(0, -1);
+    const key = container.map((s) => `${s.field}.${s.id ?? s.index}`).join(".");
+    for (const p of paths) {
+      const k = p.slice(0, -1).map((s) => `${s.field}.${s.id ?? s.index}`).join(".");
+      if (k !== key) return null;
+    }
+    return { container, indices: paths.map((p) => p[p.length - 1].index) };
+  })();
+  const canCompose = composeTarget != null;
 
   const handleCompose = useCallback(() => {
-    const cc = (doc.children ?? []).length;
-    // Attachment compose: wrap each selected attachment in its own
-    // composition (lifting start/end/id). No dependency walk / confirm.
-    if (
-      selectedIndices.length > 0 &&
-      selectedIndices.every((i) => i >= cc)
-    ) {
-      const next = composeAttachments(
-        doc,
-        selectedIndices.map((i) => i - cc),
-      );
-      onDocumentChange(next);
-      // The new comps occupy the same attachment slots — keep them selected.
-      onSelectionChange(selectedIndices);
-      return;
-    }
-    if (
-      !(
-        selectedIndices.length > 0 &&
-        selectedIndices.every((i) => i < cc) &&
-        isComposableSelection(selectedIndices, cc)
-      )
-    ) {
-      return;
-    }
-    const walk = walkComposeDependencies(doc, selectedIndices);
-    if (walk.extraChildren > 0) {
-      const word = walk.extraChildren === 1 ? "clip" : "clips";
-      const ok = window.confirm(
-        `Composing will also pull in ${walk.extraChildren} more ${word} ` +
-          `because one or more attachments anchor outside your selection. ` +
-          `Proceed?`,
-      );
-      if (!ok) return;
-    }
-    const next = applyCompose(doc, walk);
+    if (!composeTarget) return;
+    let wrapperIndex = -1;
+    const next = editContainer(doc, composeTarget.container, doc.bin ?? [], (sub) => {
+      const result = applyCompose(sub, composeTarget.indices);
+      if (!result) return null;
+      wrapperIndex = result.index;
+      return result.container;
+    });
+    if (wrapperIndex < 0 || next === doc) return;
     onDocumentChange(next);
-    // Select the newly-created composition so the user can immediately
-    // act on it (e.g. promote to bin).
-    onSelectionChange([walk.childIndices[0]]);
-  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
+    // Select the new composition so the user can immediately act on it
+    // (e.g. promote to bin).
+    const prefix = selection[0].split(".").slice(0, -1).join(".");
+    onPathSelectionChange([`${prefix}.${wrapperIndex}`]);
+  }, [doc, composeTarget, selection, onDocumentChange, onPathSelectionChange]);
 
   // ── Bin ────────────────────────────────────────────────────────
   const canBinSelection =
@@ -562,25 +531,17 @@ export default function ControlsBar({
               onClick={handleSlice}
               style={{ ...BTN_STYLE, opacity: canSlice ? 1 : 0.3 }}
               disabled={!canSlice}
-              title="Slice (S) — clip, audio, or composition"
+              title="Slice (S) — every clip, audio or composition under the playhead; with a selection, only the selected ones"
             >
               <Scissors size={ICON_SIZE} />
             </button>
             <button
-              onClick={() => handleAttach("start")}
+              onClick={handleAttach}
               style={{ ...BTN_STYLE, opacity: canAttach ? 1 : 0.3 }}
               disabled={!canAttach}
-              title="Attach start of secondaries to the primary at the playhead"
+              title="Attach: start each secondary at the playhead, anchored to the primary there"
             >
               <AlignStartVertical size={ICON_SIZE} />
-            </button>
-            <button
-              onClick={() => handleAttach("end")}
-              style={{ ...BTN_STYLE, opacity: canAttach ? 1 : 0.3 }}
-              disabled={!canAttach}
-              title="Attach end of secondaries to the primary at the playhead"
-            >
-              <AlignEndVertical size={ICON_SIZE} />
             </button>
             <button
               onClick={() => handleBracket("start")}
@@ -602,7 +563,7 @@ export default function ControlsBar({
               onClick={handleCompose}
               style={{ ...BTN_STYLE, opacity: canCompose ? 1 : 0.3 }}
               disabled={!canCompose}
-              title="Compose: club selected children (+ dependent attachments) into one composition, or wrap each selected attachment in a composition"
+              title="Compose: wrap the selected nodes (+ runs anchored to them) in one composition"
             >
               <Group size={ICON_SIZE} />
             </button>
@@ -633,12 +594,11 @@ export default function ControlsBar({
             <button
               onClick={() => {
                 if (selectedIndices.length > 0) {
-                  const cc = (doc.children ?? []).length;
                   const nextTime = playheadAfterDelete(
                     timeline,
                     doc,
                     selectedIndices.map((i) =>
-                      parsePath(rootKeyFromIndex(i, cc)),
+                      parsePath(rootKeyFromIndex(i)),
                     ),
                     currentTime,
                   );

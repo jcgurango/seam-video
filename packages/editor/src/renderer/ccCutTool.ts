@@ -3,13 +3,7 @@
 // scannable word ribbon and let the user pick time ranges by clicking.
 
 import { resolveComposition } from "@seam/core";
-import type {
-  Child,
-  Composition,
-  Data,
-  ResolvedChild,
-  SeamFile,
-} from "@seam/core";
+import type { Child, Composition, Data, SeamFile } from "@seam/core";
 import type { BinEntry } from "./nodeBin.js";
 
 /** Stable colours per transcription index, used to tell overlapping CC
@@ -68,31 +62,6 @@ function isTranscriptionData(node: Child): node is Data {
   );
 }
 
-/** Map a source-time on the anchored child back to the bin entry's
- *  inner output timeline. Returns null when the resolved anchor isn't a
- *  source-bearing type. */
-function sourceToCompositionTime(
-  resolved: ResolvedChild,
-  sourceTime: number,
-): number | null {
-  if (resolved.type === "clip" || resolved.type === "audio") {
-    return (
-      resolved.timelineStart + (sourceTime - resolved.sourceIn) / resolved.speed
-    );
-  }
-  // Compositions can also be anchor targets — for those, source-time is
-  // a point on the comp's inner (pre-window) timeline. We don't carry
-  // `in` on the resolved comp, but the resolver's output→source formula
-  // is `source = compIn + (output − timelineStart) * speed`, so reversed
-  // here. Without `compIn` we approximate by treating the comp's inner
-  // origin as 0; transcriptions are nearly always anchored to clips
-  // anyway.
-  if (resolved.type === "composition") {
-    return resolved.timelineStart + sourceTime / resolved.speed;
-  }
-  return null;
-}
-
 /** Wrap a bin entry as a composition so we can run the resolver against
  *  it. Carries forward the document's canvas dimensions so spatial
  *  resolution doesn't fail. */
@@ -104,15 +73,15 @@ export function binEntryAsComposition(
     type: "composition",
     children: entry.children,
   };
-  if (entry.attachments) comp.attachments = entry.attachments;
   if (rootDoc.contentWidth != null) comp.contentWidth = rootDoc.contentWidth;
   if (rootDoc.contentHeight != null) comp.contentHeight = rootDoc.contentHeight;
   return comp;
 }
 
 /** Resolve all transcription words inside a bin entry to composition-
- *  time coordinates. Returns words sorted by start. Words anchored to
- *  a non-existent / non-source child are skipped. */
+ *  time coordinates. Returns words sorted by start. A phrase sits wherever
+ *  its data node resolves (`start` anchor + `offset`, spanning `duration`);
+ *  its words are phrase-relative and spread over that span. */
 export function resolveCCWords(
   entry: BinEntry,
   rootDoc: SeamFile,
@@ -120,72 +89,34 @@ export function resolveCCWords(
   const comp = binEntryAsComposition(entry, rootDoc);
   let resolved;
   try {
-    resolved = resolveComposition(comp);
+    // `uncropped` keeps resolved children 1:1 with `entry.children`.
+    resolved = resolveComposition(comp, { uncropped: true });
   } catch {
     return [];
   }
 
-  // Build an id → resolved-child map covering both sequential children
-  // and attachments (the resolver appends attachments to `children`).
-  const idToResolved = new Map<string, ResolvedChild>();
-  const compChildren = comp.children ?? [];
-  resolved.children.forEach((rc, i) => {
-    const orig =
-      i < compChildren.length
-        ? compChildren[i]
-        : (comp.attachments ?? [])[i - compChildren.length];
-    const id = (orig as { id?: string } | undefined)?.id;
-    if (id) idToResolved.set(id, rc);
-  });
-
-  // Gather transcriptions in a deterministic order (children first, then
-  // attachments) so the colour index is stable across runs.
-  const transcriptions: Data[] = [];
-  (entry.children ?? []).forEach((c) => {
-    if (isTranscriptionData(c)) transcriptions.push(c);
-  });
-  (entry.attachments ?? []).forEach((c) => {
-    if (isTranscriptionData(c)) transcriptions.push(c);
-  });
-
   const out: CCWord[] = [];
-  transcriptions.forEach((t, transcriptionIndex) => {
-    const anchorId = t.start?.anchor ?? t.end?.anchor;
-    if (!anchorId) return;
-    const resolvedAnchor = idToResolved.get(anchorId);
-    if (!resolvedAnchor) return;
+  // Array order, so the colour index is stable across runs.
+  let transcriptionIndex = 0;
+  (entry.children ?? []).forEach((node, i) => {
+    if (!isTranscriptionData(node)) return;
+    const index = transcriptionIndex++;
+    const span = resolved.children[i];
+    if (!span) return;
 
-    // Phrase position on the composition timeline. Words are phrase-
-    // relative, so we map both anchors to composition time once and
-    // place each word inside that span.
-    const phraseStartAnchor = (t.start as { anchorPoint?: number } | undefined)
-      ?.anchorPoint;
-    const phraseEndAnchor = (t.end as { anchorPoint?: number } | undefined)
-      ?.anchorPoint;
-    if (phraseStartAnchor == null || phraseEndAnchor == null) return;
-    const phraseStartComp = sourceToCompositionTime(
-      resolvedAnchor,
-      phraseStartAnchor,
-    );
-    const phraseEndComp = sourceToCompositionTime(
-      resolvedAnchor,
-      phraseEndAnchor,
-    );
-    if (phraseStartComp == null || phraseEndComp == null) return;
-
-    const payload = t.data as TranscriptionPayload;
-    // If the clip plays at a non-unit speed, the rendered phrase span
-    // differs from the recorded `data.duration`. Scale word positions
-    // by that factor so they land where they actually play.
-    const compSpan = phraseEndComp - phraseStartComp;
+    const payload = node.data as TranscriptionPayload;
+    // The rendered phrase span can differ from the recorded `data.duration`
+    // (the words' own coordinate space). Scale word positions by that factor
+    // so they land where they actually play.
+    const compSpan = span.timelineEnd - span.timelineStart;
     const scale = payload.duration > 0 ? compSpan / payload.duration : 1;
 
     for (const w of payload.words) {
       out.push({
         text: w.text,
-        start: phraseStartComp + w.start * scale,
-        end: phraseStartComp + w.end * scale,
-        transcriptionIndex,
+        start: span.timelineStart + w.start * scale,
+        end: span.timelineStart + w.end * scale,
+        transcriptionIndex: index,
       });
     }
   });
@@ -203,11 +134,10 @@ export function buildCCPreviewDoc(
   rootDoc: SeamFile,
   selections: CCSelection[],
 ): SeamFile {
-  const innerWrap = (): Composition => {
-    const c: Composition = { type: "composition", children: entry.children };
-    if (entry.attachments) c.attachments = entry.attachments;
-    return c;
-  };
+  const innerWrap = (): Composition => ({
+    type: "composition",
+    children: entry.children,
+  });
 
   if (selections.length === 0) {
     const root: SeamFile = {

@@ -23,7 +23,7 @@ import {
   Output,
   WebMOutputFormat,
 } from "mediabunny";
-import { compileSeamFile, parseSeamFile, resolveComposition } from "@seam/core";
+import { compileSeamFile, formatStart, parseSeamFile, parseStart, resolveComposition } from "@seam/core";
 import type { Composition, ResolvedChild } from "@seam/core";
 
 export interface DistillOptions {
@@ -59,8 +59,8 @@ interface ClipUse {
  * mapping back to the document — so instead each composition is resolved
  * **un-windowed in its own scope** (its own `in`/`out` stripped; children
  * keep theirs), giving every child's inner-timeline placement and net rate
- * 1:1 with the arrays (`children` then `attachments`, the resolver's
- * append order). The visible window is intersected per child and mapped
+ * 1:1 with `children` (`uncropped`, so nodes before time 0 stay in the
+ * list). The visible window is intersected per child and mapped
  * into clip source time / nested comp inner time via the resolved `speed`.
  *
  * Also deletes now-dead `bin` maps as it walks (post-compile, nothing
@@ -74,15 +74,14 @@ function collectVisibleClips(
 ) {
   delete comp.bin;
   const stripped = { ...comp, in: undefined, out: undefined };
-  const resolved = resolveComposition(stripped as unknown as Composition);
+  const resolved = resolveComposition(stripped as unknown as Composition, { uncropped: true });
   const children = (comp.children ?? []) as Record<string, unknown>[];
-  const attachments = (comp.attachments ?? []) as Record<string, unknown>[];
 
   resolved.children.forEach((rchild: ResolvedChild, i: number) => {
-    const authored =
-      i < children.length ? children[i] : attachments[i - children.length];
+    const authored = children[i];
     if (!authored) return;
-    const s = Math.max(visIn, rchild.timelineStart);
+    // Time before 0 is never shown, whatever the enclosing window says.
+    const s = Math.max(visIn, rchild.timelineStart, 0);
     const e = Math.min(visOut, rchild.timelineEnd);
 
     if (rchild.type === "clip" && authored.type === "clip") {
@@ -113,30 +112,28 @@ function collectVisibleClips(
   });
 }
 
-/** Attachments can anchor to a clip in its *source* timebase
- *  (`timeSource: "source"`, `anchorPoint` in source seconds). Trimming shifts
- *  a clip's source timebase back by its keyframe lead-in, so any source-mode
- *  anchor targeting a rewritten clip's id must shift by the same amount. */
+/** A node can anchor to a clip in its *source* timebase (`start: "id@10"`,
+ *  source seconds). Trimming shifts a clip's source timebase back by its
+ *  keyframe lead-in, so any source anchor targeting a rewritten clip's id
+ *  must shift by the same amount. */
 function shiftSourceAnchors(node: unknown, idShifts: Map<string, number>) {
   if (node == null || typeof node !== "object") return;
   const n = node as Record<string, unknown>;
-  for (const field of ["start", "end"]) {
-    const spec = n[field] as Record<string, unknown> | undefined;
+  if (typeof n.start === "string") {
+    const parsed = parseStart(n.start);
     if (
-      spec != null &&
-      typeof spec === "object" &&
-      typeof spec.anchor === "string" &&
-      spec.timeSource === "source" &&
-      idShifts.has(spec.anchor)
+      parsed.kind === "node" &&
+      parsed.point?.kind === "source" &&
+      idShifts.has(parsed.id)
     ) {
-      spec.anchorPoint =
-        ((spec.anchorPoint as number | undefined) ?? 0) - idShifts.get(spec.anchor)!;
+      n.start = formatStart({
+        ...parsed,
+        point: { kind: "source", value: parsed.point.value - idShifts.get(parsed.id)! },
+      });
     }
   }
-  for (const field of ["children", "attachments"]) {
-    const arr = n[field];
-    if (Array.isArray(arr)) for (const child of arr) shiftSourceAnchors(child, idShifts);
-  }
+  const arr = n.children;
+  if (Array.isArray(arr)) for (const child of arr) shiftSourceAnchors(child, idShifts);
 }
 
 function outputFormatFor(ext: string) {

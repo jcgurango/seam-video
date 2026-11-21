@@ -72,29 +72,25 @@ describe("data node", () => {
     });
   });
 
-  it("works as an attachment with a single anchor (zero-duration marker)", () => {
+  it("works as an anchored zero-duration marker", () => {
     const result = resolveComposition(
       comp({
         children: [
           { id: "intro", type: "clip", source: "v.mp4", in: 0, out: 10 },
-        ],
-        attachments: [
           {
             type: "data",
             data: { kind: "cue" },
-            start: {
-              anchor: "intro",
-              timeSource: "output",
-              anchorPoint: "100%",
-              offset: -3,
-            },
+            start: "intro@100%",
+            offset: -3,
           },
         ],
       })
     );
 
-    // Anchor at 100% of [0,10] = 10, offset -3 → start 7. No end → use natural
-    // duration (0 since no `duration` was given).
+    // 100% of [0,10] = 10, offset -3 → start 7; natural duration 0. A head's
+    // negative offset is a plain shift — and data never fades anyway.
+    expect(result.duration).toBe(10);
+    expect((result.children[0] as { transitionOut?: number }).transitionOut).toBeUndefined();
     expect(result.children[1]).toMatchObject({
       type: "data",
       data: { kind: "cue" },
@@ -103,25 +99,21 @@ describe("data node", () => {
     });
   });
 
-  it("spans start..end when both anchors are pinned, ignoring duration", () => {
+  it("spans start..start+duration when anchored", () => {
     const result = resolveComposition(
       comp({
         children: [
           { id: "main", type: "clip", source: "v.mp4", in: 0, out: 10 },
-        ],
-        attachments: [
           {
             type: "data",
             data: { caption: "hi" },
-            duration: 1,
-            start: { anchor: "main", timeSource: "output", anchorPoint: "20%" },
-            end: { anchor: "main", timeSource: "output", anchorPoint: "60%" },
+            duration: 4,
+            start: "main@20%",
           },
         ],
       })
     );
 
-    // [2, 6] from anchors — duration field is irrelevant once both ends pinned.
     expect(result.children[1]).toMatchObject({
       type: "data",
       timelineStart: 2,
@@ -129,19 +121,45 @@ describe("data node", () => {
     });
   });
 
+  it("pads a composition's tail (and never cross-fades)", () => {
+    const result = resolveComposition(
+      comp({
+        children: [
+          { type: "clip", source: "a.mp4", in: 0, out: 3 },
+          { type: "data", data: null, duration: 2 },
+          { type: "clip", source: "b.mp4", in: 0, out: 3, offset: -1 },
+        ],
+      })
+    );
+
+    // The clip pulled back over the data pad lands at 4 but nothing fades.
+    expect(result.children[1]).toMatchObject({ timelineStart: 3, timelineEnd: 5 });
+    expect(result.children[2]).toMatchObject({ timelineStart: 4, timelineEnd: 7 });
+    expect((result.children[1] as { transitionOut?: number }).transitionOut).toBeUndefined();
+    expect((result.children[2] as { transition?: number }).transition).toBeUndefined();
+
+    const padded = resolveComposition(
+      comp({
+        children: [
+          { type: "clip", source: "a.mp4", in: 0, out: 3 },
+          { type: "data", data: null, duration: 2 },
+        ],
+      })
+    );
+    expect(padded.duration).toBe(5);
+  });
+
   it("can be referenced as an anchor by other children", () => {
     const result = resolveComposition(
       comp({
         children: [
           { id: "marker", type: "data", data: null, duration: 5 },
-        ],
-        attachments: [
           {
             type: "clip",
             source: "b.mp4",
             in: 0,
             out: 2,
-            start: { anchor: "marker", timeSource: "output", anchorPoint: "100%" },
+            start: "marker@100%",
           },
         ],
       })

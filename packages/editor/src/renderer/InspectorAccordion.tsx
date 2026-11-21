@@ -324,7 +324,7 @@ function renderCoveringBlocks({
   rootBin,
 }: {
   resolved: { children: ResolvedChild[] };
-  docComp: { children?: Child[]; attachments?: Child[] };
+  docComp: { children?: Child[] };
   currentTime: number;
   depth: number;
   /** Path of indices from the root, so keys stay unique across sibling
@@ -336,8 +336,6 @@ function renderCoveringBlocks({
   rootBin: BinEntry[];
 }): React.ReactNode[] {
   const docChildren = docComp.children ?? [];
-  const attachmentStartIndex = docChildren.length;
-  const docAttachments = docComp.attachments ?? [];
 
   const out: React.ReactNode[] = [];
   resolved.children.forEach((child, index) => {
@@ -347,10 +345,7 @@ function renderCoveringBlocks({
     ) {
       return;
     }
-    const isAttachment = index >= attachmentStartIndex;
-    const docChild: Child | undefined = isAttachment
-      ? docAttachments[index - attachmentStartIndex]
-      : docChildren[index];
+    const docChild: Child | undefined = docChildren[index];
     const key = `${keyPath}${index}`;
     out.push(
       <NodeBlock
@@ -358,7 +353,6 @@ function renderCoveringBlocks({
         child={child}
         docChild={docChild}
         currentTime={currentTime}
-        isAttachment={isAttachment}
         depth={depth}
       />,
     );
@@ -368,7 +362,7 @@ function renderCoveringBlocks({
       // entry's body (mirrors the timeline's `layoutTree`). Regular
       // compositions descend into their own body.
       const binId = "binItem" in docChild ? docChild.binItem : undefined;
-      const subComp: { children?: Child[]; attachments?: Child[] } = binId
+      const subComp: { children?: Child[] } = binId
         ? findBinItem(rootBin, binId) ?? { children: [] }
         : docChild;
       out.push(
@@ -390,13 +384,11 @@ function NodeBlock({
   child,
   docChild,
   currentTime,
-  isAttachment,
   depth,
 }: {
   child: ResolvedChild;
   docChild: Child | undefined;
   currentTime: number;
-  isAttachment: boolean;
   depth: number;
 }) {
   const localTime = currentTime - child.timelineStart;
@@ -465,7 +457,7 @@ function NodeBlock({
             letterSpacing: 0.5,
           }}
         >
-          {isAttachment ? "attachment" : child.type}
+          {child.type}
         </span>
       </div>
       <Row label="On node" value={formatTime(localTime)} />

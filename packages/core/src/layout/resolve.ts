@@ -5,7 +5,6 @@ import type {
   Length,
   Overflow,
   Pin,
-  TimeAnchor,
   TextRun,
   Underflow,
 } from "../types.js";
@@ -19,49 +18,43 @@ import { applyOverflow } from "./overflow.js";
 import { applyUnderflow } from "./underflow.js";
 import { loopIterations, loopLocalTime } from "./loop.js";
 import { clipOut } from "./clip-span.js";
+import { parseStart } from "./anchor.js";
 
-function clipBaseSpeed(clip: { in: number; out?: number; speed?: number; duration?: number }): number {
-  // `out` omitted ⇒ out = in + duration ⇒ rate 1.
-  if (clip.duration != null) return (clipOut(clip) - clip.in) / clip.duration;
-  return clip.speed ?? 1;
-}
-
-/** A composition's playback rate from its `speed`/`duration`, where the
- *  "source" is the inner window of length `span` (`out − in`). Mirrors
- *  `clipBaseSpeed`: `duration` sets the output length (rate = span/duration),
- *  else `speed` (default 1). */
-function compositionBaseSpeed(
-  comp: { speed?: number; duration?: number },
-  span: number,
-): number {
-  if (comp.duration != null) return span / comp.duration;
-  return comp.speed ?? 1;
-}
-
+/**
+ * A node's natural output length: its content (`[in, out]` / inner window)
+ * played at `speed`, ignoring `duration`. For the duration-only types this is
+ * just `duration`.
+ */
 function naturalDuration(child: Child): number {
   switch (child.type) {
     case "clip":
     case "audio":
-      return (clipOut(child) - child.in) / clipBaseSpeed(child);
+      return (clipOut(child) - child.in) / (child.speed ?? 1);
     case "static":
-      return child.duration;
-    case "empty":
-      return child.duration;
-    case "data":
-      return child.duration ?? 0;
     case "text":
     case "rect":
     case "circle":
-      return child.duration ?? 0;
     case "map":
       return child.duration;
+    case "data":
+      return child.duration ?? 0;
     case "composition": {
       const compIn = child.in ?? 0;
       const compOut = child.out ?? resolveCompositionInner(child).duration;
-      const span = compOut - compIn;
-      return span / compositionBaseSpeed(child, span);
+      return (compOut - compIn) / (child.speed ?? 1);
     }
   }
+}
+
+/** The output length a node occupies: its authored `duration` when it has
+ *  one, else its natural length. Where the two differ on a clip / audio /
+ *  composition, `overflow` / `underflow` (default `stretch`) decide how the
+ *  content fills it. */
+function targetDuration(child: Child, nat: number): number {
+  if (child.type === "clip" || child.type === "audio" || child.type === "composition") {
+    return child.duration ?? nat;
+  }
+  return nat;
 }
 
 /** Wrap any bare strings in `text` into single-text TextRun objects so
@@ -72,11 +65,7 @@ function normalizeTextRuns(text: string | (string | TextRun)[]): TextRun[] {
 }
 
 function collectSpatialInput(child: Child): SpatialInput | undefined {
-  if (
-    child.type === "empty" ||
-    child.type === "audio" ||
-    child.type === "data"
-  ) {
+  if (child.type === "audio" || child.type === "data") {
     return undefined;
   }
   const { objectFit, origin, translation, size, rotation } = child;
@@ -112,24 +101,18 @@ function spatialExtras(child: {
 }
 
 /**
- * Resolve a single child to its target duration. For sequential children
- * `target` always equals `nat`, so overflow/underflow are no-ops; for
- * attachments with both ends pinned the caller passes a target derived from
- * the anchors and overflow/underflow strategies kick in to fit.
+ * Resolve a single child's content to `target` output seconds (placement
+ * comes later). `nat` is its natural length; when `target` differs — a
+ * `duration` on a clip / audio / composition — overflow/underflow fit the
+ * content, defaulting to `stretch` (i.e. `duration` derives the rate).
  */
 function resolveChild(
   child: Child,
   nat: number,
   target: number,
-  defaultOverflow: Overflow,
-  defaultUnderflow: Underflow | null
-): { resolved: ResolvedChild; actualDuration: number } {
-  if (child.type === "empty") {
-    return {
-      resolved: { type: "empty" as const, timelineStart: 0, timelineEnd: 0 },
-      actualDuration: target,
-    };
-  }
+): { resolved: ResolvedChild; actualDuration: number; sourceBase?: number } {
+  const defaultOverflow: Overflow = "stretch";
+  const defaultUnderflow: Underflow = "stretch";
 
   if (child.type === "data") {
     return {
@@ -235,12 +218,11 @@ function resolveChild(
 
   if (child.type === "map") {
     // A map is a static-like leaf for timing (the camera keyframes sample
-    // against its span) that also hosts attachments: resolved exactly like a
-    // composition's — anchors may reference earlier attachments' ids — in
-    // map-local time (0 = map start, speed 1). The attachments are NOT
-    // cropped to the map's span here; the compositor only draws what's active.
-    const idMap = new Map<string, IdMapEntry>();
-    const children = resolveAttachments(child.attachments ?? [], idMap);
+    // against its span) that also hosts children: placed exactly like a
+    // composition's (runs + `start` anchors) in map-local time (0 = map
+    // start, speed 1). They never extend the map and are NOT cropped to its
+    // span here; the compositor only draws what's active.
+    const children = placeChildren(child.children ?? []).children;
     return {
       resolved: {
         type: "map" as const,
@@ -269,10 +251,10 @@ function resolveChild(
     const compIn = child.in ?? 0;
     const compOut = child.out ?? inner.duration;
     const span = compOut - compIn;
-    // `speed`/`duration` set the base playback rate of the window (mirror
-    // of clips). overflow/underflow then layer on top only when an anchor
-    // forces a `target` different from this natural output.
-    const baseSpeed = compositionBaseSpeed(child, span);
+    // `speed` is the base playback rate of the window (mirror of clips);
+    // overflow/underflow layer on top when `duration` asks for a different
+    // output length than `span / speed`.
+    const baseSpeed = child.speed ?? 1;
     const natural = span / baseSpeed;
 
     let windowIn = compIn;
@@ -289,14 +271,12 @@ function resolveChild(
       speed = result.speed * baseSpeed;
     } else if (target > natural) {
       const underflow = child.underflow ?? defaultUnderflow;
-      if (underflow) {
-        const sourceTarget = target * baseSpeed;
-        const result = applyUnderflow(underflow, compIn, compOut, sourceTarget);
-        windowIn = result.sourceIn;
-        windowOut = result.sourceOut;
-        speed = result.speed * baseSpeed;
-        loops = result.loop === true;
-      }
+      const sourceTarget = target * baseSpeed;
+      const result = applyUnderflow(underflow, compIn, compOut, sourceTarget);
+      windowIn = result.sourceIn;
+      windowOut = result.sourceOut;
+      speed = result.speed * baseSpeed;
+      loops = result.loop === true;
     }
 
     const croppedChildren = cropChildrenToWindow(inner.children, windowIn, windowOut);
@@ -326,6 +306,9 @@ function resolveChild(
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
       },
       actualDuration: loop ? target : windowDur,
+      // Inner time at the composition's start — the window a non-stretch
+      // strategy kept, not necessarily the authored `in`.
+      sourceBase: windowIn,
     };
   }
 
@@ -333,7 +316,7 @@ function resolveChild(
   const leaf = child;
   let sourceIn = leaf.in;
   let sourceOut = clipOut(leaf);
-  const baseSpeed = clipBaseSpeed(leaf);
+  const baseSpeed = leaf.speed ?? 1;
   let speed = baseSpeed;
   let loops = false;
 
@@ -346,14 +329,12 @@ function resolveChild(
     speed = result.speed * baseSpeed;
   } else if (target > nat) {
     const underflow = leaf.underflow ?? defaultUnderflow;
-    if (underflow) {
-      const sourceTarget = target * baseSpeed;
-      const result = applyUnderflow(underflow, sourceIn, sourceOut, sourceTarget);
-      sourceIn = result.sourceIn;
-      sourceOut = result.sourceOut;
-      speed = result.speed * baseSpeed;
-      loops = result.loop === true;
-    }
+    const sourceTarget = target * baseSpeed;
+    const result = applyUnderflow(underflow, sourceIn, sourceOut, sourceTarget);
+    sourceIn = result.sourceIn;
+    sourceOut = result.sourceOut;
+    speed = result.speed * baseSpeed;
+    loops = result.loop === true;
   }
 
   // One pass over `[sourceIn, sourceOut]`; a looping leaf replays it until
@@ -401,89 +382,31 @@ function resolveChild(
   };
 }
 
-export function resolveComposition(composition: Composition): ResolvedTimeline {
-  return resolveCompositionInner(composition);
+export interface ResolveOptions {
+  /** Keep this composition's direct children exactly 1:1 with the authored
+   *  array: nodes that start before time 0 keep their negative
+   *  `timelineStart` instead of being cropped / dropped. For tools that map
+   *  resolved children back onto the document (editor timeline, distill).
+   *  Applies to the top level only; nested compositions crop as usual. */
+  uncropped?: boolean;
 }
 
-function resolveCompositionInner(composition: Composition): ResolvedTimeline {
+export function resolveComposition(
+  composition: Composition,
+  options: ResolveOptions = {},
+): ResolvedTimeline {
+  return resolveCompositionInner(composition, options.uncropped === true);
+}
+
+function resolveCompositionInner(composition: Composition, uncropped = false): ResolvedTimeline {
   // Post-compile, `binItem` references are inflated and `children` is
   // always populated; `?? []` keeps the now-optional authored type happy.
-  const children = composition.children ?? [];
-
-  // Sequential children: each child takes its natural duration. There's no
-  // higher-order organizer (no flex, no justify, no container duration) —
-  // the composition's length is the sum of its children, minus any
-  // crossfade overlaps (`transition`), accumulated in the placement loop.
-  const naturals = children.map((c) => naturalDuration(c));
-
-  const resolvedChildren: ResolvedChild[] = [];
-  const actualDurations: number[] = [];
-  for (let i = 0; i < children.length; i++) {
-    const { resolved, actualDuration } = resolveChild(
-      children[i],
-      naturals[i],
-      naturals[i],
-      "trim-end",
-      null
-    );
-    resolvedChildren.push(resolved);
-    actualDurations.push(actualDuration);
-  }
-
-  // Place children sequentially and build the id map from this composition's
-  // direct children. Ids are scoped to the composition — we deliberately
-  // don't look into nested children here, so an attachment can only anchor
-  // to a sibling.
-  const idMap = new Map<string, IdMapEntry>();
-  let pos = 0;
-  for (let i = 0; i < resolvedChildren.length; i++) {
-    // Crossfade overlap: a child with `transition` starts that many seconds
-    // before the previous child ends. Clamped so it can't reach past the
-    // previous child's start (≤ prev duration) or exceed its own length
-    // (≤ own duration). First child ignores it. The composition shrinks by
-    // each applied overlap (the cursor `pos` rewinds before placing).
-    let overlap = 0;
-    if (i > 0) {
-      const authored = getTransition(children[i]) ?? 0;
-      if (authored > 0) {
-        overlap = Math.min(authored, actualDurations[i - 1], actualDurations[i]);
-      }
-    }
-    const start = pos - overlap;
-    const end = start + actualDurations[i];
-    resolvedChildren[i] = {
-      ...resolvedChildren[i],
-      timelineStart: start,
-      timelineEnd: end,
-      ...(overlap > 0 ? { transition: overlap } : {}),
-    };
-    // Mirror the overlap onto the previous child as `transitionOut` so audio
-    // renderers can fade it out over the same window without sibling lookup.
-    // (Skip empty/data — they produce nothing and carry no such field.)
-    const prev = resolvedChildren[i - 1];
-    if (overlap > 0 && prev.type !== "empty" && prev.type !== "data") {
-      resolvedChildren[i - 1] = { ...prev, transitionOut: overlap };
-    }
-    pos = end;
-    const id = getId(children[i]);
-    if (id != null) {
-      if (idMap.has(id)) {
-        throw new Error(`duplicate id "${id}" in composition`);
-      }
-      idMap.set(id, buildIdMapEntry(children[i], resolvedChildren[i]));
-    }
-  }
-
-  // Resolve attachments in array order. Each attachment can reference ids of
-  // direct children or earlier attachments. Rendered as regular resolved
-  // children appended after the sequential ones — later in the array means
-  // on top.
-  resolvedChildren.push(...resolveAttachments(composition.attachments ?? [], idMap));
+  const { children, duration } = placeChildren(composition.children ?? [], uncropped);
 
   return {
-    // Total = end of the last placed child (sum of durations minus overlaps).
-    duration: pos,
-    children: resolvedChildren,
+    // The latest end among the children — there is no other organizer.
+    duration,
+    children,
     ...(composition.objectFit ? { objectFit: composition.objectFit } : {}),
     ...(composition.backgroundColor != null
       ? { backgroundColor: composition.backgroundColor }
@@ -495,30 +418,128 @@ function resolveCompositionInner(composition: Composition): ResolvedTimeline {
   };
 }
 
-/** Resolve a list of attachments in array order against (and extending) an
- *  id map. Shared by compositions and maps. */
-function resolveAttachments(
-  attachments: Child[],
-  idMap: Map<string, IdMapEntry>,
-): ResolvedChild[] {
-  const out: ResolvedChild[] = [];
-  for (const att of attachments) {
-    const resolvedAtt = resolveAttachment(att, idMap);
-    out.push(resolvedAtt);
-    const id = getId(att);
+/**
+ * Resolve and place a `children` array (a composition's or a map's).
+ *
+ * Each node lands at `(start ?? end of the previous node, 0 for the first)
+ * + offset`. A node without `start` therefore continues the previous node's
+ * *run*; a node with one heads a new run. Array order is z-order only —
+ * anchors may point at ids anywhere in the array, so placement walks the
+ * dependency graph (cycles throw).
+ *
+ * A run member with a negative `offset` overlaps the previous node and
+ * cross-fades with it: the effective overlap is stamped as `transition` on
+ * the node and `transitionOut` on the previous one. A negative offset on a
+ * run head is a plain shift.
+ *
+ * Anything before time 0 is cropped (a node wholly before 0 is dropped), and
+ * `duration` is the latest end.
+ */
+function placeChildren(
+  children: Child[],
+  uncropped = false,
+): { children: ResolvedChild[]; duration: number } {
+  const n = children.length;
+  const resolved: ResolvedChild[] = new Array(n);
+  const durations: number[] = new Array(n);
+  const sourceBases: (number | undefined)[] = new Array(n);
+  const indexById = new Map<string, number>();
+  for (let i = 0; i < n; i++) {
+    const nat = naturalDuration(children[i]);
+    const r = resolveChild(children[i], nat, targetDuration(children[i], nat));
+    resolved[i] = r.resolved;
+    durations[i] = r.actualDuration;
+    sourceBases[i] = r.sourceBase;
+    const id = children[i].id;
     if (id != null) {
-      if (idMap.has(id)) {
-        throw new Error(`duplicate id "${id}" in composition`);
-      }
-      idMap.set(id, buildIdMapEntry(att, resolvedAtt));
+      if (indexById.has(id)) throw new Error(`duplicate id "${id}" in composition`);
+      indexById.set(id, i);
     }
   }
-  return out;
+
+  // 0 = unplaced, 1 = in progress, 2 = placed.
+  const state = new Uint8Array(n);
+  const starts: number[] = new Array(n).fill(0);
+
+  const place = (i: number): void => {
+    if (state[i] === 2) return;
+    if (state[i] === 1) {
+      const id = children[i].id;
+      throw new Error(`anchor cycle through ${id != null ? `"${id}"` : `child ${i}`}`);
+    }
+    state[i] = 1;
+    const child = children[i];
+    let base: number;
+    if (child.start == null) {
+      if (i === 0) {
+        base = 0;
+      } else {
+        place(i - 1);
+        base = starts[i - 1] + durations[i - 1];
+      }
+    } else {
+      const parsed = parseStart(child.start);
+      if (parsed.kind === "absolute") {
+        base = parsed.time;
+      } else {
+        const j = indexById.get(parsed.id);
+        if (j == null) throw new Error(`anchor "${parsed.id}" not found`);
+        place(j);
+        const target = buildIdMapEntry(
+          {
+            ...resolved[j],
+            timelineStart: starts[j],
+            timelineEnd: starts[j] + durations[j],
+          },
+          sourceBases[j],
+        );
+        if (!parsed.point) {
+          base = target.start;
+        } else if (parsed.point.kind === "percent") {
+          base = target.start + (target.end - target.start) * parsed.point.value;
+        } else {
+          base = target.start + (parsed.point.value - target.baseSourceTime) / target.speed;
+        }
+      }
+    }
+    starts[i] = base + (child.offset ?? 0);
+    state[i] = 2;
+  };
+  for (let i = 0; i < n; i++) place(i);
+
+  let duration = 0;
+  let anyNegative = false;
+  for (let i = 0; i < n; i++) {
+    const start = starts[i];
+    const end = start + durations[i];
+    resolved[i] = { ...resolved[i], timelineStart: start, timelineEnd: end };
+    if (end > duration) duration = end;
+    if (start < 0) anyNegative = true;
+  }
+
+  // Crossfades: a run member pulled back over the previous node. Clamped so
+  // the fade can't outlast either side. `data` produces nothing — no fade.
+  for (let i = 1; i < n; i++) {
+    const offset = children[i].offset ?? 0;
+    if (children[i].start != null || offset >= 0) continue;
+    const cur = resolved[i];
+    const prev = resolved[i - 1];
+    if (cur.type === "data" || prev.type === "data") continue;
+    const overlap = Math.min(-offset, durations[i - 1], durations[i]);
+    if (overlap <= 0) continue;
+    resolved[i] = { ...cur, transition: overlap };
+    resolved[i - 1] = { ...prev, transitionOut: overlap };
+  }
+
+  return {
+    children: anyNegative && !uncropped ? cropChildrenToWindow(resolved, 0, Infinity) : resolved,
+    duration,
+  };
 }
 
 /**
- * Per-id data used to resolve both "output"-mode (percentage of output span)
- * and "source"-mode (pre-trim/pre-window source time) anchors.
+ * Per-id data used to resolve both percent (`id@50%`, fraction of the output
+ * span) and source (`id@10`, pre-trim/pre-window source time) anchors.
  *
  * Inverse mapping from source time to output time, used in source mode:
  *   output_time = start + (source_time - baseSourceTime) / speed
@@ -530,20 +551,7 @@ interface IdMapEntry {
   speed: number;
 }
 
-function getId(child: Child): string | undefined {
-  return (child as { id?: string }).id;
-}
-
-/** Authored crossfade overlap (seconds) with the previous sibling. Only
- *  producing types carry it; everything else reads as `undefined`. */
-function getTransition(child: Child): number | undefined {
-  return (child as { transition?: number }).transition;
-}
-
-function buildIdMapEntry(
-  original: Child,
-  resolved: ResolvedChild
-): IdMapEntry {
+function buildIdMapEntry(resolved: ResolvedChild, compWindowIn = 0): IdMapEntry {
   const start = resolved.timelineStart;
   const end = resolved.timelineEnd;
   if (resolved.type === "clip" || resolved.type === "audio") {
@@ -555,14 +563,13 @@ function buildIdMapEntry(
     };
   }
   if (
-    resolved.type === "empty" ||
     resolved.type === "data" ||
     resolved.type === "text" ||
     resolved.type === "rect" ||
     resolved.type === "circle" ||
     resolved.type === "map"
   ) {
-    // Static-like leaves: no source-time mapping to expose to attachments.
+    // Static-like leaves: source time is just output seconds from the start.
     return { start, end, baseSourceTime: 0, speed: 1 };
   }
   if (resolved.type === "static") {
@@ -570,127 +577,9 @@ function buildIdMapEntry(
     // frame is static.
     return { start, end, baseSourceTime: resolved.sourceTime, speed: 1 };
   }
-  // composition — source time is the pre-window inner timeline
-  const baseSourceTime =
-    original.type === "composition" ? original.in ?? 0 : 0;
-  return { start, end, baseSourceTime, speed: resolved.speed };
-}
-
-function resolveAnchorTime(
-  spec: TimeAnchor,
-  idMap: Map<string, IdMapEntry>,
-  attachmentNatDur: number
-): number {
-  // offset is in OUTPUT seconds. A %-string is interpreted as that fraction
-  // of the *attachment's own natural duration* — independent of the anchor,
-  // so it works even when no anchor is given.
-  let offsetSec = 0;
-  if (spec.offset != null) {
-    offsetSec =
-      typeof spec.offset === "number"
-        ? spec.offset
-        : parsePercent(spec.offset) * attachmentNatDur;
-  }
-
-  // No anchor: offset is the entire position (relative to the composition's
-  // start). anchorPoint / timeSource don't apply.
-  if (spec.anchor == null) {
-    if (spec.anchorPoint != null) {
-      throw new Error("'anchorPoint' requires an 'anchor'");
-    }
-    if (spec.timeSource != null) {
-      throw new Error("'timeSource' requires an 'anchor'");
-    }
-    return offsetSec;
-  }
-
-  const anchor = idMap.get(spec.anchor);
-  if (!anchor) {
-    throw new Error(`anchor "${spec.anchor}" not found`);
-  }
-  if (spec.timeSource == null) {
-    throw new Error("'timeSource' is required when 'anchor' is provided");
-  }
-  const timeSource = spec.timeSource;
-
-  let pointTime: number;
-  if (timeSource === "source") {
-    if (spec.anchorPoint != null && typeof spec.anchorPoint !== "number") {
-      throw new Error(
-        `when timeSource is "source", anchorPoint must be a number (seconds)`
-      );
-    }
-    const sourceTime = (spec.anchorPoint as number | undefined) ?? 0;
-    pointTime =
-      anchor.start + (sourceTime - anchor.baseSourceTime) / anchor.speed;
-  } else {
-    if (spec.anchorPoint != null && typeof spec.anchorPoint !== "string") {
-      throw new Error(
-        `when timeSource is "output", anchorPoint must be a percentage string`
-      );
-    }
-    const pointPct = parsePercent(spec.anchorPoint ?? "0%");
-    const anchorLen = anchor.end - anchor.start;
-    pointTime = anchor.start + anchorLen * pointPct;
-  }
-
-  return pointTime + offsetSec;
-}
-
-function parsePercent(s: string): number {
-  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(s);
-  if (!m) throw new Error(`expected percentage string, got "${s}"`);
-  return parseFloat(m[1]) / 100;
-}
-
-function resolveAttachment(
-  att: Child,
-  idMap: Map<string, IdMapEntry>
-): ResolvedChild {
-  const attNatDur = naturalDuration(att);
-  const startT = att.start
-    ? resolveAnchorTime(att.start, idMap, attNatDur)
-    : null;
-  const endT = att.end ? resolveAnchorTime(att.end, idMap, attNatDur) : null;
-
-  let position: number;
-  let target: number;
-
-  if (startT != null && endT != null) {
-    if (endT <= startT) {
-      throw new Error(
-        `attachment end (${endT}) must be after start (${startT})`
-      );
-    }
-    position = startT;
-    target = endT - startT;
-  } else if (startT != null) {
-    position = startT;
-    target = attNatDur;
-  } else if (endT != null) {
-    target = attNatDur;
-    position = endT - target;
-  } else {
-    position = 0;
-    target = attNatDur;
-  }
-
-  // For attachments, both overflow and underflow default to "stretch" so an
-  // overconstrained attachment fills its anchored span by adjusting speed.
-  // Authors can opt into trim/extend strategies on the attachment node itself.
-  const { resolved, actualDuration } = resolveChild(
-    att,
-    attNatDur,
-    target,
-    "stretch",
-    "stretch"
-  );
-
-  return {
-    ...resolved,
-    timelineStart: position,
-    timelineEnd: position + actualDuration,
-  };
+  // composition — source time is its inner timeline; the start shows the
+  // window's `in`.
+  return { start, end, baseSourceTime: compWindowIn, speed: resolved.speed };
 }
 
 /**
@@ -707,7 +596,11 @@ function cropChildrenToWindow(
 
   for (const child of children) {
     // Skip children completely outside the window
-    if (child.timelineEnd <= windowIn || child.timelineStart >= windowOut) {
+    // (A zero-length node sitting exactly on the window start stays.)
+    if (
+      (child.timelineEnd <= windowIn && child.timelineStart < windowIn) ||
+      child.timelineStart >= windowOut
+    ) {
       continue;
     }
 
@@ -746,7 +639,6 @@ function cropChildrenToWindow(
         timelineEnd: rebasedEnd,
       });
     } else if (
-      child.type === "empty" ||
       child.type === "data" ||
       child.type === "text" ||
       child.type === "static" ||
@@ -778,12 +670,6 @@ function cropChildrenToWindow(
         children: croppedInner,
       });
     }
-  }
-
-  // If window has no visible children, insert an empty
-  if (result.length === 0) {
-    const dur = windowOut - windowIn;
-    result.push({ type: "empty", timelineStart: 0, timelineEnd: dur });
   }
 
   return result;

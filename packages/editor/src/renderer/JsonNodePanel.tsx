@@ -15,7 +15,7 @@ interface JsonNodePanelProps {
    */
   onSave: (next: unknown) => string[] | null;
   /**
-   * Path key (e.g. "children.3", "attachments.0") to scroll the editor to
+   * Path key (e.g. "children.3", "children.3.children.0") to scroll the editor to
    * whenever it changes. Computed by the parent from the current selection.
    */
   jumpPath?: string | null;

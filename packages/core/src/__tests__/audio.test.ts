@@ -129,46 +129,45 @@ describe("audio", () => {
     }
   });
 
-  it("applies stretch overflow to audio when used as an attachment", () => {
+  it("stretches audio to an explicit duration by default", () => {
     const result = resolveComposition(
       comp({
         children: [
           { id: "main", type: "clip", source: "v.mp4", in: 0, out: 5 },
-        ],
-        attachments: [
           {
             type: "audio",
             source: "a.mp3",
             in: 0,
             out: 10,
-            start: { anchor: "main", timeSource: "output", anchorPoint: "0%" },
-            end: { anchor: "main", timeSource: "output", anchorPoint: "100%" },
+            start: "main",
+            duration: 5,
           },
         ],
       })
     );
 
-    // 10s natural, pinned to 5s span → default stretch → speed 2
+    // 10s natural into a 5s duration → default stretch → speed 2
     const audio = result.children[1];
+    expect(audio.type).toBe("audio");
     if (audio.type === "audio") {
       expect(audio.speed).toBe(2);
-      expect(audio.timelineEnd - audio.timelineStart).toBeCloseTo(5);
+      expect(audio.timelineStart).toBe(0);
+      expect(audio.timelineEnd).toBe(5);
     }
+    expect(result.duration).toBe(5);
   });
 
-  it("can be used as an attachment with start anchor", () => {
+  it("can be anchored to a sibling with start", () => {
     const result = resolveComposition(
       comp({
         children: [
           { id: "main", type: "clip", source: "v.mp4", in: 0, out: 10 },
-        ],
-        attachments: [
           {
             type: "audio",
             source: "vo.mp3",
             in: 0,
             out: 3,
-            start: { anchor: "main", timeSource: "output", anchorPoint: "50%" },
+            start: "main@50%",
           },
         ],
       })

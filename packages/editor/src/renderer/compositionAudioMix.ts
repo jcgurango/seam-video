@@ -10,11 +10,12 @@
 // child). So the mix covers the composition's *inner* timeline starting at 0,
 // which means whisper timestamps over this WAV ARE the composition's
 // source-time directly — the caller anchors transcript data nodes to the comp
-// id with `timeSource: "source"` and `anchorPoint = segTime` (no offset).
+// with a source-point `start` (`"<id>@<segTime>"`).
 
 import {
   compileSeamFile,
   resolveComposition,
+  runsOf,
   flattenResolved,
   sampleVolume,
   isKeyframed,
@@ -28,11 +29,13 @@ import { decodeMonoRange, encodeWavMono16, type MonoRange } from "./audioExtract
 type AudioLeaf = Extract<FlatLeaf, { type: "clip" | "audio" }>;
 
 export interface MixCompositionOptions {
-  /** Include the composition's top-level `attachments` array in the mix.
-   *  When false, only the sequential `children` contribute audio. (Nested
-   *  compositions are always resolved in full — the choice only gates the
-   *  selected composition's own attachments.) */
-  includeAttachments: boolean;
+  /** Mix only the composition's FIRST run — its first child and the nodes
+   *  that continue it (everything before the first other node with a
+   *  `start`) — leaving out the runs laid over it (music beds, overlays).
+   *  When false, every child contributes. (Nested compositions are always
+   *  resolved in full — the choice only gates the selected composition's own
+   *  top-level runs.) */
+  firstRunOnly: boolean;
   /** The enclosing document's root scope, so the target compiles correctly:
    *  `binItem` lookups resolve against `bin`, and `"$$NAME"` macros resolve
    *  against `macros` (both lexically scoped up to the document root). Pass
@@ -88,13 +91,15 @@ export async function mixCompositionAudio(
   const compiledTarget = (compiled.doc.children ?? [])[0];
   if (!compiledTarget || compiledTarget.type !== "composition") return null;
 
-  // Strip top-level attachments for "children only" — AFTER compile, so a
-  // `binItem` composition's spliced-in attachments are excluded too. Resolved
-  // as root, the comp's own windowing fields are ignored and children lay out
-  // from t=0.
-  const subject: Composition = opts.includeAttachments
-    ? compiledTarget
-    : { ...compiledTarget, attachments: [] };
+  // Keep only the first run for "first run only" — AFTER compile, so it is a
+  // `binItem` composition's spliced-in body that gets cut. Resolved as root,
+  // the comp's own windowing fields are ignored and children lay out from
+  // t=0.
+  const targetChildren = compiledTarget.children ?? [];
+  const firstRunEnd = runsOf(targetChildren)[0]?.[1] ?? 0;
+  const subject: Composition = opts.firstRunOnly
+    ? { ...compiledTarget, children: targetChildren.slice(0, firstRunEnd) }
+    : compiledTarget;
 
   const resolved = resolveComposition(subject);
   const duration = resolved.duration;

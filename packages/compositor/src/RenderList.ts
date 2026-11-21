@@ -21,7 +21,7 @@
  * group (composition / map).
  *
  * Maps are containers: a DrawCommand for the basemap (the host rasterizes it
- * at the inner canvas size for `drawTime`), then the map's attachments walked
+ * at the inner canvas size for `drawTime`), then the map's children walked
  * like a composition's children — except a child with a `pin` has its origin
  * placed at the pin's projected pixel (camera sampled in map-local time).
  */
@@ -471,12 +471,7 @@ function walkChildren(
   mapCtx: MapContext | null,
 ): void {
   for (const child of children) {
-    if (
-      child.type === "empty" ||
-      child.type === "audio" ||
-      child.type === "data"
-    )
-      continue;
+    if (child.type === "audio" || child.type === "data") continue;
 
     const isActive =
       localTime >= child.timelineStart && localTime < child.timelineEnd;
@@ -631,7 +626,7 @@ function walkChildren(
     // (windowDur = span / speed), which also holds with overflow/underflow
     // stretch folded into `speed`. Clamping to `duration` alone pinned inner
     // time at the output length, freezing the first child and starving every
-    // later child. A map's attachments live in map-local time at speed 1. A
+    // later child. A map's children live in map-local time at speed 1. A
     // looping comp's `contentTime` already wraps into one cycle.
     const childLocalTime = isMap
       ? drawTime
@@ -694,7 +689,7 @@ function walkChildren(
       cornerRadiusPx(child.cornerRadius, drawTime, drawDuration, spatial, scale),
     );
 
-    // The map's camera at this instant, for its pinned attachments. The
+    // The map's camera at this instant, for its pinned children. The
     // basemap draw's `drawTime` is the same map-local time, so the host
     // rasterizes the tiles for exactly this camera.
     let innerMapCtx: MapContext | null = null;

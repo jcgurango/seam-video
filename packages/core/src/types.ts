@@ -1,10 +1,12 @@
 import type { Keyframed } from "./animation/keyframes.js";
 export type { Keyframe, Keyframed } from "./animation/keyframes.js";
 export type { TimeExpr } from "./animation/time.js";
+import type { Start } from "./layout/anchor.js";
+export type { Start } from "./layout/anchor.js";
 
 export type Overflow = "trim-end" | "trim-start" | "trim-center" | "stretch";
-/** How a node fills a target span longer than its natural duration (only
- *  attachments with both ends anchored ever have one). `loop` replays the
+/** How a node fills a `duration` longer than its natural length (`[in, out]`
+ *  at `speed`). Default `stretch` (derive the rate). `loop` replays the
  *  content from its start — a clip/audio's `[in, out]` at its own speed, a
  *  composition's inner window — until the span is filled (the last cycle is
  *  cut short); the node's own keyframes still run over the whole span. */
@@ -82,7 +84,7 @@ export interface SpatialFields {
    *  px; `%` resolves against the SHORTER side of the rect, so `"50%"` turns a
    *  square into a circle and a rectangle into a pill. Default 0. Animatable. */
   cornerRadius?: Keyframed<Length>;
-  /** Geo / path anchor — only meaningful on a `map`'s attachments: the node's
+  /** Geo / path anchor — only meaningful on a `map`'s children: the node's
    *  `origin` lands at the pin's projected point and `translation` becomes a
    *  pixel offset from there. Ignored elsewhere. Animatable (see {@link Pin}). */
   pin?: Keyframed<Pin>;
@@ -145,57 +147,30 @@ export interface Distort {
   y3?: Length;
 }
 
-/**
- * A timing anchor references another child (by `id`) in the enclosing
- * composition's scope.
- *
- * When `anchor` is set, `timeSource` is required and selects the coordinate
- * space of `anchorPoint`:
- * - `"output"`: `anchorPoint` is a percentage string (e.g. "50%") into the
- *   anchor's *output* duration (0% = start, 100% = end).
- * - `"source"`: `anchorPoint` is a number of seconds in the anchor's *source*
- *   timeline — the pre-trim/pre-speed media time for clips, or the pre-window
- *   inner timeline for compositions. The resolver reverses the
- *   clip's in/out+speed (or the composition's windowing) to find the
- *   corresponding output time, so values can land outside the anchor's
- *   visible range (negative output times are legal).
- *
- * `offset` always shifts in *output* time — a number is absolute seconds,
- * a string like "25%" is that fraction of the *attachment's own natural
- * output duration* (so the offset is self-contained and doesn't depend on
- * the anchor or even require one).
- *
- * When `anchor` is omitted, `anchorPoint`/`timeSource` must also be omitted
- * and `offset` is relative to the composition's start.
- */
-export interface TimeAnchor {
-  anchor?: string;
-  anchorPoint?: string | number;
-  offset?: number | string;
-  timeSource?: "output" | "source";
+/** Placement fields every node carries. A node lands at
+ *  `(start ?? end of the previous node, 0 for the first) + offset`. */
+export interface PlacementFields {
+  /** Identifier sibling `start` anchors reference (no `@`, not numeric). */
+  id?: string;
+  /** Heads a new run: a bare number (absolute seconds in the container) or
+   *  an anchor string — `"id"`, `"id@50%"`, `"id@10"`. See `layout/anchor.ts`. */
+  start?: Start;
+  /** Seconds added to the position. On a run member: the gap after the
+   *  previous node; negative overlaps it and cross-fades. On a run head: a
+   *  plain shift off the anchor. */
+  offset?: number;
 }
 
 /** Free-form per-node bag for editor / tooling concerns that travel with
  *  the document but don't affect rendering. Values are arbitrary JSON. */
 export type Metadata = Record<string, unknown>;
 
-export interface ChildTimingFields extends SpatialFields {
+export interface ChildTimingFields extends SpatialFields, PlacementFields {
   in?: number;
   out?: number;
   overflow?: Overflow;
   underflow?: Underflow;
   filters?: Filter[];
-  /** Identifier for anchor references within the enclosing composition. */
-  id?: string;
-  /** Anchor for the child's timeline start (only meaningful in attachments). */
-  start?: TimeAnchor;
-  /** Anchor for the child's timeline end (only meaningful in attachments). */
-  end?: TimeAnchor;
-  /** Crossfade overlap in seconds with the previous sequential sibling.
-   *  The element starts this many seconds before the previous one ends and
-   *  cross-dissolves over the overlap, shortening the composition by the
-   *  same amount. Ignored on the first child and on attachments. */
-  transition?: number;
   metadata?: Metadata;
 }
 
@@ -230,7 +205,7 @@ export interface Clip extends ChildTimingFields {
  * Visual only; no audio, no overflow/underflow (target span just shows
  * the same frame for `duration` seconds, like `text`).
  */
-export interface Static extends SpatialFields {
+export interface Static extends SpatialFields, PlacementFields {
   type: "static";
   source: string;
   duration: number;
@@ -238,21 +213,6 @@ export interface Static extends SpatialFields {
    *  Defaults to 0. */
   in?: number;
   filters?: Filter[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  /** Crossfade overlap (s) with the previous sequential sibling — see
-   *  {@link ChildTimingFields.transition}. */
-  transition?: number;
-  metadata?: Metadata;
-}
-
-export interface Empty {
-  type: "empty";
-  duration: number;
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
   metadata?: Metadata;
 }
 
@@ -262,7 +222,7 @@ export interface Empty {
  * spatial layout and no visual filters — audio filtering (gain/EQ/etc.) is
  * different in kind and will get its own schema later.
  */
-export interface Audio {
+export interface Audio extends PlacementFields {
   type: "audio";
   source: string;
   in: number;
@@ -278,12 +238,6 @@ export interface Audio {
   volume?: Keyframed<number | string>;
   /** Length-preserving pitch shift in semitones — see {@link Clip.pitch}. */
   pitch?: number;
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  /** Crossfade overlap (s) with the previous sequential sibling — see
-   *  {@link ChildTimingFields.transition}. */
-  transition?: number;
   metadata?: Metadata;
 }
 
@@ -292,19 +246,15 @@ export interface Audio {
  * Renders nothing visual or audible; it's a parking spot for editor
  * concerns (markers, captions, decorators) that travel with the document.
  *
- * As a child it takes up `duration` seconds of sequential time (default 0).
- * As an attachment it can be pinned via `start`/`end`; if both are pinned
- * its on-timeline length is `end − start` regardless of `duration`.
+ * It takes up `duration` seconds (default 0) — also the way to pad a
+ * composition's tail with silence, since nothing else extends it.
  */
-export interface Data {
+export interface Data extends PlacementFields {
   type: "data";
   data: unknown;
   duration?: number;
   /** Free-form classifier tags. Editor-side filtering / grouping fodder. */
   tags?: string[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
   metadata?: Metadata;
 }
 
@@ -361,7 +311,7 @@ export interface TextRun extends TextStyleFields {
  * `text` can be a plain string or an array of strings / styled runs
  * for inline formatting (bold parts, per-run highlights, etc.).
  */
-export interface Text extends SpatialFields, TextStyleFields {
+export interface Text extends SpatialFields, TextStyleFields, PlacementFields {
   type: "text";
   text: string | (string | TextRun)[];
   /** Optional override for line height in pixels; defaults to 1.2 ×
@@ -378,24 +328,16 @@ export interface Text extends SpatialFields, TextStyleFields {
    *  parent container. Animatable; defaults to `"100%"` of the parent. */
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
-  /** Display duration. Required for sequential / single-anchor
-   *  attachment use; optional only when both `start` and `end` are
-   *  pinned (the anchor span dictates the target). */
-  duration?: number;
+  /** Display duration. */
+  duration: number;
   filters?: Filter[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  /** Crossfade overlap (s) with the previous sequential sibling — see
-   *  {@link ChildTimingFields.transition}. */
-  transition?: number;
   metadata?: Metadata;
 }
 
 /**
  * Reusable composition body addressable by `id`. Referenced from any
  * descendant composition via `binItem: "<id>"`. Holds only the body
- * (`children` + optional `attachments`) — instance-level fields
+ * (`children`) — instance-level fields
  * (spatial / timing / filters / metadata) live on each reference, so
  * swapping a bin entry can't accidentally overwrite a reference's
  * authored properties.
@@ -403,12 +345,11 @@ export interface Text extends SpatialFields, TextStyleFields {
 export interface BinEntry {
   id: string;
   children: Child[];
-  attachments?: Child[];
 }
 
 /**
  * Fields shared by every composition, whether it's a normal body or a
- * `binItem` reference. The discriminant — `children`/`attachments` vs
+ * `binItem` reference. The discriminant — `children` vs
  * `binItem` — lives on the two concrete variants below; everything else
  * (spatial / timing / filters / bin scope / script / inset / volume / …)
  * applies to both, because a bin reference still carries its own
@@ -438,13 +379,13 @@ export interface BaseComposition extends ChildTimingFields {
   /**
    * Playback rate of the inner window (the `[in, out]` slice of the inner
    * timeline, defaulting to the whole thing). >1 plays faster, shortening
-   * the output. Mutually exclusive with `duration`. Mirrors clip `speed`.
+   * the output. Mirrors clip `speed`.
    */
   speed?: number;
   /**
-   * Explicit output duration of the inner window, in output seconds. The
-   * window plays at the derived rate `windowSpan / duration`. Mutually
-   * exclusive with `speed`. Mirrors clip `duration`.
+   * Output duration in seconds. `overflow`/`underflow` say how the inner
+   * window (at `speed`) fills it; the default `stretch` derives the rate
+   * `windowSpan / duration`. Mirrors clip `duration`.
    */
   duration?: number;
   /**
@@ -493,46 +434,33 @@ export interface BaseComposition extends ChildTimingFields {
 }
 
 /**
- * A normal composition: its own `children` body plus optional anchored
- * `attachments`. Never a bin reference (`binItem?: never` makes the two
- * variants narrow cleanly on `binItem`).
+ * A normal composition with its own `children`. Never a bin reference.
  */
 export interface BasicComposition extends BaseComposition {
   /**
-   * Sequential body. Optional — an empty composition can leave it off;
-   * the compile pass normalizes it to `[]`, so post-compile consumers
-   * always see an array.
+   * The body. Array order is z-order (later = on top); time comes from the
+   * run / `start` rules (see {@link PlacementFields}). The composition's
+   * natural duration is the latest end among its children. Optional — the
+   * compile pass normalizes it to `[]`.
+   *
+   * `binItem` is omitted entirely (rather than typed `never`) so the
+   * ubiquitous immutable `{ ...comp, children }` spreads still type-check;
+   * narrow with `"binItem" in comp` to reach a {@link BinItemComposition}.
    */
   children?: Child[];
-  /**
-   * Anchored children rendered on top of `children`. Each attachment's
-   * `start`/`end` may reference child IDs. Attachments render in array
-   * order, last on top.
-   */
-  attachments?: Child[];
-  /**
-   * A normal composition is never a bin reference. The field is omitted
-   * entirely (rather than typed `never`) so the ubiquitous immutable
-   * `{ ...comp, children }` spreads still type-check; narrow with
-   * `"binItem" in comp` to reach a {@link BinItemComposition}. Authoring a
-   * literal with both `binItem` and `children` is still rejected (excess
-   * property on this variant, `never` children on the other).
-   */
 }
 
 /**
  * A bin reference: adopts the named bin entry's body at compile time, so
- * it carries no `children`/`attachments` of its own — only instance-level
- * overrides (from {@link BaseComposition}). Compile splices the entry's
- * body in and strips `binItem`, so this shape never reaches the resolved
- * tree.
+ * it carries no `children` of its own — only instance-level overrides (from
+ * {@link BaseComposition}). Compile splices the entry's body in and strips
+ * `binItem`, so this shape never reaches the resolved tree.
  */
 export interface BinItemComposition extends BaseComposition {
   /** Names a bin entry whose body this composition adopts at compile
    *  time. Resolved lexically (nearest-enclosing wins). */
   binItem: string;
   children?: never;
-  attachments?: never;
 }
 
 export type Composition = BasicComposition | BinItemComposition;
@@ -555,27 +483,18 @@ export interface ShapeFields {
  * so `size` IS the rectangle (bare number = px). Corners round via the
  * universal `cornerRadius`.
  */
-export interface Rect extends SpatialFields, ShapeFields {
+export interface Rect extends SpatialFields, ShapeFields, PlacementFields {
   type: "rect";
-  /** Required unless both `start` and `end` anchors are set. */
-  duration?: number;
+  duration: number;
   filters?: Filter[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  transition?: number;
   metadata?: Metadata;
 }
 
 /** The ellipse inscribed in the node's box (equal `size` → a circle). */
-export interface Circle extends SpatialFields, ShapeFields {
+export interface Circle extends SpatialFields, ShapeFields, PlacementFields {
   type: "circle";
-  duration?: number;
+  duration: number;
   filters?: Filter[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  transition?: number;
   metadata?: Metadata;
 }
 
@@ -596,12 +515,12 @@ export interface MapPath {
 
 /**
  * A basemap rasterized from a pmtiles archive with an animatable camera,
- * geo `paths`, and ordinary nodes composited over it as `attachments`
+ * geo `paths`, and ordinary nodes composited over it as `children`
  * (placed geographically via `pin`). The inner canvas (`contentWidth` /
  * `contentHeight`, default 100% of the parent) is both the raster size and the
- * layout space the attachments resolve against.
+ * layout space the children resolve against.
  */
-export interface MapNode extends SpatialFields {
+export interface MapNode extends SpatialFields, PlacementFields {
   type: "map";
   /** pmtiles archive — host-resolved like clip/static `source`. */
   source: string;
@@ -610,19 +529,16 @@ export interface MapNode extends SpatialFields {
   longitude?: Keyframed<number>;
   /** maplibre-512 convention; interpolates in scale space (linear in 2^-zoom). */
   zoom?: Keyframed<number>;
-  /** Basemap-only opacity (tiles); paths/attachments unaffected. */
+  /** Basemap-only opacity (tiles); paths/children unaffected. */
   mapOpacity?: Keyframed<number>;
   theme?: "light" | "dark";
   paths?: MapPath[];
-  /** Resolved like a composition's attachments (time 0 = map start). */
-  attachments?: Child[];
+  /** Placed like a composition's children (time 0 = map start), but they
+   *  never extend the map: its `duration` is authoritative. */
+  children?: Child[];
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
   filters?: Filter[];
-  id?: string;
-  start?: TimeAnchor;
-  end?: TimeAnchor;
-  transition?: number;
   metadata?: Metadata;
 }
 
@@ -630,7 +546,6 @@ export type Child =
   | Clip
   | Audio
   | Static
-  | Empty
   | Data
   | Text
   | Rect

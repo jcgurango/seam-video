@@ -5,20 +5,24 @@
 // primary, the rest are secondaries. "Bracket start" moves each subject's
 // *start* edge, "Bracket end" its *end* edge. With secondaries, only they
 // are edited and the target time depends on the relationship:
-//   • the secondary is attached to the primary (one of its `start`/`end`
-//     anchors references the primary's id, sibling scope) → match the SAME
+//   • the secondary is attached to the primary (its `start` anchors the
+//     primary's id, same container) → match the SAME
 //     edge of the primary (start↔start / end↔end);
 //   • otherwise → legato: the bracketed edge meets the primary's OPPOSITE
 //     edge (bracket end → primary's start, bracket start → primary's end).
 // With no secondaries, the primary itself is the subject and the target is
 // the playhead.
 //
-// How the edge moves follows one invariant, per subject:
-//   • the bracketed side has a `start`/`end` anchor spec → shift that spec's
-//     `offset` by the delta (the anchor point itself stays put);
-//   • no spec on that side → reuse the timeline drag-handle logic
-//     (`resizeChild`), trimming `in`/`out`/`duration` so the floating edge
-//     lands on the target (rate-aware for `speed`/`duration` overrides).
+// How the edge moves, per subject:
+//   • START edge of a node with a `start` (it heads a run) → shift its
+//     `offset` by the delta: the node (and the run behind it) moves, the
+//     anchor itself stays put;
+//   • START edge of a node without `start` (a run member, or the implicit
+//     head at index 0) → its position belongs to the run, so it is trimmed
+//     instead: the timeline's left drag-handle logic (`resizeChild`) cuts
+//     `in`/`duration` by the delta (rate-aware);
+//   • END edge → always trimmed via `resizeChild`'s right handle
+//     (`out`/`duration`) so the edge lands on the target.
 //
 // All deltas are measured against the initial resolved timeline (snapshot
 // semantics — sequential-sibling shifts from one edit don't re-target the
@@ -28,52 +32,27 @@
 //
 // Pure transformations on a SeamFile — no React, no platform deps.
 
-import type {
-  Child,
-  ResolvedTimeline,
-  SeamFile,
-  TimeAnchor,
-} from "@seam/core";
-import { fmtPct, fmtSec, naturalDurOf, parsePct } from "./anchorEdit.js";
+import { startAnchorId } from "@seam/core";
+import type { ResolvedTimeline, SeamFile } from "@seam/core";
 import {
   editContainer,
   getNodeAtPath,
   parsePath,
   pathKey,
   splitLast,
-  updateNodeAtPath,
   type NodePath,
 } from "./nodePath.js";
-import { descendToContainer, globalSpanOf, type Span } from "./resolveLocal.js";
+import { descendToContainer, globalSpanOf } from "./resolveLocal.js";
 import { resizeChild } from "./resizeTool.js";
+import { shiftOffsets } from "./runEdit.js";
 
 const EPS = 1e-6;
 
-/** Shift an anchor spec's offset by `deltaSec` (container-local output
- *  seconds), preserving the authored unit. A %-offset resolves against the
- *  attachment's natural duration; when that's unknown (0) the offset falls
- *  back to seconds so the shift isn't silently lost. No side clamping —
- *  unlike the drag path, bracketing legitimately crosses zero. */
-function shiftOffset(
-  spec: TimeAnchor,
-  deltaSec: number,
-  natDur: number,
-): TimeAnchor {
-  if (typeof spec.offset === "string" && natDur > 0) {
-    return { ...spec, offset: fmtPct(parsePct(spec.offset) + deltaSec / natDur) };
-  }
-  const oldSec =
-    typeof spec.offset === "string"
-      ? parsePct(spec.offset) * natDur
-      : spec.offset ?? 0;
-  return { ...spec, offset: fmtSec(oldSec + deltaSec) };
-}
-
 /** Move one edge of the node at `path` to `targetGlobal` (global output
- *  seconds), applying the offset-vs-resize invariant. Deltas are measured on
- *  the initial `doc`/`resolvedRoot` snapshot; the edit lands on `working`.
- *  Returns `working` unchanged when the path doesn't resolve or the edge is
- *  already in place. */
+ *  seconds): offset shift for the start of a run head, trim otherwise.
+ *  Deltas are measured on the initial `doc`/`resolvedRoot` snapshot; the
+ *  edit lands on `working`. Returns `working` unchanged when the path
+ *  doesn't resolve or the edge is already in place. */
 function bracketEdge(
   working: SeamFile,
   doc: SeamFile,
@@ -93,31 +72,20 @@ function bracketEdge(
   // node's resolved edge there.
   const desc = descendToContainer(resolvedRoot, doc, containerPath, targetGlobal);
   if (!desc) return working;
-  const flat =
-    last.field === "children"
-      ? last.index
-      : (desc.aContainer.children ?? []).length + last.index;
-  const rNode = desc.rContainer.children[flat];
+  const rNode = desc.rContainer.children[last.index];
   if (!rNode) return working;
   const edge = side === "start" ? rNode.timelineStart : rNode.timelineEnd;
   const delta = desc.localTime - edge;
   if (Math.abs(delta) < EPS) return working;
 
-  const spec = (node as { start?: TimeAnchor; end?: TimeAnchor })[side];
-  if (spec != null) {
-    const newSpec = shiftOffset(spec, delta, naturalDurOf(node));
-    return updateNodeAtPath(working, path, (n) => {
-      return { ...n, [side]: newSpec } as Child;
-    });
+  if (side === "start" && node.start != null) {
+    return editContainer(working, containerPath, rootBin, (sub) => ({
+      ...sub,
+      children: shiftOffsets(sub.children ?? [], new Set([last.index]), delta),
+    }));
   }
   return editContainer(working, containerPath, rootBin, (sub) =>
-    resizeChild(
-      sub,
-      last.index,
-      last.field === "attachments",
-      side === "start" ? "left" : "right",
-      delta,
-    ),
+    resizeChild(sub, last.index, side === "start" ? "left" : "right", delta),
   );
 }
 
@@ -160,7 +128,7 @@ export function applyBracket(
 
   const primarySpan = globalSpanOf(resolvedRoot, doc, primaryPath);
   if (!primarySpan) return null;
-  const primaryId = (primary as { id?: string }).id;
+  const primaryId = primary.id;
   const primaryContainerKey = pathKey(primaryPath.slice(0, -1));
 
   let working = doc;
@@ -173,11 +141,10 @@ export function applyBracket(
 
     // Attached case only when the anchor id can actually resolve to the
     // primary — anchors are sibling-scoped, so require the same container.
-    const specs = node as { start?: TimeAnchor; end?: TimeAnchor };
     const attachedToPrimary =
       primaryId != null &&
       pathKey(p.slice(0, -1)) === primaryContainerKey &&
-      (specs.start?.anchor === primaryId || specs.end?.anchor === primaryId);
+      startAnchorId(node.start) === primaryId;
     const targetGlobal = attachedToPrimary
       ? side === "start"
         ? primarySpan.start

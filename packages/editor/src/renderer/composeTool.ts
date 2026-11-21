@@ -1,253 +1,125 @@
-// Compose: take a contiguous range of children from a composition,
-// collect every attachment whose start/end anchors land on any of those
-// children (and recursively, any attachment whose anchors land on those
-// already-collected attachments), then club the whole set into a new
-// composition that replaces the contiguous range in the parent's
-// `children`. The dependent attachments move out of the parent's
-// `attachments` and into the new composition's `attachments`.
+// Compose: wrap the selected nodes of one container into a new composition.
 //
-// Dependency walk extends the selection: if a collected attachment
-// anchors to a child OUTSIDE the user's initial selection, the
-// selection grows to a contiguous range that covers it (per user-chosen
-// "fill the middle" rule). The caller is expected to confirm with the
-// user when `extraChildren > 0` before applying.
+// The wrapper takes the FIRST selected node's slot (array order) and its
+// slot-level fields (`LIFTED_FIELDS`: `start`, `offset`, `id`), so it lands
+// exactly where that node was and inbound anchors to its id keep resolving.
+// Inside the wrapper that node is the implicit head at 0.
+//
+// A run whose head anchors to an id that moves INSIDE the wrapper would
+// dangle (anchors resolve per container), so such runs are pulled in too,
+// transitively. Runs anchored to the lifted id stay outside — the wrapper
+// carries that id now.
+//
+// Inside the wrapper a node keeps its `start` only when it anchors to another
+// wrapped node; any other `start` (absolute, or an anchor left outside) is
+// dropped and the node continues the previous one's run. So a slice of one
+// run stays that run, and a scattered selection becomes one run in array
+// order. Offsets always travel with their node.
 
-import type { Child, Composition, SeamFile } from "@seam/core";
+import { startAnchorId, type Child, type Composition, type Start } from "@seam/core";
+import { removeFromRuns, withPlacement } from "./runEdit.js";
 
-export interface ComposeWalk {
-  /** Final set of child indices (sorted ascending). Always contiguous
-   *  — the loop fills any gap created by extending the range. */
-  childIndices: number[];
-  /** Attachment indices to move into the new composition (sorted
-   *  ascending — preserves z-order). */
-  attachmentIndices: number[];
-  /** How many extra children got pulled in beyond the user's initial
-   *  selection. `> 0` means the caller should confirm before applying. */
-  extraChildren: number;
+type Placed = { id?: string; start?: Start; offset?: number };
+
+/** Fields that describe the node's slot in its container — lifted from the
+ *  first selected node to the wrapper. */
+const LIFTED_FIELDS = ["start", "offset", "id"] as const;
+
+function validSelection(children: readonly Child[], selected: readonly number[]): number[] {
+  return [...new Set(selected)]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < children.length)
+    .sort((a, b) => a - b);
 }
 
-function isContiguousAscending(sorted: number[]): boolean {
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] !== sorted[i - 1] + 1) return false;
-  }
-  return true;
-}
-
-/** Returns true iff `initialChildIndices` is a non-empty, contiguous
- *  range. The Compose tool requires this because the result replaces a
- *  contiguous slice of the parent's `children` array. */
-export function isComposableSelection(
-  initialChildIndices: number[],
-  childCount: number,
-): boolean {
-  if (initialChildIndices.length === 0) return false;
-  for (const i of initialChildIndices) {
-    if (i < 0 || i >= childCount) return false;
-  }
-  const sorted = [...initialChildIndices].sort((a, b) => a - b);
-  return isContiguousAscending(sorted);
-}
-
-/** Walk attachment dependencies from `initialChildIndices`, extending
- *  the child range to fill any gap an anchor pulls in. Loops until
- *  stable so attachments-anchoring-attachments cascade correctly. */
+/** The indices Compose would wrap for `selected` (sorted ascending): the
+ *  selection plus every run anchored, transitively, to an id that moves
+ *  inside the wrapper. Empty when nothing valid is selected. */
 export function walkComposeDependencies(
-  parent: { children?: readonly Child[]; attachments?: readonly Child[] },
-  initialChildIndices: number[],
-): ComposeWalk {
-  const children = parent.children ?? [];
-  const attachments = parent.attachments ?? [];
-  const initialCount = new Set(initialChildIndices).size;
+  children: readonly Child[],
+  selected: readonly number[],
+): number[] {
+  const initial = validSelection(children, selected);
+  if (initial.length === 0) return [];
+  const first = initial[0];
+  const wrapped = new Set(initial);
+  const isHead = (i: number) => i === 0 || (children[i] as Placed).start != null;
 
-  // id → index lookups, scoped to the parent composition. Anchors can
-  // reference either a child or an attachment.
-  const childIdToIndex = new Map<string, number>();
-  children.forEach((c, i) => {
-    const id = (c as { id?: string }).id;
-    if (id != null) childIdToIndex.set(id, i);
-  });
-  const attachmentIdToIndex = new Map<string, number>();
-  attachments.forEach((a, i) => {
-    const id = (a as { id?: string }).id;
-    if (id != null) attachmentIdToIndex.set(id, i);
-  });
-
-  const collectedChildren = new Set(initialChildIndices);
-  const collectedAttachments = new Set<number>();
-
-  const idOfChild = (i: number): string | undefined =>
-    (children[i] as { id?: string }).id;
-  const idOfAttachment = (i: number): string | undefined =>
-    (attachments[i] as { id?: string }).id;
-
-  const anchorIdsOf = (a: Child): string[] => {
-    const out: string[] = [];
-    const sa = (a as { start?: { anchor?: string } }).start?.anchor;
-    const ea = (a as { end?: { anchor?: string } }).end?.anchor;
-    if (sa) out.push(sa);
-    if (ea) out.push(ea);
-    return out;
-  };
-
-  // Iterate to fixed-point: each round may collect new attachments
-  // (which give the next round more covered ids) and extend the child
-  // range (which may make further attachments dependent).
   let changed = true;
   while (changed) {
     changed = false;
-
-    // Refresh the covered-id set from current collected indices.
-    const coveredIds = new Set<string>();
-    for (const i of collectedChildren) {
-      const id = idOfChild(i);
-      if (id) coveredIds.add(id);
+    const innerIds = new Set<string>();
+    for (const i of wrapped) {
+      const id = (children[i] as Placed).id;
+      if (id && i !== first) innerIds.add(id);
     }
-    for (const i of collectedAttachments) {
-      const id = idOfAttachment(i);
-      if (id) coveredIds.add(id);
-    }
-
-    // 1. New dependent attachments — anything anchored to a covered id.
-    for (let i = 0; i < attachments.length; i++) {
-      if (collectedAttachments.has(i)) continue;
-      const ids = anchorIdsOf(attachments[i]);
-      if (ids.some((id) => coveredIds.has(id))) {
-        collectedAttachments.add(i);
-        changed = true;
-      }
-    }
-
-    // 2. Extend child range — if any collected attachment anchors to a
-    //    child outside the current set, grow to the contiguous hull.
-    let lo: number | null = null;
-    let hi: number | null = null;
-    for (const i of collectedChildren) {
-      if (lo == null || i < lo) lo = i;
-      if (hi == null || i > hi) hi = i;
-    }
-    for (const i of collectedAttachments) {
-      for (const anchorId of anchorIdsOf(attachments[i])) {
-        const childIdx = childIdToIndex.get(anchorId);
-        if (childIdx == null) continue;
-        if (collectedChildren.has(childIdx)) continue;
-        // Grow the convex hull to cover this child.
-        lo = lo == null ? childIdx : Math.min(lo, childIdx);
-        hi = hi == null ? childIdx : Math.max(hi, childIdx);
-      }
-    }
-    if (lo != null && hi != null) {
-      for (let j = lo; j <= hi; j++) {
-        if (!collectedChildren.has(j)) {
-          collectedChildren.add(j);
+    for (let h = 0; h < children.length; h++) {
+      if (!isHead(h)) continue;
+      const ref = startAnchorId((children[h] as Placed).start);
+      if (ref == null || !innerIds.has(ref)) continue;
+      for (let i = h; i < children.length && (i === h || !isHead(i)); i++) {
+        if (!wrapped.has(i)) {
+          wrapped.add(i);
           changed = true;
         }
       }
     }
   }
-
-  const childIndices = [...collectedChildren].sort((a, b) => a - b);
-  const attachmentIndices = [...collectedAttachments].sort((a, b) => a - b);
-  return {
-    childIndices,
-    attachmentIndices,
-    extraChildren: childIndices.length - initialCount,
-  };
+  return [...wrapped].sort((a, b) => a - b);
 }
 
-/** Apply the walk result: replace the contiguous child range with a new
- *  composition containing those children + the collected attachments;
- *  drop the collected attachments from the parent. */
-export function applyCompose(
-  doc: SeamFile,
-  walk: ComposeWalk,
-): SeamFile {
-  const { childIndices, attachmentIndices } = walk;
-  if (childIndices.length === 0) return doc;
-
-  const start = childIndices[0];
-  const end = childIndices[childIndices.length - 1];
-
-  const docChildren = doc.children ?? [];
-  const newCompChildren = childIndices.map((i) => docChildren[i]);
-  const allAttachments = doc.attachments ?? [];
-  const newCompAttachments = attachmentIndices.map((i) => allAttachments[i]);
-
-  const newComp: Composition = {
-    type: "composition",
-    children: newCompChildren,
-  };
-  if (newCompAttachments.length > 0) {
-    newComp.attachments = newCompAttachments;
-  }
-
-  const newChildren = [
-    ...docChildren.slice(0, start),
-    newComp,
-    ...docChildren.slice(end + 1),
-  ];
-
-  const droppedAttachmentSet = new Set(attachmentIndices);
-  const newAttachments = allAttachments.filter(
-    (_, i) => !droppedAttachmentSet.has(i),
-  );
-
-  if (newAttachments.length > 0) {
-    return { ...doc, children: newChildren, attachments: newAttachments };
-  }
-  const { attachments: _drop, ...rest } = doc;
-  return { ...rest, children: newChildren };
+export interface ComposeResult<T> {
+  container: T;
+  /** Index of the new composition in `container.children`. */
+  index: number;
 }
 
-// ── Attachment compose ───────────────────────────────────────────────
-//
-// Composing an *attachment* is a different, deliberately narrow operation
-// from composing children: it wraps a single attachment in a composition
-// that takes over the node's slot in the parent. The wrapper inherits the
-// fields that describe the node *as a slot in its parent* — its positioning
-// anchors (`start`/`end`), its flex strategy (`overflow`/`underflow`, which
-// only mean anything on the pinned-both-ends node, now the composition), and
-// its identity (`id`, so inbound anchors — which resolve per-composition-
-// scope — keep pointing at the same slot). Everything else (`source`,
-// `in`/`out`, …) drops into the single inner child unchanged. No "magic":
-// nothing else is lifted or inferred.
+/** Wrap the nodes at `selected` (indices into `container.children`), plus
+ *  their dependents, into one composition. Null when nothing valid is
+ *  selected. */
+export function applyCompose<T extends { children?: Child[] }>(
+  container: T,
+  selected: readonly number[],
+): ComposeResult<T> | null {
+  const children = container.children ?? [];
+  const indices = walkComposeDependencies(children, selected);
+  if (indices.length === 0) return null;
+  const first = validSelection(children, selected)[0];
 
-/** Fields that describe the node's slot in its parent — lifted to the
- *  wrapper. Everything else stays on the inner child. */
-const LIFTED_FIELDS = ["start", "end", "id", "overflow", "underflow"] as const;
+  const innerIds = new Set<string>();
+  for (const i of indices) {
+    const id = (children[i] as Placed).id;
+    if (id && i !== first) innerIds.add(id);
+  }
 
-/** Wrap one attachment node in a composition, lifting its slot-level fields
- *  to the wrapper and leaving the rest as the inner child. */
-function wrapAttachment(att: Child): Composition {
-  const rest = { ...(att as unknown as Record<string, unknown>) };
   const lifted: Record<string, unknown> = {};
-  for (const f of LIFTED_FIELDS) {
-    if (rest[f] !== undefined) {
-      lifted[f] = rest[f];
-      delete rest[f];
+  const inner = indices.map((i, k): Child => {
+    const node = children[i];
+    const placed = node as Child & Placed;
+    if (i === first) {
+      const rest = { ...(node as unknown as Record<string, unknown>) };
+      for (const f of LIFTED_FIELDS) {
+        if (rest[f] !== undefined) lifted[f] = rest[f];
+        delete rest[f];
+      }
+      // Not the wrapper's first child (a pulled-in run sits below it in
+      // z-order): pin it at 0 so it doesn't join that run.
+      return (k === 0 ? rest : { ...rest, start: 0 }) as unknown as Child;
     }
-  }
-  return {
-    type: "composition",
-    children: [rest as unknown as Child],
-    ...lifted,
-  } as Composition;
-}
+    const ref = startAnchorId(placed.start);
+    if (placed.start != null && (ref == null || !innerIds.has(ref))) {
+      return withPlacement(node, undefined, placed.offset);
+    }
+    return node;
+  });
 
-/** Replace each attachment at the given indices with its composition
- *  wrapper, in place (slots and ordering are unchanged). */
-export function composeAttachments(
-  doc: SeamFile,
-  attachmentIndices: number[],
-): SeamFile {
-  if (attachmentIndices.length === 0) return doc;
-  const atts = [...(doc.attachments ?? [])];
-  let changed = false;
-  for (const idx of attachmentIndices) {
-    const att = atts[idx];
-    if (!att) continue;
-    atts[idx] = wrapAttachment(att);
-    changed = true;
-  }
-  if (!changed) return doc;
-  return { ...doc, attachments: atts };
+  const wrapper = { type: "composition", children: inner, ...lifted } as Composition;
+
+  // The wrapper takes the first selected node's slot as-is; every other
+  // wrapped node leaves through the run-aware removal.
+  const slotted = children.map((c, i) => (i === first ? wrapper : c));
+  const remove = new Set(indices.filter((i) => i !== first));
+  return {
+    container: { ...container, children: removeFromRuns(slotted, remove) },
+    index: first - indices.filter((i) => i < first).length,
+  };
 }

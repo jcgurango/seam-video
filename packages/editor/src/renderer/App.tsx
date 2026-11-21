@@ -70,8 +70,10 @@ const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
  *  only "mode" the editor has now that drill-down navigation is gone. */
 type CCCutMode = { binId: string } | null;
 
-function resolveDoc(doc: SeamFile): ResolvedTimeline {
-  const temporal = resolveComposition(doc);
+/** `uncropped` keeps root children 1:1 with the authored array (nodes that
+ *  start before 0 stay in the list) — what the editing panels need. */
+function resolveDoc(doc: SeamFile, uncropped = false): ResolvedTimeline {
+  const temporal = resolveComposition(doc, { uncropped });
   return resolveSpatial(
     temporal,
     doc.contentWidth ?? DEFAULT_CANVAS_WIDTH,
@@ -134,7 +136,7 @@ export default function App({ platform }: AppProps) {
   const [filePath, setFilePath] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   // Canonical selection: path keys (`children.0`,
-  // `children.3.attachments.1`). Root-only tools derive flat indices from
+  // `children.3.children.1`). Root-only tools derive flat indices from
   // these via `rootIndicesFromKeys` at their boundary (see nodePath.ts).
   const [selection, setSelection] = useState<string[]>([]);
   const [ccCut, setCcCut] = useState<CCCutMode>(null);
@@ -285,7 +287,7 @@ export default function App({ platform }: AppProps) {
       const { doc: panelCompiled } = compileDocument(activeDoc, {
         runScripts: false,
       });
-      return resolveDoc(panelCompiled);
+      return resolveDoc(panelCompiled, true);
     } catch (err) {
       console.error("[App] editorTimeline resolve failed:", err, { activeDoc });
       return null;
@@ -457,7 +459,7 @@ export default function App({ platform }: AppProps) {
   }, []);
 
   // The current selection's path key already *is* a dotted JSON path
-  // (`children.0`, `children.3.attachments.1`) — jump straight to it. A
+  // (`children.0`, `children.3.children.1`) — jump straight to it. A
   // diamond click overrides with the exact keyframe path.
   const jsonJumpPath = useMemo<string | null>(() => {
     if (jsonReveal) return jsonReveal.path;
@@ -493,7 +495,7 @@ export default function App({ platform }: AppProps) {
   const handleJsonNodeSave = useCallback(
     (next: unknown): string[] | null => {
       // The JSON tab edits the whole root document. The edited form may
-      // have stripped children/attachments on any script/bin composition —
+      // have stripped children on any script/bin composition —
       // `compileDocument` below regenerates them, so validation runs
       // against the authored shape and the compile pass runs after.
       const proposed = next;
@@ -533,19 +535,14 @@ export default function App({ platform }: AppProps) {
   }, []);
 
   // Flat root indices for the root-only edit tools (ControlsBar): the
-  // path-key selection projected down to `[0, childCount)` children and
-  // `[childCount, …)` attachments, nested keys dropped.
-  const rootSelectedIndices = useMemo(
-    () => rootIndicesFromKeys(selection, (document.children ?? []).length),
-    [selection, document],
-  );
+  // path-key selection projected down to root child indices, nested keys
+  // dropped.
+  const rootSelectedIndices = useMemo(() => rootIndicesFromKeys(selection), [selection]);
   const onRootSelectionChange = useCallback(
     (idxs: number[]) => {
-      setSelection(
-        idxs.map((i) => rootKeyFromIndex(i, (document.children ?? []).length)),
-      );
+      setSelection(idxs.map(rootKeyFromIndex));
     },
-    [document],
+    [],
   );
 
   // ── CC Cut entry / exit ────────────────────────────────────────
@@ -610,7 +607,7 @@ export default function App({ platform }: AppProps) {
       // CC-cut renders the preview's root children; map the path-key
       // selection back to those flat child indices.
       const drop = new Set(
-        rootIndicesFromKeys(selection, ccSelections.length).filter(
+        rootIndicesFromKeys(selection).filter(
           (i) => i < ccSelections.length,
         ),
       );
@@ -919,14 +916,9 @@ export default function App({ platform }: AppProps) {
   // Root-level selected nodes that are compositions — they need the mix-mode
   // modal before the job runs (clip/audio targets transcribe directly).
   const selectedCompositionCount = useMemo(() => {
-    const childCount = (document.children ?? []).length;
-    return rootSelectedIndices.filter((idx) => {
-      const node =
-        idx < childCount
-          ? (document.children ?? [])[idx]
-          : document.attachments?.[idx - childCount];
-      return node?.type === "composition";
-    }).length;
+    return rootSelectedIndices.filter(
+      (idx) => (document.children ?? [])[idx]?.type === "composition",
+    ).length;
   }, [rootSelectedIndices, document]);
 
   const handleTranscribe = useCallback(() => {
@@ -1065,10 +1057,9 @@ export default function App({ platform }: AppProps) {
                 words={ccWords}
                 selections={ccSelections}
                 onSelectionsChange={setCcSelections}
-                focusedSelectionIndices={rootIndicesFromKeys(
-                  selection,
-                  ccSelections.length,
-                ).filter((i) => i < ccSelections.length)}
+                focusedSelectionIndices={rootIndicesFromKeys(selection).filter(
+                  (i) => i < ccSelections.length,
+                )}
               />
             ) : (
               <InspectorAccordion
@@ -1117,6 +1108,7 @@ export default function App({ platform }: AppProps) {
               selection={selection}
               timeline={editorTimeline}
               onSelectionChange={onRootSelectionChange}
+              onPathSelectionChange={onSelectionChange}
               onDocumentChange={updateDocument}
               onUndo={handleUndo}
               onRedo={handleRedo}

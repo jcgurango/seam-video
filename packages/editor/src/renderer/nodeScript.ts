@@ -2,7 +2,7 @@
 // a JavaScript source string; the compile pass (in @seam/core) runs it
 // at resolve time. Unlike the old metadata-payload form, there's no
 // separate `original` snapshot — the composition's own
-// `children`/`attachments` is the script's input, and the script's
+// `children` is the script's input, and the script's
 // output replaces it during compile.
 
 import { runScript } from "@seam/core";

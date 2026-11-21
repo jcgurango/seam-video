@@ -90,7 +90,7 @@ function collect(
         : envs;
       collect(child.children, start, child.speed * parentSpeed, innerEnvs, out);
     } else if (child.type === "map") {
-      // Map attachments: map-local time at speed 1, no volume of their own.
+      // Map children: map-local time at speed 1, no volume of their own.
       collect(child.children, start, parentSpeed, envs, out);
     }
   }
@@ -126,7 +126,7 @@ export async function flatCommand(file: string, options: FlatOptions) {
   const entries: FlatSourceEntry[] = [];
   collect(timeline.children, 0, 1, rootEnvs, entries);
 
-  // Attachments resolve after all children, so restore chronological order.
+  // Children are in array (z) order, not time order — sort chronologically.
   entries.sort((a, b) => a.start - b.start || a.end - b.end);
 
   const out = options.pretty !== false
