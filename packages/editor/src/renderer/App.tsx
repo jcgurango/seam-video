@@ -57,6 +57,7 @@ import { useHistory } from "./useHistory.js";
 import { useEvent } from "./useEvent.js";
 import { rootIndicesFromKeys, rootKeyFromIndex } from "./nodePath.js";
 import type { Platform } from "./platform/index.js";
+import { setMapBasePath } from "./mapBasePath.js";
 import { WebPlatform } from "./platform/index.js";
 
 interface AppProps {
@@ -856,6 +857,9 @@ export default function App({ platform }: AppProps) {
   ]);
 
   const basePath = filePath ? dirname(filePath) : "";
+  // The boot-registered pmtiles resolver reads this when a map first opens
+  // its archive, so it has to be current before the player renders.
+  setMapBasePath(basePath);
 
   // Generator server selection (transcription / enhancement). Precedence:
   //   1. an explicit user setting (direct connection),

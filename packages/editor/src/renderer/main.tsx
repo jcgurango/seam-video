@@ -9,6 +9,7 @@ import {
 } from "@seam/preview";
 import App from "./App.js";
 import { detectPlatform, WebPlatform } from "./platform/index.js";
+import { getMapBasePath } from "./mapBasePath.js";
 import type { Source } from "pmtiles";
 
 const platform = detectPlatform();
@@ -44,7 +45,7 @@ setSourceResolver((source, basePath) =>
 // pmtiles → byte-range Source — same shape on web (OPFS) + electron
 // (file:// FetchSource). `map` nodes use it when opening pmtiles.
 setPmtilesResolver(async (filename: string) => {
-  const src = await platform.openPmtilesSource(filename, "");
+  const src = await platform.openPmtilesSource(filename, getMapBasePath());
   return (src as Source | null) ?? null;
 });
 
