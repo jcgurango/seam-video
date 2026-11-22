@@ -14,11 +14,8 @@ import {
   AlignStartVertical,
   ArrowLeftToLine,
   ArrowRightToLine,
-  Captions,
   Group,
   Box,
-  Split,
-  Combine,
   AudioLines,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
@@ -40,13 +37,6 @@ import { normalizeTargets } from "./normalizeTool.js";
 import { sliceAtPlayhead } from "./splitTool.js";
 import { applyAttach } from "./attachTool.js";
 import { applyBracket } from "./bracketTool.js";
-import {
-  separateByWord,
-  groupWords,
-  childAtBlockIndex,
-  isTranscriptionWords,
-  isWordItem,
-} from "./wordTool.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 import { useSeam } from "./seamContext.js";
 
@@ -67,24 +57,11 @@ interface ControlsBarProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
-  /** True while CC-cut mode is active — swaps the edit toolbar for the
-   *  Cancel/OK pair. */
-  ccCutMode: boolean;
   platform: Platform;
-  /** Trigger CC/transcript generation for the current selection (or all). */
-  onTranscribe: () => void;
-  /** True while a transcription job is running — disables the CC button. */
-  transcribing: boolean;
   /** Peak-normalize the selected clip/audio nodes to -1 dBFS. */
   onNormalize: () => void;
   /** True while a normalize job is decoding — disables the button. */
   normalizing: boolean;
-  /** CC-cut mode: commit selections and splice into the root doc. */
-  onCCCutOk: () => void;
-  /** CC-cut mode: discard selections and exit. */
-  onCCCutCancel: () => void;
-  /** True when the CC-cut user has at least one selection (gates OK). */
-  ccCutHasSelections: boolean;
   /** Toolbar commands contributed by extensions, and the context they run in. */
   extensionCommands?: readonly EditorCommand[];
   commandContext?: EditorCommandContext;
@@ -157,39 +134,6 @@ const TIME_STYLE: React.CSSProperties = {
 
 const ICON_SIZE = 16;
 
-const BTN_PRIMARY_TEXT: React.CSSProperties = {
-  background: "#4a7eb8",
-  border: "none",
-  color: "#fff",
-  padding: "6px 14px",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 13,
-  fontFamily: "inherit",
-  height: 28,
-  flexShrink: 0,
-};
-
-const BTN_PRIMARY_TEXT_DISABLED: React.CSSProperties = {
-  ...BTN_PRIMARY_TEXT,
-  background: "#2a2a2a",
-  color: "#666",
-  cursor: "not-allowed",
-};
-
-const BTN_SECONDARY_TEXT: React.CSSProperties = {
-  background: "transparent",
-  border: "1px solid #555",
-  color: "#ddd",
-  padding: "6px 14px",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 13,
-  fontFamily: "inherit",
-  height: 28,
-  flexShrink: 0,
-};
-
 // ── Component ────────────────────────────────────────────────────────
 
 export default function ControlsBar({
@@ -205,15 +149,9 @@ export default function ControlsBar({
   onRedo,
   canUndo,
   canRedo,
-  ccCutMode,
   platform,
-  onTranscribe,
-  transcribing,
   onNormalize,
   normalizing,
-  onCCCutOk,
-  onCCCutCancel,
-  ccCutHasSelections,
   extensionCommands = [],
   commandContext,
   extensionViews = [],
@@ -274,11 +212,11 @@ export default function ControlsBar({
     if (next !== doc) onDocumentChange(next);
   }, [doc, timeline, currentTime, selection, onDocumentChange]);
 
-  // S key shortcut (disabled in CC-cut mode and while typing in any
+  // S key shortcut (disabled while an extension view is open and while typing in any
   // editable surface — otherwise typing "s" into the JSON / Script
   // editor or a rename input would slice the playhead clip).
   useEffect(() => {
-    if (ccCutMode || viewOpen) return;
+    if (viewOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (isTypingInEditableSurface(e)) return;
       if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -287,7 +225,7 @@ export default function ControlsBar({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSlice, ccCutMode, viewOpen]);
+  }, [handleSlice, viewOpen]);
 
   // ── Import ─────────────────────────────────────────────────────
 
@@ -436,39 +374,6 @@ export default function ControlsBar({
     !normalizing &&
     normalizeTargets(doc, selection.map(parsePath)).length > 0;
 
-  // ── Word tools ─────────────────────────────────────────────────
-  // Separate by word: one or more CC transcription items (with a words
-  // array) selected. Group words: 2+ per-word items selected.
-  const canSeparateWords =
-    selectedIndices.length > 0 &&
-    selectedIndices.every((i) =>
-      isTranscriptionWords(childAtBlockIndex(doc, i)),
-    );
-
-  const canGroupWords =
-    selectedIndices.length >= 2 &&
-    selectedIndices.every((i) => isWordItem(childAtBlockIndex(doc, i)));
-
-  const handleSeparateWords = useCallback(() => {
-    const result = separateByWord(doc, selectedIndices);
-    if (!result.ok) {
-      window.alert(result.error);
-      return;
-    }
-    onDocumentChange(result.doc);
-    onSelectionChange([]);
-  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
-
-  const handleGroupWords = useCallback(() => {
-    const result = groupWords(seam, doc, selectedIndices);
-    if (!result.ok) {
-      window.alert(result.error);
-      return;
-    }
-    onDocumentChange(result.doc);
-    onSelectionChange([]);
-  }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
-
   // ── Render ─────────────────────────────────────────────────────
 
   return (
@@ -542,7 +447,7 @@ export default function ControlsBar({
         <div style={SEPARATOR} />
 
         {/* Edit tools */}
-        {viewOpen ? null : !ccCutMode ? (
+        {viewOpen ? null : (
           <>
             <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
               <FolderOpen size={ICON_SIZE} />
@@ -596,22 +501,6 @@ export default function ControlsBar({
               <Box size={ICON_SIZE} />
             </button>
             <button
-              onClick={handleSeparateWords}
-              style={{ ...BTN_STYLE, opacity: canSeparateWords ? 1 : 0.3 }}
-              disabled={!canSeparateWords}
-              title="Separate by word: split a CC transcription into one item per word"
-            >
-              <Split size={ICON_SIZE} />
-            </button>
-            <button
-              onClick={handleGroupWords}
-              style={{ ...BTN_STYLE, opacity: canGroupWords ? 1 : 0.3 }}
-              disabled={!canGroupWords}
-              title="Group words: merge selected word items back into one phrase"
-            >
-              <Combine size={ICON_SIZE} />
-            </button>
-            <button
               onClick={() => {
                 if (selectedIndices.length > 0) {
                   const nextTime = playheadAfterDelete(seam,
@@ -635,22 +524,6 @@ export default function ControlsBar({
               title="Delete (Del)"
             >
               <Trash2 size={ICON_SIZE} />
-            </button>
-            <button
-              onClick={onTranscribe}
-              disabled={transcribing || selectedIndices.length === 0}
-              style={{
-                ...BTN_STYLE,
-                opacity:
-                  transcribing || selectedIndices.length === 0 ? 0.3 : 1,
-              }}
-              title={
-                selectedIndices.length === 0
-                  ? "Select a clip, audio, or composition to generate subtitles"
-                  : "Generate subtitles for the selected clip/audio/composition nodes"
-              }
-            >
-              <Captions size={ICON_SIZE} />
             </button>
             <button
               onClick={onNormalize}
@@ -714,30 +587,6 @@ export default function ControlsBar({
                   </button>
                 );
               })}
-          </>
-        ) : (
-          <>
-            <button
-              onClick={onCCCutCancel}
-              style={BTN_SECONDARY_TEXT}
-              title="Discard selections and exit CC Cut"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={onCCCutOk}
-              disabled={!ccCutHasSelections}
-              style={
-                ccCutHasSelections ? BTN_PRIMARY_TEXT : BTN_PRIMARY_TEXT_DISABLED
-              }
-              title={
-                ccCutHasSelections
-                  ? "Splice selections into the root composition"
-                  : "Make at least one selection first"
-              }
-            >
-              OK
-            </button>
           </>
         )}
         <input

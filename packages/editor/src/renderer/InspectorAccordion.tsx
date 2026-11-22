@@ -61,8 +61,6 @@ interface InspectorAccordionProps {
   /** Push a new editor-surface root back to history (typically the same
    *  callback used by ControlsBar/TimelinePanel). */
   onRootDocumentChange: (next: SeamFile) => void;
-  /** Enter CC Cut view for the given bin entry. */
-  onEnterCCCut: (binId: string) => void;
   /** Platform — gates the web-only Media section + backs its browser. */
   platform: Platform;
   /** Path-keyed selection — the Properties section edits these nodes. */
@@ -90,7 +88,6 @@ export default function InspectorAccordion({
   onScriptApply,
   rootDocument,
   onRootDocumentChange,
-  onEnterCCCut,
   platform,
   selection,
   onDocumentEdit,
@@ -149,7 +146,6 @@ export default function InspectorAccordion({
           <BinPanel
             rootDocument={rootDocument}
             onRootDocumentChange={onRootDocumentChange}
-            onEnterCCCut={onEnterCCCut}
           />
         );
       case "media":

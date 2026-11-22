@@ -62,7 +62,7 @@ export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
   /**
    * The authored document whose `children` correspond to the
-   * timeline. When undefined the panel is read-only (e.g. the CC-cut
+   * timeline. When undefined the panel is read-only (e.g. an extension view's
    * preview) — editing, reorder, delete, and import are all
    * disabled and block labels fall back to the resolved nodes.
    */
@@ -1918,7 +1918,7 @@ export default function TimelinePanel({
   onJumpToJson,
 }: TimelinePanelProps) {
   const seam = useSeam();
-  // The panel is editable only when given a document; the CC-cut preview
+  // The panel is editable only when given a document; an extension view's preview
   // passes none, leaving the timeline read-only (selection-only).
   const editable = doc != null;
   const { currentTime, seek } = useTimeline();
@@ -2004,8 +2004,8 @@ export default function TimelinePanel({
   );
 
   // Delete/Backspace to remove selected blocks (runs anchored to a deleted
-  // node go with it). Editable panels only (the CC-cut preview
-  // routes Delete through its own handler in App).
+  // node go with it). Editable panels only (an extension view's preview
+  // is read-only).
   useEffect(() => {
     if (!doc) return;
     const handler = (e: KeyboardEvent) => {

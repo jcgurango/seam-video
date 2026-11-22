@@ -12,7 +12,7 @@ interface PreviewStageProps {
   contentHeight: number;
   /** Viewport transform gizmo: shown for a single selected node when all of
    *  these are given (omitted in modes where the document isn't the thing on
-   *  screen, e.g. CC cut). */
+   *  screen, e.g. an extension view's preview). */
   document?: SeamFile;
   selection?: string[];
   /** The editor timeline (scripts off, root `uncropped`). */

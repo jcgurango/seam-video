@@ -39,16 +39,8 @@ import Toast from "./Toast.js";
 import TranscribeProgressOverlay from "./TranscribeProgressOverlay.js";
 import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import { compileDocument } from "./compile.js";
-import { findBin } from "./nodeBin.js";
-import CCCutView from "./CCCutView.js";
 import ExtensionViewHost from "./ExtensionViewHost.js";
 import { EditorExtensionsContext, type EditorExtensionsValue } from "./extensionContext.js";
-import {
-  buildCCPreviewDoc,
-  buildCCSpliceChildren,
-  resolveCCWords,
-  type CCSelection,
-} from "./ccCutTool.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
 import type { Composition } from "@seam/core";
 import type { ExportProgress } from "./platform/types.js";
@@ -81,10 +73,7 @@ interface AppProps {
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
 
-/** CC-Cut mode: when non-null the editor is cutting the named bin entry
- *  into clips. Null means normal editing of the root document. This is the
- *  only "mode" the editor has now that drill-down navigation is gone. */
-type CCCutMode = { binId: string } | null;
+
 
 /** `uncropped` keeps root children 1:1 with the authored array (nodes that
  *  start before 0 stay in the list) — what the editing panels need. */
@@ -165,11 +154,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
   // `children.3.children.1`). Root-only tools derive flat indices from
   // these via `rootIndicesFromKeys` at their boundary (see nodePath.ts).
   const [selection, setSelection] = useState<string[]>([]);
-  const [ccCut, setCcCut] = useState<CCCutMode>(null);
-  // In-flight selections for the CC Cut view. Cleared on entry and on
-  // OK/Cancel — lives on App because both the CC view (renders + edits)
-  // and the toolbar (OK button) need to read them.
-  const [ccSelections, setCcSelections] = useState<CCSelection[]>([]);
   // An extension's view (`EditorExtension.views`), while one is open: which
   // one, the node it was opened on, the document it was opened against (a
   // change underneath closes it) and the preview document it asked the
@@ -233,32 +217,15 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
   // failures still produce a usable preview.
   const [scriptError, setScriptError] = useState<string | null>(null);
 
-  // Bin entry currently being CC-cut (null outside CC-cut mode). The
-  // resolved word ribbon + preview doc derive from this.
-  const ccBinEntry = useMemo(() => {
-    if (!ccCut) return null;
-    const bin = findBin(document as Composition);
-    return bin.find((e) => e.id === ccCut.binId) ?? null;
-  }, [ccCut, document]);
-
-  const ccWords = useMemo(() => {
-    if (!ccBinEntry) return [];
-    return resolveCCWords(seam, ccBinEntry, document);
-  }, [ccBinEntry, document]);
-
   // The document currently being shown. Normal editing operates on the
-  // root document directly; CC-cut synthesises a preview doc from the
-  // user's in-progress word selections.
+  // root document directly; an extension view may show a preview in its
+  // place (the Captions CC cut previews the result of the picked ranges).
   const activeDoc = useMemo<SeamFile>(() => {
-    if (ccCut) {
-      if (!ccBinEntry) return document;
-      return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
-    }
     // An extension view's live preview (only while it still belongs to this
     // document).
     if (extView?.preview && extView.openedOn === document) return extView.preview;
     return document;
-  }, [ccCut, ccBinEntry, document, ccSelections, extView]);
+  }, [document, extView]);
 
   // Two resolved timelines:
   //   - playerTimeline: bins spliced + scripts run; what the canvas plays.
@@ -333,17 +300,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     }
   }, [activeDoc]);
 
-  // Guard: bounce out of CC-cut if the targeted bin entry has been
-  // deleted / renamed out from under us.
-  useEffect(() => {
-    if (!ccCut) return;
-    const bin = findBin(document as Composition);
-    if (!bin.some((e) => e.id === ccCut.binId)) {
-      setCcCut(null);
-      setCcSelections([]);
-    }
-  }, [document, ccCut]);
-
   const updateTitle = useCallback(
     (fp: string | null) => {
       platform.setTitle(
@@ -373,8 +329,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     setFilePath(fp);
     setErrors([]);
     setSelection([]);
-    setCcCut(null);
-    setCcSelections([]);
     updateTitle(fp);
   });
 
@@ -586,80 +540,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     },
     [],
   );
-
-  // ── CC Cut entry / exit ────────────────────────────────────────
-
-  const handleEnterCCCut = useCallback(
-    (binId: string) => {
-      setCcSelections([]);
-      setCcCut({ binId });
-      setSelection([]);
-    },
-    [],
-  );
-
-  const handleCCCutCancel = useCallback(() => {
-    // Cancelling discards the in-progress cuts, which aren't on the undo
-    // stack — confirm before throwing them away (an empty session is a
-    // harmless no-op, so skip the prompt then).
-    if (ccSelections.length > 0) {
-      const ok = window.confirm(
-        "Discard all CC Cut selections? This can't be undone.",
-      );
-      if (!ok) return;
-    }
-    setCcCut(null);
-    setCcSelections([]);
-  }, [ccSelections]);
-
-  const handleCCCutOk = useCallback(() => {
-    if (!ccCut) return;
-    if (!ccBinEntry) return;
-    if (ccSelections.length === 0) {
-      // Nothing to splice — behave like cancel.
-      handleCCCutCancel();
-      return;
-    }
-    const spliced = buildCCSpliceChildren(
-      ccBinEntry,
-      ccCut.binId,
-      ccSelections,
-    );
-    // Append the bin-reference children directly to the authored
-    // document. The compile pass at preview/render time resolves them
-    // against the doc's `bin`.
-    const newDoc: SeamFile = {
-      ...document,
-      children: [...(document.children ?? []), ...spliced],
-    };
-    void commitDocument(newDoc);
-    setCcCut(null);
-    setCcSelections([]);
-  }, [ccCut, ccBinEntry, ccSelections, document, commitDocument, handleCCCutCancel]);
-
-  // Delete in CC-cut mode: drop the timeline-selected entries from
-  // `ccSelections` (which the timeline + word ribbon both drive off of).
-  useEffect(() => {
-    if (!ccCut) return;
-    const handler = (e: KeyboardEvent) => {
-      if (isTypingInEditableSurface(e)) return;
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
-      if (selection.length === 0) return;
-      e.preventDefault();
-      // CC-cut renders the preview's root children; map the path-key
-      // selection back to those flat child indices.
-      const drop = new Set(
-        rootIndicesFromKeys(selection).filter(
-          (i) => i < ccSelections.length,
-        ),
-      );
-      if (drop.size === 0) return;
-      setCcSelections(ccSelections.filter((_, i) => !drop.has(i)));
-      setSelection([]);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [ccCut, selection, ccSelections]);
 
   // ── Undo / Redo ────────────────────────────────────────────────
 
@@ -931,7 +811,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     authToken: generatorAuthToken,
     platform,
     basePath,
-    history,
   });
 
   useEffect(() => {
@@ -966,20 +845,8 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     ).length;
   }, [rootSelectedIndices, document]);
 
-  const handleTranscribe = useCallback(() => {
-    if (rootSelectedIndices.length === 0) return;
-    setTranscribeNotice([]);
-    // A composition in the selection needs a mix-mode choice first.
-    if (selectedCompositionCount > 0) {
-      setCompAudioPromptOpen(true);
-      return;
-    }
-    void transcriber.run(document, rootSelectedIndices);
-  }, [transcriber, document, rootSelectedIndices, selectedCompositionCount]);
-
-  // An extension command waiting on the mix-mode choice (see
-  // `commandContext.services.transcribe`); null when the prompt was opened by
-  // the built-in button.
+  // The extension command waiting on the mix-mode choice (see
+  // `commandContext.services.transcribe`).
   const compAudioWaiter = useRef<((mode: CompositionAudioMode | null) => void) | null>(null);
 
   const handleCompAudioChoose = useCallback(
@@ -987,14 +854,10 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
       setCompAudioPromptOpen(false);
       setTranscribeNotice([]);
       const waiter = compAudioWaiter.current;
-      if (waiter) {
-        compAudioWaiter.current = null;
-        waiter(mode);
-        return;
-      }
-      void transcriber.run(document, rootSelectedIndices, mode);
+      compAudioWaiter.current = null;
+      waiter?.(mode);
     },
-    [transcriber, document, rootSelectedIndices],
+    [],
   );
 
   const handleCompAudioClose = useCallback(() => {
@@ -1062,7 +925,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     if (extView && extView.openedOn !== document) setExtView(null);
   }, [extView, document]);
   /** The timeline + viewport don't edit while a mode owns the document. */
-  const readOnly = ccCut != null || extView != null;
+  const readOnly = extView != null;
 
   // ── Extension commands ──
   // What each extension's toolbar command runs against: the editor's state
@@ -1122,8 +985,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     ],
   );
 
-  // Remounts the <Timeline> (resetting playhead) when toggling CC-cut mode.
-  const viewKey = ccCut ? `cc-cut-${ccCut.binId}` : "root";
 
   // Selection bar appears once 2+ blocks are selected (Ctrl/Cmd+click).
   const showSelectionBar = selection.length >= 2;
@@ -1206,7 +1067,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
 
     return (
       <Timeline
-        key={viewKey}
         timeline={playerTimeline}
         seam={seam}
         basePath={basePath}
@@ -1224,8 +1084,8 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
             minHeight: 0,
           }}
         >
-          {/* Left pane (~1/3): the inspector accordion, or the CC Cut editor
-              while CC-cut mode is active. */}
+          {/* Left pane (~1/3): the inspector accordion, or an extension's
+              view (e.g. the Captions CC cut) while one is open. */}
           <div
             style={{
               flex: "1 1 0",
@@ -1244,15 +1104,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
                 onPreview={handleViewPreview}
                 onClose={handleCloseView}
               />
-            ) : ccCut ? (
-              <CCCutView
-                words={ccWords}
-                selections={ccSelections}
-                onSelectionsChange={setCcSelections}
-                focusedSelectionIndices={rootIndicesFromKeys(selection).filter(
-                  (i) => i < ccSelections.length,
-                )}
-              />
             ) : (
               <EditorExtensionsContext.Provider value={extensionsValue}>
               <InspectorAccordion
@@ -1266,7 +1117,6 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
                 onScriptApply={handleScriptApply}
                 rootDocument={document}
                 onRootDocumentChange={updateDocument}
-                onEnterCCCut={handleEnterCCCut}
                 platform={platform}
                 selection={selection}
                 onDocumentEdit={editDocument}
@@ -1311,20 +1161,14 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
               onRedo={handleRedo}
               canUndo={history.canUndo}
               canRedo={history.canRedo}
-              ccCutMode={ccCut != null}
               viewOpen={extView != null}
               extensionViews={extensionViews}
               onOpenView={handleOpenView}
               platform={platform}
-              onTranscribe={handleTranscribe}
-              transcribing={transcriber.progress != null}
               onNormalize={handleNormalize}
               extensionCommands={extensionCommands}
               commandContext={commandContext}
               normalizing={normalizer.normalizing}
-              onCCCutOk={handleCCCutOk}
-              onCCCutCancel={handleCCCutCancel}
-              ccCutHasSelections={ccSelections.length > 0}
             />
             <TimelinePanel
               timeline={editorTimeline}

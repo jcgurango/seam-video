@@ -45,7 +45,7 @@ Proposed, not yet confirmed:
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
-| 3 | Captions (CC cut + CC generation) | A–C, D1 done; D2 (view contract + CC cut view) done; caption style (default, Properties section, presets) done, awaiting JC's test; word-level reauthoring (Slice / resize / Merge) done, awaiting JC's test; E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
+| 3 | Captions (CC cut + CC generation) | done (A–E), awaiting JC's test of stage E | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
@@ -236,7 +236,7 @@ Each stage green; the golden project checked at C and E.
 | D2 ✔ | The view contract (`EditorExtension.views`) and the CC cut view on a selected composition (using `keepRanges`), previewed live | views, preview documents, the player |
 | Style ✔ | A built-in default caption style; a "Caption style" section in the Properties panel (every textual property, `maxChars`, speaker overrides); presets kept with the editor's settings | property editors, extension storage |
 | D3 ✔ | Reauthoring at the word level with the editor's OWN tools: Slice cuts a caption between words, an edge drag retimes its first / last word, `CC+` merges captions. Generated captions carry no `duration` when they have words; zero-length words are repaired. (The derived caption lane was DROPPED: materialized things do not show on the timeline anywhere else) | node-type editing hooks (`editor.split` / `resize` / `blockLabel`) |
-| E | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
+| E ✔ | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
 
 Stage C result: see "Golden project" at the end of this document.
 
@@ -260,68 +260,42 @@ Settled details:
 
 ## Where we are (handoff, 2026-11-22)
 
-Committed by JC: stage 0, Adjustments, Map, Captions A, B–C and D part 1
-(`be017b3 WIP Phase 2: Captions extension stage D (1/2)`). **Uncommitted in
-the working tree: Captions D part 2** — the view contract and the CC cut
-view (core `editor-api.ts`, editor `ExtensionViewHost.tsx` + `App.tsx` +
-`ControlsBar.tsx`, captions `cut.ts` + `editor/CCCutView.tsx`, React as an
-optional peer of the captions package). Full build + test suite pass.
+**Captions (roadmap item 3) is complete.** Committed by JC: everything up to
+and including word-level reauthoring (`6c55da4 WIP Phase 2: Captions
+extension stage D (2/2)`). **Uncommitted in the working tree: stage E** —
+the old `data`-based tools are gone:
 
-Checked live in the web editor on a small synthetic project (a composition
-holding a rect + four captions, two rects anchored to it): open the view on
-the selected composition, drag two ranges, the timeline + player preview the
-cut as it is picked (anchored rect follows its piece, the one whose moment
-is cut disappears), Alt-click seeks to a word, Apply commits one undo step
-with the pieces selected, undo restores. Captions also draw in the live
-preview (first time that was looked at). NOT exercised: real footage, a
-nested or bin-rooted target, the Electron shell, transcription.
+- the bin-only CC cut mode (`ccCut` in `App.tsx`, `ccCutTool.ts`, the
+  editor's own `CCCutView.tsx`, the toolbar's OK / Cancel pair, BinPanel's
+  "CC Cut" button);
+- the built-in transcribe button and `useTranscribe`'s `data`-writing `run`
+  (the hook now only offers `transcribe()`, the service extensions call);
+- `wordTool.ts` and its two toolbar buttons (separate by word / group
+  words) — Slice and `CC+` replace them.
 
-Seen while testing, not changed: with no `captionStyle` on the surface a
-caption draws with a text node's bare defaults — small black text at the top
-of the canvas. Correct per the design (the look is decided at the surface),
-but a sensible default style may be wanted.
+The `data` node type itself stays (JC: data + scripts was always meant to do
+something). Build + tests pass; smoke-tested in the web editor (toolbar, Bin
+panel, the Captions CC cut view still opens). There is no migration: a
+project whose transcripts are `data` nodes keeps them as plain data; the
+editor no longer reads them.
 
-No render-path code changed in D2, so the golden project was not re-rendered.
-
-**Added after D2 (2026-11-22, uncommitted): caption style.** A built-in
-default (`DEFAULT_CAPTION_STYLE`, the bottom layer of `cueStyle`), a
-"Caption style" Properties section and presets — see "The editor side".
-Checked live in the web editor: default look, live edit, Save as, the `*`
-on a modified preset, Save. Also fixed along the way: the preview did not
-repaint extension draws / overlays after an edit to a document with no clips
-or statics (`FrameCoordinator` now asks for a repaint once it is ready).
-The golden captions copy authors every key the default has, so it is
-unaffected (not re-rendered).
-
-**JC, 2026-11-22:** the caption lane is dropped (it would put materialized
-content on the timeline, which nothing else does).
-
-**Added after that (uncommitted): word-level reauthoring — D3.** JC's
-design: no word editor and no new mode; split → adjust → regroup is Slice →
-edge drag → Merge with the tools the editor already has. See "Node types
-under the editor's own tools" in the contract. Checked live in the web
-editor: a three-word caption sliced inside its pause gives two captions on
-one run with the pause kept; `CC+` puts them back; a caption expands into
-its word blocks, and a word refuses to be dragged out to the root. Not
-exercised live: edge drags (the browser automation cannot drive pointer
-drags on the timeline; they are unit-tested), real transcripts, an expanded
-map.
+What was checked live across the Captions work, and what was not: the CC
+cut view, caption style + presets, Slice / Merge and expanding a caption
+were each driven in the web editor on small synthetic projects. NOT
+exercised: real footage and real transcripts (no generator server here),
+edge drags on the timeline (unit-tested only — the browser automation cannot
+drive pointer drags), an expanded map, the Electron shell, a Docker build of
+the web image.
 
 **Next, in order:**
 
-2. Stage E — remove the old `data`-based tools: the built-in transcribe
-   button's `run` (data-writing) path, `wordTool.ts` (separate / group
-   words), the bin-only CC cut mode (`ccCut` flag in `App.tsx`,
-   `ccCutTool.ts`, `buildCCPreviewDoc` / `buildCCSpliceChildren`), BinPanel's
-   "enter CC cut". **The `data` node type itself stays.**
-3. Not started, noted along the way: a CLI command for `toSrt` / `toVtt`;
-   converting the golden project's 435 bin-entry transcript `data` nodes to
-   captions (needs the source composition set to `"off"` or the root phrases
-   dropped, else captions double); Adjustments merging its fields into
-   `VisualExtensionFields`; a Docker build of the web image has never been
-   run since the Dockerfile was changed to build `extensions/*`.
-4. Then roadmap item 4, Text (Captions will declare it as a dependency:
+1. Roadmap item 4, Text (Captions will declare it as a dependency:
    `requires` is not built yet).
+2. Loose ends noted along the way: a CLI command for `toSrt` / `toVtt`;
+   converting the golden project's 435 bin-entry transcript `data` nodes to
+   captions; Adjustments merging its fields into `VisualExtensionFields`;
+   preset rename; the renderer's `planned-source` test is load-sensitive
+   (fails occasionally in the full parallel run, passes alone).
 
 **How JC wants this run:** one stage at a time, each green (build + tests),
 then stop and let him test and commit — he commits himself. Check the golden
@@ -755,8 +729,7 @@ drops the preset name. `withStyle(node, undefined, …)` removes the key; an
 empty style is kept.
 
 The old `data`-based tools (the built-in transcribe button, separate / group
-words, the bin-only CC cut mode and its `CCCutView.tsx` in the editor) still
-exist alongside these until stage E.
+words, the bin-only CC cut mode) were removed in stage E.
 
 ### Rasterizers and host services (stage 2)
 

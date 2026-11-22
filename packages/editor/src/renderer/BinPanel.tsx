@@ -10,8 +10,6 @@ export interface BinPanelProps {
    *  so the rest of the editor (timeline, script, compile pass) picks
    *  up the new ids automatically. */
   onRootDocumentChange: (next: SeamFile) => void;
-  /** Enter the CC Cut view for the given bin entry id. */
-  onEnterCCCut: (binId: string) => void;
 }
 
 /** Barebones bin panel: list every entry by id, let the user rename one
@@ -20,7 +18,6 @@ export interface BinPanelProps {
 export default function BinPanel({
   rootDocument,
   onRootDocumentChange,
-  onEnterCCCut,
 }: BinPanelProps) {
   const entries = useMemo(() => findBin(rootDocument), [rootDocument]);
   const takenIds = useMemo(
@@ -50,7 +47,6 @@ export default function BinPanel({
                 renameBinItemId(rootDocument, entry.id, newId),
               );
             }}
-            onCCCut={() => onEnterCCCut(entry.id)}
           />
         ))}
       </div>
@@ -62,10 +58,9 @@ interface BinRowProps {
   id: string;
   takenIds: Set<string>;
   onRename: (newId: string) => void;
-  onCCCut: () => void;
 }
 
-function BinRow({ id, takenIds, onRename, onCCCut }: BinRowProps) {
+function BinRow({ id, takenIds, onRename }: BinRowProps) {
   const [editing, setEditing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState(id);
@@ -140,13 +135,6 @@ function BinRow({ id, takenIds, onRename, onCCCut }: BinRowProps) {
       title="Drag onto the timeline to insert a reference to this bin entry"
     >
       <code style={ID_STYLE}>{id}</code>
-      <button
-        onClick={onCCCut}
-        style={BTN_SECONDARY}
-        title="Enter CC Cut view to pick clip ranges from this bin entry's transcription"
-      >
-        CC Cut
-      </button>
       <button onClick={startEdit} style={BTN_SECONDARY}>
         Rename
       </button>
