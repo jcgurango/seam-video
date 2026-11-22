@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { text } from "@seam/extension-text";
 import { createSeam, resolveSpatial, type Composition, type SurfaceView } from "@seam/core";
 import {
   activeCues,
@@ -14,7 +15,7 @@ import {
   type CaptionCue,
 } from "../index.js";
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 const word = (text: string, duration: number, extra: object = {}) => ({ type: "word", text, duration, ...extra });
 const caption = (words: [string, number][], extra: object = {}) => ({
   type: "caption",

@@ -22,17 +22,15 @@ import {
   type Rotation,
   type VideoSample,
 } from "mediabunny";
-import { layoutText, drawTextLayout, clipSourceTime } from "@seam/core";
+import { clipSourceTime } from "@seam/core";
 import type {
   Seam,
   ResolvedClip,
   ResolvedExtensionNode,
   ResolvedStatic,
-  ResolvedText,
 } from "@seam/core";
-import { installCanvasShim } from "./text/canvasShim.js";
 import { NodeRasterizers } from "./nodeRasterizers.js";
-import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
@@ -115,7 +113,6 @@ export class FrameSource {
   // Statics decode once (fixed sourceTime / image) — cached for the run.
   private readonly statics = new Map<ResolvedStatic, NodeFrame | null>();
   private readonly staticDims = new Map<ResolvedStatic, { w: number; h: number }>();
-  private textReady = false;
 
   // Extension node types that draw themselves (a map's basemap) rasterize on
   // demand; their rasterizers' caches stay warm across frames and are closed
@@ -176,7 +173,12 @@ export class FrameSource {
   }
 
   /** Intrinsic (display) size for objectFit, consumed by buildRenderList. */
-  intrinsicSize(node: ResolvedClip | ResolvedStatic): { w: number; h: number } | null {
+  intrinsicSize(
+    node: ResolvedClip | ResolvedStatic | ResolvedExtensionNode,
+    t = 0,
+  ): { w: number; h: number } | null {
+    // An extension node that measures its own inner canvas (unwrapped text).
+    if ("extension" in node) return this.nodes.measure(node, t);
     if (node.type === "static") return this.staticDims.get(node) ?? null;
     const entry = this.sources.get(node.source);
     if (!entry) return null;
@@ -227,10 +229,6 @@ export class FrameSource {
         this.statics.set(node, frame);
       }
       return frame;
-    }
-
-    if (node.type === "text") {
-      return this.renderText(node, drawTime, contentW, contentH);
     }
 
     throw new Error(
@@ -445,35 +443,6 @@ export class FrameSource {
       sample.close();
       holder.hdr?.dispose();
     }
-  }
-
-  /** Rasterize a text node at output time `t` via the same Skia + Pretext
-   *  layout the CLI uses (@seam/renderer's text path), to RGBA. */
-  private renderText(
-    node: ResolvedText,
-    drawTime: number,
-    contentW?: number,
-    contentH?: number,
-  ): NodeFrame {
-    if (!this.textReady) {
-      installCanvasShim(); // fonts + OffscreenCanvas polyfill (idempotent)
-      this.textReady = true;
-    }
-    // Inner canvas: the compositor's per-frame sampled size (animatable),
-    // falling back to the resolver's baked t=0 value for static text.
-    const w = contentW ?? node.intrinsicWidth ?? 0;
-    const h = contentH ?? node.intrinsicHeight ?? 0;
-    const W = Math.max(1, Math.round(w));
-    const H = Math.max(1, Math.round(h));
-    const localT = Math.max(0, drawTime);
-    const canvas = createCanvas(W, H);
-    const ctx = canvas.getContext("2d") as SKRSContext2D;
-    drawTextLayout(
-      ctx as unknown as OffscreenCanvasRenderingContext2D,
-      layoutText(node, localT, W, H),
-    );
-    const id = ctx.getImageData(0, 0, W, H);
-    return { data: id.data, width: W, height: H };
   }
 }
 

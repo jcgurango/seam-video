@@ -277,6 +277,9 @@ export const captionsOverlay: OverlayDef = {
  *  render register `captions` from `@seam/extension-captions/render`. */
 export const captions: SeamExtension = {
   name: "captions",
+  // Phrases are set with the Text extension's layout engine, and "convert
+  // to text" writes `text` nodes.
+  requires: ["text"],
   fields: compositionFields,
   // `word` first: `caption` names it as its only child type.
   nodes: [wordNode, captionNode],

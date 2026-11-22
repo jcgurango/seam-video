@@ -20,6 +20,7 @@
     "@seam/extension-adjustments": "workspace:*",
     "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
+    "@seam/extension-text": "workspace:*",
     "@seam/preview": "workspace:*",
     "lucide-react": "^1.8.0",
     "mediabunny": "^1.61.5",

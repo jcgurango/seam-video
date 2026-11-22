@@ -339,8 +339,8 @@ export async function renderSeamToFile(
       }
       const t = i / fps;
       planner.update(t);
-      const commands = buildRenderList(seam, timeline, t, width, height, (clip) =>
-        source.intrinsicSize(clip),
+      const commands = buildRenderList(seam, timeline, t, width, height, (node, at) =>
+        source.intrinsicSize(node, at),
       );
       const p0 = performance.now();
       await source.prepare(collectDrawables(commands));

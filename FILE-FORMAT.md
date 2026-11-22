@@ -165,7 +165,7 @@ The renderer and preview skip `data` nodes — they don't draw and don't make so
 
 ### Text
 
-A text node renders styled text as inline SVG. Layout (line breaking, alignment) happens at resolve time via [`@chenglou/pretext`](https://github.com/chenglou/pretext); the SVG is then rasterized and composited like any other visual node.
+A text node renders styled text on its own inner canvas. It is contributed by the **Text extension** (`@seam/extension-text`), which every Seam host installs; a document using it does not validate without that extension. Layout (line breaking, alignment) is done with [`@chenglou/pretext`](https://github.com/chenglou/pretext) each time the node is drawn; the result is composited like any other visual node. `duration` is required.
 
 ```json
 { "type": "text", "text": "Hello, world!", "fontSize": 64, "duration": 3 }
@@ -188,12 +188,27 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `textAlign` | `"left"` \| `"center"` \| `"right"` | no | Horizontal alignment within the inner box. Default `"center"` |
 | `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
-| `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
+| `wrap` | boolean | no | Default `true`: the text wraps inside its inner canvas. `false`: a single line of text — see [Unwrapped text](#unwrapped-text) |
+| `contentWidth`, `contentHeight` | `Length` | no | The inner canvas the text is laid out on (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)). Not allowed with `wrap: false` |
 | `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
+
+#### Unwrapped text
+
+```json
+{ "type": "text", "text": "Chapter one", "fontSize": 80, "wrap": false, "padding": 20, "duration": 3 }
+```
+
+With `wrap: false` the node is a single line of text in the old Flash / SVG sense: lines break **only** where you write a `\n`, and the node is as big as what it says. Its inner canvas is no longer `contentWidth` × `contentHeight` (authoring either is an error) but the **measured** text — the widest line by the number of lines — plus `padding`. From there it behaves like an image of that size: the parent's `objectFit` fits it into the parent (the default, `fit`, scales it until it touches the parent's width or height — set `fitSelf: "center"` on the text to keep it at its true pixel size), and `size` / `origin` / `translation` / `rotation` place it, so `origin: "0%"` really is the text's top-left corner.
+
+- There is no maximum width or height. A long line is simply wide (and, under `fit`, scaled down to fit the parent).
+- The text is rasterized at its measured size and then scaled like any other media, so text shown larger than it was set looks soft: set the `fontSize` you need.
+- Backgrounds and strokes hang past the glyphs and are not part of the measurement. Give the node enough `padding` for them.
+- A keyframed `fontSize` (or `lineHeight`) changes the node's size frame by frame.
+- `textAlign` still aligns the lines with each other; `verticalAlign` has nothing to do.
 
 #### Inline runs
 
@@ -863,7 +878,7 @@ Rotating a composition spins the whole group (background + children) as one unit
 
 ### objectFit
 
-`objectFit` decides what `size: "100%"` actually evaluates to for the node, relative to its parent. That's its **only** job — once `size` is in pixels, the source stretches to fill it.
+`objectFit` is set on a **container** (a composition, or the root) and decides how its **children** are fitted into it: what `size: "100%"` evaluates to for each child. That's its **only** job — once a child's `size` is in pixels, its source stretches to fill it.
 
 | Value | "100% size" evaluates to |
 |-------|--------------------------|
@@ -873,7 +888,9 @@ Rotating a composition spins the whole group (background + children) as one unit
 
 The natural size comes from intrinsic media dims for clip / static / text (the source video / image dims, or the text canvas), and from `contentWidth`/`contentHeight` for compositions. With the default `size: "100%"` and the default `translation: 0`, a node is rendered at its natural size, centered in its parent — the previous "fit objectFit, centered" behavior is now the default.
 
-`objectFit` only affects the node it's set on. It doesn't cascade to children — each child decides its own `objectFit`.
+A node is fitted by its **parent's** `objectFit`, never by its own. The value is inherited: a nested composition that doesn't set one passes its parent's on to its own children. On a node without children (a clip, an image, a text node) `objectFit` has no effect.
+
+**`fitSelf`** (same three values) is the override: it says how **this node** is fitted into its parent, whatever the parent's `objectFit` is. It applies to that node alone — its children are still fitted by its `objectFit` — and is not allowed on the root. Use it to mix fits inside one container: a `cover` background beside a `fitSelf: "center"` logo, or a line of [unwrapped text](#unwrapped-text) at its true pixel size.
 
 ### Content dimensions
 

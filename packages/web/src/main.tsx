@@ -17,9 +17,12 @@ import { captions } from "@seam/extension-captions/render";
 import { captionsEditor } from "@seam/extension-captions/editor";
 // The render entry: the Map extension WITH its rasterizer (this shell draws).
 import { map } from "@seam/extension-map/render";
+// The render entry: Text WITH its rasterizer.
+import { text } from "@seam/extension-text/render";
+import { textEditor } from "@seam/extension-text/editor";
 
 // One Seam instance per host: core plus the extensions this shell installs.
-const seam = createSeam([adjustments, map, captions]);
+const seam = createSeam([adjustments, map, text, captions]);
 const platform = new WebPlatform(seam);
 
 // Bundle the same fonts the renderer uses (body + CJK/emoji fallbacks) so
@@ -55,5 +58,5 @@ if (cloud) void cloud.restore();
 
 const root = createRoot(document.getElementById("root")!);
 // What the extensions add to the editor itself (toolbar commands, …).
-const editorExtensions = [captionsEditor];
+const editorExtensions = [textEditor, captionsEditor];
 root.render(<App platform={platform} seam={seam} editorExtensions={editorExtensions} />);

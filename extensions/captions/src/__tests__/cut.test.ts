@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { text } from "@seam/extension-text";
 import { createSeam, type Composition } from "@seam/core";
 import { captions, captionsFromTranscript, cutWords, innerToGlobal } from "../index.js";
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 
 /** Resolve `comp` the way the editor's `context.resolve` does: on its own,
  *  inside a wrapper, with its window applied. */

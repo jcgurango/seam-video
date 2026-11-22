@@ -22,6 +22,8 @@
 
 import {
   asExtensionNode,
+  extensionContentSpan,
+  type ResolvedExtensionNode,
   type ResolvedTimeline,
   type ResolvedChild,
   type SpatialRect,
@@ -67,10 +69,26 @@ function isKeyframedPoint(value: Keyframed<Point2D> | undefined): boolean {
   return true;
 }
 
+/** Sizes the inner canvas of a node whose type measures it (see
+ *  `NodeTypeDef.measured`) at node-local time `t` — a host's rasterizers
+ *  behind one function. */
+export type InnerMeasurer = (
+  node: ResolvedExtensionNode,
+  t: number,
+) => { width: number; height: number } | null;
+
+export interface ResolveSpatialOptions {
+  /** Without it a measured node (a text node that does not wrap) gets no
+   *  meaningful baked rect — only hosts that can draw can measure. With it,
+   *  the rect is the node's first frame; an animated one still changes. */
+  measure?: InnerMeasurer;
+}
+
 export function resolveSpatial(
   timeline: ResolvedTimeline,
   canvasWidth: number,
   canvasHeight: number,
+  options: ResolveSpatialOptions = {},
 ): ResolvedTimeline {
   const rootObjectFit = timeline.objectFit ?? "fit";
   // Root contentWidth/Height must be pixel numbers — no parent reference.
@@ -92,7 +110,7 @@ export function resolveSpatial(
     height: canvasHeight,
     contentWidth: rootInnerW,
     contentHeight: rootInnerH,
-    children: resolveChildren(timeline.children, rootInnerW, rootInnerH, rootObjectFit, false),
+    children: resolveChildren(timeline.children, rootInnerW, rootInnerH, rootObjectFit, false, options.measure),
   };
 }
 
@@ -102,9 +120,10 @@ function resolveChildren(
   parentH: number,
   parentObjectFit: ObjectFit,
   parentDimsAnimated: boolean,
+  measure: InnerMeasurer | undefined,
 ): ResolvedChild[] {
   return children.map((c) =>
-    resolveNode(c, parentW, parentH, parentObjectFit, parentDimsAnimated),
+    resolveNode(c, parentW, parentH, parentObjectFit, parentDimsAnimated, measure),
   );
 }
 
@@ -119,6 +138,7 @@ function resolveNode(
   // static, and — when this node's own dims are parent-relative — propagates
   // to its own children.
   parentDimsAnimated: boolean,
+  measure: InnerMeasurer | undefined,
 ): ResolvedChild {
   if (node.type === "audio" || node.type === "data") {
     return node;
@@ -128,7 +148,10 @@ function resolveNode(
 
   const input = node.spatialInput;
   const ownObjectFit: ObjectFit = input?.objectFit ?? parentObjectFit;
-  const fitForSelf: ObjectFit = parentObjectFit;
+  // A node is fitted by its PARENT's `objectFit` — unless it says how it
+  // wants to be fitted itself (`fitSelf`, this node only; its children still
+  // get `ownObjectFit`).
+  const fitForSelf: ObjectFit = input?.fitSelf ?? parentObjectFit;
 
   // Step 1+2: figure out the intrinsic dimensions. Core knows them for
   // compositions, text, and maps (contentWidth/Height); for clip/static it's
@@ -144,7 +167,7 @@ function resolveNode(
   // Every extension node has an inner canvas (default 100% of the parent).
   const extNode = asExtensionNode(node);
   const hasContentDims =
-    node.type === "composition" || node.type === "text" || extNode != null;
+    node.type === "composition" || extNode != null;
   // `hasContentDims` is a boolean (not a type guard), so read the authored
   // dims through a cast — they exist exactly on the three content-bearing types.
   const cw = hasContentDims
@@ -156,6 +179,16 @@ function resolveNode(
   if (hasContentDims) {
     intrinsicW = sampleContentDim(cw, 0, duration, parentW);
     intrinsicH = sampleContentDim(ch, 0, duration, parentH);
+  }
+  // A measured node's inner canvas is what its rasterizer says it is (at its
+  // first frame here). With no measurer the bake stays the parent-sized
+  // default and hosts lay the node out per frame.
+  if (extNode?.measured) {
+    const m = measure?.(extNode, extensionContentSpan(extNode).offset);
+    if (m) {
+      intrinsicW = m.width;
+      intrinsicH = m.height;
+    }
   }
 
   // Does this node's inner canvas animate? Either its own contentWidth/Height
@@ -178,7 +211,10 @@ function resolveNode(
     hasAnimatedSpatialInput(input) ||
     parentDimsAnimated ||
     ownContentKeyframed ||
-    node.anchored === true;
+    node.anchored === true ||
+    // Its inner canvas is measured per frame by its rasterizer: no rect can
+    // be baked here.
+    extNode?.measured === true;
 
   // Step 3: post-objectFit natural size (the value of `size: "100%"`).
   const { naturalWidth, naturalHeight } = computeNaturalSize(
@@ -216,7 +252,7 @@ function resolveNode(
       spatial,
       objectFit: fitForSelf,
       ...(extNode.children
-        ? { children: resolveChildren(extNode.children, innerW, innerH, ownObjectFit, dimsAnimated) }
+        ? { children: resolveChildren(extNode.children, innerW, innerH, ownObjectFit, dimsAnimated, measure) }
         : {}),
     }) as unknown as ResolvedChild;
   }
@@ -238,14 +274,12 @@ function resolveNode(
       naturalHeight,
       spatial,
       objectFit: fitForSelf,
-      children: resolveChildren(node.children, innerW, innerH, ownObjectFit, dimsAnimated),
+      children: resolveChildren(node.children, innerW, innerH, ownObjectFit, dimsAnimated, measure),
     });
   }
 
-  if (node.type === "text" || node.type === "rect" || node.type === "circle") {
-    // Text: authored `contentWidth`/`contentHeight` preserved (via spread) for
-    // per-frame re-sampling; baked t=0 value in `intrinsicWidth`. Shapes carry
-    // no intrinsic dims (undefined → natural = parent).
+  if (node.type === "rect" || node.type === "circle") {
+    // Shapes carry no intrinsic dims (undefined → natural = parent).
     return stripIfStatic({
       ...node,
       intrinsicWidth: intrinsicW,

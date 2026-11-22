@@ -37,8 +37,7 @@ describe("map schema", () => {
         pin: { path: "route" },
       },
       {
-        type: "text",
-        text: "Start",
+        type: "rect",
         duration: 6,
         start: 0,
         pin: [[0, { latitude: 34.0, longitude: 132.9 }], [6, { latitude: 34.2, longitude: 133.1 }]],
@@ -94,7 +93,7 @@ describe("map schema", () => {
     expect(m.children[0].timelineStart).toBe(0);
     expect(m.children[0].timelineEnd).toBe(6);
     // `start: 0` heads a second run alongside the first, in array (z) order.
-    expect(m.children[1]).toMatchObject({ type: "text", timelineStart: 0, timelineEnd: 6 });
+    expect(m.children[1]).toMatchObject({ type: "rect", timelineStart: 0, timelineEnd: 6 });
     expect((m.children[0] as { ext?: { pin?: unknown } }).ext?.pin).toEqual({ path: "route" });
     // A pinned child keeps its authored spatial input: the pin replaces
     // `translation` at render time, so the baked rect is only a fallback.

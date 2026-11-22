@@ -14,12 +14,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.6",
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
     "@seam/extension-adjustments": "workspace:*",
     "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
+    "@seam/extension-text": "workspace:*",
     "@seam/media-source": "workspace:*",
     "chokidar": "^4.0.0",
     "mediabunny": "^1.61.5",

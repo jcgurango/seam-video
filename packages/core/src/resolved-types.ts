@@ -8,8 +8,6 @@ import type {
   Distort,
   Orientation,
   TextPadding,
-  TextRun,
-  TextStyleFields,
 } from "./types.js";
 
 /** Extension-contributed field values carried on a resolved visual node,
@@ -46,6 +44,8 @@ export interface SpatialRect {
  *  `spatialInput` from the resolved tree. */
 export interface SpatialInput {
   objectFit?: ObjectFit;
+  /** Overrides the parent's `objectFit` for this node alone. */
+  fitSelf?: ObjectFit;
   origin?: Keyframed<Point2D>;
   translation?: Keyframed<Point2D>;
   size?: Keyframed<Point2D>;
@@ -188,47 +188,6 @@ export interface ResolvedData {
   timelineEnd: number;
 }
 
-export interface ResolvedText extends TextStyleFields {
-  type: "text";
-  runs: TextRun[];
-  /** Crossfade overlap (s) with the previous sibling — see ResolvedClip. */
-  transition?: number;
-  /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
-  transitionOut?: number;
-  lineHeight?: Keyframed<number>;
-  textAlign?: "left" | "center" | "right";
-  verticalAlign?: "top" | "center" | "bottom";
-  padding?: TextPadding;
-  /** Intrinsic SVG canvas, the AUTHORED `Keyframed<Length>` preserved
-   *  through the spatial pass so per-frame consumers can sample it against
-   *  live parent dims (default `"100%"`). The baked t=0 pixel value lives
-   *  in `intrinsicWidth`/`intrinsicHeight` for static consumers. */
-  contentWidth?: Keyframed<Length>;
-  contentHeight?: Keyframed<Length>;
-  timelineStart: number;
-  timelineEnd: number;
-  /** Extension-contributed fields authored on this node, verbatim (plain
-   *  values or keyframes) — sampled per frame by the render list. */
-  ext?: ExtFields;
-  /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
-   *  renderers, like `volume`. */
-  opacity?: Keyframed<number>;
-  /** Rounded-corner mask (authored `Keyframed<Length>`); absent = square.
-   *  Sampled per-frame against the shorter side of the final rect. */
-  cornerRadius?: Keyframed<Length>;
-  /** Geo / path anchor — read only when this node is a map attachment. */
-  /** Set when the node authors an extension field that positions it inside
-   *  an extension container (a map `pin`): layout re-evaluates per frame. */
-  anchored?: true;
-  spatial?: SpatialRect;
-  objectFit?: ObjectFit;
-  spatialInput?: SpatialInput;
-  intrinsicWidth?: number;
-  intrinsicHeight?: number;
-  naturalWidth?: number;
-  naturalHeight?: number;
-}
-
 export interface ResolvedComposition {
   type: "composition";
   timelineStart: number;
@@ -349,6 +308,11 @@ export interface ResolvedExtensionNode<T extends string = string> {
    *  it carries no spatial data and neither the spatial pass nor the render
    *  list touches it or its children. */
   nonVisual?: true;
+  /** Set when the node's inner canvas is measured by its rasterizer each
+   *  frame (`NodeTypeDef.measured`) instead of coming from `contentWidth` /
+   *  `contentHeight`: it has no meaningful baked rect or intrinsic size, and
+   *  hosts lay it out per frame. */
+  measured?: true;
   timelineStart: number;
   timelineEnd: number;
   transition?: number;
@@ -405,7 +369,6 @@ export type ResolvedChild =
   | ResolvedAudio
   | ResolvedStatic
   | ResolvedData
-  | ResolvedText
   | ResolvedRect
   | ResolvedCircle
   | ResolvedComposition

@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { Child } from "@seam/core";
 import { SOURCE_DRAG_MIME } from "./useImport.js";
+import { useSeam } from "./seamContext.js";
 
 /**
  * "New" accordion section — a palette of node templates the author drags onto
@@ -36,12 +37,6 @@ const NEW_ITEMS: NewItem[] = [
     node: { type: "circle", duration: 1, fill: "#d957b8", size: 240 } as Child,
   },
   {
-    label: "Text",
-    icon: "T",
-    hint: "A text layer.",
-    node: { type: "text", duration: 1, text: "Sample Text" } as Child,
-  },
-  {
     label: "Data",
     icon: "{ }",
     hint: "A metadata marker / spacer (no visuals/audio).",
@@ -50,6 +45,23 @@ const NEW_ITEMS: NewItem[] = [
 ];
 
 export default function NewPanel() {
+  const seam = useSeam();
+  // Core's tiles, then one per extension node type that offers one
+  // (`NodeTypeDef.editor.palette` — the Text extension's "Text").
+  const items = useMemo<NewItem[]>(() => {
+    const contributed: NewItem[] = [];
+    for (const def of seam.nodeTypes.values()) {
+      const tile = def.editor?.palette;
+      if (!tile) continue;
+      contributed.push({
+        label: tile.label,
+        icon: tile.glyph ?? tile.label.slice(0, 1),
+        hint: `A ${def.type} node.`,
+        node: tile.create() as unknown as Child,
+      });
+    }
+    return [...NEW_ITEMS, ...contributed];
+  }, [seam]);
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12 }}>
       <div style={{ color: "#888", fontSize: 11, marginBottom: 10 }}>
@@ -62,7 +74,7 @@ export default function NewPanel() {
           gap: 8,
         }}
       >
-        {NEW_ITEMS.map((item) => (
+        {items.map((item) => (
           <NewTile key={item.label} item={item} />
         ))}
       </div>

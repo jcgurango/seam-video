@@ -141,6 +141,7 @@ const DistortSchema = z.object({
 
 const SpatialFieldsSchema = {
   objectFit: ObjectFitSchema.optional(),
+  fitSelf: ObjectFitSchema.optional(),
   origin: keyframed(Point2DSchema).optional(),
   translation: keyframed(Point2DSchema).optional(),
   size: keyframed(Point2DSchema).optional(),
@@ -195,19 +196,22 @@ function fieldSchema(spec: FieldSpec): z.ZodTypeAny {
   switch (spec.type) {
     case "number": {
       let num = z.number();
-      if (spec.min != null) num = num.min(spec.min);
+      if (spec.min != null) num = spec.exclusiveMin ? num.gt(spec.min) : num.min(spec.min);
       if (spec.max != null) num = num.max(spec.max);
       value = num;
       break;
     }
     case "string":
-      value = z.string().min(1);
+      value = spec.pattern != null ? z.string().regex(new RegExp(spec.pattern)) : z.string().min(1);
       break;
     case "enum":
       value = z.enum(spec.options as [string, ...string[]]);
       break;
     case "color":
       value = z.string();
+      break;
+    case "boolean":
+      value = z.boolean();
       break;
     case "length":
       value = LengthSchema;
@@ -363,66 +367,6 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
     ...MetadataFieldsSchema,
   }).strict();
 
-  // Padding can be a single number (all sides), `[v, h]`, or `[t, r, b, l]`.
-  const TextPaddingSchema = z.union([
-    z.number().nonnegative(),
-    z.tuple([z.number().nonnegative(), z.number().nonnegative()]),
-    z.tuple([
-      z.number().nonnegative(),
-      z.number().nonnegative(),
-      z.number().nonnegative(),
-      z.number().nonnegative(),
-    ]),
-  ]);
-
-  // Common style fields shared between the top-level Text node and inline
-  // runs. Layout-level fields (textAlign, verticalAlign, lineHeight,
-  // contentWidth, contentHeight) live only on the top-level node.
-  const TextStyleFieldsSchema = {
-    fontFamily: z.string().min(1).optional(),
-    fontSize: keyframed(z.number().positive()).optional(),
-    color: keyframed(z.string()).optional(),
-    fontWeight: z.string().optional(),
-    // CSS `font-style` ("italic" / "oblique" / "normal"). Plain string like
-    // fontWeight — passed straight into the canvas font shorthand.
-    fontStyle: z.string().optional(),
-    // Single text-decoration line. Canvas has no native support, so the
-    // layout/draw passes render the rule manually.
-    textDecoration: z
-      .enum(["none", "underline", "overline", "line-through"])
-      .optional(),
-    // Vertical glyph stretch as a percentage string ("100%" = natural
-    // height). Not a CSS property — applied as a per-glyph vertical scale
-    // about the baseline; horizontal advance (and thus line-breaking) is
-    // unaffected. A string keeps the percentage unambiguous (no "1.5 vs 150").
-    letterHeight: PercentStringSchema.optional(),
-    backgroundColor: keyframed(z.string()).optional(),
-    backgroundPadding: keyframed(TextPaddingSchema).optional(),
-    strokeColor: keyframed(z.string()).optional(),
-    strokeWidth: keyframed(z.number().nonnegative()).optional(),
-  };
-
-  const TextRunSchema = z.object({
-    text: z.string(),
-    ...TextStyleFieldsSchema,
-  }).strict();
-
-  const TextSchema = z.object(visual("text", {
-    type: z.literal("text"),
-    text: z.union([z.string(), z.array(z.union([z.string(), TextRunSchema]))]),
-    lineHeight: keyframed(z.number().nonnegative()).optional(),
-    textAlign: z.enum(["left", "center", "right"]).optional(),
-    verticalAlign: z.enum(["top", "center", "bottom"]).optional(),
-    padding: TextPaddingSchema.optional(),
-    contentWidth: keyframed(LengthSchema).optional(),
-    contentHeight: keyframed(LengthSchema).optional(),
-    duration: z.number().positive(),
-    ...TextStyleFieldsSchema,
-    ...SpatialFieldsSchema,
-    ...AnchorFieldsSchema,
-    ...MetadataFieldsSchema,
-  })).strict();
-
   // ── Shapes ─────────────────────────────────────────────────────────
   //
   // `rect` and `circle` are first-class nodes placed by the ordinary spatial
@@ -518,12 +462,20 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
         ...own,
       }).strict();
       // Its length comes from `duration` or, failing that, from its children.
-      return spanFromChildren
+      const spanned = spanFromChildren
         ? node.refine(
             (n) => n.duration != null || (Array.isArray(n.children) && n.children.length > 0),
             { message: `A ${def.type} needs 'duration' or children` },
           )
         : node;
+      // The type's own cross-field check.
+      const check = def.validate;
+      return check
+        ? spanned.superRefine((n, ctx) => {
+            const message = check(n as Record<string, unknown>);
+            if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+          })
+        : spanned;
     });
   };
   const unionOf = (schemas: z.ZodTypeAny[]): z.ZodTypeAny =>
@@ -541,7 +493,6 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
       AudioSchema,
       StaticSchema,
       DataSchema,
-      TextSchema,
       RectSchema,
       CircleSchema,
       CompositionSchema,
@@ -639,7 +590,6 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
   nodeSchemaByType.set("audio", AudioSchema);
   nodeSchemaByType.set("static", StaticSchema);
   nodeSchemaByType.set("data", DataSchema);
-  nodeSchemaByType.set("text", TextSchema);
   nodeSchemaByType.set("rect", RectSchema);
   nodeSchemaByType.set("circle", CircleSchema);
   nodeSchemaByType.set("composition", CompositionSchema);

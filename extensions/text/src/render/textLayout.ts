@@ -1,4 +1,4 @@
-// Lay out a ResolvedText node at a given local time. Pure logic — no
+// Lay out a text node (a `TextLayoutInput`) at a given local time. Pure logic — no
 // rendering. The output is a list of rects (backgrounds) and glyph
 // fragments (text + style) at concrete pixel positions, ready for any
 // backend that can draw rects + text. Same module is shared by the
@@ -16,15 +16,31 @@ import {
   type RichInlineItem,
   type RichInlineLineRange,
 } from "@chenglou/pretext/rich-inline";
-import type { ResolvedText } from "../resolved-types.js";
-import type { TextRun, TextPadding, Keyframed } from "../types.js";
 import {
   isKeyframed,
   sampleNumber,
   sampleColor,
   samplePadding,
-} from "../animation/keyframes.js";
-import { withFallbackFamilies } from "./fallbackFonts.js";
+  withFallbackFamilies,
+  type Keyframed,
+  type TextPadding,
+} from "@seam/core";
+import type { TextRun, TextStyleFields } from "../index.js";
+
+/** What the layout needs of a text node: its runs, its style, and the span
+ *  its keyframes run over. The `text` node's rasterizer builds one from the
+ *  node; Captions builds one per phrase. */
+export interface TextLayoutInput extends TextStyleFields {
+  runs: TextRun[];
+  lineHeight?: Keyframed<number>;
+  textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "center" | "bottom";
+  padding?: TextPadding;
+  /** `false`: lines break only at `\n`, however wide they get. */
+  wrap?: boolean;
+  /** Seconds the node's keyframes are sampled against. */
+  duration: number;
+}
 
 // Liberation Sans is bundled with the renderer (and should be loaded
 // in the browser preview too) so the same layout decisions land on
@@ -118,7 +134,7 @@ function weightToNumber(fontWeight: string | null): number {
 
 function resolveRunStyle(
   run: TextRun,
-  defaults: ResolvedText,
+  defaults: TextLayoutInput,
   duration: number,
   t: number,
 ): RunStyle {
@@ -157,7 +173,7 @@ function resolveRunStyle(
 
 /** True when any text-style field on the node or its runs is animated.
  *  Lets the rasteriser skip per-frame regeneration when the text is static. */
-export function textHasAnimatedStyle(node: ResolvedText): boolean {
+export function textHasAnimatedStyle(node: TextLayoutInput): boolean {
   const styleKeys = [
     "fontSize", "color", "backgroundColor", "backgroundPadding",
     "strokeColor", "strokeWidth", "lineHeight",
@@ -218,39 +234,45 @@ export interface TextLayoutResult {
   glyphs: TextGlyph[];
 }
 
-/** Produce a backend-agnostic layout for a ResolvedText at node-local
- *  time `t` (seconds since the node became active). The values returned
- *  are in the SVG canvas's coordinate space (origin top-left). */
-export function layoutText(
-  node: ResolvedText,
-  t: number = 0,
-  contentWidth?: number,
-  contentHeight?: number,
-): TextLayoutResult {
-  // contentWidth/Height are an animatable `Keyframed<Length>` on the resolved
-  // node. The per-frame renderers sample them against live parent dims and
-  // pass the pixel result here; absent an override we use the baked t=0
-  // `intrinsicWidth`/`intrinsicHeight` (static text), then a static-number
-  // `contentWidth` as a last resort (hand-built nodes that skipped the
-  // spatial pass).
-  const staticW = typeof node.contentWidth === "number" ? node.contentWidth : 0;
-  const staticH = typeof node.contentHeight === "number" ? node.contentHeight : 0;
-  const W = contentWidth ?? node.intrinsicWidth ?? staticW;
-  const H = contentHeight ?? node.intrinsicHeight ?? staticH;
-  const duration = node.timelineEnd - node.timelineStart;
+/** Produce a backend-agnostic layout for a text node at node-local time
+ *  `t` (seconds since the node became active) on a `W`×`H` canvas (the
+ *  node's inner canvas, sampled by the host for this frame). The values
+ *  returned are in that canvas's coordinate space (origin top-left). */
+/** Wide enough that nothing ever wraps. */
+const NO_WRAP_WIDTH = 1e7;
+
+/**
+ * The size of a text node that does not wrap (`wrap: false`) at node-local
+ * time `t`: its widest line and its line count, plus `padding`. This IS the
+ * node's inner canvas — laying it out at this size fits it exactly. Rounded
+ * up to whole pixels. Backgrounds and strokes are not counted: they hang
+ * past the glyphs, and `padding` is what makes room for them.
+ */
+export function measureText(node: TextLayoutInput, t: number): { width: number; height: number } {
+  const pad = expandPadding(node.padding);
+  const { lines, lineHeight } = breakLines(node, t, NO_WRAP_WIDTH);
+  const widest = lines.reduce((w, line) => Math.max(w, line.width), 0);
+  return {
+    width: Math.max(1, Math.ceil(widest + pad.left + pad.right)),
+    height: Math.max(1, Math.ceil(lines.length * lineHeight + pad.top + pad.bottom)),
+  };
+}
+
+type Line = ReturnType<typeof materializeRichInlineLineRange>;
+
+/** Sample the node's style at `t` and break its runs into lines no wider
+ *  than `maxWidth` (hard breaks at `\n` always). */
+function breakLines(
+  node: TextLayoutInput,
+  t: number,
+  maxWidth: number,
+): { lines: Line[]; styles: RunStyle[]; fontSize: number; lineHeight: number } {
+  const duration = node.duration;
   const fontSize = sN(node.fontSize, duration, t) ?? DEFAULT_FONT_SIZE;
   const lineHeightSampled = sN(node.lineHeight, duration, t);
   const lineHeight = lineHeightSampled && lineHeightSampled > 0
     ? lineHeightSampled
     : Math.round(fontSize * 1.2);
-
-  // Inner box: shrunk from the canvas by `padding` so backgrounds and
-  // strokes hanging past the layout extents don't clip the canvas edge.
-  const pad = expandPadding(node.padding);
-  const innerW = Math.max(0, W - pad.left - pad.right);
-  const innerH = Math.max(0, H - pad.top - pad.bottom);
-  const innerX = pad.left;
-  const innerY = pad.top;
 
   // Pre-resolve each run's style so we can read it cheaply per fragment.
   const styles: RunStyle[] = node.runs.map((run) => resolveRunStyle(run, node, duration, t));
@@ -273,7 +295,7 @@ export function layoutText(
     }
   }
 
-  const lines: ReturnType<typeof materializeRichInlineLineRange>[] = [];
+  const lines: Line[] = [];
   const EMPTY_CURSOR = { itemIndex: 0, segmentIndex: 0, graphemeIndex: 0 };
   for (const paragraph of paragraphs) {
     if (paragraph.length === 0) {
@@ -292,7 +314,7 @@ export function layoutText(
     });
     const prepared = prepareRichInline(items);
     const ranges: RichInlineLineRange[] = [];
-    walkRichInlineLineRanges(prepared, innerW, (range) => {
+    walkRichInlineLineRanges(prepared, maxWidth, (range) => {
       ranges.push(range);
     });
     for (const range of ranges) {
@@ -306,6 +328,28 @@ export function layoutText(
       lines.push(materialized);
     }
   }
+  return { lines, styles, fontSize, lineHeight };
+}
+
+export function layoutText(
+  node: TextLayoutInput,
+  t: number,
+  W: number,
+  H: number,
+): TextLayoutResult {
+  // Inner box: shrunk from the canvas by `padding` so backgrounds and
+  // strokes hanging past the layout extents don't clip the canvas edge.
+  const pad = expandPadding(node.padding);
+  const innerW = Math.max(0, W - pad.left - pad.right);
+  const innerH = Math.max(0, H - pad.top - pad.bottom);
+  const innerX = pad.left;
+  const innerY = pad.top;
+
+  const { lines, styles, fontSize, lineHeight } = breakLines(
+    node,
+    t,
+    node.wrap === false ? NO_WRAP_WIDTH : innerW,
+  );
 
   // Vertical placement, in inner-box coordinates.
   const totalHeight = lines.length * lineHeight;

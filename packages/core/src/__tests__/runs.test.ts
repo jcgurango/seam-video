@@ -97,7 +97,7 @@ describe("runs: implicit placement", () => {
       clip("a.mp4", 10, { speed: 2 }), // 5s
       clip("b.mp4", 4, { duration: 8 }), // 8s
       { type: "static", source: "s.png", duration: 1 },
-      { type: "text", text: "hi", duration: 2 },
+      { type: "rect", duration: 2 },
       { type: "composition", children: [clip("x.mp4", 1), clip("y.mp4", 2)] }, // 3s
       clip("c.mp4", 1),
     ]);
@@ -147,7 +147,7 @@ describe("runs: negative offset cross-fades", () => {
   it("fades between any producing types", () => {
     const r = resolve([
       { type: "static", source: "s.png", duration: 3 },
-      { type: "text", text: "hi", duration: 3, offset: -1 },
+      { type: "rect", duration: 3, offset: -1 },
       { type: "rect", duration: 3, offset: -1 },
       { type: "audio", source: "a.wav", in: 0, out: 3, offset: -1 },
       { type: "composition", children: [clip("x.mp4", 3)], offset: -1 },
@@ -363,7 +363,7 @@ describe("runs: `start`", () => {
         { ...target, id: "t" } as Child,
         clip("o.mp4", 1, { start: "t@1.5" }),
       ]).children[2].timelineStart;
-    expect(at({ type: "text", text: "hi", duration: 4 })).toBe(3.5);
+    expect(at({ type: "rect", duration: 4 })).toBe(3.5);
     expect(at({ type: "rect", duration: 4 })).toBe(3.5);
     expect(at({ type: "circle", duration: 4 })).toBe(3.5);
     expect(at({ type: "data", data: null, duration: 4 })).toBe(3.5);
@@ -643,11 +643,11 @@ describe("runs: crop at 0", () => {
   it("trims static-like nodes without touching their content", () => {
     const r = resolve([
       { type: "static", source: "s.mp4", in: 3, duration: 5, start: -2 },
-      { type: "text", text: "hi", duration: 5, start: -1 },
+      { type: "rect", duration: 5, start: -1 },
       { type: "data", data: { k: 1 }, duration: 5, start: -4 },
     ]);
     expect(r.children[0]).toMatchObject({ type: "static", sourceTime: 3, timelineStart: 0, timelineEnd: 3 });
-    expect(r.children[1]).toMatchObject({ type: "text", timelineStart: 0, timelineEnd: 4 });
+    expect(r.children[1]).toMatchObject({ type: "rect", timelineStart: 0, timelineEnd: 4 });
     expect(r.children[2]).toMatchObject({ type: "data", data: { k: 1 }, timelineStart: 0, timelineEnd: 1 });
   });
 
@@ -749,8 +749,8 @@ describe("runs: inside an extension container's children", () => {
     const c = kids([
       { type: "rect", duration: 2, id: "a" },
       { type: "rect", duration: 1, offset: 0.5 },
-      { type: "text", text: "x", duration: 1, start: "a@50%" },
-      { type: "text", text: "y", duration: 1 },
+      { type: "rect", duration: 1, start: "a@50%" },
+      { type: "rect", duration: 1 },
       { type: "circle", duration: 1, start: 4 },
       clip("c.mp4", 4, { start: "later@2", in: 0, out: 4 }),
       { type: "clip", source: "l.mp4", in: 1, out: 5, speed: 2, id: "later", start: 3 },
@@ -1119,7 +1119,7 @@ describe("schema: id / start / offset", () => {
       { type: "audio", source: "a.wav", in: 0, out: 1 },
       { type: "static", source: "s.png", duration: 1 },
       { type: "data", data: null },
-      { type: "text", text: "hi", duration: 1 },
+      { type: "rect", duration: 1 },
       { type: "rect", duration: 1 },
       { type: "circle", duration: 1 },
       { type: "stage", source: "m.bin", duration: 1 },
@@ -1171,8 +1171,8 @@ describe("schema: id / start / offset", () => {
     ).toBe(false);
   });
 
-  it("text / rect / circle always need a duration, anchored or not", () => {
-    for (const node of [{ type: "text", text: "hi" }, { type: "rect" }, { type: "circle" }]) {
+  it("rect / circle always need a duration, anchored or not", () => {
+    for (const node of [{ type: "rect" }, { type: "circle" }]) {
       bad({ ...node, in: undefined, out: undefined, source: undefined });
       const r = (extra: object) =>
         validate({
@@ -1220,7 +1220,7 @@ describe("schema: id / start / offset", () => {
       children: [
         { type: "clip", source: "a.mp4", in: 0, out: 5, id: "a" },
         { type: "clip", source: "b.mp4", in: 0, out: 5, offset: -1 },
-        { type: "text", text: "title", duration: 2, start: "a@50%" },
+        { type: "rect", duration: 2, start: "a@50%" },
         { type: "audio", source: "bed.wav", in: 0, out: 2, start: 0, duration: 9, underflow: "loop" },
       ],
     });

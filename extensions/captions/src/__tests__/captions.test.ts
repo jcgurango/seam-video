@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { text } from "@seam/extension-text";
 import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { captions, captionText, type ResolvedCaption } from "../index.js";
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 const doc = (children: unknown[], root: Record<string, unknown> = {}) => ({
   type: "composition",
   ...root,

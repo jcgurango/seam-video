@@ -1,20 +1,13 @@
 // The captions overlay renderer — one implementation for both hosts.
 //
 // For a surface at its inner time `t`: the phrases on screen there
-// (`activeCues`), each laid out with core's text layout in the surface's
+// (`activeCues`), each laid out with the Text extension's layout in the surface's
 // inner canvas using the surface's style (+ speaker override + the caption's
-// own), drawn bottom first. Shares the layout code with the `text` node —
-// not the primitive.
+// own), drawn bottom first. Shares the Text extension's layout engine with
+// the `text` node — not the primitive.
 
-import {
-  drawTextLayout,
-  layoutText,
-  type CanvasLike,
-  type OverlayRasterizer,
-  type RasterHost,
-  type ResolvedText,
-  type SurfaceView,
-} from "@seam/core";
+import type { CanvasLike, OverlayRasterizer, RasterHost, SurfaceView } from "@seam/core";
+import { drawTextLayout, layoutText, type TextLayoutInput } from "@seam/extension-text/render";
 import { activeCues, cueStyle, surfaceStyle, type CaptionCue } from "../collect.js";
 import type { CaptionStyle } from "../index.js";
 
@@ -27,15 +20,13 @@ interface Entry {
   height: number;
 }
 
-/** A cue as the text layout sees it: a one-run text node filling the canvas. */
-function textNodeFor(cue: CaptionCue, style: CaptionStyle): ResolvedText {
+/** A cue as the text layout sees it: one run, the cue's look. */
+function textNodeFor(cue: CaptionCue, style: CaptionStyle): TextLayoutInput {
   return {
-    type: "text",
-    runs: [{ text: cue.text }],
-    timelineStart: 0,
-    timelineEnd: Math.max(cue.end - cue.start, 0),
     ...style,
-  } as ResolvedText;
+    runs: [{ text: cue.text }],
+    duration: Math.max(cue.end - cue.start, 0),
+  };
 }
 
 const sameCues = (a: CaptionCue[], b: CaptionCue[]) =>

@@ -155,6 +155,14 @@ export interface LocatedNode {
   inner?: LocatedInner;
 }
 
+/** Measures the inner canvas of an authored node whose type sizes itself
+ *  (`NodeTypeDef.measured`) at node-local `t` — the host's rasterizers. */
+export type NodeMeasurer = (
+  node: Child,
+  t: number,
+  duration: number,
+) => { width: number; height: number } | null;
+
 export type MediaSizeGetter = (node: {
   type: "clip" | "static";
   source: string;
@@ -218,6 +226,7 @@ function placeNode(
   t: number,
   duration: number,
   getMediaSize: MediaSizeGetter,
+  measure?: NodeMeasurer,
 ): Placed | null {
   if (node.type === "audio" || node.type === "data") return null;
   // An extension node with no visual presence (a caption) has no box.
@@ -240,7 +249,6 @@ function placeNode(
     }
   } else if (
     node.type === "composition" ||
-    node.type === "text" ||
     // Every extension node type has an inner canvas.
     seam.nodeTypes.has(node.type)
   ) {
@@ -248,6 +256,15 @@ function placeNode(
     const ch = (node as { contentHeight?: Keyframed<Length> }).contentHeight;
     innerW = sampleContentDim(cw, t, duration, parentW);
     innerH = sampleContentDim(ch, t, duration, parentH);
+    // A node whose type measures its own inner canvas (text that does not
+    // wrap): ask the host, as the render list does.
+    if (seam.nodeTypes.get(node.type)?.measured?.(node as unknown as Record<string, unknown>)) {
+      const m = measure?.(node, t, duration);
+      if (m && m.width > 0 && m.height > 0) {
+        innerW = m.width;
+        innerH = m.height;
+      }
+    }
     const n = computeNaturalSize(fit, innerW, innerH, parentW, parentH);
     naturalW = n.naturalWidth;
     naturalH = n.naturalHeight;
@@ -331,6 +348,7 @@ export function locateNode(
   indices: number[],
   time: number,
   getMediaSize: MediaSizeGetter,
+  measure?: NodeMeasurer,
 ): LocatedNode | null {
   if (indices.length === 0) return null;
   const rootW = compiled.contentWidth ?? DEFAULT_CANVAS_WIDTH;
@@ -354,7 +372,9 @@ export function locateNode(
     const local = t - rChild.timelineStart;
     const duration = rChild.timelineEnd - rChild.timelineStart;
 
-    const placed = placeNode(seam, cChild, parentW, parentH, fit, local, duration, getMediaSize);
+    // Fitted by the parent's `objectFit` unless the node overrides it.
+    const selfFit = (cChild as SpatialFields).fitSelf ?? fit;
+    const placed = placeNode(seam, cChild, parentW, parentH, selfFit, local, duration, getMediaSize, measure);
     if (!placed) return null;
 
     if (depth === indices.length - 1) {

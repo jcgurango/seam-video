@@ -138,7 +138,7 @@ describe("reverse playback — resolver", () => {
       comp([
         { type: "clip", source: "b.mp4", in: 0, out: 1 },
         { type: "clip", id: "rev", source: "a.mp4", in: 10, out: 4, speed: 2 },
-        { type: "text", text: "x", duration: 1, start: "rev@8" },
+        { type: "rect", duration: 1, start: "rev@8" },
       ]),
     );
     // rev starts at t=1 showing source 10, falling 2 source-s per output-s:

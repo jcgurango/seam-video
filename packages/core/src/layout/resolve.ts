@@ -5,7 +5,6 @@ import type {
   Length,
   ExtensionNodeBase,
   Overflow,
-  TextRun,
   Underflow,
 } from "../types.js";
 import type {
@@ -49,7 +48,6 @@ function naturalDuration(registry: Registry, child: Child): number {
     case "audio":
       return clipNaturalDuration(child);
     case "static":
-    case "text":
     case "rect":
     case "circle":
       return child.duration;
@@ -78,21 +76,17 @@ function targetDuration(child: Child, nat: number): number {
 
 /** Wrap any bare strings in `text` into single-text TextRun objects so
  *  callers downstream see a uniform `runs: TextRun[]` shape. */
-function normalizeTextRuns(text: string | (string | TextRun)[]): TextRun[] {
-  if (typeof text === "string") return [{ text }];
-  return text.map((item) => (typeof item === "string" ? { text: item } : item));
-}
-
 function collectSpatialInput(child: Child): SpatialInput | undefined {
   if (child.type === "audio" || child.type === "data") {
     return undefined;
   }
-  const { objectFit, origin, translation, size, rotation } = child;
+  const { objectFit, fitSelf, origin, translation, size, rotation } = child;
   // `inset` (crop) + `insetMode` are composition-only.
   const inset = child.type === "composition" ? child.inset : undefined;
   const insetMode = child.type === "composition" ? child.insetMode : undefined;
   if (
     objectFit == null &&
+    fitSelf == null &&
     origin == null &&
     translation == null &&
     size == null &&
@@ -101,7 +95,16 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
   ) {
     return undefined;
   }
-  return { objectFit, origin, translation, size, rotation, inset, insetMode };
+  return {
+    objectFit,
+    ...(fitSelf != null ? { fitSelf } : {}),
+    origin,
+    translation,
+    size,
+    rotation,
+    inset,
+    insetMode,
+  };
 }
 
 /** Per-frame-sampled visual fields every spatial node carries through
@@ -197,53 +200,6 @@ function resolveChild(
     };
   }
 
-  if (child.type === "text") {
-    // Text is static — overflow/underflow strategies all collapse to
-    // "show the same image for the target span". `contentWidth` /
-    // `contentHeight` stay as authored (possibly undefined — the
-    // spatial pass fills with the display rect, mirroring composition
-    // behaviour). We always emit `runs` as a normalised array so
-    // downstream consumers don't need to handle the `string | array`
-    // union.
-    const runs = normalizeTextRuns(child.text);
-    const styleKeys = [
-      "fontFamily",
-      "fontSize",
-      "color",
-      "fontWeight",
-      "fontStyle",
-      "textDecoration",
-      "letterHeight",
-      "backgroundColor",
-      "backgroundPadding",
-      "strokeColor",
-      "strokeWidth",
-      "lineHeight",
-      "textAlign",
-      "verticalAlign",
-      "padding",
-    ] as const;
-    const carried: Record<string, unknown> = {};
-    for (const k of styleKeys) {
-      const v = (child as unknown as Record<string, unknown>)[k];
-      if (v != null) carried[k] = v;
-    }
-    return {
-      resolved: {
-        type: "text" as const,
-        runs,
-        ...carried,
-        contentWidth: child.contentWidth,
-        contentHeight: child.contentHeight,
-        timelineStart: 0,
-        timelineEnd: 0,
-        ...(spatialInput ? { spatialInput } : {}),
-        ...spatialExtras(registry, child),
-      } as ResolvedChild,
-      actualDuration: target,
-    };
-  }
-
   if (child.type === "rect" || child.type === "circle") {
     // Shapes are static leaves like text: overflow/underflow collapse to
     // "show the shape for the target span". Fill/stroke stay keyframed —
@@ -309,6 +265,8 @@ function resolveChild(
         ...(node.contentHeight != null ? { contentHeight: node.contentHeight } : {}),
         ...(spatialInput ? { spatialInput } : {}),
         ...spatialExtras(registry, node),
+        // Its inner canvas is measured by its rasterizer, per frame.
+        ...(def.measured?.(node as unknown as Record<string, unknown>) ? { measured: true as const } : {}),
       } as unknown as ResolvedChild,
       actualDuration: target,
     };
@@ -650,7 +608,6 @@ function buildIdMapEntry(resolved: ResolvedChild, compWindowIn = 0): IdMapEntry 
   }
   if (
     resolved.type === "data" ||
-    resolved.type === "text" ||
     resolved.type === "rect" ||
     resolved.type === "circle" ||
     asExtensionNode(resolved) != null
@@ -753,7 +710,6 @@ function cropChildrenToWindow(
       }
     } else if (
       child.type === "data" ||
-      child.type === "text" ||
       child.type === "static" ||
       child.type === "rect" ||
       child.type === "circle"

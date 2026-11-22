@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { text } from "@seam/extension-text";
 import { createSeam, resolveSpatial, type Child, type Composition, type SurfaceView } from "@seam/core";
 import {
   captionAsText,
@@ -15,7 +16,7 @@ import {
   type CaptionNode,
 } from "../index.js";
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 const resolve = (children: unknown[], root: object = {}) =>
   resolveSpatial(seam.resolveComposition({ type: "composition", ...root, children } as unknown as Composition), 1080, 1920);
 const valid = (children: unknown[]) => {

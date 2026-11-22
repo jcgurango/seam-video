@@ -28,6 +28,12 @@ describe("createSeam", () => {
     expect(() => createSeam([{ name: "a" }, { name: "a" }])).toThrow(/registered twice/);
   });
 
+  it("rejects an extension whose required extension is not installed", () => {
+    expect(() => createSeam([{ name: "a", requires: ["b"] }])).toThrow(/requires the "b" extension/);
+    // Present in any order is fine.
+    expect(createSeam([{ name: "a", requires: ["b"] }, { name: "b" }]).extensions).toHaveLength(2);
+  });
+
   it("rejects an extension without a name", () => {
     expect(() => createSeam([{ name: "" }])).toThrow(/non-empty 'name'/);
   });
@@ -84,7 +90,6 @@ describe("extension fields", () => {
     const nodes: Record<string, unknown>[] = [
       { type: "clip", source: "a.mp4", in: 0, out: 1 },
       { type: "static", source: "a.png", duration: 1 },
-      { type: "text", text: "hi", duration: 1 },
       { type: "rect", duration: 1 },
       { type: "circle", duration: 1 },
       { type: "stage", source: "a.bin", duration: 1 },

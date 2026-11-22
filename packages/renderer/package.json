@@ -21,7 +21,6 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.6",
     "@mediabunny/server": "^1.61.5",
     "@napi-rs/canvas": "^0.1.100",
     "@seam/compositor": "workspace:*",
@@ -38,6 +37,7 @@
     "@seam/extension-adjustments": "workspace:*",
     "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
+    "@seam/extension-text": "workspace:*",
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",

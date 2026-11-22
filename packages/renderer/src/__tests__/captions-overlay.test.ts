@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { buildRenderList, Compositor } from "@seam/compositor";
 import { captions } from "@seam/extension-captions/render";
+import { text as textExtension } from "@seam/extension-text/render";
 import { createGpuDevice } from "../gpu.js";
 import { NodeBackend, type NodeFrame } from "../NodeBackend.js";
 import { FrameSource, collectDrawables } from "../frameSource.js";
@@ -15,7 +16,7 @@ import { FrameSource, collectDrawables } from "../frameSource.js";
 
 const W = 256;
 const H = 256;
-const seam = createSeam([captions]);
+const seam = createSeam([textExtension, captions]);
 
 let device: GPUDevice;
 let backend: NodeBackend;

@@ -66,6 +66,7 @@
     "@seam/extension-adjustments": "workspace:*",
     "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
+    "@seam/extension-text": "workspace:*",
     "@seam/renderer": "workspace:*",
     "@types/node": "^25.3.3",
     "esbuild": "^0.24.0",

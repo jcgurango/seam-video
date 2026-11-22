@@ -34,5 +34,5 @@ export {
   resetSourceResolver,
 } from "./components/resolveSource.js";
 export type { SourceResolver } from "./components/resolveSource.js";
-export { setByteSourceResolver } from "./media/nodeRasterizers.js";
+export { setByteSourceResolver, rasterizerFor } from "./media/nodeRasterizers.js";
 export type { ByteSourceResolver } from "./media/nodeRasterizers.js";

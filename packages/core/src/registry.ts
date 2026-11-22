@@ -23,7 +23,6 @@ export type FieldTarget = "visual" | "composition";
 export const VISUAL_NODE_TYPES = [
   "clip",
   "static",
-  "text",
   "rect",
   "circle",
   "composition",
@@ -50,6 +49,8 @@ interface FieldBase {
 export interface NumberFieldSpec extends FieldBase {
   readonly type: "number";
   readonly min?: number;
+  /** `min` itself is not allowed (a font size: > 0). */
+  readonly exclusiveMin?: boolean;
   readonly max?: number;
   /** The value an omitted field evaluates to — the editor's placeholder and
    *  where a slider rests. Required on a field a colour stage consumes. */
@@ -72,6 +73,8 @@ export interface StringFieldSpec extends FieldBase {
   /** The value is a media path the host resolves (like a clip's `source`):
    *  export, remote .seam and proxies rewrite it. */
   readonly source?: boolean;
+  /** A regular expression (source) the value must match. */
+  readonly pattern?: string;
 }
 
 export interface EnumFieldSpec extends FieldBase {
@@ -120,8 +123,15 @@ export interface CustomFieldSpec extends FieldBase {
  *  flat on the node (`{ "type": "clip", "saturation": 0 }`). This ONE
  *  declaration drives schema validation, keyframing, per-frame sampling and
  *  the editor's Properties row. */
+/** `true` / `false`. Not animatable. */
+export interface BooleanFieldSpec extends FieldBase {
+  readonly type: "boolean";
+  readonly default?: boolean;
+}
+
 export type FieldSpec =
   | NumberFieldSpec
+  | BooleanFieldSpec
   | StringFieldSpec
   | EnumFieldSpec
   | ColorFieldSpec
@@ -206,6 +216,10 @@ export interface NodeRasterizer {
    *  when nothing can be drawn yet. Missing content is requested; the host
    *  hears about it through `requestRepaint`. Synchronous. */
   draw(node: ExtensionNodeView, drawTime: number, width: number, height: number): CanvasLike | null;
+  /** For a node its type calls {@link NodeTypeDef.measured}: the size of its
+   *  inner canvas at node-local `drawTime`, in px — what `draw` is then asked
+   *  to fill. Synchronous; null when it cannot be known yet. */
+  measure?(node: ExtensionNodeView, drawTime: number): { width: number; height: number } | null;
   /** Resolve once everything `draw` needs for these arguments is loaded.
    *  The offline renderer awaits it before each `draw`. */
   ensure?(node: ExtensionNodeView, drawTime: number, width: number, height: number): Promise<void>;
@@ -299,6 +313,19 @@ export interface NodeTypeDef {
    *  definition an extension's `./render` entry exports, so pure consumers
    *  (validate / resolve) never load the rasterizer's dependencies. */
   readonly rasterizer?: (host: RasterHost) => NodeRasterizer;
+  /**
+   * Pure. True when this node's inner canvas is not `contentWidth` /
+   * `contentHeight` but whatever its rasterizer MEASURES it to be each frame
+   * ({@link NodeRasterizer.measure}) — a text node that does not wrap is as
+   * big as what it says. From there on it behaves like any inner canvas:
+   * `objectFit` fits it into the parent and `size` / `origin` / `translation`
+   * place the result. Such a node carries no baked layout rect (the resolver
+   * cannot measure); hosts lay it out per frame.
+   */
+  measured?(node: Record<string, unknown>): boolean;
+  /** Pure. An extra check on an authored node the field declarations cannot
+   *  express; returns the error message, or nothing when it is fine. */
+  validate?(node: Record<string, unknown>): string | undefined;
   /** Editor: timeline block colours, and how the editor's own tools treat
    *  this node type. Both functions are pure: authored node in, authored
    *  node(s) out. */
@@ -306,6 +333,10 @@ export interface NodeTypeDef {
     readonly color: string;
     readonly border: string;
     readonly label?: string;
+    /** A tile in the editor's "New" panel that creates this node when
+     *  dragged onto the timeline. `glyph` is one or two characters shown as
+     *  its icon. */
+    readonly palette?: { readonly label: string; readonly glyph?: string; create(): Record<string, unknown> };
     /** Text for the node's timeline block (default: the type name). */
     blockLabel?(node: Record<string, unknown>): string | undefined;
     /**
@@ -356,6 +387,9 @@ export interface NodeTypeDef {
 export interface SeamExtension {
   /** Unique within an instance; duplicate names are a registration error. */
   readonly name: string;
+  /** Names of extensions that must be installed alongside this one (it uses
+   *  their node types or their code). A missing one is a registration error. */
+  readonly requires?: readonly string[];
   /** Fields added to existing nodes. */
   readonly fields?: readonly FieldSpec[];
   readonly colorStage?: ColorStage;
@@ -409,7 +443,6 @@ export const CORE_NODE_TYPES = [
   "audio",
   "static",
   "data",
-  "text",
   "rect",
   "circle",
   "composition",
@@ -554,6 +587,14 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
         throw new Error(
           `Extension "${def.extension}": "${def.type}" allows children of unknown type "${t}"`,
         );
+      }
+    }
+  }
+
+  for (const ext of extensions) {
+    for (const needed of ext.requires ?? []) {
+      if (!names.has(needed)) {
+        throw new Error(`Extension "${ext.name}" requires the "${needed}" extension, which is not installed`);
       }
     }
   }

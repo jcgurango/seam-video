@@ -81,6 +81,8 @@ export {
   hasAnimatedSpatialInput,
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
+  type InnerMeasurer,
+  type ResolveSpatialOptions,
 } from "./layout/resolve-spatial.js";
 export {
   squareToQuad,
@@ -101,14 +103,6 @@ export { flattenResolved, walkResolved } from "./flatten.js";
 export type { FlatLeaf, WalkedSpan } from "./flatten.js";
 export * from "./animation/index.js";
 export { createPitchShifter, type PitchShifter } from "./audio/pitchShifter.js";
-export {
-  layoutText,
-  textHasAnimatedStyle,
-  type TextLayoutResult,
-  type TextRect,
-  type TextGlyph,
-} from "./text/textLayout.js";
-export { drawTextLayout } from "./text/textCanvas.js";
 export {
   CJK_FALLBACK_FAMILY,
   EMOJI_FALLBACK_FAMILY,

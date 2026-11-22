@@ -1,29 +1,20 @@
 import { describe, it, expect } from "vitest";
-import { layoutText, drawTextLayout } from "@seam/core";
-import type { ResolvedText } from "@seam/core";
+import { layoutText, drawTextLayout, type TextLayoutInput } from "@seam/extension-text/render";
 import { createCanvas } from "@napi-rs/canvas";
 import { installCanvasShim } from "../text/canvasShim.js";
 
-// Exercises the text-node rasterization path end to end: core's layout +
+// Exercises the text-node rasterization path end to end: the Text extension's layout +
 // draw (which now append CJK/emoji fallbacks to every font string) on the
 // same @napi-rs/canvas the renderer uses. Confirms missing-script glyphs
 // fall through to the bundled fonts — and that emoji render in colour.
 
-function textNode(text: string, fontWeight?: string): ResolvedText {
-  return {
-    type: "text",
-    runs: [{ text }],
-    fontWeight,
-    contentWidth: 400,
-    contentHeight: 120,
-    timelineStart: 0,
-    timelineEnd: 1,
-  } as ResolvedText;
+function textNode(text: string, fontWeight?: string): TextLayoutInput {
+  return { runs: [{ text }], fontWeight, duration: 1 };
 }
 
 function rasterize(text: string, fontWeight?: string): { ink: number; colored: number } {
   installCanvasShim();
-  const layout = layoutText(textNode(text, fontWeight), 0);
+  const layout = layoutText(textNode(text, fontWeight), 0, 400, 120);
   const canvas = createCanvas(
     Math.max(1, Math.ceil(layout.width)),
     Math.max(1, Math.ceil(layout.height)),
@@ -76,7 +67,7 @@ describe("text node CJK/emoji fallback (renderer)", () => {
   it("MEASURES CJK with the fallback (Pretext layout width matches a real measureText)", () => {
     installCanvasShim();
     const text = "日本語のテキスト";
-    const layout = layoutText(textNode(text), 0);
+    const layout = layoutText(textNode(text), 0, 400, 120);
 
     // Direct measurement with the fallback-bearing font the draw pass uses.
     const probe = createCanvas(10, 10).getContext("2d");

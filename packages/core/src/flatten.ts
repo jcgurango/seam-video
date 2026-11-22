@@ -4,7 +4,6 @@ import type {
   ResolvedAudio,
   ResolvedStatic,
   ResolvedData,
-  ResolvedText,
   ResolvedRect,
   ResolvedCircle,
   ResolvedExtensionChild,
@@ -56,7 +55,6 @@ export type FlatLeaf =
   | ResolvedAudio
   | ResolvedStatic
   | ResolvedData
-  | ResolvedText
   | ResolvedRect
   | ResolvedCircle
   | ResolvedExtensionChild;
@@ -115,12 +113,6 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
         ...(child.tags?.length ? { tags: child.tags } : {}),
-      });
-    } else if (child.type === "text") {
-      result.push({
-        ...child,
-        timelineStart: start,
-        timelineEnd: end,
       });
     } else if (child.type === "rect" || child.type === "circle") {
       result.push({

@@ -156,6 +156,13 @@ export class NodeRasterizers {
     return this.read(rasterizer.draw(view, drawTime, width, height));
   }
 
+  /** The inner canvas of a node whose type measures it (`measured` — a text
+   *  node that does not wrap) at node-local `drawTime`. Synchronous. */
+  measure(node: ResolvedExtensionNode, drawTime: number): { w: number; h: number } | null {
+    const size = this.rasterizerFor(node.type)?.measure?.(node as unknown as ExtensionNodeView, drawTime);
+    return size ? { w: size.width, h: size.height } : null;
+  }
+
   /** Dispose the rasterizers and close every file they opened. */
   async dispose(): Promise<void> {
     for (const r of this.rasterizers.values()) await r?.dispose();
@@ -165,4 +172,27 @@ export class NodeRasterizers {
     await Promise.all(this.files.map((f) => f.close()));
     this.files.length = 0;
   }
+}
+
+/**
+ * A measurer for `resolveSpatial` (`ResolveSpatialOptions.measure`): sizes
+ * the inner canvas of nodes whose type measures it (a text node that does
+ * not wrap), so a resolved timeline carries their real rect. `dispose` when
+ * done.
+ */
+export function createInnerMeasurer(
+  seam: Pick<Seam, "nodeTypes" | "overlays">,
+  basePath: string,
+): {
+  measure(node: ResolvedExtensionNode, t: number): { width: number; height: number } | null;
+  dispose(): Promise<void>;
+} {
+  const nodes = new NodeRasterizers(basePath, seam);
+  return {
+    measure(node, t) {
+      const size = nodes.measure(node, t);
+      return size ? { width: size.w, height: size.h } : null;
+    },
+    dispose: () => nodes.dispose(),
+  };
 }

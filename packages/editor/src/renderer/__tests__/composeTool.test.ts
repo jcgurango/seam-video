@@ -7,7 +7,7 @@ const { validate } = createSeam();
 const clip = (extra: Record<string, unknown> = {}): Child =>
   ({ type: "clip", source: "a.mp4", in: 0, out: 2, ...extra }) as Child;
 const text = (extra: Record<string, unknown> = {}): Child =>
-  ({ type: "text", text: "t", duration: 1, ...extra }) as Child;
+  ({ type: "rect", duration: 1, ...extra }) as Child;
 const comp = (children: Child[]): Composition => ({ type: "composition", children });
 
 function compose(children: Child[], selected: number[]) {

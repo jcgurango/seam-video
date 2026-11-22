@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createSeam, type Child, type EditorCommandContext, type SeamFile, type Transcript } from "@seam/core";
 import { captions, DEFAULT_CAPTION_STYLE } from "@seam/extension-captions";
 import { captionsEditor } from "@seam/extension-captions/editor";
+import { text } from "@seam/extension-text";
 import { createEditorTools, resolveStandalone } from "../extensionHost.js";
 import { editContainer, getNodeAtPath, parsePath, removeNodesAtPaths, updateNodeAtPath } from "../nodePath.js";
 import { layoutTree } from "../timelineTree.js";
@@ -14,7 +15,7 @@ import { resizeChild } from "../resizeTool.js";
 // extension's real commands: a context built the way App builds it, minus
 // React.
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 const tools = createEditorTools(seam);
 
 function context(document: SeamFile, selection: string[], transcripts: Transcript[] = []) {

@@ -110,3 +110,51 @@ describe("shape resolution", () => {
     expect((c as ResolvedRect).naturalHeight).toBe(480);
   });
 });
+
+describe("fitSelf — a node's own fit into its parent", () => {
+  // A 400×200 inner canvas in a 1080×1920 parent, holding a 100×50 one.
+  const inner = { type: "composition", contentWidth: 100, contentHeight: 50, children: [{ type: "rect", duration: 1 }] };
+  const natural = (rootFit: object, node: object) => {
+    const comp = resolveComposition({
+      type: "composition",
+      ...rootFit,
+      children: [{ type: "composition", contentWidth: 400, contentHeight: 200, children: [inner], ...node }],
+    } as unknown as Composition);
+    const outer = resolveSpatial(comp, 1080, 1920).children[0] as unknown as {
+      naturalWidth: number;
+      naturalHeight: number;
+      children: { naturalWidth: number; naturalHeight: number }[];
+    };
+    return {
+      outer: [outer.naturalWidth, outer.naturalHeight],
+      child: [outer.children[0].naturalWidth, outer.children[0].naturalHeight],
+    };
+  };
+
+  it("a node is fitted by its parent's objectFit, never by its own", () => {
+    expect(natural({}, {}).outer).toEqual([1080, 540]); // parent default: fit
+    expect(natural({ objectFit: "center" }, {}).outer).toEqual([400, 200]);
+    // Its own objectFit is for ITS children.
+    expect(natural({}, { objectFit: "center" })).toEqual({ outer: [1080, 540], child: [100, 50] });
+  });
+
+  it("fitSelf overrides the parent's objectFit for that node alone", () => {
+    expect(natural({}, { fitSelf: "center" }).outer).toEqual([400, 200]);
+    expect(natural({}, { fitSelf: "cover" }).outer).toEqual([3840, 1920]);
+    expect(natural({ objectFit: "center" }, { fitSelf: "fit" }).outer).toEqual([1080, 540]);
+    // It does not pass down: the child is still fitted by the node's objectFit
+    // (inherited from the root here: fit → 400×200 for a 2:1 child).
+    expect(natural({}, { fitSelf: "center" }).child).toEqual([400, 200]);
+    expect(natural({}, { fitSelf: "center", objectFit: "center" }).child).toEqual([100, 50]);
+  });
+
+  it("is a schema field on visual nodes, and refused on the root", () => {
+    const ok = parse({ type: "composition", children: [{ type: "rect", duration: 1, fitSelf: "cover" }] });
+    expect(ok.success).toBe(true);
+    expect(parse({ type: "composition", children: [{ type: "rect", duration: 1, fitSelf: "stretch" }] }).success).toBe(false);
+    expect(parse({ type: "composition", children: [{ type: "audio", source: "a.mp3", in: 0, out: 1, fitSelf: "fit" }] }).success).toBe(false);
+    const root = parse({ type: "composition", fitSelf: "center", children: [] });
+    expect(root.success).toBe(false);
+    if (!root.success) expect(root.errors.join()).toMatch(/not allowed on the root/);
+  });
+});

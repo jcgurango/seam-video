@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { text } from "@seam/extension-text";
 import { createSeam } from "@seam/core";
 import {
   captions,
@@ -12,7 +13,7 @@ import {
   withStyle,
 } from "../index.js";
 
-const seam = createSeam([captions]);
+const seam = createSeam([text, captions]);
 
 describe("default caption style", () => {
   it("is what an unstyled surface shows, overridden key by key", () => {

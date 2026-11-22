@@ -51,6 +51,10 @@ export function validate(registry: Registry, input: unknown): ValidationResult {
       errors: formatZodError(result.error),
     };
   }
+  // The root has no parent to be fitted into.
+  if ((expanded.data as { fitSelf?: unknown } | null)?.fitSelf != null) {
+    return { success: false, errors: ["fitSelf: not allowed on the root composition (it has no parent)"] };
+  }
   return { success: true, data: input as SeamFile };
 }
 

@@ -39,7 +39,6 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedStatic,
-  ResolvedText,
   ResolvedRect,
   ResolvedCircle,
   ResolvedExtensionNode,
@@ -235,7 +234,6 @@ export interface OverlayDrawable {
  *  key), after which `clip.type` narrows as usual. */
 export type Drawable =
   | ResolvedClip
-  | ResolvedText
   | ResolvedStatic
   | ResolvedExtensionNode
   | OverlayDrawable;
@@ -359,14 +357,39 @@ interface ClipRect {
   h: number;
 }
 
+/** The host's sizes: a clip / static's probed media dims, or — for an
+ *  extension node whose type measures its inner canvas (`measured`) — that
+ *  canvas at the node's own time `t`. Null when not known yet. */
 type SizeGetter = (
-  clip: ResolvedClip | ResolvedStatic,
+  node: ResolvedClip | ResolvedStatic | ResolvedExtensionNode,
+  t?: number,
 ) => { w: number; h: number } | null;
+
+/** An extension node's inner canvas this frame: measured by its rasterizer
+ *  when its type says so, else `contentWidth` / `contentHeight` sampled
+ *  against the live parent. `t` is the node's local time (its content time
+ *  adds the window offset). */
+function innerCanvas(
+  node: ResolvedExtensionNode,
+  t: number,
+  duration: number,
+  parentW: number,
+  parentH: number,
+  getIntrinsicSize: SizeGetter,
+): { w: number; h: number } {
+  if (node.measured) {
+    const m = getIntrinsicSize(node, extensionContentSpan(node).offset + t);
+    if (m && m.w > 0 && m.h > 0) return m;
+  }
+  return {
+    w: sampleContentDim(node.contentWidth, t, duration, parentW),
+    h: sampleContentDim(node.contentHeight, t, duration, parentH),
+  };
+}
 
 type SpatialNode =
   | ResolvedClip
   | ResolvedStatic
-  | ResolvedText
   | ResolvedRect
   | ResolvedCircle
   | ResolvedComposition;
@@ -539,7 +562,6 @@ function dynamicSpatial(
     }
   } else if (
     child.type === "composition" ||
-    child.type === "text" ||
     asExtensionNode(child) != null
   ) {
     // Sample the (animatable) inner canvas against the LIVE parent dims, then
@@ -552,8 +574,13 @@ function dynamicSpatial(
       contentHeight?: Keyframed<Length>;
       objectFit?: ObjectFit;
     };
-    const iw = sampleContentDim(inner.contentWidth, t, duration, parentW);
-    const ih = sampleContentDim(inner.contentHeight, t, duration, parentH);
+    const ext = asExtensionNode(child);
+    const { w: iw, h: ih } = ext
+      ? innerCanvas(ext, t, duration, parentW, parentH, getIntrinsicSize)
+      : {
+          w: sampleContentDim(inner.contentWidth, t, duration, parentW),
+          h: sampleContentDim(inner.contentHeight, t, duration, parentH),
+        };
     const n = computeNaturalSize(inner.objectFit ?? "fit", iw, ih, parentW, parentH);
     naturalW = n.naturalWidth;
     naturalH = n.naturalHeight;
@@ -663,38 +690,56 @@ function walkChildren(
       viewport.contentH > 0 ? viewport.h / viewport.contentH : 1,
     );
 
-    if (
-      child.type === "clip" ||
-      child.type === "static" ||
-      child.type === "text"
-    ) {
-      const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize, anchor);
+    // An extension node type that draws itself and holds no children (the
+    // Text extension's `text`) is a plain leaf: one quad, like a clip — its
+    // rotation / opacity / mask / fields ride on the draw, no layer needed.
+    const leafExt = asExtensionNode(child);
+    const leafDef = leafExt ? env.seam.nodeTypes.get(leafExt.type) : undefined;
+    const drawsItself = leafExt != null && leafDef?.draws === true && !leafDef.children;
+
+    if (child.type === "clip" || child.type === "static" || drawsItself) {
+      // One shape for the three: placement, fade, opacity, mask and fields
+      // are the common node fields (a self-drawing node has them all).
+      const leaf = child as ResolvedClip | ResolvedStatic;
+      const spatial = dynamicSpatial(leaf, viewport, localTime, getIntrinsicSize, anchor);
       const quad = absoluteRect(viewport, spatial);
       const { rotation, pivotX, pivotY } = rotationFor(viewport, spatial, quad);
       const scissor = scissorFor(clipRect, quad, rotation, pivotX, pivotY);
       if (scissor.w <= 0 || scissor.h <= 0) continue;
 
-      const fade = transitionFade(child, localTime);
-      const nodeOpacity = sampleOpacity(child.opacity, drawTime, drawDuration);
+      const fade = transitionFade(leaf, localTime);
+      const nodeOpacity = sampleOpacity(leaf.opacity, drawTime, drawDuration);
 
-      // text rasterizes at its inner canvas — sampled per-frame against the
-      // live parent dims so an animated contentWidth reflows the texture.
-      // clip/static texture size is the probed media (omit).
+      // A self-drawing node rasterizes at its inner canvas — sampled
+      // per-frame against the live parent dims so an animated contentWidth
+      // reflows the texture. clip/static texture size is the probed media
+      // (omit). Its content runs on its original span even when a window cut
+      // into it (`extensionContentSpan`).
       let contentW: number | undefined;
       let contentH: number | undefined;
-      if (child.type === "text") {
-        contentW = sampleContentDim(child.contentWidth, drawTime, drawDuration, viewport.contentW);
-        contentH = sampleContentDim(child.contentHeight, drawTime, drawDuration, viewport.contentH);
+      let ownTime = contentTime;
+      if (drawsItself) {
+        const inner = innerCanvas(
+          leafExt!,
+          drawTime,
+          drawDuration,
+          viewport.contentW,
+          viewport.contentH,
+          getIntrinsicSize,
+        );
+        contentW = inner.w;
+        contentH = inner.h;
+        ownTime = extensionContentSpan(leafExt!).offset + drawTime;
       }
 
       const mask = roundRectMask(
-        cornerRadiusPx(child.cornerRadius, drawTime, drawDuration, spatial, scale),
+        cornerRadiusPx(leaf.cornerRadius, drawTime, drawDuration, spatial, scale),
       );
 
       commands.push({
         type: "draw",
-        clip: child,
-        fields: sampleFields(env, child.ext, drawTime, drawDuration),
+        clip: drawsItself ? leafExt! : leaf,
+        fields: sampleFields(env, leaf.ext, drawTime, drawDuration),
         scissorX: scissor.x,
         scissorY: scissor.y,
         scissorW: scissor.w,
@@ -707,7 +752,7 @@ function walkChildren(
         pivotX,
         pivotY,
         opacity: opacity * fade * nodeOpacity,
-        drawTime: contentTime,
+        drawTime: ownTime,
         contentW,
         contentH,
         sourceRect: spatial.sourceRect,

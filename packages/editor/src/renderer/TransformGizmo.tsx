@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
-import { useTimeline, useTimelineMedia } from "@seam/preview";
+import { rasterizerFor, useTimeline, useTimelineMedia } from "@seam/preview";
 import type { GizmoSurface } from "@seam/preview";
 import type { History } from "./useHistory.js";
 import { getNodeAtPath, parsePath, updateNodeAtPath } from "./nodePath.js";
@@ -12,6 +12,7 @@ import {
   rotateVec,
   type LocatedNode,
   type Mat3,
+  type NodeMeasurer,
   type Pt,
 } from "./viewportLocate.js";
 import {
@@ -174,9 +175,20 @@ export default function TransformGizmo({
     return out;
   }, [path]);
 
+  // Unwrapped text is as big as what it says: measured by the same
+  // rasterizer the preview draws it with.
+  const measureNode = useCallback<NodeMeasurer>(
+    (authored, t, duration) =>
+      rasterizerFor(seam.nodeTypes, authored.type)?.measure?.(
+        { ...(authored as unknown as Record<string, unknown>), type: authored.type, timelineStart: 0, timelineEnd: duration },
+        t,
+      ) ?? null,
+    [seam],
+  );
+
   const located: LocatedNode | null =
     compiled && indices && node
-      ? locateNode(seam, compiled, timeline, indices, currentTime, media.getMediaSize)
+      ? locateNode(seam, compiled, timeline, indices, currentTime, media.getMediaSize, measureNode)
       : null;
 
   // The active drag re-evaluates when a modifier flips without pointer motion.

@@ -9,7 +9,6 @@ import type {
   ExtensionNodeView,
   Seam,
   ResolvedStatic,
-  ResolvedText,
   ResolvedTimeline,
 } from "@seam/core";
 import {
@@ -26,7 +25,6 @@ import { AudioBufferSink } from "mediabunny";
 import { ClipBuffer } from "./ClipBuffer.js";
 import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
-import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
 import {
   clearRasterizers,
@@ -128,7 +126,6 @@ export class FrameCoordinator {
   onMediaSize: (() => void) | null = null;
   private playingClips = new Set<FlatClip>();
   private audioScheduler: AudioScheduler | null = null;
-  private textStore = new TextStore();
   private staticStore = new StaticStore();
   /** The Seam instance's contributed node types — where rasterizers for
    *  self-drawing extension nodes (a map) come from. */
@@ -207,11 +204,6 @@ export class FrameCoordinator {
         };
       }),
     );
-
-    // Text nodes rasterize synchronously straight onto OffscreenCanvases
-    // via Pretext-laid-out canvas drawing — no SVG / `<img>` decode wait.
-    this.textStore.onFrameAvailable = () => this.onFrameAvailable?.();
-    this.textStore.setTimeline(timeline);
 
     // Static nodes decode asynchronously — fire and forget so the
     // initial reconcile doesn't block on them. The first frame
@@ -374,13 +366,12 @@ export class FrameCoordinator {
   /** Push the compositor's per-frame inner-canvas sizes (text / extension
    *  nodes) from a freshly-built render list into the stores, so an animated
    *  `contentWidth` reflows/resizes the rasterized texture. Call right before
-   *  `getFrame` in the render pass — text resizes synchronously; self-drawing
-   *  extension nodes (a map) rasterize here for the draw's node-local
+   *  `getFrame` in the render pass — self-drawing extension nodes (text, a
+   *  map) rasterize here for the draw's node-local
    *  `drawTime` (so nested-composition time mapping lives in the render list
    *  alone). */
   applyContentSizes(commands: RenderCommand[], currentTime: number): void {
     if (!this.ready) return;
-    const textSizes = new Map<ResolvedText, { w: number; h: number }>();
     const walk = (cmds: RenderCommand[]): void => {
       for (const c of cmds) {
         if (c.type === "draw") {
@@ -406,26 +397,21 @@ export class FrameCoordinator {
             );
             if (canvas) this.nodeFrames.set(node, canvas as unknown as HTMLCanvasElement);
             else this.nodeFrames.delete(node);
-          } else if (node.type === "text")
-            textSizes.set(node, { w: c.contentW, h: c.contentH });
+          }
         } else if (c.type === "group") {
           walk(c.children);
         }
       }
     };
     walk(commands);
-    if (textSizes.size > 0) this.textStore.setContentSizes(textSizes, currentTime);
   }
 
   getFrame(
-    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode | OverlayDrawable,
+    clip: ResolvedClip | ResolvedStatic | ResolvedExtensionNode | OverlayDrawable,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
     if ("overlay" in clip || "extension" in clip) {
       return this.nodeFrames.get(clip) ?? null;
-    }
-    if (clip.type === "text") {
-      return this.textStore.getFrame(clip);
     }
     if (clip.type === "static") {
       return this.staticStore.getFrame(clip);
@@ -443,8 +429,17 @@ export class FrameCoordinator {
   }
 
   getIntrinsicSize(
-    clip: ResolvedClip | ResolvedStatic,
+    clip: ResolvedClip | ResolvedStatic | ResolvedExtensionNode,
+    t = 0,
   ): { w: number; h: number } | null {
+    // An extension node that measures its own inner canvas (unwrapped text).
+    if ("extension" in clip) {
+      const size = rasterizerFor(this.nodeTypes, clip.type)?.measure?.(
+        clip as unknown as ExtensionNodeView,
+        t,
+      );
+      return size ? { w: size.width, h: size.height } : null;
+    }
     if (clip.type === "static") return this.staticStore.getIntrinsicSize(clip);
     return (
       this.sizes.get(clip) ??
@@ -489,7 +484,6 @@ export class FrameCoordinator {
     this.flatByClip.clear();
     this.sizes.clear();
     this.playingClips.clear();
-    this.textStore.dispose();
     this.staticStore.dispose();
     this.nodeFrames.clear();
     clearRasterizers(this.nodeTypes, this.overlays);
@@ -601,10 +595,6 @@ export class FrameCoordinator {
         if (flat.audioId) this.audioScheduler?.stopClip(flat.audioId);
       }
     }
-
-    // Animated text styles: re-rasterize each frame. Static texts noop.
-    // (Maps rasterize from the render list in applyContentSizes.)
-    this.textStore.update(currentTime);
 
     // Animated clip volumes + crossfade gain: sample once per tick and push
     // to the scheduler. Static-volume clips with no transition skip the

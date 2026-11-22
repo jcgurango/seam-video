@@ -25,9 +25,10 @@ import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
 import { map } from "@seam/extension-map";
 import { captions } from "@seam/extension-captions";
+import { text } from "@seam/extension-text";
 
 // Core plus the Map extension (a contributed node type with its own catalog).
-const seam = createSeam([map]);
+const seam = createSeam([map, text]);
 
 const doc: SeamFile = {
   type: "composition",
@@ -217,7 +218,7 @@ describe("applyPropertyEdit", () => {
 });
 
 describe("extension-contributed fields", () => {
-  const withAdj = createSeam([adjustments, map]);
+  const withAdj = createSeam([adjustments, map, text]);
   const KEYS = ["brightness", "contrast", "saturation", "gamma", "temperature", "tint"];
 
   it("appear on every visual node type, after core's rows, and not on audio/data", () => {
@@ -319,7 +320,7 @@ describe("extension node types", () => {
 });
 
 describe("non-visual node types and composition-only fields", () => {
-  const withCaptions = createSeam([adjustments, map, captions]);
+  const withCaptions = createSeam([adjustments, map, text, captions]);
 
   it("a non-visual type's catalog has timing and its own fields only", () => {
     const keys = catalogFor(withCaptions, "caption").map((d) => d.key);

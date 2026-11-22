@@ -48,9 +48,10 @@ export type PropKind =
   /** Single-line string. */
   | "string"
   /** Multi-line string. */
-  | "text"
   /** One of `options`. */
   | "enum"
+  /** `true` / `false`. */
+  | "boolean"
   /** `Inset`: per-edge `Length`s (top / right / bottom / left), authored in
    *  the padding shorthand. */
   | "inset"
@@ -191,6 +192,16 @@ const SPATIAL: PropDef[] = [
     kind: "enum",
     options: ["fit", "cover", "center"],
     placeholder: "inherit",
+    hint: "How this node's CHILDREN are fitted into it. Does nothing on a node without children.",
+  },
+  {
+    key: "fitSelf",
+    label: "Fit self",
+    group: "Layout",
+    kind: "enum",
+    options: ["fit", "cover", "center"],
+    placeholder: "parent's object fit",
+    hint: "How THIS node is fitted into its parent, overriding the parent's object fit for this node only.",
   },
   {
     key: "origin",
@@ -292,104 +303,6 @@ const PITCH: PropDef = {
   hint: "Length-preserving shift in semitones (±48).",
 };
 
-const COLOR_ENUMS = {
-  fontStyle: ["normal", "italic", "oblique"],
-  textDecoration: ["none", "underline", "overline", "line-through"],
-  textAlign: ["left", "center", "right"],
-  verticalAlign: ["top", "center", "bottom"],
-} as const;
-
-const TEXT_PROPS: PropDef[] = [
-  { key: "text", label: "Text", group: "Text", kind: "text" },
-  { key: "fontFamily", label: "Font", group: "Text", kind: "string", placeholder: "Liberation Sans" },
-  {
-    key: "fontSize",
-    label: "Font size",
-    group: "Text",
-    kind: "number",
-    animatable: true,
-    unit: "px",
-    placeholder: "16",
-  },
-  { key: "color", label: "Color", group: "Text", kind: "color", animatable: true, placeholder: "black" },
-  { key: "fontWeight", label: "Weight", group: "Text", kind: "string", placeholder: "normal" },
-  {
-    key: "fontStyle",
-    label: "Style",
-    group: "Text",
-    kind: "enum",
-    options: COLOR_ENUMS.fontStyle,
-    placeholder: "normal",
-  },
-  {
-    key: "textDecoration",
-    label: "Decoration",
-    group: "Text",
-    kind: "enum",
-    options: COLOR_ENUMS.textDecoration,
-    placeholder: "none",
-  },
-  {
-    key: "letterHeight",
-    label: "Letter height",
-    group: "Text",
-    kind: "string",
-    placeholder: "100%",
-    hint: "Vertical glyph stretch about the baseline.",
-  },
-  {
-    key: "lineHeight",
-    label: "Line height",
-    group: "Text",
-    kind: "number",
-    animatable: true,
-    unit: "px",
-    placeholder: "1.2 × font size",
-  },
-  {
-    key: "textAlign",
-    label: "Align",
-    group: "Text",
-    kind: "enum",
-    options: COLOR_ENUMS.textAlign,
-    placeholder: "center",
-  },
-  {
-    key: "verticalAlign",
-    label: "Vertical align",
-    group: "Text",
-    kind: "enum",
-    options: COLOR_ENUMS.verticalAlign,
-    placeholder: "top",
-  },
-  { key: "padding", label: "Padding", group: "Text", kind: "number", unit: "px", placeholder: "0" },
-  {
-    key: "backgroundColor",
-    label: "Background",
-    group: "Text",
-    kind: "color",
-    animatable: true,
-    placeholder: "none",
-  },
-  {
-    key: "strokeColor",
-    label: "Stroke",
-    group: "Text",
-    kind: "color",
-    animatable: true,
-    placeholder: "black",
-  },
-  {
-    key: "strokeWidth",
-    label: "Stroke width",
-    group: "Text",
-    kind: "number",
-    animatable: true,
-    unit: "px",
-    placeholder: "0",
-  },
-];
-
 const SHAPE_PROPS: PropDef[] = [
   { key: "fill", label: "Fill", group: "Appearance", kind: "color", animatable: true, placeholder: "black" },
   { key: "stroke", label: "Stroke", group: "Appearance", kind: "color", animatable: true, placeholder: "none" },
@@ -490,7 +403,6 @@ const CATALOG: Record<string, PropDef[]> = {
     timing({ key: "duration", label: "Duration", kind: "number", unit: "s", placeholder: "0" }),
     ...PLACEMENT,
   ],
-  text: [DURATION_REQ, ...PLACEMENT, ...TEXT_PROPS, ...SPATIAL, ...CONTENT_DIMS],
   rect: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
   circle: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
   composition: COMPOSITION_PROPS,
@@ -588,6 +500,13 @@ function propFromField(f: FieldSpec): PropDef | null {
       };
     case "color":
       return { ...base, kind: "color", ...(f.default != null ? { placeholder: f.default } : {}) };
+    case "boolean":
+      return {
+        ...base,
+        kind: "boolean",
+        animatable: false,
+        ...(f.default != null ? { placeholder: f.default ? "on" : "off" } : {}),
+      };
     case "length":
       return {
         ...base,

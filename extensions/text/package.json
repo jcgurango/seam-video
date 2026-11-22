@@ -1,0 +1,51 @@
+{
+  "name": "@seam/extension-text",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Seam extension: the `text` node — a designed piece of text laid out on its own inner canvas, with inline styled runs and keyframed style.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./render": {
+      "import": "./dist/render/index.js",
+      "types": "./dist/render/index.d.ts"
+    },
+    "./editor": {
+      "import": "./dist/editor.js",
+      "types": "./dist/editor.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.6"
+  },
+  "peerDependencies": {
+    "@seam/core": "workspace:*",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@seam/core": "workspace:*",
+    "@types/react": "^19.2.14",
+    "react": "^19.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

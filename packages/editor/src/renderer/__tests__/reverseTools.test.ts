@@ -86,7 +86,7 @@ describe("sliceAtPlayhead on a reversed clip", () => {
   it("re-points a source-mode anchor at the half that holds its moment", () => {
     const doc = docWith(
       { type: "clip", id: "rev", source: "a.mp4", in: 10, out: 4 } as Child,
-      { type: "text", text: "x", duration: 1, start: "rev@5" } as Child,
+      { type: "rect", duration: 1, start: "rev@5" } as Child,
     );
     const before = resolveComposition(doc).children[1].timelineStart;
     expect(before).toBe(5); // source 5 is 5 s into a 10 → 4 clip

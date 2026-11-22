@@ -37,7 +37,14 @@ export type Point2D = Length | { x?: Length; y?: Length };
 export interface VisualExtensionFields {}
 
 export interface SpatialFields extends VisualExtensionFields {
+  /** How this node's CHILDREN are fitted into it (a container's field;
+   *  inherited by nested containers that don't set their own). A node is
+   *  never fitted by its own `objectFit`. */
   objectFit?: ObjectFit;
+  /** How THIS node is fitted into its parent, overriding the parent's
+   *  `objectFit` for this node alone. Does not pass down to children. Not
+   *  allowed on the root (it has no parent). */
+  fitSelf?: ObjectFit;
   /** Point on the item that lines up with `translation` in the parent.
    *  Per-axis: percent (0..100%) selects a position along the item's
    *  size, pixel offset adds to it. Default `"50%"` = item center. */
@@ -224,79 +231,11 @@ export interface Data extends PlacementFields {
 }
 
 /**
- * Background padding around inline text. A single number applies to all
+ * A box shorthand (padding). A single number applies to all
  * four sides; `[v, h]` splits vertical/horizontal; `[t, r, b, l]` is the
  * full set in CSS shorthand order.
  */
 export type TextPadding = number | [number, number] | [number, number, number, number];
-
-/** Common style fields available on both the top-level `Text` node and
- *  on individual `TextRun`s in its `text` array. Layout-level fields
- *  (`textAlign`, `verticalAlign`, `lineHeight`, `contentWidth`,
- *  `contentHeight`) live only on the top-level node. */
-export interface TextStyleFields {
-  fontFamily?: string;
-  fontSize?: Keyframed<number>;
-  /** Any valid SVG `fill` value; defaults to black. */
-  color?: Keyframed<string>;
-  /** Any valid SVG `font-weight` (e.g. "bold", "700"). */
-  fontWeight?: string;
-  /** CSS `font-style` ("italic" / "oblique" / "normal"). */
-  fontStyle?: string;
-  /** A single text-decoration line, drawn manually (canvas has no native
-   *  text-decoration). */
-  textDecoration?: "none" | "underline" | "overline" | "line-through";
-  /** Vertical glyph stretch as a percentage string ("100%" = natural
-   *  height). Applied as a per-glyph vertical scale about the baseline;
-   *  horizontal advance is unchanged. */
-  letterHeight?: string;
-  /** Any valid SVG fill string. Drawn as a rect behind the run, expanding
-   *  per line on wrap (mirrors the way a span's background flows in HTML). */
-  backgroundColor?: Keyframed<string>;
-  backgroundPadding?: Keyframed<TextPadding>;
-  /** Any valid SVG stroke value. */
-  strokeColor?: Keyframed<string>;
-  /** SVG stroke width in pixels. SVG centers strokes on path edges, so
-   *  the visible outline thickness is roughly half this value. */
-  strokeWidth?: Keyframed<number>;
-}
-
-/** A styled run inside a `Text` node's `text` array. Mirrors
- *  `TextStyleFields` plus the run's own `text` content. */
-export interface TextRun extends TextStyleFields {
-  text: string;
-}
-
-/**
- * A text node rendered by laying out (via `@chenglou/pretext`) and
- * emitting an inline SVG. Like html, sizing follows composition rules:
- * `contentWidth`/`contentHeight` are the SVG's intrinsic canvas, and
- * `SpatialFields` place that canvas on the parent.
- *
- * `text` can be a plain string or an array of strings / styled runs
- * for inline formatting (bold parts, per-run highlights, etc.).
- */
-export interface Text extends SpatialFields, TextStyleFields, PlacementFields {
-  type: "text";
-  text: string | (string | TextRun)[];
-  /** Optional override for line height in pixels; defaults to 1.2 ×
-   *  `fontSize`. */
-  lineHeight?: Keyframed<number>;
-  textAlign?: "left" | "center" | "right";
-  verticalAlign?: "top" | "center" | "bottom";
-  /** Inset on the inner layout box. Same shape as `backgroundPadding`
-   *  (number / `[v,h]` / `[t,r,b,l]`). Useful for keeping
-   *  background/stroke from clipping the content edges. */
-  padding?: TextPadding;
-  /** Intrinsic SVG canvas width. Same shape as composition's
-   *  `contentWidth` — number = pixels, percentage = fraction of the
-   *  parent container. Animatable; defaults to `"100%"` of the parent. */
-  contentWidth?: Keyframed<Length>;
-  contentHeight?: Keyframed<Length>;
-  /** Display duration. */
-  duration: number;
-  metadata?: Metadata;
-}
 
 /**
  * Reusable composition body addressable by `id`. Referenced from any
@@ -508,7 +447,6 @@ export type Child =
   | Audio
   | Static
   | Data
-  | Text
   | Rect
   | Circle
   | Composition

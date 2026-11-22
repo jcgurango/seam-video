@@ -5,6 +5,8 @@ import {
   DEFAULT_CANVAS_WIDTH,
   resolveSpatial,
 } from "@seam/core";
+import { createInnerMeasurer } from "@seam/renderer";
+import { dirname } from "node:path";
 import { seam } from "../seam.js";
 
 const { parseSeamFile, compileSeamFile, resolveComposition } = seam;
@@ -46,9 +48,13 @@ export async function resolveCommand(file: string, options: ResolveOptions) {
     process.exit(1);
   }
   const temporal = resolveComposition(compiled);
+  // Nodes that are as big as what they draw (text with `wrap: false`) get
+  // their real rect: this host can measure them.
+  const measurer = createInnerMeasurer(seam, dirname(filePath));
   const timeline = applySpatial
-    ? resolveSpatial(temporal, width, height)
+    ? resolveSpatial(temporal, width, height, { measure: measurer.measure })
     : temporal;
+  await measurer.dispose();
 
   const out = options.pretty !== false
     ? JSON.stringify(timeline, null, 2)

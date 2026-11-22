@@ -515,19 +515,23 @@ function ValueControl({ def, value, mixed, slider, onChange, onAxis, onLength }:
           onCommit={(s) => onChange(s === "" ? undefined : s)}
         />
       );
-    case "text": {
-      if (!mixed && value != null && typeof value !== "string") {
-        return <div style={{ color: "#777", fontSize: 11 }}>inline runs — edit in JSON</div>;
-      }
+    case "boolean":
       return (
-        <TextInput
-          value={mixed ? "" : value == null ? "" : String(value)}
-          placeholder={mixed ? MIXED : def.placeholder ?? ""}
-          multiline
-          onCommit={(s) => onChange(s === "" ? undefined : s)}
-        />
+        <select
+          value={mixed ? "__mixed__" : value == null ? "" : value ? "on" : "off"}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === "__mixed__") return;
+            onChange(v === "" ? undefined : v === "on");
+          }}
+          style={{ ...fieldStyle, width: "100%" }}
+        >
+          {mixed && <option value="__mixed__">{MIXED}</option>}
+          <option value="">{def.placeholder ? `default (${def.placeholder})` : "default"}</option>
+          <option value="on">on</option>
+          <option value="off">off</option>
+        </select>
       );
-    }
     case "enum":
       return (
         <select

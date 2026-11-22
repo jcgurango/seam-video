@@ -45,8 +45,8 @@ Proposed, not yet confirmed:
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
-| 3 | Captions (CC cut + CC generation) | done (A–E), awaiting JC's test of stage E | non-visual node types, a collected channel, overlay rendering, views, commands, services |
-| 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
+| 3 | Captions (CC cut + CC generation) | done (A–E) | non-visual node types, a collected channel, overlay rendering, views, commands, services |
+| 4 | Text | evicted into `extensions/text`; `wrap: false` (text sized by what it says) added on top. Awaiting JC's test | extension dependencies (`requires`), leaf self-drawing nodes, New-panel tiles, measured inner canvases |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
 
@@ -255,47 +255,91 @@ Settled details:
   breaks; a caption longer than a maximum character count is split at word
   boundaries; short neighbours are not merged.
 - Words are a second node type, **`word`**, the caption's children.
-- Extension dependencies (`requires`) wait until text is extracted — Captions
-  uses core's text layout until then, so nothing needs the declaration yet.
+- Extension dependencies: Captions declares `requires: ["text"]` (built with
+  the Text eviction).
 
 ## Where we are (handoff, 2026-11-22)
 
-**Captions (roadmap item 3) is complete.** Committed by JC: everything up to
-and including word-level reauthoring (`6c55da4 WIP Phase 2: Captions
-extension stage D (2/2)`). **Uncommitted in the working tree: stage E** —
-the old `data`-based tools are gone:
+Committed by JC: everything through Captions (`99bfbc1 Phase 2: Captions
+extension`). **Uncommitted in the working tree: roadmap item 4 — Text
+evicted from core into `extensions/text`** (`@seam/extension-text`).
 
-- the bin-only CC cut mode (`ccCut` in `App.tsx`, `ccCutTool.ts`, the
-  editor's own `CCCutView.tsx`, the toolbar's OK / Cancel pair, BinPanel's
-  "CC Cut" button);
-- the built-in transcribe button and `useTranscribe`'s `data`-writing `run`
-  (the hook now only offers `transcribe()`, the service extensions call);
-- `wordTool.ts` and its two toolbar buttons (separate by word / group
-  words) — Slice and `CC+` replace them.
+What moved:
 
-The `data` node type itself stays (JC: data + scripts was always meant to do
-something). Build + tests pass; smoke-tested in the web editor (toolbar, Bin
-panel, the Captions CC cut view still opens). There is no migration: a
-project whose transcripts are `data` nodes keeps them as plain data; the
-editor no longer reads them.
+- the `text` node type: schema, types, resolve branch, spatial special
+  cases and the flatten branch are gone from core; the node is now a
+  `NodeTypeDef` with its fields declared as data;
+- the layout engine (`textLayout.ts`, `textCanvas.ts`, the Pretext
+  dependency) → `extensions/text/src/render/`;
+- the hosts' text paths: the preview's `TextStore` and the renderer's
+  `frameSource` text branch are deleted — both hosts draw text through the
+  one rasterizer the extension attaches, like a map;
+- the editor's hand-written text catalog, timeline label, block colour and
+  New-panel tile → generated rows / `editor.blockLabel` / `editor.palette`;
+  the text itself and `padding` are edited in the extension's own
+  "Text content" Properties section.
 
-What was checked live across the Captions work, and what was not: the CC
-cut view, caption style + presets, Slice / Merge and expanding a caption
-were each driven in the web editor on small synthetic projects. NOT
-exercised: real footage and real transcripts (no generator server here),
-edge drags on the timeline (unit-tested only — the browser automation cannot
-drive pointer drags), an expanded map, the Electron shell, a Docker build of
-the web image.
+Captions now `requires: ["text"]` and takes the layout engine from
+`@seam/extension-text/render`. Every host installs
+`[adjustments, map, text, captions]`.
+
+What stays in core, on purpose: the font-fallback family names
+(`text/fallbackFonts.ts` — the Map extension's labels use them too), the
+`TextPadding` box type and `samplePadding`. Font REGISTRATION is still each
+host's own job (renderer `installFonts`, browser `loadFallbackFonts`) and
+the Node `OffscreenCanvas` shim still lives in the renderer.
+
+Behaviour that changed (all small):
+
+- a `text` node cut by a composition window (or the crop at 0) now keeps
+  its keyframes on its original span, like any extension node, instead of
+  re-running them over the shortened one;
+- `letterHeight` must be a non-negative percentage (`"120%"`); the old
+  schema also let a negative one through;
+- in the Properties panel `fontStyle` is a text box (it was a 3-way
+  select), `padding` accepts the 2- and 4-value forms, and the text / padding
+  rows sit in their own section below the generated ones;
+- a document with `text` nodes does not validate on a Seam instance without
+  the Text extension (true of every host's own instance; relevant to tests
+  and to anyone calling `createSeam()` bare).
+
+Verified: build + all tests; live in the web editor (New tile, block label,
+runs, animated font size, rotation gizmo, Properties rows, a caption over
+text). Golden: bit-identical to the reference (see "Golden project"). NOT exercised: the Electron shell, a
+Docker build of the web image.
+
+**Added on top (uncommitted): `wrap: false`** — JC's planned "single line
+of text" (old Flash's, or SVG's). Lines break only at `\n`, and the node's
+inner canvas is the MEASURED size of the text plus `padding` instead of
+`contentWidth` / `contentHeight` (authoring those with it is a validation
+error). From there it is an inner canvas like any other: the parent's
+`objectFit` fits it, `size` / `origin` / `translation` place it — a piece of
+rasterized media whose intrinsic size is the text's. See "Measured inner
+canvases" in the contract. Verified by unit tests on the real Skia path and
+a rendered sample frame (true size + rotation, `origin: "0%"`, a fitted
+one); not looked at in the browser editor.
+
+`objectFit` (confirmed by JC, 2026-11-22): a container's `objectFit` fits
+its CHILDREN; a node is fitted by its parent's. So unwrapped text at true
+pixel size needs `objectFit: "center"` on its container. `FILE-FORMAT.md`
+said the opposite and is corrected.
+
+**`fitSelf`** (core, added at JC's request): a visual node's own fit into
+its parent, overriding the parent's `objectFit` for that node alone. Not
+inherited by its children; refused on the root. `resolve-spatial.ts`
+(`fitForSelf = input.fitSelf ?? parentObjectFit`) — the render list and the
+gizmo already read the per-node baked fit. `fitSelf: "center"` on unwrapped
+text is the direct way to its true pixel size.
 
 **Next, in order:**
 
-1. Roadmap item 4, Text (Captions will declare it as a dependency:
-   `requires` is not built yet).
-2. Loose ends noted along the way: a CLI command for `toSrt` / `toVtt`;
-   converting the golden project's 435 bin-entry transcript `data` nodes to
-   captions; Adjustments merging its fields into `VisualExtensionFields`;
-   preset rename; the renderer's `planned-source` test is load-sensitive
-   (fails occasionally in the full parallel run, passes alone).
+1. Roadmap item 5, Shaders / transitions.
+2. Loose ends: fonts as a host service (my idea, not a request — JC has it
+   noted; only worth building for per-project or extension-shipped fonts);
+   a CLI command for `toSrt` / `toVtt`; converting
+   the golden project's bin-entry transcript `data` nodes; Adjustments
+   merging its fields into `VisualExtensionFields`; caption preset rename;
+   the renderer's `planned-source` test is load-sensitive.
 
 **How JC wants this run:** one stage at a time, each green (build + tests),
 then stop and let him test and commit — he commits himself. Check the golden
@@ -306,6 +350,13 @@ Clean breaks, no converters. Keep this document and `CLAUDE.md` current.
 
 | Date | Decision | Why |
 |------|----------|-----|
+| 2026-11-23 | `objectFit` on a container fits its children (inherited); a node is fitted by its parent's. `fitSelf` overrides that per node | JC confirmed the code's rule as intended and asked for the override; mixed fits in one container, true-size text without a wrapper |
+| 2026-11-22 | Unwrapped text (`wrap: false`) is a property of the text node; its measured box is its inner canvas and `objectFit` applies to it as to a composition's. No max width / height | JC's plan: single-line text whose natural size is the rendered text; you own the line breaks; resampling under `fit` is accepted (fix with font size / padding, supersampling later if needed) |
+| 2026-11-22 | `padding` is kept on unwrapped text | JC: otherwise a background with background padding overflows the box |
+| 2026-11-22 | The spatial pass takes an optional measurer, so a host that can draw gives measured nodes a real size at resolve time | JC asked whether resolve could give a rect; the CLI's `resolve` supplies one |
+| 2026-11-22 | Text moved out of core as a pure relocation: same pixels, same fields. Natural-size feedback and a font host service are NOT part of it | My call (JC asked for the eviction): a move that must keep the golden render should not also change how text is sized |
+| 2026-11-22 | An extension node type that draws itself and has no children is a leaf in the render list (one quad, no layer) | Text must composite exactly as it did; routing every rotated / faded text through an FBO would cost a pass and resample it |
+| 2026-11-22 | Extensions declare dependencies with `requires` | Captions needs Text's layout engine and writes `text` nodes |
 | 2026-11-22 | Slicing a caption duplicates its anchor, moved forward, instead of making the halves one run: seconds are added to a numeric / source-time anchor; a bare-id or percentage anchor takes the shift as `offset` | JC: each half should stay anchored to its own moment (revises the earlier "single run" wording) |
 | 2026-11-22 | Word-level reauthoring uses the editor's own verbs (Slice between words, edge drag, Merge) — no word editor, no transcript view | JC: now that Seam knows what a caption is, Slice can act on it; split → adjust → regroup is the workflow he already has |
 | 2026-11-22 | Generated captions are each placed on their own, not as one run with offsets | JC: positions are derived at merge time (earliest start wins); a single run is the consequence of authoring |
@@ -731,6 +782,61 @@ empty style is kept.
 The old `data`-based tools (the built-in transcribe button, separate / group
 words, the bin-only CC cut mode) were removed in stage E.
 
+### Dependencies, leaf nodes and the New panel (Text, item 4)
+
+- **`SeamExtension.requires: string[]`** — names of extensions that must be
+  installed alongside. A missing one throws at `createSeam`; order does not
+  matter. A package also lists the other as a peer dependency.
+- **Leaf self-drawing nodes.** A node type with `draws: true` and no
+  `children` is emitted by the render list as ONE `DrawCommand`, exactly like
+  a clip: rotation, opacity, crossfade, corner mask and colour-stage fields
+  ride on that quad, and its time is `extensionContentSpan(node).offset +
+  drawTime`. Only container types take the group / FBO path.
+- **`FieldSpec` additions:** `pattern` on a string field (a regular
+  expression source the value must match), `exclusiveMin` on a number field.
+- **`NodeTypeDef.editor.palette: { label, glyph?, create() }`** — a tile in
+  the editor's New panel that drags the created node onto the timeline.
+
+The `text` node declares: `text` (custom: a string, or strings and styled
+runs — required), the style fields (`fontFamily`, `fontSize`▸, `color`▸,
+`fontWeight`, `fontStyle`, `textDecoration`, `letterHeight`, `lineHeight`▸,
+`textAlign`, `verticalAlign`, `backgroundColor`▸, `strokeColor`▸,
+`strokeWidth`▸; ▸ = keyframeable) and two more custom ones (`padding`,
+`backgroundPadding`▸). Its rasterizer keeps one canvas per node: static
+text is drawn once and again only when the inner canvas changes size;
+animated text when its time moves.
+
+### Measured inner canvases (Text `wrap: false`)
+
+A node type may say that a node's inner canvas is not `contentWidth` /
+`contentHeight` but whatever its rasterizer measures:
+
+- **`NodeTypeDef.measured(node)`** (pure) → the resolver stamps the resolved
+  node `measured: true`.
+- **`NodeRasterizer.measure(node, drawTime)`** → `{ width, height }`,
+  synchronous. `draw` is then asked to fill exactly that.
+- **Render list:** the host's size getter (already used for clip / static
+  media dims) is asked for such a node with its content time —
+  `getIntrinsicSize(node, t)`. That size is the inner canvas: it feeds
+  `computeNaturalSize` (so `objectFit` fits it) and is the draw's
+  `contentW` / `contentH`. Re-asked every frame, so a keyframed font size
+  resizes the node live.
+- **Spatial pass:** `resolveSpatial(timeline, w, h, { measure })`. With a
+  measurer the node's `intrinsicWidth/Height` and natural size are its real
+  first-frame box (the CLI's `resolve` passes one, via the renderer's
+  `createInnerMeasurer`); without, they stay the parent-sized default. The
+  node always keeps its `spatialInput`: hosts lay it out per frame.
+- **Editor:** the transform gizmo measures through the preview's rasterizer
+  (`locateNode(…, measure)`).
+- **`NodeTypeDef.validate(node)`** — a cross-field check the declarations
+  can't express (text: `wrap: false` with a `contentWidth`).
+- **`FieldSpec` kind `boolean`** — a default / on / off select in the
+  Properties panel.
+
+Text's measurement (`measureText`): widest line × line count at the sampled
+font size and line height, plus `padding`, rounded up. Backgrounds and
+strokes are not counted — `padding` makes the room.
+
 ### Rasterizers and host services (stage 2)
 
 ```ts
@@ -807,6 +913,9 @@ and JC judges the rest by eye.
 root `captionStyle`. It matches the baseline on 4746 of 4797 frames; the
 other 51 (around 77.8 s and 114.5–116 s) differ invisibly, cause not found,
 accepted by JC by eye on 2026-11-22.
+After the Text eviction (item 4) `GoldenTestVideo-extensions.seam` — whose
+root script emits `text` nodes — rendered all 4797 frames and the audio
+bit-identical to the reference again (`_baseline/text-extension.mp4`).
 `GoldenTestVideo-d78e536.mp4` is the pre-extensions reference. Stage 0
 rendered all 4797 frames and the audio bit-identical to it (ffmpeg `psnr` +
 audio md5).

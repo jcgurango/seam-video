@@ -457,23 +457,6 @@ describe("validate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts keyframed text style fields", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "text",
-          text: "hi",
-          duration: 2,
-          fontSize: [[0, 24], ["100%", 64]],
-          color: [[0, "red"], [1, "blue", "ease-in-out"]],
-          backgroundPadding: [[0, 5], [1, [10, 20]]],
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
   it("accepts keyframed opacity", () => {
     const result = validate({
       type: "composition",
@@ -643,7 +626,7 @@ describe("validate — macro expansion runs before schema checks", () => {
     const doc = {
       type: "composition",
       macros: { FG: "white" },
-      children: [{ type: "text", text: "$$FG", duration: 2, color: "$$FG" }],
+      children: [{ type: "rect", duration: 2, fill: "$$FG" }],
     };
     const result = validate(doc);
     expect(result.success).toBe(true);

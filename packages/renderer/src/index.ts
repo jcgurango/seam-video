@@ -19,3 +19,4 @@ export { createGpuDevice } from "./gpu.js";
 export { NodeBackend, parseColor } from "./NodeBackend.js";
 export type { NodeFrame } from "./NodeBackend.js";
 export { FrameSource, collectDrawables } from "./frameSource.js";
+export { createInnerMeasurer } from "./nodeRasterizers.js";

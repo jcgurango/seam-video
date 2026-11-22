@@ -239,7 +239,7 @@ describe("applyAttach — anchors without moving", () => {
   });
 
   it("uses the bare id + offset for a primary with no source axis", () => {
-    const d = doc([{ type: "text", text: "hi", duration: 4, id: "t" } as Child, clip("b", { start: 1.5 })]);
+    const d = doc([{ type: "rect", duration: 4, id: "t" } as Child, clip("b", { start: 1.5 })]);
     const r = at(d, 3, "children.0", ["children.1"]);
     expect(placement(r.doc.children![1])).toEqual({ start: "t", offset: 1.5 });
   });

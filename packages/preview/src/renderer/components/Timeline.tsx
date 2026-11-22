@@ -220,7 +220,7 @@ export default function Timeline({
         time,
         mount.width,
         mount.height,
-        (clip) => coordinator.getIntrinsicSize(clip),
+        (node, at) => coordinator.getIntrinsicSize(node, at),
       );
       // Push per-frame inner-canvas sizes (animatable contentWidth) into the
       // text/map stores before compositing, so their textures rasterize at
