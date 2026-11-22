@@ -13,10 +13,11 @@
 // All the data logic (catalog, mixed detection, length splitting, keyframe
 // patching, multi-node write-back + validation) lives in propertyCatalog.ts.
 
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import {
   isKeyframed,
   type Child,
+  type EditorPropertyProps,
   type Distort,
   type Inset,
   type Length,
@@ -32,6 +33,7 @@ import {
   rootProps,
   addKeyframe,
   applyPropertyEdit,
+  fieldAppliesTo,
   formatNumber,
   joinLength,
   parseNumberInput,
@@ -55,7 +57,8 @@ import {
   type PropDef,
   type PropGroup,
 } from "./propertyCatalog.js";
-import type { NodePath } from "./nodePath.js";
+import { updateNodeAtPath, type NodePath } from "./nodePath.js";
+import { useEditorExtensions } from "./extensionContext.js";
 import {
   activeKeyframeIndex,
   insertKeyframeAtPlayhead,
@@ -151,6 +154,36 @@ export default function PropertiesPanel({
     if (result.doc !== document) onDocumentEdit(result.doc, opts);
   };
 
+  // Sections contributed by extensions: the UI of a structured field, shown
+  // when every selected node carries it.
+  const { extensions, storage } = useEditorExtensions();
+  const sections = useMemo(
+    () =>
+      extensions.flatMap((ext) =>
+        (ext.properties ?? [])
+          .filter((p) => fieldAppliesTo(seam, p.field, nodes))
+          .map((p) => ({
+            key: `${ext.name}.${p.field}`,
+            label: p.label,
+            extension: ext.name,
+            Component: sectionComponent(p.component),
+          })),
+      ),
+    [extensions, seam, nodes],
+  );
+  const updateNodes = (change: (node: Child) => Child, opts?: EditOptions) => {
+    let next = document;
+    for (const path of paths) next = updateNodeAtPath(next, path, change);
+    if (next === document) return;
+    const v = seam.validate(next);
+    if (!v.success) {
+      setError(v.errors[0] ?? "invalid value");
+      return;
+    }
+    setError(null);
+    onDocumentEdit(next, opts);
+  };
+
   if (selected.length === 0) {
     return (
       <div style={{ padding: 12, color: "#777" }}>
@@ -220,13 +253,40 @@ export default function PropertiesPanel({
           ))}
         </div>
       ))}
-      {props.length === 0 && (
+      {sections.map((section) => (
+        <div key={section.key} style={{ marginBottom: 10 }}>
+          <div
+            style={{
+              color: "#777",
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              margin: "6px 0 4px",
+            }}
+          >
+            {section.label}
+          </div>
+          <section.Component
+            seam={seam}
+            nodes={nodes}
+            update={updateNodes}
+            storage={storage(section.extension)}
+          />
+        </div>
+      ))}
+      {props.length === 0 && sections.length === 0 && (
         <div style={{ color: "#777" }}>These node types share no editable properties.</div>
       )}
     </div>
     </PlayheadContext.Provider>
   );
 }
+
+/** An extension's component function as a React component (core types it
+ *  without React). */
+const sectionComponent = (fn: (props: EditorPropertyProps) => unknown) =>
+  fn as ComponentType<EditorPropertyProps>;
 
 // ── Rows ───────────────────────────────────────────────────────────
 

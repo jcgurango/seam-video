@@ -312,6 +312,13 @@ export class FrameCoordinator {
     // Prime at the actual playhead so the paused frame becomes available
     // without having to wait for a tick or seek.
     this.reconcile(initialTime, false, timeline.duration, false);
+
+    // Extension draws and overlays (a map, the captions layer) only rasterize
+    // once `ready` (applyContentSizes), so the paint `<Timeline>` does right
+    // after handing over a timeline of purely synchronous content came too
+    // early for them — repaint now. With clips / statics their first frame
+    // triggers it instead.
+    if (!this.hasAsyncFrames) this.onFrameAvailable?.();
   }
 
   tick(

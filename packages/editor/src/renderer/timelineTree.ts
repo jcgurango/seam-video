@@ -53,6 +53,9 @@ export interface TreeBlock {
   addr: string;
   docChild?: Child;
   isComposition: boolean;
+  /** True for anything that expands into a body of children: a composition,
+   *  or an extension container (a caption's words, a map's pinned nodes). */
+  isContainer: boolean;
   isBinItem: boolean;
   /** True when the node has any animated property (so it's expandable to
    *  show keyframe lanes even when it isn't a composition). */
@@ -101,6 +104,9 @@ export interface TreeGroup {
    *  expansions alike (the latter address a `bin.<id>` root, so edits
    *  rewrite the shared entry). Reserved for any future read-only case. */
   editable: boolean;
+  /** The child types this container takes (an extension container with
+   *  restricted children — a caption holds only words). Undefined = any. */
+  accepts?: readonly string[];
 }
 
 /** Resolve a composition body's full (un-windowed, un-cropped) inner
@@ -174,6 +180,16 @@ function buildExpansion(
   rootBin: BinEntry[],
   editable: boolean,
 ): TreeGroup | null {
+  // An extension container: its children play in its own time from 0 at
+  // speed 1, with no window — the block clips whatever runs past its length.
+  const def = block.docChild ? seam.nodeTypes.get(block.docChild.type) : undefined;
+  if (def && block.docChild) {
+    const kids = ((block.docChild as { children?: Child[] }).children ?? []) as Child[];
+    const resolvedKids = resolveBody(seam, { children: kids }, rootBin);
+    if (!resolvedKids) return null;
+    const group = layoutGroup(seam, resolvedKids, { children: kids }, expanded, rootBin, block.path, editable, 0, 1);
+    return Array.isArray(def.children) ? { ...group, accepts: def.children } : group;
+  }
   const docComp = block.docChild as Composition | undefined;
   let body: AuthoredBody | undefined;
   // A `binItem` expansion's body lives in the shared bin entry, so its
@@ -245,12 +261,15 @@ function layoutGroup(
         const docChild = authored?.children?.[index];
         const isComposition = (docChild?.type ?? child.type) === "composition";
         const isBinItem = isComposition && !!docChild && "binItem" in docChild;
+        // An extension node type that holds children expands like one.
+        const extDef = docChild ? seam.nodeTypes.get(docChild.type) : undefined;
+        const isContainer = isComposition || (extDef != null && !!extDef.children);
         const path: NodePath = [...parentPath, { field: "children", index }];
         const addr = pathKey(path);
         // A node is expandable when it's a composition (window) or has any
         // animated property (keyframe lanes).
         const hasLanes = hasAnimatedLanes(docChild);
-        const expandable = isComposition || hasLanes;
+        const expandable = isContainer || hasLanes;
         const block: TreeBlock = {
           child,
           index,
@@ -261,6 +280,7 @@ function layoutGroup(
           addr,
           docChild,
           isComposition,
+          isContainer,
           isBinItem,
           hasLanes,
           isExpanded: expandable && expanded.has(addr),
@@ -278,7 +298,7 @@ function layoutGroup(
         // lanes below it. Sibling expansions on the same row share
         // `expBaseRow` (they sit at different x, under their own blocks).
         let winRows = 0;
-        if (block.isComposition) {
+        if (block.isContainer) {
           const group = buildExpansion(seam, block, expanded, rootBin, editable);
           if (group) {
             block.expansion = { group, topRow: expBaseRow };

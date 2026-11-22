@@ -68,6 +68,40 @@ export interface DropRegion {
   /** Runs in array (z) order. */
   runs: DropRun[];
   childCount: number;
+  /** Child types this container takes (undefined = any) — see `TreeGroup`. */
+  accepts?: readonly string[];
+}
+
+/**
+ * The regions a drag may land in. Nodes dragged out of a restricted
+ * container (a caption's words) only go into containers that take them;
+ * anything else goes anywhere that doesn't refuse its type. `types` null =
+ * unknown content (a file being dragged in): unrestricted containers only.
+ */
+export function regionsAccepting(
+  regions: DropRegion[],
+  types: readonly string[] | null,
+  fromRestricted: boolean,
+): DropRegion[] {
+  return regions.filter((r) => {
+    if (!r.accepts) return !fromRestricted;
+    return types != null && types.every((t) => r.accepts!.includes(t));
+  });
+}
+
+/** `dropTargetAt` over a subset of regions that may lack the root floor:
+ *  null when the cursor is over none of them. */
+export function dropTargetIn(
+  regions: DropRegion[],
+  x: number,
+  y: number,
+  pxPerSec: number,
+  snap?: DropSnap,
+): DropTarget | null {
+  if (regions.length === 0) return null;
+  if (regions[0].path.length === 0) return dropTargetAt(regions, x, y, pxPerSec, snap);
+  const hit = regions.filter((r) => contains(r, x, y));
+  return hit.length > 0 ? dropTargetAt(hit, x, y, pxPerSec, snap) : null;
 }
 
 /** An editable group placed in content space: its row-0 top and left edge. */
@@ -167,6 +201,7 @@ export function flattenDropRegions(
         rowsTop: p.trueTop,
         runs,
         childCount: p.group.blocks.length,
+        ...(p.group.accepts ? { accepts: p.group.accepts } : {}),
       };
     });
 }

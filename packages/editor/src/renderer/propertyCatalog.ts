@@ -985,3 +985,18 @@ export function formatNumber(v: unknown): string {
   if (v == null) return "";
   return String(v);
 }
+
+/** Whether every one of `nodes` carries the field `key`: a field an
+ *  extension contributes to compositions / visual nodes, or an extension
+ *  node type's own. Decides when an extension's property editor shows. */
+export function fieldAppliesTo(seam: Seam, key: string, nodes: readonly Child[]): boolean {
+  if (nodes.length === 0) return false;
+  const contributed = seam.fields.find((f) => f.key === key);
+  return nodes.every((node) => {
+    const def = seam.nodeTypes.get(node.type);
+    if (def?.fields?.some((f) => f.key === key)) return true;
+    if (!contributed) return false;
+    if (contributed.nodes === "composition") return node.type === "composition";
+    return def ? def.visual !== false : (VISUAL_NODE_TYPES as readonly string[]).includes(node.type);
+  });
+}

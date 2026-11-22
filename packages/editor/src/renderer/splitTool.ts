@@ -141,8 +141,98 @@ function compWindowIn(
 
 /** True for the node types a slice applies to — splitting static / text /
  *  data / shapes / map has no clear meaning. */
-function isSplittable(type: string | undefined): boolean {
-  return type === "clip" || type === "audio" || type === "composition";
+function isSplittable(seam: Seam, type: string | undefined): boolean {
+  if (type === "clip" || type === "audio" || type === "composition") return true;
+  // An extension node type that says how it splits (a caption, between words).
+  return type != null && seam.nodeTypes.get(type)?.editor?.split != null;
+}
+
+const micro = (n: number) => Math.round(n * 1e6) / 1e6;
+
+/**
+ * Split an extension node through its type's own `editor.split`. The left
+ * half keeps the slot. The right half gets the SAME anchor moved forward to
+ * where it begins (`at` seconds after the original's start), so each half
+ * stands on its own:
+ *   • numeric `start`           → `start + at`;
+ *   • source anchor `"id@12"`   → the seconds advanced by `at` at the
+ *                                 target's playback rate (it stays glued to
+ *                                 the same moment of the footage);
+ *   • bare `"id"` / `"id@50%"`  → same anchor, `offset` increased by `at`;
+ *   • no `start` (a run member) → the next run member, `offset` = the gap
+ *                                 left between the two.
+ */
+function splitExtensionAt(
+  seam: Seam,
+  doc: SeamFile,
+  index: number,
+  resolved: ResolvedChild[],
+  currentTime: number,
+): SeamFile | null {
+  const children = doc.children ?? [];
+  const child = children[index] as Child & { start?: Start; offset?: number };
+  const rChild = resolved[index];
+  const split = seam.nodeTypes.get(child.type)?.editor?.split;
+  if (!split) return null;
+  const result = split(child as unknown as Record<string, unknown>, currentTime - rChild.timelineStart);
+  if (!result) return null;
+  const { id: _id, start: _start, offset: _offset, ...body } = result.right as {
+    id?: unknown;
+    start?: unknown;
+    offset?: unknown;
+  };
+  const at = result.at;
+
+  let placement: { start?: Start; offset?: number };
+  if (child.start === undefined) {
+    // A run member: the right half continues the run after the left one.
+    const leftLength = (() => {
+      try {
+        const kids = [...children];
+        kids[index] = result.left as unknown as Child;
+        const r = seam.resolveComposition(
+          seam.compileSeamFile({ ...doc, children: kids }, { runScripts: false }).doc,
+          { uncropped: true },
+        ).children[index];
+        return r.timelineEnd - r.timelineStart;
+      } catch {
+        return at;
+      }
+    })();
+    const gap = micro(at - leftLength);
+    placement = gap > 0 ? { offset: gap } : {};
+  } else {
+    const parsed = typeof child.start === "number" ? null : parseStart(child.start);
+    if (typeof child.start === "number") {
+      placement = { start: micro(child.start + at) };
+      if (child.offset != null) placement.offset = child.offset;
+    } else if (parsed && parsed.kind === "node" && parsed.point?.kind === "source") {
+      // Source seconds per output second of the anchored sibling.
+      const targetIndex = children.findIndex((c) => c.id === parsed.id);
+      const rTarget = targetIndex >= 0 ? resolved[targetIndex] : undefined;
+      const rate =
+        rTarget && (rTarget.type === "clip" || rTarget.type === "audio")
+          ? resolvedSignedRate(rTarget)
+          : rTarget && rTarget.type === "composition"
+            ? rTarget.speed
+            : 1;
+      placement = {
+        start: formatStart({
+          kind: "node",
+          id: parsed.id,
+          point: { kind: "source", value: micro(parsed.point.value + at * rate) },
+        }),
+      };
+      if (child.offset != null) placement.offset = child.offset;
+    } else {
+      // The start of a sibling, or a fraction of it: keep the anchor.
+      placement = { start: child.start, offset: micro((child.offset ?? 0) + at) };
+    }
+  }
+
+  const next = [...children];
+  next.splice(index, 1, result.left as unknown as Child, { ...body, ...placement } as unknown as Child);
+  return { ...doc, children: next };
 }
 
 /**
@@ -174,7 +264,7 @@ export function sliceAtPlayhead(
   for (let i = 0; i < resolved.children.length; i++) {
     if (only && !only.has(i)) continue;
     const rc = resolved.children[i];
-    if (!isSplittable(children[i]?.type)) continue;
+    if (!isSplittable(seam, children[i]?.type)) continue;
     if (currentTime > rc.timelineStart && currentTime < rc.timelineEnd) targets.push(i);
   }
 
@@ -183,7 +273,12 @@ export function sliceAtPlayhead(
   // anything in time) stay valid.
   let next = doc;
   for (let k = targets.length - 1; k >= 0; k--) {
-    next = splitChildAt(next, targets[k], resolved.children[targets[k]], currentTime) ?? next;
+    const i = targets[k];
+    const rChild = resolved.children[i];
+    next =
+      ("extension" in rChild
+        ? splitExtensionAt(seam, next, i, resolved.children, currentTime)
+        : splitChildAt(next, i, rChild, currentTime)) ?? next;
   }
   return next === doc ? null : next;
 }

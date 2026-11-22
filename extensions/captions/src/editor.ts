@@ -1,11 +1,22 @@
 // `@seam/extension-captions/editor` — what Captions adds to the editor:
-// toolbar commands. (The CC cut view and the caption lane come next.)
+// toolbar commands, the CC cut view and the caption style section of the
+// Properties panel.
 //
 // Plain objects over the editor extension API in `@seam/core`; the editor
-// supplies the context each command runs in.
+// supplies the context each command runs in and mounts the view. This entry
+// (alone in the package) depends on React, through the view component.
 
-import type { Child, Composition, EditorCommand, EditorCommandContext, EditorExtension } from "@seam/core";
-import { captionAsText, captionsFromTranscript, reauthoredCaptions } from "./edit.js";
+import type {
+  Child,
+  Composition,
+  EditorCommand,
+  EditorCommandContext,
+  EditorExtension,
+  EditorView,
+} from "@seam/core";
+import CCCutView from "./editor/CCCutView.js";
+import CaptionStyleEditor from "./editor/CaptionStyleEditor.js";
+import { captionAsText, captionsFromTranscript, mergeCaptions, reauthoredCaptions } from "./edit.js";
 import type { CaptionNode, CaptionSurfaceStyle } from "./index.js";
 
 const isRootChild = (key: string) => /^children\.\d+$/.test(key);
@@ -109,10 +120,59 @@ const toText: EditorCommand = {
   },
 };
 
+/** Merge the selected captions (siblings; they need not touch) into one.
+ *  The counterpart of Slice, which cuts a caption between words. */
+const merge: EditorCommand = {
+  id: "captions.merge",
+  label: "CC+",
+  title: "Merge the selected captions into one (the earliest keeps its place; words keep their timing)",
+  enabled: (ctx) => {
+    if (ctx.selection.length < 2) return false;
+    const parent = ctx.tools.parentKey(ctx.selection[0]);
+    return ctx.selection.every(
+      (key) => ctx.tools.parentKey(key) === parent && ctx.node(key)?.type === "caption",
+    );
+  },
+  run(ctx) {
+    const parent = ctx.tools.parentKey(ctx.selection[0]);
+    const spans = ctx.tools.childSpans(ctx.document, parent);
+    if (!spans) {
+      ctx.notify(["These captions could not be placed in time."]);
+      return;
+    }
+    const indexOf = (key: string) => Number(key.slice(key.lastIndexOf(".") + 1));
+    const picked = ctx.selection
+      .map((key) => ({ key, index: indexOf(key), node: ctx.node(key) as unknown as CaptionNode }))
+      .filter((p) => spans[p.index] != null)
+      .map((p) => ({ ...p, ...spans[p.index] }));
+    const merged = mergeCaptions(picked);
+    if (!merged || picked.length < 2) return;
+    const earliest = [...picked].sort((a, b) => a.start - b.start)[0];
+    const others = picked.filter((p) => p !== earliest);
+    let doc = ctx.tools.updateNode(ctx.document, earliest.key, () => merged as unknown as Child);
+    doc = ctx.tools.removeNodes(doc, others.map((p) => p.key));
+    // The merged caption's index after the others left.
+    const index = earliest.index - others.filter((p) => p.index < earliest.index).length;
+    ctx.edit(doc, { select: [`${parent === "" ? "" : `${parent}.`}children.${index}`] });
+  },
+};
+
+/** Cut a composition by what is said in it: pick ranges of words to keep. */
+const ccCut: EditorView = {
+  id: "captions.cut",
+  label: "CC✂",
+  title: "CC cut: keep ranges of the selected composition, picked from the words spoken in it",
+  enabled: (ctx) => ctx.selection.length === 1 && ctx.node(ctx.selection[0])?.type === "composition",
+  component: CCCutView,
+};
+
 /** The Captions extension's editor side. */
 export const captionsEditor: EditorExtension = {
   name: "captions",
-  commands: [generate, reauthor, toText],
+  commands: [generate, reauthor, merge, toText],
+  views: [ccCut],
+  // The look of captions shown at a composition, with presets.
+  properties: [{ field: "captionStyle", label: "Caption style", component: CaptionStyleEditor }],
 };
 
 export default captionsEditor;

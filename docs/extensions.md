@@ -45,7 +45,7 @@ Proposed, not yet confirmed:
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
-| 3 | Captions (CC cut + CC generation) | A–C done; D part 1 done (awaiting JC's test); D part 2 and E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
+| 3 | Captions (CC cut + CC generation) | A–C, D1 done; D2 (view contract + CC cut view) done; caption style (default, Properties section, presets) done, awaiting JC's test; word-level reauthoring (Slice / resize / Merge) done, awaiting JC's test; E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
@@ -233,7 +233,9 @@ Each stage green; the golden project checked at C and E.
 | B ✔ | Collecting captions: a pure function over the resolved tree giving every caption and word with its output time at its surface; derived display phrases; `toSrt` / `toVtt` | a collected channel (`walkResolved`) |
 | C ✔ | Rendering: the overlay at each surface, in both hosts; golden parity (see below) | overlays (`OverlayDef`, `OverlayRasterizer`, `SurfaceView`) |
 | D1 ✔ | Editor commands: generate captions, reauthor, convert to text; the batch keep-ranges cut (`cutTool.ts`); transcription as a service | commands, tools, services (`EditorExtension`) |
-| D2 | The CC cut view on a selected composition (using `keepRanges`), a derived caption lane on the timeline, words edited inline as a caption's children | views |
+| D2 ✔ | The view contract (`EditorExtension.views`) and the CC cut view on a selected composition (using `keepRanges`), previewed live | views, preview documents, the player |
+| Style ✔ | A built-in default caption style; a "Caption style" section in the Properties panel (every textual property, `maxChars`, speaker overrides); presets kept with the editor's settings | property editors, extension storage |
+| D3 ✔ | Reauthoring at the word level with the editor's OWN tools: Slice cuts a caption between words, an edge drag retimes its first / last word, `CC+` merges captions. Generated captions carry no `duration` when they have words; zero-length words are repaired. (The derived caption lane was DROPPED: materialized things do not show on the timeline anywhere else) | node-type editing hooks (`editor.split` / `resize` / `blockLabel`) |
 | E | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
 
 Stage C result: see "Golden project" at the end of this document.
@@ -256,10 +258,88 @@ Settled details:
 - Extension dependencies (`requires`) wait until text is extracted — Captions
   uses core's text layout until then, so nothing needs the declaration yet.
 
+## Where we are (handoff, 2026-11-22)
+
+Committed by JC: stage 0, Adjustments, Map, Captions A, B–C and D part 1
+(`be017b3 WIP Phase 2: Captions extension stage D (1/2)`). **Uncommitted in
+the working tree: Captions D part 2** — the view contract and the CC cut
+view (core `editor-api.ts`, editor `ExtensionViewHost.tsx` + `App.tsx` +
+`ControlsBar.tsx`, captions `cut.ts` + `editor/CCCutView.tsx`, React as an
+optional peer of the captions package). Full build + test suite pass.
+
+Checked live in the web editor on a small synthetic project (a composition
+holding a rect + four captions, two rects anchored to it): open the view on
+the selected composition, drag two ranges, the timeline + player preview the
+cut as it is picked (anchored rect follows its piece, the one whose moment
+is cut disappears), Alt-click seeks to a word, Apply commits one undo step
+with the pieces selected, undo restores. Captions also draw in the live
+preview (first time that was looked at). NOT exercised: real footage, a
+nested or bin-rooted target, the Electron shell, transcription.
+
+Seen while testing, not changed: with no `captionStyle` on the surface a
+caption draws with a text node's bare defaults — small black text at the top
+of the canvas. Correct per the design (the look is decided at the surface),
+but a sensible default style may be wanted.
+
+No render-path code changed in D2, so the golden project was not re-rendered.
+
+**Added after D2 (2026-11-22, uncommitted): caption style.** A built-in
+default (`DEFAULT_CAPTION_STYLE`, the bottom layer of `cueStyle`), a
+"Caption style" Properties section and presets — see "The editor side".
+Checked live in the web editor: default look, live edit, Save as, the `*`
+on a modified preset, Save. Also fixed along the way: the preview did not
+repaint extension draws / overlays after an edit to a document with no clips
+or statics (`FrameCoordinator` now asks for a repaint once it is ready).
+The golden captions copy authors every key the default has, so it is
+unaffected (not re-rendered).
+
+**JC, 2026-11-22:** the caption lane is dropped (it would put materialized
+content on the timeline, which nothing else does).
+
+**Added after that (uncommitted): word-level reauthoring — D3.** JC's
+design: no word editor and no new mode; split → adjust → regroup is Slice →
+edge drag → Merge with the tools the editor already has. See "Node types
+under the editor's own tools" in the contract. Checked live in the web
+editor: a three-word caption sliced inside its pause gives two captions on
+one run with the pause kept; `CC+` puts them back; a caption expands into
+its word blocks, and a word refuses to be dragged out to the root. Not
+exercised live: edge drags (the browser automation cannot drive pointer
+drags on the timeline; they are unit-tested), real transcripts, an expanded
+map.
+
+**Next, in order:**
+
+2. Stage E — remove the old `data`-based tools: the built-in transcribe
+   button's `run` (data-writing) path, `wordTool.ts` (separate / group
+   words), the bin-only CC cut mode (`ccCut` flag in `App.tsx`,
+   `ccCutTool.ts`, `buildCCPreviewDoc` / `buildCCSpliceChildren`), BinPanel's
+   "enter CC cut". **The `data` node type itself stays.**
+3. Not started, noted along the way: a CLI command for `toSrt` / `toVtt`;
+   converting the golden project's 435 bin-entry transcript `data` nodes to
+   captions (needs the source composition set to `"off"` or the root phrases
+   dropped, else captions double); Adjustments merging its fields into
+   `VisualExtensionFields`; a Docker build of the web image has never been
+   run since the Dockerfile was changed to build `extensions/*`.
+4. Then roadmap item 4, Text (Captions will declare it as a dependency:
+   `requires` is not built yet).
+
+**How JC wants this run:** one stage at a time, each green (build + tests),
+then stop and let him test and commit — he commits himself. Check the golden
+project per stage but do not chase sub-visible drift (see "Golden project").
+Clean breaks, no converters. Keep this document and `CLAUDE.md` current.
+
 ## Decision log
 
 | Date | Decision | Why |
 |------|----------|-----|
+| 2026-11-22 | Slicing a caption duplicates its anchor, moved forward, instead of making the halves one run: seconds are added to a numeric / source-time anchor; a bare-id or percentage anchor takes the shift as `offset` | JC: each half should stay anchored to its own moment (revises the earlier "single run" wording) |
+| 2026-11-22 | Word-level reauthoring uses the editor's own verbs (Slice between words, edge drag, Merge) — no word editor, no transcript view | JC: now that Seam knows what a caption is, Slice can act on it; split → adjust → regroup is the workflow he already has |
+| 2026-11-22 | Generated captions are each placed on their own, not as one run with offsets | JC: positions are derived at merge time (earliest start wins); a single run is the consequence of authoring |
+| 2026-11-22 | A caption with words carries no `duration` | JC: duration is only needed when there are no children to give a natural one |
+| 2026-11-22 | A zero-length Whisper word borrows half of the next word (else the previous; else the line) | JC: it used to be an error / a lost word |
+| 2026-11-22 | No derived caption lane on the timeline | JC: materialized content shows on the timeline in no other situation — it would bend the principle |
+| 2026-11-22 | Captions have a built-in default style; a surface's `captionStyle` overrides it key by key | JC: captions should simply work before anyone personalises them |
+| 2026-11-22 | Caption style presets are stored by the editor (with its settings), not in the document; the composition records only the preset's name in `metadata` | JC: presets are editor-specific; the name is enough to show whether the two have drifted |
 | 2026-11-22 | Registry is an explicit instance (`createSeam(extensions)`), not a module global | Per-project extension sets in one process; keeps core free of hidden state; a later config file just supplies the list |
 | 2026-11-22 | Contributed fields are flat (`brightness: 0.1`); a duplicate key is a registration error | "First class" means flat; collisions must be loud |
 | 2026-11-22 | A document using an unregistered field fails validation | Every node schema is already `.strict()`; silently ignoring a render-affecting field gives wrong pixels |
@@ -273,6 +353,7 @@ Settled details:
 | 2026-11-22 | Resolved nodes carry contributed fields in an `ext` bag, authored values verbatim | Flat is the authoring rule; internally a bag lets the render list sample without knowing the extension set |
 | 2026-11-22 | Root-composition fields apply to the whole frame | Silently ignoring a render-affecting field is the failure mode the validation rule exists to prevent |
 | 2026-11-22 | Slider span (`softMin`/`softMax`) is separate from the valid range | `contrast` validates −1000…1000, which is useless as a control |
+| 2026-11-22 | An extension's `./editor` entry may depend on React and export view components; the editor passes its player / timeline primitives as props | Later roadmap items (motion suite) need real views; CC cut should be the extension's own view, not editor code fed with data |
 | 2026-11-22 | The field spec covers the kinds the Properties panel already renders (number, string, enum, colour, length); structured values use a `custom` field whose schema the extension builds with core's own Zod (`(z, h) => …`) | Simple fields get rows for free; `paths` and `pin` want a purpose-built editor, not a generated form |
 | 2026-11-22 | `pin` is a field the Map extension contributes to every visual node | Keeps the format; without the extension a document using `pin` fails validation |
 | 2026-11-22 | No general "lower to render commands" hook. A node type declares `children`, `draws` and `createAnchors`; core does the walk | Map needs nothing more; a hook nobody uses is an API to maintain |
@@ -498,6 +579,7 @@ live in core (`editor-api.ts`), so an extension still depends on nothing but
 export const captionsEditor: EditorExtension = {
   name: "captions",
   commands: [{ id, label, title, enabled?(ctx), run(ctx) }],
+  views: [{ id, label, title, enabled?(ctx), component }],
 };
 ```
 
@@ -538,8 +620,143 @@ Captions commands (stage D1):
 | Reauthor (`CC✎`) | Sets the selected composition's `captions` to `"off"` and writes what it was showing out as caption nodes beside it, anchored to its source time (the root's `maxChars` applied) |
 | Convert to text (`CC→T`) | Replaces root-level captions with `text` nodes carrying the root's style |
 
+**Views (stage D2).** A view is a mode of the editor an extension owns. Its
+`component` is a React function component — the ONE place an extension may
+depend on React (a peer dependency, optional so the CLI and renderer never
+pull it in; core types it as `(props: EditorViewProps) => unknown`, so core
+itself stays React-free). The toolbar shows a button per view; clicking it
+opens the view on the primary selection. While open:
+
+- the component takes the editor's left pane (`ExtensionViewHost.tsx`);
+- the edit toolbar is hidden and the timeline + viewport are read-only — the
+  view carries its own apply / cancel;
+- the editor closes it when the document changes underneath (undo / redo, or
+  the view's own `context.edit`).
+
+`EditorViewProps`:
+
+| Prop | Is |
+|------|----|
+| `context` | The same `EditorCommandContext` commands get; its `document` is always the real one |
+| `target` | Path key the view was opened on |
+| `preview(doc \| null)` | Show `doc` in the player and on the timeline instead of the real document, outside history. A preview that fails to resolve is refused with a notice |
+| `close()` | Leave (drops the preview). Commit with `context.edit` first |
+| `player` | `time()`, `seek(t)`, `spanOf(key)` — global output seconds of the document being SHOWN (so, of the preview). A stable object read on demand: a view is not re-rendered per tick |
+
+The preview is the idea worth keeping: a view computes the document it would
+commit with the pure `tools`, hands it to `preview`, and Apply commits that
+same document — what the user watches is exactly what they get.
+
+**The CC cut view** (`extensions/captions/src/editor/CCCutView.tsx`, button
+`CC✂`, a single selected composition): the words that bubble up inside the
+composition (`cutWords`, in `cut.ts`: the composition resolved on its own,
+`collectCaptions`, times shifted by its `in` into inner time; a caption with
+no word timings is one word) as a ribbon coloured per caption. Dragging
+across words marks a range to keep; ranges have drag handles and a ×. Every
+change runs `tools.keepRanges` and previews the result; Alt-click seeks to a
+word (through the piece that holds it, `innerToGlobal`); Apply = `edit` with
+the pieces selected. Out-of-order and repeated ranges are not offered
+(`keepRanges` sorts and merges).
+
+**Node types under the editor's own tools (D3).** `NodeTypeDef.editor` grew
+three optional pure functions, so the editor's existing verbs work on an
+extension's nodes without the editor knowing what they are:
+
+- `split(node, t)` → `{ left, right, at } | null` — **Slice**. `t` is
+  seconds from the node's start; the type may snap it. `left` keeps the
+  slot; `right` has no placement, and `at` says where it begins (seconds
+  from the original's start). The EDITOR places it (`splitTool.ts`
+  `splitExtensionAt`) on the same anchor as the left, moved forward by `at`:
+  a numeric `start` → `start + at`; a source-time anchor `"id@12"` → the
+  seconds advanced by `at` × the target's playback rate; a bare-id or
+  percentage anchor → same anchor, `offset` + `at`. Only a node with no
+  `start` (a run member) gets the right half as the next run member, with
+  the gap as its `offset`. A type without `split` does not slice.
+- `resize(node, side, delta)` — **edge drag**; without it the editor adjusts
+  `duration`.
+- `blockLabel(node)` — the text on its timeline block.
+
+Captions use all three (`extensions/captions/src/edit.ts`):
+
+- **Slice** (`splitCaption`) cuts at the NEAREST WORD BOUNDARY, never through
+  a word. The right half starts at its first word and gets its own anchor
+  (JC: the halves are NOT put on one run — each stays glued to its own
+  moment), so nothing moves. Fewer than two words → no cut.
+- **Edge drag** (`resizeCaption`): right edge = the last word's length, left
+  edge = the first word's. With a caption sliced down to one word that is
+  retiming the word. (Shift-drag keeps everything downstream in place, as
+  for any node.)
+- **Merge** (`CC+`, `mergeCaptions`): the selected sibling captions become
+  one. They need not touch: the earliest keeps its slot, speaker and style;
+  every word keeps the moment it was said, a silence between two captions
+  becoming the pause before the later one's first word. It reads positions
+  through the new tool `tools.childSpans(doc, containerKey)` and removes the
+  others with `tools.removeNodes`.
+- A block shows its phrase.
+
+**Extension containers expand on the timeline (JC's go-ahead, 2026-11-22).**
+A node type that holds `children` (a caption's words — and a map's pinned
+nodes) now expands like a composition: `timelineTree.ts` lays its children
+out in the node's own time (from 0, speed 1, no window; `TreeBlock.isContainer`),
+and the block clips what runs past its length. The children are ordinary
+blocks: select, edge-drag, Shift-drag to nudge `offset`, delete, edit in the
+Properties panel. This works because `nodePath.ts` now treats any node with
+a `children` array as a container (presented to the composition tools as a
+stand-in composition; only `children` is written back), and
+`resolveLocal.ts` maps the playhead into it. A container with RESTRICTED
+children (`children: ["word"]`) carries `TreeGroup.accepts` /
+`DropRegion.accepts`: nothing else can be dropped into it, and its children
+only move among such containers (`regionsAccepting`, `dropTargetIn`) — a
+word cannot be dragged out to the root, a clip cannot land in a caption.
+A word block shows its text.
+
+Generation rules that go with it (JC): each generated caption stays placed
+on its own (a single run is what authoring — slicing — produces, not what
+generation writes); a caption with words has **no `duration`** (its words
+are its length; only a text-only caption needs one) and starts at its first
+word; a **zero-length word** from Whisper takes half of the next word's time
+(else half of the previous; a line with nothing to borrow from shares its
+whole length among its words) — `repairWordTimings`. Before, such words were
+silently dropped, text included.
+
+**Property editors.** `EditorExtension.properties: [{ field, label,
+component }]` — a section of the Properties panel the extension owns: the UI
+of a structured (`custom`) field, which gets no generated row. It shows
+whenever every selected node carries `field` (`fieldAppliesTo`; no selection
+= the root). The component gets `{ seam, nodes, update(change, { coalesce? }),
+storage }`: `update` applies a per-node change to every selected node as one
+validated undo step — a whole-node change, so an editor can write its field
+and `metadata` together.
+
+**Extension storage.** `EditorStorage` (`get(key)` / `set(key, value)`, JSON
+values) is a small persistent store scoped to the extension, kept where the
+editor keeps its own settings (`seam.settings` in localStorage, under
+`extensions.<name>`; the Settings dialog's Reset leaves it alone). It is per
+installation, never in the document.
+
+**Caption style** (`extensions/captions/src/editor/CaptionStyleEditor.tsx`,
+pure half in `presets.ts`): one row per style key — an empty control means
+"not set" and shows what it inherits as its placeholder (the default for a
+surface, the surface's value for a speaker) — plus `maxChars` and a list of
+speaker overrides. **Presets**: `[dropdown] [Save] [Save as] [Delete]`. A preset is a
+whole surface style under a name, in the extension's storage (`presets`).
+The composition only remembers the preset's NAME, as
+`metadata.captionPreset`; the dropdown shows it with a `*` while the
+composition's style differs from the stored one (`presetState`: none / clean
+/ modified / missing — a name this installation has no preset for is shown
+as "not saved here"). Picking a preset copies its style in; "(no preset)"
+forgets the name and keeps the style. **Delete** (after a confirm) removes
+the preset from storage and forgets the name on this composition, which
+keeps its style; other compositions naming it show "not saved here".
+A composition with no `captionStyle` shows only a **Define style** button
+(which writes an empty `{}` — defined, nothing overridden, the default
+showing as placeholders); **Remove style** takes it back to undefined and
+drops the preset name. `withStyle(node, undefined, …)` removes the key; an
+empty style is kept.
+
 The old `data`-based tools (the built-in transcribe button, separate / group
-words, the bin-only CC cut mode) still exist alongside these until D2 / E.
+words, the bin-only CC cut mode and its `CCCutView.tsx` in the editor) still
+exist alongside these until stage E.
 
 ### Rasterizers and host services (stage 2)
 

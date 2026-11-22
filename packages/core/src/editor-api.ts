@@ -45,6 +45,13 @@ export interface EditorTools {
   appendChildren(doc: SeamFile, containerKey: string, nodes: Child[]): SeamFile;
   /** Path key of the container holding the node at `key`. */
   parentKey(key: string): string;
+  /** Remove the nodes at `keys` (run-aware: a removed run head hands its
+   *  placement to its successor; nodes anchored to a removed id go too). */
+  removeNodes(doc: SeamFile, keys: readonly string[]): SeamFile;
+  /** Where each child of the composition at `containerKey` plays, in that
+   *  composition's own inner time — 1:1 with its authored `children`
+   *  (un-windowed, nothing cropped). Null when it doesn't resolve. */
+  childSpans(doc: SeamFile, containerKey: string): ReadonlyArray<{ start: number; end: number }> | null;
   /** An id that collides with nothing in the document. */
   freshId(doc: SeamFile, base: string): string;
   /** Keep only `ranges` (composition inner time) of the composition at `key`,
@@ -98,9 +105,104 @@ export interface EditorCommand {
   run(ctx: EditorCommandContext): void | Promise<void>;
 }
 
+/** The preview player, as a view sees it. All times are GLOBAL output
+ *  seconds of the document being shown (the view's preview, when it set
+ *  one). */
+export interface EditorPlayer {
+  /** Where the playhead is now. Read on demand — a view is not re-rendered
+   *  per tick. */
+  time(): number;
+  seek(time: number): void;
+  /** Where the node at `key` plays in the document being shown, or null
+   *  (not on the timeline, bin-rooted, unresolvable). */
+  spanOf(key: string): { start: number; end: number } | null;
+}
+
+/** What the editor hands a view component. */
+export interface EditorViewProps {
+  /** The editor's state right now — the same context commands get. Its
+   *  `document` is always the REAL document, never the view's preview. */
+  readonly context: EditorCommandContext;
+  /** Path key of the node the view was opened on (the primary selection at
+   *  that moment). */
+  readonly target: string;
+  /** Show `doc` in the player and on the timeline instead of the real
+   *  document, without touching history — a live preview of what the view
+   *  is about to do. `null` goes back to the real one. The timeline is
+   *  read-only while a view is open either way. */
+  preview(doc: SeamFile | null): void;
+  /** Leave the view (drops any preview). Commit with `context.edit` first. */
+  close(): void;
+  readonly player: EditorPlayer;
+}
+
+/**
+ * A mode of the editor an extension owns: while open, its component takes
+ * the editor's left pane, and the player + timeline show the real document
+ * (or the view's `preview`) read-only. The editor closes it when the
+ * document changes underneath (undo, or the view's own `context.edit`).
+ */
+export interface EditorView {
+  /** Unique across the editor's extensions. */
+  readonly id: string;
+  /** Short text shown on the toolbar button that opens it. */
+  readonly label: string;
+  /** Tooltip. */
+  readonly title: string;
+  /** Whether it can open on the current selection. Called on every render. */
+  enabled?(ctx: EditorCommandContext): boolean;
+  /** A React function component taking `EditorViewProps`. Typed without
+   *  React so core stays free of it: any `(props) => JSX.Element` fits. The
+   *  extension's `./editor` entry is the one place it may depend on React
+   *  (a peer dependency — the editor supplies the instance). */
+  readonly component: (props: EditorViewProps) => unknown;
+}
+
+/** A small persistent store the editor lends an extension, kept with the
+ *  editor's own settings (so: per installation, not in the document). Scoped
+ *  to the extension — keys never collide across extensions. Values must be
+ *  JSON. */
+export interface EditorStorage {
+  get(key: string): unknown;
+  set(key: string, value: unknown): void;
+}
+
+/** What the editor hands a property editor component. */
+export interface EditorPropertyProps {
+  readonly seam: Seam;
+  /** The nodes being edited (the root document when nothing is selected).
+   *  Every one carries the editor's `field`. */
+  readonly nodes: readonly Child[];
+  /** Apply `change` to each of those nodes as ONE undo step (validated; an
+   *  invalid result is refused and shown as the panel's error). With
+   *  `coalesce` it replaces the current history entry instead — the later
+   *  ticks of a drag. */
+  update(change: (node: Child) => Child, opts?: { coalesce?: boolean }): void;
+  /** The extension's persistent store. The component re-renders when it
+   *  changes. */
+  readonly storage: EditorStorage;
+}
+
+/**
+ * A section of the Properties panel an extension owns — the UI for a
+ * structured (`custom`) field, which gets no generated row. Shown, under
+ * `label`, whenever every selected node carries `field`.
+ */
+export interface EditorPropertyEditor {
+  /** Key of the field it edits (a contributed field or a node type's own). */
+  readonly field: string;
+  /** Section heading. */
+  readonly label: string;
+  /** A React function component taking `EditorPropertyProps` (typed without
+   *  React, like a view's). */
+  readonly component: (props: EditorPropertyProps) => unknown;
+}
+
 /** What an extension adds to the editor. */
 export interface EditorExtension {
   /** The extension's name (matches its `SeamExtension.name`). */
   readonly name: string;
   readonly commands?: readonly EditorCommand[];
+  readonly views?: readonly EditorView[];
+  readonly properties?: readonly EditorPropertyEditor[];
 }

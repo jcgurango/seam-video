@@ -42,6 +42,7 @@ import type {
 } from "@seam/core";
 
 import { activeCues } from "./collect.js";
+import { resizeCaption, splitCaption } from "./edit.js";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -76,6 +77,20 @@ export interface CaptionSurfaceStyle extends CaptionStyle {
   /** Overrides by a caption's `speaker`. */
   speakers?: Record<string, CaptionStyle>;
 }
+
+/** The look captions have before anyone styles them: readable on any
+ *  footage (white on a black outline, low on the frame). A surface's
+ *  `captionStyle` overrides it key by key. */
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = Object.freeze({
+  fontFamily: "Liberation Sans",
+  fontSize: 50,
+  color: "white",
+  fontWeight: "bold",
+  strokeColor: "black",
+  strokeWidth: 12,
+  verticalAlign: "bottom",
+  padding: 200,
+} as const);
 
 /** Where captions bubbling up through a composition go. */
 export type CaptionRouting = "pass" | "off" | "show";
@@ -185,7 +200,11 @@ export const wordNode: NodeTypeDef = {
   type: "word",
   visual: false,
   fields: [{ key: "text", type: "string", required: true, label: "Word", group: GROUP }],
-  editor: { color: "#8a6a2a", border: "#c49a3a" },
+  editor: {
+    color: "#8a6a2a",
+    border: "#c49a3a",
+    blockLabel: (node) => (typeof node.text === "string" && node.text !== "" ? node.text : undefined),
+  },
 };
 
 /** `caption`: a phrase whose children are its words. */
@@ -210,7 +229,21 @@ export const captionNode: NodeTypeDef = {
       schema: (z) => z.object(styleShape(z)).strict(),
     },
   ],
-  editor: { color: "#7a5a3a", border: "#a47a52" },
+  editor: {
+    color: "#7a5a3a",
+    border: "#a47a52",
+    // The phrase, so captions can be told apart on the timeline.
+    blockLabel: (node) => captionText(node as { text?: string; children?: { type: string }[] }) || undefined,
+    // Slice cuts between words; an edge drag retimes the first / last word.
+    split: (node, t) =>
+      splitCaption(node as unknown as CaptionNode, t) as unknown as {
+        left: Record<string, unknown>;
+        right: Record<string, unknown>;
+        at: number;
+      } | null,
+    resize: (node, side, delta) =>
+      resizeCaption(node as unknown as CaptionNode, side, delta) as unknown as Record<string, unknown>,
+  },
 };
 
 const compositionFields: FieldSpec[] = [
@@ -270,5 +303,25 @@ export {
   captionAsText,
   captionLength,
   captionsFromTranscript,
+  mergeCaptions,
   reauthoredCaptions,
+  repairWordTimings,
+  resizeCaption,
+  splitCaption,
 } from "./edit.js";
+
+export { cutWords, innerToGlobal, type CutWord } from "./cut.js";
+
+export {
+  presetNameOf,
+  presetState,
+  readPresets,
+  sameStyle,
+  tidyStyle,
+  withStyle,
+  parseBox,
+  formatBox,
+  PRESETS_KEY,
+  PRESET_METADATA_KEY,
+  type PresetTable,
+} from "./presets.js";

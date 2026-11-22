@@ -4,6 +4,7 @@ import {
   activeCues,
   captionRouting,
   captions,
+  DEFAULT_CAPTION_STYLE,
   collectCaptions,
   cueStyle,
   deriveCues,
@@ -214,14 +215,17 @@ describe("cueStyle", () => {
       maxChars: 20,
       speakers: { faye: { color: "pink", fontWeight: "bold" } },
     };
-    expect(cueStyle(style, {})).toEqual({ fontSize: 50, color: "white" });
-    expect(cueStyle(style, { speaker: "faye" })).toEqual({ fontSize: 50, color: "pink", fontWeight: "bold" });
+    // Everything sits on the built-in default.
+    const D = DEFAULT_CAPTION_STYLE;
+    expect(cueStyle(style, {})).toEqual({ ...D, fontSize: 50, color: "white" });
+    expect(cueStyle(style, { speaker: "faye" })).toEqual({ ...D, fontSize: 50, color: "pink", fontWeight: "bold" });
     expect(cueStyle(style, { speaker: "faye", style: { fontSize: 65, color: "red" } })).toEqual({
+      ...D,
       fontSize: 65,
       color: "red",
       fontWeight: "bold",
     });
-    expect(cueStyle(style, { speaker: "nobody" })).toEqual({ fontSize: 50, color: "white" });
+    expect(cueStyle(style, { speaker: "nobody" })).toEqual({ ...D, fontSize: 50, color: "white" });
   });
 });
 

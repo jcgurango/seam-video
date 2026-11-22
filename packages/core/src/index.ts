@@ -9,6 +9,12 @@ export type {
   EditorCommandContext,
   EditorTools,
   EditorServices,
+  EditorView,
+  EditorViewProps,
+  EditorPlayer,
+  EditorStorage,
+  EditorPropertyProps,
+  EditorPropertyEditor,
   Transcript,
   TranscriptSegment,
 } from "./editor-api.js";

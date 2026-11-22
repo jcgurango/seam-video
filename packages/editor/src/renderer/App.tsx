@@ -8,6 +8,7 @@ import {
 import type {
   EditorCommandContext,
   EditorExtension,
+  EditorView,
   Seam,
   ResolvedTimeline,
   SeamFile,
@@ -40,6 +41,8 @@ import ExportProgressOverlay from "./ExportProgressOverlay.js";
 import { compileDocument } from "./compile.js";
 import { findBin } from "./nodeBin.js";
 import CCCutView from "./CCCutView.js";
+import ExtensionViewHost from "./ExtensionViewHost.js";
+import { EditorExtensionsContext, type EditorExtensionsValue } from "./extensionContext.js";
 import {
   buildCCPreviewDoc,
   buildCCSpliceChildren,
@@ -167,6 +170,16 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
   // OK/Cancel — lives on App because both the CC view (renders + edits)
   // and the toolbar (OK button) need to read them.
   const [ccSelections, setCcSelections] = useState<CCSelection[]>([]);
+  // An extension's view (`EditorExtension.views`), while one is open: which
+  // one, the node it was opened on, the document it was opened against (a
+  // change underneath closes it) and the preview document it asked the
+  // player + timeline to show instead of the real one.
+  const [extView, setExtView] = useState<{
+    view: EditorView;
+    target: string;
+    openedOn: SeamFile;
+    preview: SeamFile | null;
+  } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saveAsPromptOpen, setSaveAsPromptOpen] = useState(false);
   // On web we start on the project browser; a project must be picked/created
@@ -241,8 +254,11 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
       if (!ccBinEntry) return document;
       return buildCCPreviewDoc(ccBinEntry, document, ccSelections);
     }
+    // An extension view's live preview (only while it still belongs to this
+    // document).
+    if (extView?.preview && extView.openedOn === document) return extView.preview;
     return document;
-  }, [ccCut, ccBinEntry, document, ccSelections]);
+  }, [ccCut, ccBinEntry, document, ccSelections, extView]);
 
   // Two resolved timelines:
   //   - playerTimeline: bins spliced + scripts run; what the canvas plays.
@@ -295,7 +311,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
   }, [document, mediaEpoch]);
 
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
-    if (!ccCut) return rootTimeline;
+    if (activeDoc === document) return rootTimeline;
     try {
       const { doc: compiled } = compileDocument(seam, activeDoc);
       return resolveDoc(seam, compiled);
@@ -303,7 +319,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
       console.error("[App] playerTimeline resolve failed:", err, { activeDoc });
       return null;
     }
-  }, [ccCut, activeDoc, rootTimeline]);
+  }, [activeDoc, document, rootTimeline]);
 
   const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
@@ -988,6 +1004,66 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
     waiter?.(null);
   }, []);
 
+  // What extensions add deeper in the tree (Properties sections), and the
+  // per-extension store kept with the editor's settings.
+  const extensionsValue = useMemo<EditorExtensionsValue>(
+    () => ({
+      extensions: editorExtensions,
+      storage: (name) => ({
+        get: (key) => settings.extensions[name]?.[key],
+        set: (key, value) =>
+          updateSettings({
+            extensions: {
+              ...settings.extensions,
+              [name]: { ...settings.extensions[name], [key]: value },
+            },
+          }),
+      }),
+    }),
+    [editorExtensions, settings.extensions, updateSettings],
+  );
+
+  // ── Extension views ──
+  const extensionViews = useMemo(
+    () => editorExtensions.flatMap((ext) => ext.views ?? []),
+    [editorExtensions],
+  );
+  const handleOpenView = useCallback(
+    (view: EditorView) => {
+      const target = selection[0];
+      if (target == null) return;
+      setExtView({ view, target, openedOn: document, preview: null });
+      // The timeline may show a preview whose paths differ from the real
+      // document's; the view keeps its `target`.
+      setSelection([]);
+    },
+    [selection, document],
+  );
+  const handleCloseView = useCallback(() => setExtView(null), []);
+  const handleViewPreview = useCallback(
+    (doc: SeamFile | null) => {
+      if (doc != null) {
+        // A preview that doesn't resolve would blank the editor (and the
+        // view with it) — refuse it and say why.
+        try {
+          resolveDoc(seam, compileDocument(seam, doc).doc);
+        } catch (err) {
+          setTranscribeNotice([`Preview failed: ${String(err)}`]);
+          doc = null;
+        }
+      }
+      setExtView((v) => (v && v.preview !== doc ? { ...v, preview: doc } : v));
+    },
+    [seam],
+  );
+  // The document changed underneath the view (undo / redo, or the view's own
+  // edit): its target and preview no longer mean anything.
+  useEffect(() => {
+    if (extView && extView.openedOn !== document) setExtView(null);
+  }, [extView, document]);
+  /** The timeline + viewport don't edit while a mode owns the document. */
+  const readOnly = ccCut != null || extView != null;
+
   // ── Extension commands ──
   // What each extension's toolbar command runs against: the editor's state
   // right now, its run-aware document tools, and the services it lends
@@ -1158,7 +1234,17 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
               borderRight: "1px solid #333",
             }}
           >
-            {ccCut ? (
+            {extView && editorTimeline ? (
+              <ExtensionViewHost
+                view={extView.view}
+                target={extView.target}
+                context={commandContext}
+                shownDocument={activeDoc}
+                shownTimeline={editorTimeline}
+                onPreview={handleViewPreview}
+                onClose={handleCloseView}
+              />
+            ) : ccCut ? (
               <CCCutView
                 words={ccWords}
                 selections={ccSelections}
@@ -1168,6 +1254,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
                 )}
               />
             ) : (
+              <EditorExtensionsContext.Provider value={extensionsValue}>
               <InspectorAccordion
                 timeline={editorTimeline}
                 document={activeDoc}
@@ -1184,6 +1271,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
                 selection={selection}
                 onDocumentEdit={editDocument}
               />
+              </EditorExtensionsContext.Provider>
             )}
           </div>
           {/* Right pane (~2/3): viewport on top, tools, then the timeline. */}
@@ -1205,7 +1293,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
             <PreviewStage
               contentWidth={playerTimeline.contentWidth}
               contentHeight={playerTimeline.contentHeight}
-              document={ccCut ? undefined : document}
+              document={readOnly ? undefined : document}
               selection={selection}
               timeline={editorTimeline}
               history={history}
@@ -1224,6 +1312,9 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
               canUndo={history.canUndo}
               canRedo={history.canRedo}
               ccCutMode={ccCut != null}
+              viewOpen={extView != null}
+              extensionViews={extensionViews}
+              onOpenView={handleOpenView}
               platform={platform}
               onTranscribe={handleTranscribe}
               transcribing={transcriber.progress != null}
@@ -1237,7 +1328,7 @@ function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
             />
             <TimelinePanel
               timeline={editorTimeline}
-              document={ccCut ? undefined : document}
+              document={readOnly ? undefined : document}
               filePath={filePath}
               selection={selection}
               onSelectionChange={onSelectionChange}

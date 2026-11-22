@@ -29,6 +29,7 @@ import type {
   Child,
   Composition,
   ResolvedChild,
+  ResolvedComposition,
   ResolvedTimeline,
   SeamFile,
 } from "@seam/core";
@@ -55,8 +56,11 @@ export interface ContainerLocal {
  *  container, its resolved placement in that container, and its own resolved
  *  body (un-cropped, 1:1 with its authored children). */
 interface Level {
-  rChild: Extract<ResolvedChild, { type: "composition" }>;
-  aChild: Composition;
+  /** The container's resolved placement. An extension container (a caption,
+   *  a map) is presented with a composition's time fields: speed 1, no loop. */
+  rChild: { timelineStart: number; timelineEnd: number; speed: number; loop?: ResolvedComposition["loop"] };
+  /** The authored container; `in` is 0 for an extension container. */
+  aChild: { in?: number; children?: Child[] };
   rBody: ResolvedBody;
 }
 
@@ -81,15 +85,24 @@ function walkContainers(
     const rChild = rNode.children[seg.index];
     const aChild = (aNode.children ?? [])[seg.index];
     const cChild: Child | undefined = (cNode.children ?? [])[seg.index];
-    if (
-      !rChild ||
-      rChild.type !== "composition" ||
-      !aChild ||
-      aChild.type !== "composition" ||
-      !cChild ||
-      cChild.type !== "composition"
-    ) {
-      return null;
+    if (!rChild || !aChild || !cChild) return null;
+    if (rChild.type !== "composition" || aChild.type !== "composition" || cChild.type !== "composition") {
+      // An extension container: its children play in its own time from 0,
+      // at speed 1, un-windowed.
+      const kids: Child[] | undefined = (cChild as { children?: Child[] }).children;
+      if (!("extension" in rChild) || !Array.isArray(kids)) return null;
+      let rBody: ResolvedBody;
+      try {
+        rBody = seam.resolveComposition({ type: "composition", children: kids } as Composition, { uncropped: true });
+      } catch {
+        return null;
+      }
+      const standIn = { children: (aChild as { children?: Child[] }).children ?? [] };
+      visit({ rChild: { timelineStart: rChild.timelineStart, timelineEnd: rChild.timelineEnd, speed: 1 }, aChild: standIn, rBody });
+      rNode = rBody;
+      aNode = standIn;
+      cNode = { children: kids };
+      continue;
     }
     let rBody: ResolvedBody;
     try {

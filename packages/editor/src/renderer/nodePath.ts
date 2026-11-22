@@ -134,7 +134,31 @@ export function getCompAtPath(
     return entry as unknown as Composition | undefined;
   }
   const node = getNodeAtPath(root, containerPath);
-  return node && node.type === "composition" ? node : undefined;
+  if (!node) return undefined;
+  return node.type === "composition" ? node : asContainer(node);
+}
+
+/** An extension container (a caption with its words, a map with its pinned
+ *  children) presented as a composition holding the same `children`, so the
+ *  composition tools can edit that array. Undefined for a node without
+ *  children. Only `children` is ever written back (see `fromContainer`). */
+function asContainer(node: Child): Composition | undefined {
+  const children = (node as { children?: unknown }).children;
+  return Array.isArray(children) ? ({ type: "composition", children } as Composition) : undefined;
+}
+
+/** Write a tool's result on the stand-in composition back onto the node. */
+function fromContainer(node: Child, standIn: Composition, result: Composition): Child {
+  if (result === standIn) return node;
+  return { ...node, children: result.children ?? [] } as unknown as Child;
+}
+
+/** `fn` applied below `child` — a composition directly, an extension
+ *  container through its stand-in. Null when `child` holds no children. */
+function descend(child: Child, step: (comp: Composition) => Composition): Child | null {
+  if (child.type === "composition") return step(child) as Child;
+  const standIn = asContainer(child);
+  return standIn ? fromContainer(child, standIn, step(standIn)) : null;
 }
 
 /** Immutably replace the composition at `containerPath` ([] = root) with
@@ -163,9 +187,9 @@ export function updateCompAtPath(
   }
   const arr = childArray(root);
   const child = arr[seg.index];
-  if (!child || child.type !== "composition") return root;
-  const newChild = updateCompAtPath(child, rest, fn);
-  if (newChild === child) return root;
+  if (!child) return root;
+  const newChild = descend(child, (comp) => updateCompAtPath(comp, rest, fn));
+  if (newChild == null || newChild === child) return root;
   const newArr = [...arr];
   newArr[seg.index] = newChild;
   return { ...root, children: newArr };
@@ -204,12 +228,12 @@ export function updateNodeAtPath(
   if (rest.length === 0) {
     newChild = fn(child);
   } else {
-    if (child.type !== "composition") return root;
-    newChild = updateNodeAtPath(
-      child as unknown as SeamFile,
-      rest,
-      fn,
-    ) as unknown as Child;
+    const below = descend(
+      child,
+      (comp) => updateNodeAtPath(comp as unknown as SeamFile, rest, fn) as unknown as Composition,
+    );
+    if (below == null) return root;
+    newChild = below;
   }
   if (newChild === child) return root;
   const newArr = [...arr];

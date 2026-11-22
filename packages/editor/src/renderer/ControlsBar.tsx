@@ -22,7 +22,7 @@ import {
   AudioLines,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
-import type { EditorCommand, EditorCommandContext, ResolvedTimeline } from "@seam/core";
+import type { EditorCommand, EditorCommandContext, EditorView, ResolvedTimeline } from "@seam/core";
 import {
   editContainer,
   getNodeAtPath,
@@ -88,6 +88,13 @@ interface ControlsBarProps {
   /** Toolbar commands contributed by extensions, and the context they run in. */
   extensionCommands?: readonly EditorCommand[];
   commandContext?: EditorCommandContext;
+  /** Views contributed by extensions: one toolbar button each, opening the
+   *  view on the primary selection. */
+  extensionViews?: readonly EditorView[];
+  onOpenView?: (view: EditorView) => void;
+  /** True while an extension view is open — the edit tools are hidden (the
+   *  view carries its own apply / cancel). */
+  viewOpen?: boolean;
 }
 
 // Slice + attach logic lives in splitTool.ts / attachTool.ts.
@@ -209,6 +216,9 @@ export default function ControlsBar({
   ccCutHasSelections,
   extensionCommands = [],
   commandContext,
+  extensionViews = [],
+  onOpenView,
+  viewOpen = false,
 }: ControlsBarProps) {
   const seam = useSeam();
   const {
@@ -268,7 +278,7 @@ export default function ControlsBar({
   // editable surface — otherwise typing "s" into the JSON / Script
   // editor or a rename input would slice the playhead clip).
   useEffect(() => {
-    if (ccCutMode) return;
+    if (ccCutMode || viewOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (isTypingInEditableSurface(e)) return;
       if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -277,7 +287,7 @@ export default function ControlsBar({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSlice, ccCutMode]);
+  }, [handleSlice, ccCutMode, viewOpen]);
 
   // ── Import ─────────────────────────────────────────────────────
 
@@ -309,7 +319,10 @@ export default function ControlsBar({
   // playhead crosses in that selection's container) or — with nothing
   // selected — the root has a sliceable (clip/audio/composition) child.
   const isSliceableType = (t: string | undefined) =>
-    t === "clip" || t === "audio" || t === "composition";
+    t === "clip" ||
+    t === "audio" ||
+    t === "composition" ||
+    (t != null && seam.nodeTypes.get(t)?.editor?.split != null);
   const canSlice =
     selection.length > 0 ||
     (doc.children ?? []).some((c) => isSliceableType(c.type));
@@ -529,7 +542,7 @@ export default function ControlsBar({
         <div style={SEPARATOR} />
 
         {/* Edit tools */}
-        {!ccCutMode ? (
+        {viewOpen ? null : !ccCutMode ? (
           <>
             <button onClick={handleImportClick} style={BTN_STYLE} title="Import">
               <FolderOpen size={ICON_SIZE} />
@@ -538,7 +551,7 @@ export default function ControlsBar({
               onClick={handleSlice}
               style={{ ...BTN_STYLE, opacity: canSlice ? 1 : 0.3 }}
               disabled={!canSlice}
-              title="Slice (S) — every clip, audio or composition under the playhead; with a selection, only the selected ones"
+              title="Slice (S) — every clip, audio, composition or caption under the playhead (a caption cuts at the nearest word boundary); with a selection, only the selected ones"
             >
               <Scissors size={ICON_SIZE} />
             </button>
@@ -673,6 +686,31 @@ export default function ControlsBar({
                     title={command.title}
                   >
                     {command.label}
+                  </button>
+                );
+              })}
+            {/* Views contributed by extensions (e.g. the CC cut). */}
+            {commandContext &&
+              extensionViews.map((view) => {
+                const enabled = view.enabled ? view.enabled(commandContext) : true;
+                return (
+                  <button
+                    key={view.id}
+                    onClick={() => onOpenView?.(view)}
+                    disabled={!enabled}
+                    style={{
+                      ...BTN_STYLE,
+                      width: "auto",
+                      minWidth: 32,
+                      padding: "0 6px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                      opacity: enabled ? 1 : 0.3,
+                    }}
+                    title={view.title}
+                  >
+                    {view.label}
                   </button>
                 );
               })}

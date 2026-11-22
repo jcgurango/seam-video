@@ -4,9 +4,14 @@ import {
   captionAsText,
   captionLength,
   captions,
+  DEFAULT_CAPTION_STYLE,
   captionsFromTranscript,
   collectCaptions,
   reauthoredCaptions,
+  mergeCaptions,
+  repairWordTimings,
+  resizeCaption,
+  splitCaption,
   type CaptionNode,
 } from "../index.js";
 
@@ -39,7 +44,7 @@ describe("captionsFromTranscript", () => {
       {
         type: "caption",
         start: 2,
-        duration: 1.5,
+        // No `duration`: a caption with words is as long as they are.
         children: [
           { type: "word", text: "It's", duration: 0.25 },
           { type: "word", text: "gonna", duration: 0.25 },
@@ -53,7 +58,8 @@ describe("captionsFromTranscript", () => {
 
   it("beside a clip: anchored to its source time, lengths in output seconds at its rate", () => {
     const out = captionsFromTranscript(SEGMENTS, { kind: "beside", id: "a", anchorBase: 10, rate: 2 });
-    expect(out[0]).toMatchObject({ start: "a@12", duration: 0.75 });
+    expect(out[0]).toMatchObject({ start: "a@12" });
+    expect(out[0].duration).toBeUndefined();
     expect((out[0].children as unknown as { duration: number; offset?: number }[]).map((w) => [w.duration, w.offset])).toEqual([
       [0.125, undefined],
       [0.125, undefined],
@@ -75,7 +81,7 @@ describe("captionsFromTranscript", () => {
         ],
         { kind: "inside", anchorBase: 0 },
       ),
-    ).toEqual([{ type: "caption", start: 1, duration: 1, children: [{ type: "word", text: "hi", duration: 0.5, offset: 0.5 }] }]);
+    ).toEqual([{ type: "caption", start: 1.5, children: [{ type: "word", text: "hi", duration: 0.5 }] }]);
   });
 });
 
@@ -99,7 +105,6 @@ describe("reauthoredCaptions", () => {
       {
         type: "caption",
         start: "c@1",
-        duration: 3,
         speaker: "faye",
         children: [
           { type: "word", text: "two", duration: 1 },
@@ -125,9 +130,12 @@ describe("reauthoredCaptions", () => {
 
   it("applies the surface's maxChars and the composition's speed", () => {
     const out = reauthoredCaptions(resolvedComp({ speed: 2 }), { id: "c", inTime: 1 }, { maxChars: 9 });
-    expect(out.map((c) => [c.start, c.duration, (c.children as unknown as { text: string }[]).map((w) => w.text)])).toEqual([
-      ["c@1", 1, ["two", "three"]],
-      ["c@3", 0.5, ["four"]],
+    // Lengths are the words' own, in output seconds at 2×.
+    expect(
+      out.map((c) => [c.start, (c.children as unknown as { text: string; duration: number }[]).map((w) => [w.text, w.duration])]),
+    ).toEqual([
+      ["c@1", [["two", 0.5], ["three", 0.5]]],
+      ["c@3", [["four", 0.5]]],
     ]);
   });
 
@@ -163,6 +171,7 @@ describe("captionAsText", () => {
       id: "k",
       start: "a@3",
       offset: 0.1,
+      ...DEFAULT_CAPTION_STYLE,
       fontSize: 50,
       color: "pink",
       fontStyle: "italic",
@@ -173,5 +182,98 @@ describe("captionAsText", () => {
   it("an authored duration wins over the words' extent", () => {
     expect(captionLength({ type: "caption", duration: 4, children: [{ type: "word", text: "x", duration: 1 }] as unknown as Child[] })).toBe(4);
     expect(captionLength({ type: "caption", text: "x", duration: 2 })).toBe(2);
+  });
+});
+
+describe("repairWordTimings", () => {
+  const brief = (ws: { text: string; start: number; end: number }[]) => ws.map((w) => [w.text, w.start, w.end]);
+
+  it("a zero-length word takes half of the next word", () => {
+    expect(
+      brief(repairWordTimings([{ text: "a", start: 1, end: 1 }, { text: "b", start: 1, end: 2 }], 1, 2)),
+    ).toEqual([["a", 1, 1.5], ["b", 1.5, 2]]);
+  });
+
+  it("the last word takes half of the previous one", () => {
+    expect(
+      brief(repairWordTimings([{ text: "a", start: 1, end: 2 }, { text: "b", start: 2, end: 2 }], 1, 2)),
+    ).toEqual([["a", 1, 1.5], ["b", 1.5, 2]]);
+  });
+
+  it("a lone zero-length word takes the whole line; with no line length it is dropped", () => {
+    expect(brief(repairWordTimings([{ text: "a", start: 3, end: 3 }], 3, 4))).toEqual([["a", 3, 4]]);
+    expect(repairWordTimings([{ text: "a", start: 3, end: 3 }], 3, 3)).toEqual([]);
+  });
+
+  it("no word is lost when the transcript is generated", () => {
+    const out = captionsFromTranscript(
+      [{ start: 0, end: 2, text: "uh hello", words: [{ start: 0, end: 0, text: "uh" }, { start: 0, end: 2, text: "hello" }] }],
+      { kind: "inside", anchorBase: 0 },
+    );
+    expect(out[0].children).toEqual([
+      { type: "word", text: "uh", duration: 1 },
+      { type: "word", text: "hello", duration: 1 },
+    ]);
+  });
+});
+
+describe("splitCaption / resizeCaption / mergeCaptions", () => {
+  const word = (text: string, duration: number, offset?: number) => ({ type: "word", text, duration, ...(offset ? { offset } : {}) });
+  // one 0–1, two 1–2, (pause) three 3–4
+  const caption = {
+    type: "caption",
+    id: "k",
+    start: 5,
+    speaker: "faye",
+    children: [word("one", 1), word("two", 1), word("three", 1, 1)],
+  } as unknown as CaptionNode;
+  const texts = (c: CaptionNode) => (c.children as unknown as { text: string }[]).map((w) => w.text);
+
+  it("cuts at the nearest word boundary and says where the right half begins", () => {
+    const cut = splitCaption(caption, 2.4)!; // inside the pause
+    expect(cut.left).toMatchObject({ id: "k", start: 5, speaker: "faye" });
+    expect(texts(cut.left)).toEqual(["one", "two"]);
+    // No placement of its own: the editor puts it `at` seconds after the original's start.
+    expect(cut.right).toEqual({ type: "caption", speaker: "faye", children: [word("three", 1)] });
+    expect(cut.at).toBe(3);
+    // Mid-word snaps to the closer side.
+    expect(texts(splitCaption(caption, 1.2)!.left)).toEqual(["one"]);
+    expect(splitCaption(caption, 1.2)!.at).toBe(1);
+    expect(texts(splitCaption(caption, 1.8)!.left)).toEqual(["one", "two"]);
+    // Before the first boundary still cuts at it (never an empty half).
+    expect(texts(splitCaption(caption, 0)!.left)).toEqual(["one"]);
+  });
+
+  it("does not cut a caption with fewer than two words", () => {
+    expect(splitCaption({ type: "caption", text: "hi", duration: 1 } as CaptionNode, 0.5)).toBeNull();
+    expect(splitCaption({ type: "caption", children: [word("hi", 1)] } as unknown as CaptionNode, 0.5)).toBeNull();
+  });
+
+  it("an edge drag retimes the first / last word", () => {
+    const right = resizeCaption(caption, "right", 0.5);
+    expect((right.children as unknown as { duration: number }[]).map((w) => w.duration)).toEqual([1, 1, 1.5]);
+    const left = resizeCaption(caption, "left", 0.25);
+    expect((left.children as unknown as { duration: number }[]).map((w) => w.duration)).toEqual([0.75, 1, 1]);
+    expect(resizeCaption({ type: "caption", text: "hi", duration: 1 } as CaptionNode, "right", 1).duration).toBe(2);
+  });
+
+  it("merge undoes a split", () => {
+    const { left, right, at } = splitCaption(caption, 2.4)!;
+    expect(
+      mergeCaptions([{ node: right, start: 5 + at, end: 9 }, { node: left, start: 5, end: 7 }]),
+    ).toEqual(caption);
+  });
+
+  it("merge joins captions that do not touch: the earliest keeps its place, the silence becomes a pause", () => {
+    const merged = mergeCaptions([
+      { node: { type: "caption", start: 10, text: "later", duration: 1 } as CaptionNode, start: 10, end: 11 },
+      { node: { type: "caption", start: 2, id: "first", children: [word("early", 1)] } as unknown as CaptionNode, start: 2, end: 3 },
+    ]);
+    expect(merged).toEqual({
+      type: "caption",
+      start: 2,
+      id: "first",
+      children: [word("early", 1), word("later", 1, 7)],
+    });
   });
 });

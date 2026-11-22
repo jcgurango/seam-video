@@ -24,6 +24,7 @@ import {
   updateCompAtPath,
   editContainer,
   splitLast,
+  getNodeAtPath,
   type NodePath,
 } from "./nodePath.js";
 import { moveRun, shiftOffsets, type InsertOptions } from "./runEdit.js";
@@ -31,7 +32,10 @@ import {
   flattenDropRegions,
   flattenGroups,
   dropTargetAt,
+  dropTargetIn,
+  regionsAccepting,
   runZIndexAt,
+  type DropRegion,
   type DropTarget,
 } from "./dropRegions.js";
 import {
@@ -109,8 +113,16 @@ function rulerInterval(pxPerSec: number): number {
   return 60;
 }
 
-function childLabel(docChild: import("@seam/core").Child | undefined, resolved: ResolvedChild): string {
-  const base = baseLabel(docChild, resolved);
+function childLabel(
+  seam: Seam,
+  docChild: import("@seam/core").Child | undefined,
+  resolved: ResolvedChild,
+): string {
+  // An extension node type may name its own blocks (a caption: its phrase).
+  const own = docChild
+    ? seam.nodeTypes.get(docChild.type)?.editor?.blockLabel?.(docChild as unknown as Record<string, unknown>)
+    : undefined;
+  const base = own || baseLabel(docChild, resolved);
   // A node that actually loops (anchored span longer than its content with
   // `underflow: "loop"`) — the block shows one span; the content repeats.
   // Reversed clip/audio (`out < in` / negative `duration`) gets a `◀`.
@@ -820,6 +832,21 @@ function DesktopTimeline({
 
   /** True when dropping `paths` on `target` would put them back where they
    *  are: one contiguous slice of the target container, dropped on itself. */
+  // Where a drag of these nodes may land: a container that restricts its
+  // children (a caption: words only) takes nothing else, and its children
+  // only move among such containers.
+  const regionsForPaths = (paths: NodePath[]): DropRegion[] => {
+    const types: string[] = [];
+    let fromRestricted = false;
+    for (const p of paths) {
+      const node = docRoot ? getNodeAtPath(docRoot as SeamFile, p) : undefined;
+      if (node) types.push(node.type);
+      const sp = splitLast(p);
+      if (sp && regions.find((r) => samePath(r.path, sp.parent))?.accepts) fromRestricted = true;
+    }
+    return regionsAccepting(regions, types, fromRestricted);
+  };
+
   const isSelfDrop = (paths: NodePath[], target: DropTarget): boolean => {
     if (target.kind !== "insert") return false;
     const idx: number[] = [];
@@ -897,14 +924,14 @@ function DesktopTimeline({
       if (dragRef.mode === "offset") {
         applyOffsets(x);
       } else {
-        const target = dropTargetAt(
-          regions,
+        const target = dropTargetIn(
+          regionsForPaths(dragRef.paths),
           x,
           y,
           pxPerSec,
           e.shiftKey ? snapFor(dragRef.paths) : undefined,
         );
-        if (!isSelfDrop(dragRef.paths, target)) onMoveNodes(dragRef.paths, target);
+        if (target && !isSelfDrop(dragRef.paths, target)) onMoveNodes(dragRef.paths, target);
       }
       setItemDrag(null);
     };
@@ -1048,8 +1075,10 @@ function DesktopTimeline({
     }
     if (!sourceChildren && e.dataTransfer.files.length === 0) return;
 
+    // Dragged-in content never lands inside a restricted container (a
+    // caption takes only words); the root floor is always there.
     const target = dropTargetAt(
-      regions,
+      regionsAccepting(regions, null, false),
       pos.x,
       pos.y,
       pxPerSec,
@@ -1080,7 +1109,17 @@ function DesktopTimeline({
         ? snapFor(itemDrag.paths)
         : undefined;
   const dropGhost =
-    dragPos != null ? dropTargetAt(regions, dragPos.x, dragPos.y, pxPerSec, dragSnap) : null;
+    dragPos != null
+      ? dropTargetIn(
+          fileDrag != null || !itemDrag
+            ? regionsAccepting(regions, null, false)
+            : regionsForPaths(itemDrag.paths),
+          dragPos.x,
+          dragPos.y,
+          pxPerSec,
+          dragSnap,
+        )
+      : null;
   const runDragRegion =
     runDrag != null ? regions.find((r) => samePath(r.path, runDrag.containerPath)) : undefined;
   const runDragGhost =
@@ -1456,7 +1495,7 @@ function TimelineGroup({
             isPrimary={isPrimary}
             isRoot={isRoot}
             isComposition={block.isComposition}
-            isExpandable={block.isComposition || block.hasLanes}
+            isExpandable={block.isContainer || block.hasLanes}
             isBinItem={block.isBinItem}
             isExpanded={block.isExpanded}
             onToggleExpand={() => onToggleExpand(addr)}
@@ -1609,7 +1648,7 @@ function ChildBlockView({
     | null;
 }) {
   const seam = useSeam();
-  const label = childLabel(displayChild, child);
+  const label = childLabel(seam, displayChild, child);
   const displayType = displayChild?.type ?? child.type;
   const colors = blockColors(seam, displayType);
 

@@ -15,6 +15,7 @@ import {
   getNodeAtPath,
   parsePath,
   pathKey,
+  removeNodesAtPaths,
   updateCompAtPath,
   updateNodeAtPath,
 } from "./nodePath.js";
@@ -44,6 +45,28 @@ export function createEditorTools(seam: Seam): EditorTools {
             ...comp,
             children: [...(comp.children ?? []), ...nodes],
           })),
+
+    removeNodes: (doc, keys) => removeNodesAtPaths(doc, keys.map(parsePath)),
+
+    childSpans(doc, containerKey) {
+      const container = containerKey === "" ? doc : getNodeAtPath(doc, parsePath(containerKey));
+      if (!container || container.type !== "composition") return null;
+      try {
+        // The body on its own (root bin attached so `binItem`s resolve),
+        // scripts off, uncropped: resolved children stay 1:1 with authored.
+        const body: Composition = {
+          type: "composition",
+          children: (container as Composition).children ?? [],
+          ...(doc.bin ? { bin: doc.bin } : {}),
+        };
+        const compiled = seam.compileSeamFile(body as SeamFile, { runScripts: false }).doc;
+        return seam
+          .resolveComposition(compiled as Composition, { uncropped: true })
+          .children.map((c) => ({ start: c.timelineStart, end: c.timelineEnd }));
+      } catch {
+        return null;
+      }
+    },
 
     parentKey: (key) => pathKey(parsePath(key).slice(0, -1)),
 

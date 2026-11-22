@@ -13,6 +13,9 @@ export const SettingsSchema = z.object({
   // Empty = "use the default" — consumers fall back to
   // DEFAULT_GENERATOR_SERVER_URL so we never persist the default itself.
   generatorServerUrl: z.string().default(""),
+  // Per-extension stores (`EditorStorage`): extension name → key → JSON
+  // value. E.g. the Captions extension keeps its style presets here.
+  extensions: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -72,8 +75,13 @@ export function useSettings(): UseSettings {
   }, []);
 
   const resetSettings = useCallback(() => {
-    setSettings(DEFAULT_SETTINGS);
-    writeToStorage(DEFAULT_SETTINGS);
+    // "Reset" is about the editor's own settings; what extensions stored
+    // (presets, …) is the user's data and stays.
+    setSettings((prev) => {
+      const next = { ...DEFAULT_SETTINGS, extensions: prev.extensions };
+      writeToStorage(next);
+      return next;
+    });
   }, []);
 
   return { settings, updateSettings, resetSettings };

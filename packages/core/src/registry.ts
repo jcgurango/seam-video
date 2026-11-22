@@ -299,8 +299,46 @@ export interface NodeTypeDef {
    *  definition an extension's `./render` entry exports, so pure consumers
    *  (validate / resolve) never load the rasterizer's dependencies. */
   readonly rasterizer?: (host: RasterHost) => NodeRasterizer;
-  /** Editor: timeline block colours. */
-  readonly editor?: { readonly color: string; readonly border: string; readonly label?: string };
+  /** Editor: timeline block colours, and how the editor's own tools treat
+   *  this node type. Both functions are pure: authored node in, authored
+   *  node(s) out. */
+  readonly editor?: {
+    readonly color: string;
+    readonly border: string;
+    readonly label?: string;
+    /** Text for the node's timeline block (default: the type name). */
+    blockLabel?(node: Record<string, unknown>): string | undefined;
+    /**
+     * Slice: split the node at `t` (seconds from its own start) into two
+     * that together play what it did. Returns the LEFT node (keeps the slot:
+     * `id`, `start`, `offset`), the RIGHT node (no placement of its own —
+     * the editor places it) and `at`: where the right one begins, in seconds
+     * from the original's start. Free to snap `t` (a caption cuts between
+     * words). Null = nothing to cut there. Without this the type doesn't
+     * slice.
+     *
+     * The editor places the right node at the same anchor as the left,
+     * moved forward by `at`: a numeric `start` or a source-time anchor
+     * (`"id@12"`) has the time added to it; a bare-id or percentage anchor
+     * keeps the anchor and takes it as `offset`. Only a left node with no
+     * `start` (a run member) gets the right one as the next run member.
+     */
+    split?(
+      node: Record<string, unknown>,
+      t: number,
+    ): { left: Record<string, unknown>; right: Record<string, unknown>; at: number } | null;
+    /**
+     * Edge-drag resize: `delta` output seconds added at the RIGHT edge
+     * (`side: "right"`) or removed from the LEFT (`side: "left"`, positive =
+     * shorter). Placement is never touched. Null / absent = the editor
+     * adjusts `duration`.
+     */
+    resize?(
+      node: Record<string, unknown>,
+      side: "left" | "right",
+      delta: number,
+    ): Record<string, unknown> | null;
+  };
   /** Editor: files that become this node when dropped / imported. */
   readonly import?: {
     /** Lower-case extensions without the dot (`["pmtiles"]`). */

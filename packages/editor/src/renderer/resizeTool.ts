@@ -129,6 +129,14 @@ function mutateChild(
     const outVal = child.out ?? innerDuration(seam, child);
     return resizeInOut({ ...child, in: inVal, out: outVal }, side, deltaSec);
   }
+  // An extension node type that knows what its edges mean (a caption: its
+  // first / last word).
+  const custom = seam.nodeTypes.get(child.type)?.editor?.resize?.(
+    child as unknown as Record<string, unknown>,
+    side,
+    deltaSec,
+  );
+  if (custom) return custom as unknown as Child;
   // Static / text / data / shapes / map: no source axis. Both handles just
   // adjust `duration` — left handle shrinks (drag right ⇒ shorter),
   // right handle grows (drag right ⇒ longer).

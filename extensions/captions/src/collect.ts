@@ -14,6 +14,7 @@
 import { walkResolved, type ResolvedChild, type SurfaceView } from "@seam/core";
 import {
   captionText,
+  DEFAULT_CAPTION_STYLE,
   type CaptionRouting,
   type CaptionStyle,
   type CaptionSurfaceStyle,
@@ -164,11 +165,13 @@ export function activeCues(surface: SurfaceView, t: number): CaptionCue[] {
   return surfaceCues(surface).filter((cue) => t >= cue.start && t < cue.end);
 }
 
-/** The look of one cue at a surface: the surface's default, then its
- *  speaker's overrides, then the caption's own. */
+/** The look of one cue at a surface: the built-in default
+ *  (`DEFAULT_CAPTION_STYLE`), then the surface's style, then its speaker's
+ *  overrides, then the caption's own — each overriding key by key. */
 export function cueStyle(style: CaptionSurfaceStyle, cue: Pick<CaptionCue, "speaker" | "style">): CaptionStyle {
   const { maxChars: _maxChars, speakers, ...base } = style;
   return {
+    ...DEFAULT_CAPTION_STYLE,
     ...base,
     ...(cue.speaker != null ? speakers?.[cue.speaker] : undefined),
     ...cue.style,
