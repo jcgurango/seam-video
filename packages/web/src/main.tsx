@@ -12,11 +12,12 @@ import { WebPlatform } from "@seam/editor/platform";
 import type { Source } from "pmtiles";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
+import { captions } from "@seam/extension-captions";
 // The render entry: the Map extension WITH its rasterizer (this shell draws).
 import { map } from "@seam/extension-map/render";
 
 // One Seam instance per host: core plus the extensions this shell installs.
-const seam = createSeam([adjustments, map]);
+const seam = createSeam([adjustments, map, captions]);
 const platform = new WebPlatform(seam);
 
 // Bundle the same fonts the renderer uses (body + CJK/emoji fallbacks) so

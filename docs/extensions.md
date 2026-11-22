@@ -44,8 +44,8 @@ Proposed, not yet confirmed:
 |---|-----------|--------|--------------|
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
-| 2 | Map | done, awaiting JC's test | node-type contract, host services, lifecycle, child placement |
-| 3 | CC Cut + CC generation | not started | views, panels, commands |
+| 2 | Map | done | node-type contract, host services, lifecycle, child placement |
+| 3 | Captions (CC cut + CC generation) | stage A done, awaiting JC's test; B–E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
@@ -163,6 +163,95 @@ Left as is, knowingly:
   any byte-range source.
 - Children of an extension container still have no viewport gizmo
   (`locateNode` returned null for map children before, too).
+
+### 3. Captions — design (agreed in discussion, 2026-11-22)
+
+Today `data` does three jobs: the transcript of source footage (inside a bin
+entry, read by CC cut), the captions shown in the video (root nodes anchored
+to the footage, turned into `text` by the root script) and styling hints
+(tags). "data + script" is a hand-rolled captions extension. The Captions
+extension takes over all three jobs. **`data` itself stays in core**: data +
+scripts was always meant to grow into something, it just hasn't yet.
+
+**A caption is not text.** A caption is what was said and when; how it looks
+is decided globally. Text is a designed element. They share layout code, not
+a primitive.
+
+- **One node type** for transcript and on-screen caption alike, with **words
+  as child nodes** in a run, so retiming a word is ordinary timeline editing
+  and "separate by word" / "group words" disappear.
+- **Captions bubble**, the way audio already does: a caption is not drawn
+  where it sits. It is collected up the tree, its time mapped through every
+  composition window / speed / loop, and drawn at a surface. Ancestors do not
+  transform, crop, fade or adjust it; only time is mapped. Words outside a
+  window are dropped and the caption re-forms from the survivors.
+- **Routing is one field on compositions**: `captions: "pass"` (default —
+  continue upward) | `"off"` (stop, draw nothing) | `"show"` (stop and draw
+  here with this composition's caption style). The root defaults to `"show"`.
+- **The extension renders captions itself** (an overlay at the surface),
+  from a style template held on the surface: default text properties plus
+  per-speaker overrides. It does not expand into `text` nodes.
+- **Display phrases are derived by default** from the bubbled word stream.
+- **Reauthor**: sets the composition to `"off"` and writes its derived
+  captions out as caption nodes beside it, anchored by source time, to edit
+  by hand. No automatic revert (undo, or delete them and switch back).
+- **Convert caption to text**: one click, for the rare caption that must
+  look different.
+- **Where a fix goes**: a fact about the footage (a misheard word, a word's
+  timing, the speaker) is fixed on the source caption and every use gets it;
+  a decision about this edit is what reauthor is for.
+
+**CC cut**
+
+- Its own view, reusing the player / timeline primitives.
+- Works on a **selected composition** (bin item or not); never on a bare
+  clip. Captions live inside the composition, so they travel with the cut.
+- Apply **replaces the selection in place** and is implemented as split +
+  run-aware delete at scale — one batch operation built from the same
+  per-node split and delete the toolbar uses, one undo step. Anchors to a
+  kept moment retarget to its piece; nodes anchored to a cut-out moment are
+  removed by the delete cascade.
+- Ranges are sorted and merged first. Playing ranges out of order and
+  repeating a range (both possible today, by accident of selection order)
+  are dropped; reorder or duplicate the pieces on the timeline instead.
+
+**CC generation (transcribe)**
+
+- A command of the extension. Transcribing a composition puts the captions
+  inside it, in its inner time.
+- The generator-server / Seam Cloud connection stays in core's editor and is
+  handed to the extension as a service it can make requests through. Cloud /
+  generator work is out of scope for this migration.
+
+### 3. Captions — plan (agreed 2026-11-22)
+
+Each stage green; the golden project checked at C and E.
+
+| Stage | Builds | New contract |
+|-------|--------|--------------|
+| A ✔ | `caption` + `word` node types validate and resolve; `captions` routing field and caption style on compositions | node types with no visual presence; restricted children; a span taken from children; fields that target compositions only |
+| B | Collecting captions: a pure function over the resolved tree giving every caption and word with its output time at its surface; derived display phrases; subtitle export falls out | a collected channel |
+| C | Rendering: the overlay at each surface, in both hosts; golden parity (see below) | overlay rasterizers |
+| D | Editor: transcribe command, words edited as children, reauthor, convert to text, a derived caption lane on the timeline, the CC cut view with batch split + delete | commands, views, services, document / selection / playhead access |
+| E | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
+
+Golden project: its captions become caption nodes and the root script goes
+away. To keep a pixel check, the converted copy would hold the 102 root
+phrases as **authored** captions (the reauthored state, source composition
+`"off"`) with a style reproducing the script's text properties, so stage C
+can be compared against the baseline. Derived phrasing is new behaviour and
+is judged by eye.
+
+Settled details:
+
+- A caption may carry a small **style override** (the script's larger font
+  for "LIT" and its italics-by-tag become these).
+- **Derivation rule, first version:** authored caption boundaries are hard
+  breaks; a caption longer than a maximum character count is split at word
+  boundaries; short neighbours are not merged.
+- Words are a second node type, **`word`**, the caption's children.
+- Extension dependencies (`requires`) wait until text is extracted — Captions
+  uses core's text layout until then, so nothing needs the declaration yet.
 
 ## Decision log
 
@@ -328,6 +417,29 @@ contribute to visual nodes.
   duration, placement, its other fields, spatial, inner canvas; the block
   colour comes from `editor`; dropped files matching `import.extensions`
   become the node `import.create` returns.
+
+### Non-visual node types and composition fields (stage 3A)
+
+```ts
+{ type: "caption", visual: false, children: ["word"], span: "children", fields: [ … ] }
+{ key: "captions", nodes: "composition", type: "enum", options: ["pass", "off", "show"] }
+```
+
+- **`visual: false`**: no spatial fields, inner canvas or visual extension
+  fields in the schema; the resolved node carries `nonVisual: true` and no
+  spatial data; the spatial pass and the render list skip it and everything
+  under it; the editor gives it no gizmo and a timing-only catalog. Such a
+  type cannot `draws`, anchor or rasterize.
+- **`children: [types]`** restricts what a container holds (a caption holds
+  only words). `children: true` still means any node.
+- **`span: "children"`**: `duration` becomes optional and defaults to the
+  extent of the children, like a composition; an authored `duration` wins.
+- **`nodes: "composition"`** targets compositions only, the root included.
+  The value rides in the resolved composition's `ext` (root:
+  `ResolvedTimeline.ext`). TypeScript: `CompositionExtensionFields`.
+- Only fields a colour stage consumes (numbers) make a container take the
+  group path; a structured or routing field in `ext` does not. (Since stage 2
+  a pinned composition had been taking it needlessly — fixed here.)
 
 ### Rasterizers and host services (stage 2)
 

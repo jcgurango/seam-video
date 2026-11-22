@@ -17,7 +17,7 @@
 // alone (see `transformCapabilities`).
 
 import { isKeyframed, resolveLength } from "@seam/core";
-import type { Child, Distort, Keyframed, Length, Point2D } from "@seam/core";
+import type { SpatialFields, Child, Distort, Keyframed, Length, Point2D } from "@seam/core";
 import { joinLength, pointAxis, splitLength } from "./propertyCatalog.js";
 import { rotateVec } from "./viewportLocate.js";
 
@@ -269,7 +269,7 @@ export function applyTransformDrag(
       const local = rotateVec({ x: drag.dx, y: drag.dy }, -geom.rotation);
       // An animated origin between keyframes has no authored value here:
       // take where it currently sits on the box as a pure fraction.
-      const originLive = animated(node.origin) && at.origin == null;
+      const originLive = animated((node as SpatialFields).origin) && at.origin == null;
       const origin = read("origin") as Point2D | undefined;
       const fraction = (axis: "x" | "y"): number => {
         if (!originLive) return originFraction(origin, axis);

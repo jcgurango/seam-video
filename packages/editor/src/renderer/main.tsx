@@ -13,11 +13,12 @@ import { getMapBasePath } from "./mapBasePath.js";
 import type { Source } from "pmtiles";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
+import { captions } from "@seam/extension-captions";
 // The render entry: the Map extension WITH its rasterizer (this shell draws).
 import { map } from "@seam/extension-map/render";
 
 // One Seam instance per host: core plus the extensions this shell installs.
-const seam = createSeam([adjustments, map]);
+const seam = createSeam([adjustments, map, captions]);
 const platform = detectPlatform(seam);
 
 // Seam Cloud is web-editor-only. When this entry runs as a web build (not

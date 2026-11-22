@@ -123,6 +123,8 @@ function resolveNode(
   if (node.type === "audio" || node.type === "data") {
     return node;
   }
+  // An extension node with no visual presence (and whatever is under it).
+  if (asExtensionNode(node)?.nonVisual) return node;
 
   const input = node.spatialInput;
   const ownObjectFit: ObjectFit = input?.objectFit ?? parentObjectFit;

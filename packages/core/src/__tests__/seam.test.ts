@@ -69,10 +69,11 @@ describe("extension fields", () => {
     expect(seam.fields.map((f) => [f.key, f.extension])).toEqual([
       ["gain", "gain"],
       ["bias", "gain"],
+      ["mood", "stage"],
     ]);
     expect(seam.colorSlots).toBe(1);
     expect(seam.colorStages.map((s) => [s.entry, s.offset])).toEqual([["t_stage", 0]]);
-    expect([...seam.nodeTypes.keys()]).toEqual(["stage"]);
+    expect([...seam.nodeTypes.keys()]).toEqual(["cue", "tick", "stage"]);
   });
 
   it("accepts a contributed field on every visual node type", () => {
@@ -286,5 +287,94 @@ describe("extension node types", () => {
     expect((kids[0] as { spatialInput?: unknown }).spatialInput).toBeDefined();
     expect((kids[1] as { spatialInput?: unknown }).spatialInput).toBeUndefined();
     expect((kids[1] as { anchored?: unknown }).anchored).toBeUndefined();
+  });
+});
+
+describe("non-visual node types, span from children, composition-only fields", () => {
+  const seam = createSeam([stageExt]);
+  const doc = (child: Record<string, unknown>, root: Record<string, unknown> = {}) => ({
+    type: "composition",
+    ...root,
+    children: [child],
+  });
+  const tick = (label: string, duration: number, extra: object = {}) => ({ type: "tick", label, duration, ...extra });
+
+  it("a non-visual node takes placement and its own fields, but no spatial or visual-extension fields", () => {
+    expect(seam.validate(doc(tick("a", 1, { id: "t", start: 2, offset: 0.5, metadata: {} }))).success).toBe(true);
+    for (const bad of [{ opacity: 0.5 }, { size: 10 }, { contentWidth: 100 }, { rotation: 1 }]) {
+      expect(seam.validate(doc(tick("a", 1, bad))).success, JSON.stringify(bad)).toBe(false);
+    }
+    // …including fields other extensions add to every VISUAL node.
+    const withGain = createSeam([gainExt, stageExt]);
+    expect(withGain.validate(doc({ type: "rect", duration: 1, gain: 1 })).success).toBe(true);
+    expect(withGain.validate(doc(tick("a", 1, { gain: 1 }))).success).toBe(false);
+  });
+
+  it("a container may restrict the types of its children", () => {
+    expect(seam.validate(doc({ type: "cue", children: [tick("a", 1), tick("b", 2)] })).success).toBe(true);
+    expect(seam.validate(doc({ type: "cue", children: [{ type: "rect", duration: 1 }] })).success).toBe(false);
+    expect(() =>
+      createSeam([{ name: "x", nodes: [{ type: "box", children: ["nope"] }] }]),
+    ).toThrow(/unknown type "nope"/);
+  });
+
+  it("span from children: duration is optional, defaults to the children's extent, and wins when authored", () => {
+    expect(seam.validate(doc({ type: "cue" })).success).toBe(false);
+    expect(seam.validate(doc({ type: "cue", duration: 3 })).success).toBe(true);
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [
+        { type: "rect", duration: 1 },
+        { type: "cue", who: "jc", children: [tick("a", 1), tick("b", 2, { offset: 0.5 })] },
+        { type: "cue", duration: 2, children: [tick("c", 5)] },
+        { type: "rect", duration: 1 },
+      ],
+    } as unknown as Composition);
+    const [, first, second, after] = t.children as unknown as ResolvedExtensionNode[];
+    expect(first).toMatchObject({ type: "cue", extension: true, nonVisual: true, who: "jc", timelineStart: 1, timelineEnd: 4.5 });
+    expect(first.children!.map((c) => [c.timelineStart, c.timelineEnd])).toEqual([[0, 1], [1.5, 3.5]]);
+    // Authored duration is authoritative; children keep their own times.
+    expect(second).toMatchObject({ timelineStart: 4.5, timelineEnd: 6.5 });
+    expect(second.children![0]).toMatchObject({ timelineStart: 0, timelineEnd: 5 });
+    expect(after).toMatchObject({ timelineStart: 6.5 });
+    expect(() => createSeam([{ name: "x", nodes: [{ type: "box", span: "children" }] }])).toThrow(/has none/);
+  });
+
+  it("resolves with no spatial data, and the spatial pass leaves it alone", () => {
+    const t = resolveSpatial(
+      seam.resolveComposition(doc({ type: "cue", children: [tick("a", 1)] }) as unknown as Composition),
+      100,
+      100,
+    );
+    const cue = t.children[0] as unknown as ResolvedExtensionNode;
+    for (const key of ["spatial", "spatialInput", "intrinsicWidth", "naturalWidth", "objectFit", "ext"]) {
+      expect(key in cue, key).toBe(false);
+      expect(key in cue.children![0], key).toBe(false);
+    }
+  });
+
+  it("a non-visual type cannot draw, rasterize or anchor children", () => {
+    expect(() => createSeam([{ name: "x", nodes: [{ type: "box", visual: false, draws: true }] }])).toThrow(/not visual/);
+  });
+
+  it("a composition-only field validates on compositions and the root, nowhere else", () => {
+    expect(seam.validate(doc({ type: "composition", mood: "calm", children: [] }, { mood: "loud" })).success).toBe(true);
+    expect(seam.validate(doc({ type: "rect", duration: 1, mood: "calm" })).success).toBe(false);
+    expect(seam.validate(doc({ type: "stage", source: "a.bin", duration: 1, mood: "calm" })).success).toBe(false);
+    expect(seam.validate(doc({ type: "composition", mood: "angry", children: [] })).success).toBe(false);
+  });
+
+  it("composition-only fields ride in `ext` on the resolved composition and on the root", () => {
+    const t = seam.resolveComposition(
+      doc({ type: "composition", mood: "calm", children: [{ type: "rect", duration: 1 }] }, { mood: "loud" }) as unknown as Composition,
+    );
+    expect(t.ext).toEqual({ mood: "loud" });
+    expect((t.children[0] as { ext?: unknown }).ext).toEqual({ mood: "calm" });
+  });
+
+  it("a composition-only field may not collide with a composition key or a visual field", () => {
+    expect(() =>
+      createSeam([{ name: "x", fields: [{ key: "volume", nodes: "composition", type: "number" }] }]),
+    ).toThrow(/collides with a field of "composition"/);
   });
 });

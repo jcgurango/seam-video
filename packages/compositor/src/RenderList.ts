@@ -135,6 +135,15 @@ function sampleFields(
   return out ?? NO_FIELDS;
 }
 
+/** True when a node authors at least one field a colour stage consumes.
+ *  Other extension fields (a map `pin`, a composition's caption routing) ride
+ *  in `ext` too and must not, by themselves, change how the node is drawn. */
+function hasStageFields(env: Env, ext: ExtFields | undefined): boolean {
+  if (!ext) return false;
+  for (const key in ext) if (env.numeric.has(key)) return true;
+  return false;
+}
+
 /** Analytic shape the shader rasterizes, in TARGET pixels relative to the
  *  command's quad. Used both as the geometry of a shape fill and as the alpha
  *  mask (`cornerRadius`) of any textured draw / composited group. */
@@ -330,7 +339,7 @@ export function buildRenderList(
   // Extension fields authored on the root composition (a colour adjustment
   // of the whole video): composite the frame as one full-canvas group so the
   // colour stages see it as a unit, like any composition that carries them.
-  if (timeline.ext != null) {
+  if (hasStageFields(env, timeline.ext)) {
     return [
       {
         type: "group",
@@ -533,6 +542,8 @@ function walkChildren(
 ): void {
   for (const child of children) {
     if (child.type === "audio" || child.type === "data") continue;
+    // An extension node with no visual presence (a caption) — and its children.
+    if (asExtensionNode(child)?.nonVisual) continue;
 
     const isActive =
       localTime >= child.timelineStart && localTime < child.timelineEnd;
@@ -774,9 +785,9 @@ function walkChildren(
     // The node's own draw, beneath its children.
     const ownDraw = isExt && def?.draws === true;
 
-    // Any authored extension field (a colour adjustment, …) applies to the
+    // An authored colour-stage field (a colour adjustment, …) applies to the
     // composited group as a unit.
-    const hasFields = child.ext != null;
+    const hasFields = hasStageFields(env, child.ext);
     // A rotated container can't be flattened into the parent pass (its
     // children would need the rotation composed per-quad about the pivot).
     // Render it to an FBO and rotate the composited quad — same path extension fields

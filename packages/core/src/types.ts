@@ -319,7 +319,7 @@ export interface BinEntry {
  * applies to both, because a bin reference still carries its own
  * instance-level overrides.
  */
-export interface BaseComposition extends ChildTimingFields {
+export interface BaseComposition extends ChildTimingFields, CompositionExtensionFields {
   type: "composition";
   /**
    * Per-edge inset (crop) of the composition's content box — composition-only.
@@ -476,6 +476,23 @@ export interface ExtensionNodeBase<T extends string = string>
   contentHeight?: Keyframed<Length>;
   metadata?: Metadata;
 }
+
+/** What core gives an extension node type that is NOT visual
+ *  (`NodeTypeDef.visual: false` — a caption, a word): placement, metadata, a
+ *  `duration` (optional when the type takes its span from its children) and,
+ *  for a container, `children`. No spatial fields. */
+export interface NonVisualExtensionNodeBase<T extends string = string> extends PlacementFields {
+  type: T;
+  duration?: number;
+  children?: Child[];
+  metadata?: Metadata;
+}
+
+/** Fields extensions contribute to compositions only (the root included).
+ *  Empty in core — merged into by extension packages, like
+ *  {@link VisualExtensionFields}. */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface CompositionExtensionFields {}
 
 /** Authored extension node types by `type`. Empty in core — an extension
  *  package adds its node by declaration merging:

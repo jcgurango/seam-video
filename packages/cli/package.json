@@ -64,6 +64,7 @@
   "devDependencies": {
     "@seam/core": "workspace:*",
     "@seam/extension-adjustments": "workspace:*",
+    "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
     "@seam/renderer": "workspace:*",
     "@types/node": "^25.3.3",

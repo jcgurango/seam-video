@@ -12,10 +12,11 @@
 
 import type { z, ZodTypeAny } from "zod";
 
-/** Which nodes a contributed field lands on. `"visual"` = every node that
- *  draws: clip, static, text, rect, circle, composition and every
- *  extension node type. */
-export type FieldTarget = "visual";
+/** Which nodes a contributed field lands on.
+ *  - `"visual"`: every node that draws — clip, static, text, rect, circle,
+ *    composition and every visual extension node type.
+ *  - `"composition"`: compositions only, the root included. */
+export type FieldTarget = "visual" | "composition";
 
 /** The CORE node types `"visual"` expands to (extension node types are
  *  visual too). */
@@ -215,20 +216,31 @@ export interface NodeRasterizer {
 
 /** A node type contributed by an extension.
  *
- *  Core gives every such node, without it being declared: `duration`
- *  (required — the node shows for exactly that long), the spatial fields,
- *  placement (`id` / `start` / `offset`), `metadata`, an inner canvas
- *  (`contentWidth` / `contentHeight`, default 100% of the parent), and every
- *  field extensions contribute to visual nodes. */
+ *  Core gives every such node, without it being declared: `duration`,
+ *  placement (`id` / `start` / `offset`) and `metadata` — and, unless it is
+ *  `visual: false`, the spatial fields, an inner canvas (`contentWidth` /
+ *  `contentHeight`, default 100% of the parent) and every field extensions
+ *  contribute to visual nodes. */
 export interface NodeTypeDef {
   /** The JSON `type`. Must not collide with a core type or another extension's. */
   readonly type: string;
   /** The node's own fields. */
   readonly fields?: readonly FieldSpec[];
-  /** The node has `children`: ordinary nodes of any type, placed like a
-   *  composition's (runs + `start` anchors) in node-local time at speed 1,
-   *  laid out against the node's inner canvas. They never extend the node. */
-  readonly children?: boolean;
+  /** `false`: the node has no visual presence (a caption, a word). It gets
+   *  no spatial fields, no inner canvas and no visual extension fields, the
+   *  spatial pass and the render list skip it, and it cannot draw or anchor.
+   *  Default `true`. */
+  readonly visual?: boolean;
+  /** The node has `children`, placed like a composition's (runs + `start`
+   *  anchors) in node-local time at speed 1 — laid out against the node's
+   *  inner canvas when it is visual. `true` = nodes of any type; a list =
+   *  only those node types. */
+  readonly children?: boolean | readonly string[];
+  /** Where the node's length comes from. `"duration"` (default): its
+   *  authored `duration`, required; children never extend it. `"children"`
+   *  (containers only): `duration` is optional and defaults to the extent of
+   *  its children, like a composition; an authored `duration` still wins. */
+  readonly span?: "duration" | "children";
   /** The node draws itself: the render list emits one draw for it (beneath
    *  its children) at its inner-canvas size and node-local time, and the
    *  host gets the pixels from {@link NodeTypeDef.rasterizer}. */
@@ -288,10 +300,12 @@ export interface RegisteredNodeType extends NodeTypeDef {
 
 export interface Registry {
   readonly extensions: readonly SeamExtension[];
-  /** Fields contributed to existing (visual) nodes, in registration order. */
+  /** Fields contributed to existing nodes, in registration order. */
   readonly fields: readonly RegisteredField[];
-  /** Keys of {@link Registry.fields}, in registration order. */
+  /** Keys of the fields contributed to every visual node. */
   readonly visualFieldKeys: readonly string[];
+  /** Keys of the fields contributed to compositions only. */
+  readonly compositionFieldKeys: readonly string[];
   /** Keys of the visual fields flagged `anchor`. */
   readonly anchorFieldKeys: readonly string[];
   readonly colorStages: readonly RegisteredColorStage[];
@@ -335,9 +349,9 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
 
     for (const f of ext.fields ?? []) {
       checkField(ext.name, f);
-      if (f.nodes !== "visual") {
+      if (f.nodes !== "visual" && f.nodes !== "composition") {
         throw new Error(
-          `Extension "${ext.name}": field "${f.key}" needs \`nodes: "visual"\` (the only target)`,
+          `Extension "${ext.name}": field "${f.key}" needs \`nodes: "visual"\` or \`nodes: "composition"\``,
         );
       }
       const owner = owners.get(f.key);
@@ -381,6 +395,16 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
           `Extension "${ext.name}": "${def.type}" has createAnchors but no children`,
         );
       }
+      if (def.span === "children" && !def.children) {
+        throw new Error(
+          `Extension "${ext.name}": "${def.type}" takes its span from children but has none`,
+        );
+      }
+      if (def.visual === false && (def.draws || def.createAnchors || def.rasterizer)) {
+        throw new Error(
+          `Extension "${ext.name}": "${def.type}" is not visual, so it cannot draw or anchor children`,
+        );
+      }
       nodeTypes.set(def.type, Object.freeze({ ...def, extension: ext.name }));
     }
 
@@ -413,10 +437,25 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
     }
   }
 
+  // A container that restricts its children must name real node types.
+  for (const def of nodeTypes.values()) {
+    if (!Array.isArray(def.children)) continue;
+    for (const t of def.children) {
+      if (!(CORE_NODE_TYPES as readonly string[]).includes(t) && !nodeTypes.has(t)) {
+        throw new Error(
+          `Extension "${def.extension}": "${def.type}" allows children of unknown type "${t}"`,
+        );
+      }
+    }
+  }
+
   return Object.freeze({
     extensions: Object.freeze([...extensions]),
     fields: Object.freeze(fields),
-    visualFieldKeys: Object.freeze(fields.map((f) => f.key)),
+    visualFieldKeys: Object.freeze(fields.filter((f) => f.nodes === "visual").map((f) => f.key)),
+    compositionFieldKeys: Object.freeze(
+      fields.filter((f) => f.nodes === "composition").map((f) => f.key),
+    ),
     anchorFieldKeys: Object.freeze(
       fields.filter((f) => f.type === "custom" && f.anchor === true).map((f) => f.key),
     ),

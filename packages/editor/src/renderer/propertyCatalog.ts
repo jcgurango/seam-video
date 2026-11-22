@@ -610,8 +610,21 @@ const extensionPropsCache = new WeakMap<Seam, PropDef[]>();
 export function extensionProps(seam: Seam): PropDef[] {
   let defs = extensionPropsCache.get(seam);
   if (!defs) {
-    defs = propsOf(seam.fields);
+    defs = propsOf(seam.fields.filter((f) => f.nodes === "visual"));
     extensionPropsCache.set(seam, defs);
+  }
+  return defs;
+}
+
+const compositionPropsCache = new WeakMap<Seam, PropDef[]>();
+
+/** The rows for the fields extensions contribute to compositions only, the
+ *  root included (e.g. the Captions extension's routing). */
+export function compositionExtensionProps(seam: Seam): PropDef[] {
+  let defs = compositionPropsCache.get(seam);
+  if (!defs) {
+    defs = propsOf(seam.fields.filter((f) => f.nodes === "composition"));
+    compositionPropsCache.set(seam, defs);
   }
   return defs;
 }
@@ -619,9 +632,9 @@ export function extensionProps(seam: Seam): PropDef[] {
 const nodeTypePropsCache = new WeakMap<Seam, Map<string, PropDef[]>>();
 
 /** The catalog of an extension node type (e.g. `map`): what core gives every
- *  such node — duration, placement, the spatial fields, the inner canvas —
- *  around the type's own declared fields (media sources first, like a clip's
- *  `source`). */
+ *  such node — duration, placement, and (unless it has no visual presence,
+ *  like a caption) the spatial fields and the inner canvas — around the
+ *  type's own declared fields (media sources first, like a clip's `source`). */
 function nodeTypeProps(seam: Seam, type: string): PropDef[] | null {
   const def = seam.nodeTypes.get(type);
   if (!def) return null;
@@ -631,13 +644,14 @@ function nodeTypeProps(seam: Seam, type: string): PropDef[] | null {
   if (!props) {
     const fields = def.fields ?? [];
     const isSource = (f: FieldSpec) => f.type === "string" && f.source === true;
+    const isVisual = def.visual !== false;
     props = [
       ...propsOf(fields.filter(isSource)),
-      DURATION_REQ,
+      // Optional when the type's length defaults to its children's extent.
+      def.span === "children" ? { ...DURATION_REQ, placeholder: "children" } : DURATION_REQ,
       ...PLACEMENT,
       ...propsOf(fields.filter((f) => !isSource(f))),
-      ...SPATIAL,
-      ...CONTENT_DIMS,
+      ...(isVisual ? [...SPATIAL, ...CONTENT_DIMS] : []),
     ];
     byType.set(type, props);
   }
@@ -652,15 +666,20 @@ const VISUAL_TYPES: ReadonlySet<string> = new Set(VISUAL_NODE_TYPES);
 export function catalogFor(seam: Seam, type: Child["type"]): PropDef[] {
   const own = nodeTypeProps(seam, type);
   const core = own ?? CATALOG[type] ?? [];
-  if (!own && !VISUAL_TYPES.has(type)) return core;
-  const ext = extensionProps(seam);
+  // Visual: core's visual types and every extension type that isn't
+  // `visual: false`.
+  const isVisual = own ? seam.nodeTypes.get(type)!.visual !== false : VISUAL_TYPES.has(type);
+  const ext = [
+    ...(isVisual ? extensionProps(seam) : []),
+    ...(type === "composition" ? compositionExtensionProps(seam) : []),
+  ];
   return ext.length ? [...core, ...ext] : core;
 }
 
 /** The root composition's properties (no selection): its own parentless
  *  catalog plus the extension fields, which apply to the whole output there. */
 export function rootProps(seam: Seam): PropDef[] {
-  const ext = extensionProps(seam);
+  const ext = [...extensionProps(seam), ...compositionExtensionProps(seam)];
   return ext.length ? [...ROOT_PROPS, ...ext] : ROOT_PROPS;
 }
 

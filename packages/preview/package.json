@@ -18,6 +18,7 @@
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
     "@seam/extension-adjustments": "workspace:*",
+    "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
     "@seam/media-source": "workspace:*",
     "chokidar": "^4.0.0",

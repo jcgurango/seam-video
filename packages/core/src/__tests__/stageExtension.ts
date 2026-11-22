@@ -5,7 +5,13 @@ import type { SeamExtension } from "../registry.js";
  *  the shape the real Map extension has. Core never names a real extension. */
 export const stage: SeamExtension = {
   name: "stage",
+  // A composition-only field (the root included).
+  fields: [{ key: "mood", nodes: "composition", type: "enum", options: ["calm", "loud"] }],
   nodes: [
+    // Nodes with no visual presence: a `cue` container whose length comes
+    // from its children, which may only be `tick`s.
+    { type: "cue", visual: false, children: ["tick"], span: "children", fields: [{ key: "who", type: "string" }] },
+    { type: "tick", visual: false, fields: [{ key: "label", type: "string", required: true }] },
     {
       type: "stage",
       children: true,

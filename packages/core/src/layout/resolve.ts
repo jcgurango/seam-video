@@ -33,9 +33,16 @@ import { asExtensionNode, type ExtFields } from "../resolved-types.js";
  * just `duration`.
  */
 function naturalDuration(registry: Registry, child: Child): number {
-  // An extension node shows for exactly its authored `duration`.
-  if (registry.nodeTypes.has(child.type)) {
-    return (child as unknown as ExtensionNodeBase).duration;
+  // An extension node shows for exactly its authored `duration` — or, for a
+  // type that takes its span from its children, for their extent when no
+  // `duration` is authored (like a composition).
+  const extDef = registry.nodeTypes.get(child.type);
+  if (extDef) {
+    const node = child as unknown as { duration?: number; children?: Child[] };
+    if (node.duration != null) return node.duration;
+    return extDef.span === "children"
+      ? placeChildren(registry, node.children ?? []).duration
+      : 0;
   }
   switch (child.type) {
     case "clip":
@@ -124,13 +131,20 @@ function spatialExtras(
   };
 }
 
-/** The extension-contributed fields authored on a visual node, or undefined
- *  when it has none. */
+/** The extension-contributed fields authored on a visual node — plus, on a
+ *  composition, the composition-only ones — or undefined when it has none. */
 function extFields(registry: Registry, node: object): ExtFields | undefined {
+  const rec = node as Record<string, unknown>;
   let out: Record<string, unknown> | undefined;
   for (const key of registry.visualFieldKeys) {
-    const v = (node as Record<string, unknown>)[key];
+    const v = rec[key];
     if (v != null) (out ??= {})[key] = v;
+  }
+  if (rec.type === "composition") {
+    for (const key of registry.compositionFieldKeys) {
+      const v = rec[key];
+      if (v != null) (out ??= {})[key] = v;
+    }
   }
   return out;
 }
@@ -265,6 +279,24 @@ function resolveChild(
       // optional arrays resolve).
       if (v != null && !(Array.isArray(v) && v.length === 0)) own[f.key] = v;
     }
+    const children = def.children
+      ? { children: placeChildren(registry, node.children ?? []).children }
+      : {};
+    // No visual presence (a caption, a word): timing, own fields, children.
+    if (def.visual === false) {
+      return {
+        resolved: {
+          type: def.type,
+          extension: true as const,
+          nonVisual: true as const,
+          timelineStart: 0,
+          timelineEnd: 0,
+          ...own,
+          ...children,
+        } as unknown as ResolvedChild,
+        actualDuration: target,
+      };
+    }
     return {
       resolved: {
         type: def.type,
@@ -272,9 +304,7 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         ...own,
-        ...(def.children
-          ? { children: placeChildren(registry, node.children ?? []).children }
-          : {}),
+        ...children,
         ...(node.contentWidth != null ? { contentWidth: node.contentWidth } : {}),
         ...(node.contentHeight != null ? { contentHeight: node.contentHeight } : {}),
         ...(spatialInput ? { spatialInput } : {}),

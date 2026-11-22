@@ -299,3 +299,59 @@ describe("buildRenderList — distort (corner pin)", () => {
     expect(at1.corners![1].x).toBeCloseTo(540);
   });
 });
+
+describe("buildRenderList — extension fields that are not colour-stage inputs", () => {
+  // A composition-only / structured field rides in `ext` but must not force
+  // the FBO path (root or nested), and non-visual nodes emit nothing.
+  const ext = createSeam([
+    {
+      name: "t",
+      fields: [
+        { key: "mood", nodes: "composition", type: "enum", options: ["a", "b"] },
+        { key: "gain", nodes: "visual", type: "number", default: 1 },
+      ],
+      nodes: [{ type: "note", visual: false, fields: [{ key: "label", type: "string" }] }],
+    },
+  ]);
+  const list = (doc: unknown) =>
+    buildRenderList(
+      ext,
+      resolveSpatial(ext.resolveComposition(doc as Composition), 100, 100),
+      0.5,
+      100,
+      100,
+      () => null,
+    );
+
+  it("a composition with only a non-numeric field flattens as before", () => {
+    const cmds = list({
+      type: "composition",
+      mood: "a",
+      children: [{ type: "composition", mood: "b", children: [{ type: "rect", duration: 1, fill: "red" }] }],
+    });
+    expect(cmds.map((c) => c.type)).toEqual(["fill"]);
+  });
+
+  it("a numeric field still forces the group, nested and at the root", () => {
+    expect(
+      list({
+        type: "composition",
+        children: [{ type: "composition", gain: 0.5, children: [{ type: "rect", duration: 1, fill: "red" }] }],
+      }).map((c) => c.type),
+    ).toEqual(["group"]);
+    expect(
+      list({ type: "composition", gain: 0.5, children: [{ type: "rect", duration: 1, fill: "red" }] }).map((c) => c.type),
+    ).toEqual(["group"]);
+  });
+
+  it("a non-visual extension node emits nothing", () => {
+    const cmds = list({
+      type: "composition",
+      children: [
+        { type: "rect", duration: 1, fill: "red" },
+        { type: "note", label: "hi", duration: 1, start: 0 },
+      ],
+    });
+    expect(cmds.map((c) => c.type)).toEqual(["fill"]);
+  });
+});

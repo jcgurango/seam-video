@@ -23,6 +23,18 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@25.3.3)(lightningcss@1.33.0)(terser@5.46.2)
 
+  extensions/captions:
+    devDependencies:
+      '@seam/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@25.3.3)(lightningcss@1.33.0)(terser@5.46.2)
+
   extensions/map:
     dependencies:
       '@mapbox/vector-tile':
@@ -105,6 +117,9 @@ importers:
       '@seam/extension-adjustments':
         specifier: workspace:*
         version: link:../../extensions/adjustments
+      '@seam/extension-captions':
+        specifier: workspace:*
+        version: link:../../extensions/captions
       '@seam/extension-map':
         specifier: workspace:*
         version: link:../../extensions/map
@@ -243,6 +258,9 @@ importers:
       '@seam/extension-adjustments':
         specifier: workspace:*
         version: link:../../extensions/adjustments
+      '@seam/extension-captions':
+        specifier: workspace:*
+        version: link:../../extensions/captions
       '@seam/extension-map':
         specifier: workspace:*
         version: link:../../extensions/map
@@ -326,6 +344,9 @@ importers:
       '@seam/extension-adjustments':
         specifier: workspace:*
         version: link:../../extensions/adjustments
+      '@seam/extension-captions':
+        specifier: workspace:*
+        version: link:../../extensions/captions
       '@seam/extension-map':
         specifier: workspace:*
         version: link:../../extensions/map
@@ -439,6 +460,9 @@ importers:
       '@seam/extension-adjustments':
         specifier: workspace:*
         version: link:../../extensions/adjustments
+      '@seam/extension-captions':
+        specifier: workspace:*
+        version: link:../../extensions/captions
       '@seam/extension-map':
         specifier: workspace:*
         version: link:../../extensions/map

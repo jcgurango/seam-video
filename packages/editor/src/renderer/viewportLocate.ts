@@ -27,6 +27,7 @@ import {
   DEFAULT_CANVAS_WIDTH,
 } from "@seam/core";
 import type {
+  SpatialFields,
   Seam,
   Child,
   Composition,
@@ -182,7 +183,9 @@ function bodyOf(seam: Seam, comp: Composition): ResolvedBody | null {
 
 function spatialInputOf(node: Child): SpatialInput {
   if (node.type === "audio" || node.type === "data") return {};
-  const { origin, translation, size, rotation } = node;
+  // Only visual nodes reach here (a non-visual extension node — a caption —
+  // is never located), so the spatial fields exist.
+  const { origin, translation, size, rotation } = node as SpatialFields;
   return {
     origin,
     translation,
@@ -217,6 +220,8 @@ function placeNode(
   getMediaSize: MediaSizeGetter,
 ): Placed | null {
   if (node.type === "audio" || node.type === "data") return null;
+  // An extension node with no visual presence (a caption) has no box.
+  if (seam.nodeTypes.get(node.type)?.visual === false) return null;
 
   let naturalW = parentW;
   let naturalH = parentH;

@@ -336,6 +336,10 @@ export interface ResolvedExtensionNode<T extends string = string> {
   /** Marks a node whose `type` an extension defines (registry-free code
    *  tells it from core types by this). */
   extension: true;
+  /** Set on a type with no visual presence (`NodeTypeDef.visual: false`):
+   *  it carries no spatial data and neither the spatial pass nor the render
+   *  list touches it or its children. */
+  nonVisual?: true;
   timelineStart: number;
   timelineEnd: number;
   transition?: number;

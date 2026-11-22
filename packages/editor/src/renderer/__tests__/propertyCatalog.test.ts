@@ -24,6 +24,7 @@ import { parsePath } from "../nodePath.js";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
 import { map } from "@seam/extension-map";
+import { captions } from "@seam/extension-captions";
 
 // Core plus the Map extension (a contributed node type with its own catalog).
 const seam = createSeam([map]);
@@ -314,5 +315,41 @@ describe("extension node types", () => {
 
   it("are unknown on an instance without the extension", () => {
     expect(catalogFor(createSeam(), "map" as never)).toEqual([]);
+  });
+});
+
+describe("non-visual node types and composition-only fields", () => {
+  const withCaptions = createSeam([adjustments, map, captions]);
+
+  it("a non-visual type's catalog has timing and its own fields only", () => {
+    const keys = catalogFor(withCaptions, "caption").map((d) => d.key);
+    expect(keys).toEqual(["duration", "start", "offset", "id", "text", "speaker"]);
+    // Its length defaults to its words' extent.
+    expect(catalogFor(withCaptions, "caption")[0]).toMatchObject({ key: "duration", placeholder: "children" });
+    expect(catalogFor(withCaptions, "word").map((d) => d.key)).toEqual(["duration", "start", "offset", "id", "text"]);
+  });
+
+  it("composition-only fields appear on compositions and the root, not on other nodes", () => {
+    const comp = catalogFor(withCaptions, "composition").map((d) => d.key);
+    expect(comp).toContain("captions");
+    expect(comp).toContain("saturation");
+    expect(rootProps(withCaptions).map((d) => d.key)).toContain("captions");
+    expect(catalogFor(withCaptions, "clip").map((d) => d.key)).not.toContain("captions");
+    expect(catalogFor(withCaptions, "map").map((d) => d.key)).not.toContain("captions");
+    const row = catalogFor(withCaptions, "composition").find((d) => d.key === "captions")!;
+    expect(row).toMatchObject({ kind: "enum", options: ["pass", "off", "show"], placeholder: "pass", group: "Captions" });
+    // The structured style has no row.
+    expect(comp).not.toContain("captionStyle");
+  });
+
+  it("writes and validates the routing field through applyPropertyEdit", () => {
+    const d: SeamFile = { type: "composition", children: [{ type: "composition", children: [] }] };
+    const set = applyPropertyEdit(withCaptions, d, [parsePath("children.0")], "captions", () => "off");
+    expect(set.errors).toBeFalsy();
+    expect((set.doc.children![0] as { captions?: string }).captions).toBe("off");
+    // The root (no selection) takes it too.
+    const root = applyPropertyEdit(withCaptions, d, [[]], "captions", () => "show");
+    expect((root.doc as { captions?: string }).captions).toBe("show");
+    expect(applyPropertyEdit(withCaptions, d, [[]], "captions", () => "loud").errors?.length).toBeGreaterThan(0);
   });
 });

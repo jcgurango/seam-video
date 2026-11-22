@@ -235,7 +235,25 @@ function optionalUnless(required: boolean | undefined, schema: z.ZodTypeAny): z.
  */
 export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
   const visualExt: Record<string, z.ZodTypeAny> = {};
-  for (const f of registry.fields) visualExt[f.key] = fieldSchema(f);
+  // Fields for every visual node, and fields for compositions only.
+  const compositionExt: Record<string, z.ZodTypeAny> = {};
+  for (const f of registry.fields) {
+    (f.nodes === "composition" ? compositionExt : visualExt)[f.key] = fieldSchema(f);
+  }
+  const nodeSchemaByType = new Map<string, z.ZodTypeAny>();
+  /** Splice the composition-only extension fields into the composition's
+   *  shape, refusing a key it already has. */
+  const withCompositionFields = <S extends z.ZodRawShape>(shape: S): S => {
+    for (const key of Object.keys(compositionExt)) {
+      if (key in shape || key in visualExt) {
+        const owner = registry.fields.find((f) => f.key === key)!.extension;
+        throw new Error(
+          `Extension "${owner}": field "${key}" collides with a field of "composition"`,
+        );
+      }
+    }
+    return { ...shape, ...compositionExt } as S;
+  };
   const visual = <S extends z.ZodRawShape>(type: string, shape: S): S => {
     for (const key of Object.keys(visualExt)) {
       if (key in shape) {
@@ -449,18 +467,23 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
   // an inner canvas, the spatial / placement / metadata fields, `children`
   // when it is a container — around its own declared fields.
   const extensionNode = (def: RegisteredNodeType): z.ZodTypeAny => {
+    const isVisual = def.visual !== false;
     const own: Record<string, z.ZodTypeAny> = {};
     for (const f of def.fields ?? []) own[f.key] = fieldSchema(f);
     const frameKeys = new Set([
       "type",
       "duration",
-      "contentWidth",
-      "contentHeight",
       "children",
-      ...Object.keys(SpatialFieldsSchema),
       ...Object.keys(AnchorFieldsSchema),
       ...Object.keys(MetadataFieldsSchema),
-      ...Object.keys(visualExt),
+      ...(isVisual
+        ? [
+            "contentWidth",
+            "contentHeight",
+            ...Object.keys(SpatialFieldsSchema),
+            ...Object.keys(visualExt),
+          ]
+        : []),
     ]);
     // Checked now (not inside the lazy schema) so a bad definition fails at
     // `createSeam`.
@@ -471,22 +494,46 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
         );
       }
     }
-    return z.lazy(() =>
-      z.object({
+    const spanFromChildren = def.span === "children";
+    return z.lazy(() => {
+      // A container takes any node, or only the types it names.
+      const childSchema: z.ZodTypeAny = Array.isArray(def.children)
+        ? unionOf(def.children.map((t) => nodeSchemaByType.get(t)!))
+        : ChildSchema;
+      const duration = z.number().positive();
+      const node = z.object({
         type: z.literal(def.type),
-        duration: z.number().positive(),
-        contentWidth: keyframed(LengthSchema).optional(),
-        contentHeight: keyframed(LengthSchema).optional(),
-        ...(def.children ? { children: z.array(ChildSchema).optional() } : {}),
-        ...SpatialFieldsSchema,
+        duration: spanFromChildren ? duration.optional() : duration,
+        ...(def.children ? { children: z.array(childSchema).optional() } : {}),
         ...AnchorFieldsSchema,
         ...MetadataFieldsSchema,
-        ...visualExt,
+        ...(isVisual
+          ? {
+              contentWidth: keyframed(LengthSchema).optional(),
+              contentHeight: keyframed(LengthSchema).optional(),
+              ...SpatialFieldsSchema,
+              ...visualExt,
+            }
+          : {}),
         ...own,
-      }).strict(),
-    );
+      }).strict();
+      // Its length comes from `duration` or, failing that, from its children.
+      return spanFromChildren
+        ? node.refine(
+            (n) => n.duration != null || (Array.isArray(n.children) && n.children.length > 0),
+            { message: `A ${def.type} needs 'duration' or children` },
+          )
+        : node;
+    });
   };
-  const extensionNodeSchemas = [...registry.nodeTypes.values()].map(extensionNode);
+  const unionOf = (schemas: z.ZodTypeAny[]): z.ZodTypeAny =>
+    schemas.length === 1
+      ? schemas[0]
+      : z.union(schemas as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+  const extensionNodeEntries = [...registry.nodeTypes.values()].map(
+    (def) => [def.type, extensionNode(def)] as const,
+  );
+  const extensionNodeSchemas = extensionNodeEntries.map(([, schema]) => schema);
 
   const ChildSchema: z.ZodType<any> = z.lazy(() =>
     z.union([
@@ -515,7 +562,7 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
   );
 
   const CompositionSchema: z.ZodType<any> = z.lazy(() =>
-    z.object(visual("composition", {
+    z.object(visual("composition", withCompositionFields({
       type: z.literal("composition"),
       children: z.array(ChildSchema).optional(),
       /** Bin entries scoped to this composition's subtree. A descendant
@@ -570,7 +617,7 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
       ...SpatialFieldsSchema,
         ...AnchorFieldsSchema,
       ...MetadataFieldsSchema,
-    })).strict().refine(
+    }))).strict().refine(
       (data) =>
       !(data.speed != null && data.duration != null) ||
       (data.overflow != null && data.overflow !== "stretch") ||
@@ -585,6 +632,22 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
       }
     )
   );
+
+  // Every node schema by `type`, for containers that restrict their children
+  // (read lazily, at parse time).
+  nodeSchemaByType.set("clip", ClipSchema);
+  nodeSchemaByType.set("audio", AudioSchema);
+  nodeSchemaByType.set("static", StaticSchema);
+  nodeSchemaByType.set("data", DataSchema);
+  nodeSchemaByType.set("text", TextSchema);
+  nodeSchemaByType.set("rect", RectSchema);
+  nodeSchemaByType.set("circle", CircleSchema);
+  nodeSchemaByType.set("composition", CompositionSchema);
+  for (const [type, schema] of extensionNodeEntries) nodeSchemaByType.set(type, schema);
+
+  // Evaluate the lazy composition schema once, so a contributed field that
+  // collides with one of its keys fails at `createSeam`, not at first use.
+  CompositionSchema.safeParse({ type: "composition" });
 
   return CompositionSchema;
 }
