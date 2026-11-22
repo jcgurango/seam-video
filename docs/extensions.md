@@ -45,7 +45,7 @@ Proposed, not yet confirmed:
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
-| 3 | Captions (CC cut + CC generation) | stage A done, awaiting JC's test; B–E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
+| 3 | Captions (CC cut + CC generation) | stages A–C done (C awaiting JC's test); D–E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
@@ -230,10 +230,12 @@ Each stage green; the golden project checked at C and E.
 | Stage | Builds | New contract |
 |-------|--------|--------------|
 | A ✔ | `caption` + `word` node types validate and resolve; `captions` routing field and caption style on compositions | node types with no visual presence; restricted children; a span taken from children; fields that target compositions only |
-| B | Collecting captions: a pure function over the resolved tree giving every caption and word with its output time at its surface; derived display phrases; subtitle export falls out | a collected channel |
-| C | Rendering: the overlay at each surface, in both hosts; golden parity (see below) | overlay rasterizers |
+| B ✔ | Collecting captions: a pure function over the resolved tree giving every caption and word with its output time at its surface; derived display phrases; `toSrt` / `toVtt` | a collected channel (`walkResolved`) |
+| C ✔ | Rendering: the overlay at each surface, in both hosts; golden parity (see below) | overlays (`OverlayDef`, `OverlayRasterizer`, `SurfaceView`) |
 | D | Editor: transcribe command, words edited as children, reauthor, convert to text, a derived caption lane on the timeline, the CC cut view with batch split + delete | commands, views, services, document / selection / playhead access |
 | E | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
+
+Stage C result: see "Golden project" at the end of this document.
 
 Golden project: its captions become caption nodes and the root script goes
 away. To keep a pixel check, the converted copy would hold the 102 root
@@ -440,6 +442,50 @@ contribute to visual nodes.
 - Only fields a colour stage consumes (numbers) make a container take the
   group path; a structured or routing field in `ext` does not. (Since stage 2
   a pinned composition had been taking it needlessly — fixed here.)
+
+### Collected channels and overlays (stage 3B–C)
+
+Captions are not drawn where they sit; they are gathered up the tree and
+drawn at a surface. Two contract pieces make that possible.
+
+**`walkResolved(children, visit, offset?, rate?)`** (core) walks a resolved
+tree through compositions (speed, and loops unrolled into the cycles they
+play) and extension containers, giving `visit` each node with its span in
+the walk root's time; returning `false` skips a subtree. It is the same time
+mapping `flattenResolved` and the audio mixers use. Composition windows need
+no handling: the resolver already crops and rebases a windowed composition's
+children.
+
+```ts
+overlays: [{
+  key: "captions",
+  active(surface, t) { … },            // pure; asked every frame
+  rasterizer: createCaptionsRasterizer // only on the ./render entry
+}]
+surface = { root, ext, children }      // the root, or a composition
+rasterizer(host) → { draw(surface, t, width, height): CanvasLike | null, ensure?, clear?, dispose }
+```
+
+- The render list asks every overlay, for the root and for each active
+  composition, whether it has something to show at that surface's inner time,
+  and emits one draw for it **on top of that surface's children**, filling
+  its viewport at its inner-canvas size. The drawable is
+  `{ overlay, surface }`, one stable object per pair.
+- At the root the overlay sits outside the root's colour-stage group: a look
+  applied to the whole video does not recolour its captions. In a composition
+  that is a surface it is part of that composition's content.
+- Hosts get the pixels from the overlay's rasterizer exactly as they do for a
+  self-drawing node (`"overlay" in drawable`).
+
+**A node cut by a composition window.** A resolved extension node whose span
+a window (or the crop at time 0) cut into carries
+`window: { offset, duration }` — where the visible part starts on its own
+span, and that span's full length. Its content runs on that original span
+(`extensionContentSpan(node)`): the render list gives the node's own draw and
+its anchor function `offset + t`, and a rasterizer samples against
+`duration`. Its children are cropped and rebased to the visible part, like a
+composition's. Before this, a map cut at its head restarted its camera and
+mistimed its children.
 
 ### Rasterizers and host services (stage 2)
 

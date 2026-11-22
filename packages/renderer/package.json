@@ -36,6 +36,7 @@
   },
   "devDependencies": {
     "@seam/extension-adjustments": "workspace:*",
+    "@seam/extension-captions": "workspace:*",
     "@seam/extension-map": "workspace:*",
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",

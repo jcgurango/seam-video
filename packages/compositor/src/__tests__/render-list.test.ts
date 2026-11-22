@@ -355,3 +355,101 @@ describe("buildRenderList — extension fields that are not colour-stage inputs"
     expect(cmds.map((c) => c.type)).toEqual(["fill"]);
   });
 });
+
+describe("buildRenderList — overlays", () => {
+  // A stand-in overlay: active at a surface whose `layer` field is "on"
+  // (the root: unless "off"), while t < 1.
+  const ext = createSeam([
+    {
+      name: "o",
+      fields: [
+        { key: "layer", nodes: "composition", type: "enum", options: ["on", "off"] },
+        { key: "gain", nodes: "visual", type: "number", default: 1 },
+      ],
+      overlays: [
+        {
+          key: "marks",
+          active: (surface, t) =>
+            t < 1 && (surface.root ? surface.ext?.layer !== "off" : surface.ext?.layer === "on"),
+        },
+      ],
+    },
+  ]);
+  const list = (doc: unknown, t = 0.5) =>
+    buildRenderList(ext, resolveSpatial(ext.resolveComposition(doc as Composition), 200, 100), t, 200, 100, () => null);
+  const rect = { type: "rect", duration: 4, fill: "red" };
+  const isOverlay = (c: RenderCommand) => c.type === "draw" && "overlay" in c.clip;
+
+  it("draws on top of the root's children, at the root's inner canvas and time", () => {
+    const cmds = list({ type: "composition", children: [rect] });
+    expect(cmds.map((c) => c.type)).toEqual(["fill", "draw"]);
+    const o = cmds[1] as DrawCommand;
+    expect(o.clip).toMatchObject({ overlay: "marks", surface: { root: true } });
+    expect([o.quadX, o.quadY, o.quadW, o.quadH]).toEqual([0, 0, 200, 100]);
+    expect([o.contentW, o.contentH, o.drawTime]).toEqual([200, 100, 0.5]);
+  });
+
+  it("is emitted only while active, and the same drawable comes back each frame", () => {
+    const doc = { type: "composition", children: [rect] };
+    const timeline = resolveSpatial(ext.resolveComposition(doc as Composition), 200, 100);
+    const at = (t: number) => buildRenderList(ext, timeline, t, 200, 100, () => null);
+    expect(at(2).some(isOverlay)).toBe(false);
+    const a = at(0.2).find(isOverlay) as DrawCommand;
+    const b = at(0.4).find(isOverlay) as DrawCommand;
+    expect(a.clip).toBe(b.clip);
+  });
+
+  it("the root can switch it off", () => {
+    expect(list({ type: "composition", layer: "off", children: [rect] }).some(isOverlay)).toBe(false);
+  });
+
+  it("stays outside the root's colour-stage group", () => {
+    const cmds = list({ type: "composition", gain: 0.5, children: [rect] });
+    expect(cmds.map((c) => c.type)).toEqual(["group", "draw"]);
+    expect(isOverlay(cmds[1])).toBe(true);
+  });
+
+  it("a composition that is a surface draws it in its own viewport and inner time", () => {
+    const cmds = list(
+      {
+        type: "composition",
+        layer: "off",
+        children: [
+          rect,
+          {
+            type: "composition",
+            start: 0,
+            layer: "on",
+            in: 0.25,
+            size: { x: 100, y: 50 },
+            contentWidth: 400,
+            contentHeight: 200,
+            children: [{ type: "rect", duration: 4, fill: "blue" }],
+          },
+        ],
+      },
+      0.5,
+    );
+    const o = cmds.find(isOverlay) as DrawCommand;
+    expect(o.clip).toMatchObject({ overlay: "marks", surface: { root: false, ext: { layer: "on" } } });
+    // Centred 100×50 box in the 200×100 canvas; raster at the inner canvas.
+    expect([o.quadX, o.quadY, o.quadW, o.quadH]).toEqual([50, 25, 100, 50]);
+    expect([o.contentW, o.contentH]).toEqual([400, 200]);
+    // The composition's inner time: output 0.5 s into a window starting at 0.25.
+    expect(o.drawTime).toBeCloseTo(0.5, 9);
+    // After that composition's own children.
+    expect(cmds.indexOf(o)).toBe(cmds.length - 1);
+  });
+
+  it("inside a layered composition it rides in the group", () => {
+    const cmds = list({
+      type: "composition",
+      layer: "off",
+      children: [{ type: "composition", layer: "on", opacity: 0.5, children: [rect] }],
+    });
+    expect(cmds.map((c) => c.type)).toEqual(["group"]);
+    const group = cmds[0] as GroupCommand;
+    expect(group.children.map((c) => c.type)).toEqual(["fill", "draw"]);
+    expect(isOverlay(group.children[1])).toBe(true);
+  });
+});

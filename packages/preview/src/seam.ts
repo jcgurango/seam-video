@@ -1,6 +1,7 @@
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
-import { captions } from "@seam/extension-captions";
+// The render entry: Captions WITH its overlay renderer.
+import { captions } from "@seam/extension-captions/render";
 // The render entry: the Map extension WITH its rasterizer (this host draws).
 import { map } from "@seam/extension-map/render";
 

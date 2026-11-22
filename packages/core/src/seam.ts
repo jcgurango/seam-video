@@ -12,6 +12,7 @@ import {
   type RegisteredColorStage,
   type RegisteredField,
   type RegisteredNodeType,
+  type RegisteredOverlay,
   type SeamExtension,
 } from "./registry.js";
 import {
@@ -44,6 +45,8 @@ export interface Seam {
    *  anchoring, self-drawing nodes), the hosts (rasterizers) and the editor
    *  (catalog, import, block colours) read them. */
   readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>;
+  /** Contributed overlays (layers drawn on top of a surface), bottom first. */
+  readonly overlays: readonly RegisteredOverlay[];
   /** Strict schema validation of a (macro-expanded) document. Returns the
    *  authored source on success. */
   validate(input: unknown): ValidationResult;
@@ -66,6 +69,7 @@ export function createSeam(extensions: readonly SeamExtension[] = []): Seam {
     colorStages: registry.colorStages,
     colorSlots: registry.colorSlots,
     nodeTypes: registry.nodeTypes,
+    overlays: registry.overlays,
     validate: (input: unknown) => validate(registry, input),
     parseSeamFile: (json: string) => parseSeamFile(registry, json),
     compileSeamFile: (doc: SeamFile, options?: CompileOptions) =>

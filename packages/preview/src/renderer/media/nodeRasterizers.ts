@@ -15,8 +15,10 @@ import type {
   ByteSource,
   CanvasLike,
   NodeRasterizer,
+  OverlayRasterizer,
   RasterHost,
   RegisteredNodeType,
+  RegisteredOverlay,
 } from "@seam/core";
 
 /** Async resolver from a node's `source` to a byte-range source. Null when
@@ -74,7 +76,29 @@ export function rasterizerFor(nodeTypes: NodeTypes, type: string): NodeRasterize
   return r;
 }
 
+type Overlays = readonly RegisteredOverlay[];
+const overlayRasterizers = new WeakMap<Overlays, Map<string, OverlayRasterizer | null>>();
+
+/** The page's rasterizer for the overlay `key` under this Seam instance's
+ *  overlays (`seam.overlays`), or null when it has none. Page-lifetime, like
+ *  the node rasterizers. */
+export function overlayRasterizerFor(overlays: Overlays, key: string): OverlayRasterizer | null {
+  let byKey = overlayRasterizers.get(overlays);
+  if (!byKey) {
+    byKey = new Map();
+    overlayRasterizers.set(overlays, byKey);
+  }
+  let r = byKey.get(key);
+  if (r === undefined) {
+    const create = overlays.find((o) => o.key === key)?.rasterizer;
+    r = create ? create(host) : null;
+    byKey.set(key, r);
+  }
+  return r;
+}
+
 /** Drop every rasterizer's per-timeline state (their media caches stay). */
-export function clearRasterizers(nodeTypes: NodeTypes): void {
+export function clearRasterizers(nodeTypes: NodeTypes, overlays: Overlays = []): void {
   for (const r of rasterizers.get(nodeTypes)?.values() ?? []) r?.clear?.();
+  for (const r of overlayRasterizers.get(overlays)?.values() ?? []) r?.clear?.();
 }

@@ -336,6 +336,15 @@ export interface ResolvedExtensionNode<T extends string = string> {
   /** Marks a node whose `type` an extension defines (registry-free code
    *  tells it from core types by this). */
   extension: true;
+  /** Present when a composition window (or the crop at time 0) cut into the
+   *  node: the part of its own span that is still visible. `offset` is the
+   *  node-local time at `timelineStart`, `duration` its full, uncropped
+   *  length. The node's CONTENT (a map's camera, what its rasterizer draws,
+   *  where it anchors children) runs on that original span — read it through
+   *  {@link extensionContentSpan} — so cropping shows the node as it would
+   *  have been at that moment instead of restarting it. Its children are
+   *  already cropped and rebased to the visible part, like a composition's. */
+  window?: { offset: number; duration: number };
   /** Set on a type with no visual presence (`NodeTypeDef.visual: false`):
    *  it carries no spatial data and neither the spatial pass nor the render
    *  list touches it or its children. */
@@ -371,6 +380,17 @@ export interface ResolvedExtensionNode<T extends string = string> {
 export interface ResolvedExtensionNodeTypes {}
 
 export type ResolvedExtensionChild = ResolvedExtensionNodeTypes[keyof ResolvedExtensionNodeTypes];
+
+/** The span an extension node's content runs on: its full, uncropped length
+ *  and the node-local time at which the visible part starts (0 unless a
+ *  window cut into it). Content time at node-local `t` is `offset + t`. */
+export function extensionContentSpan(node: {
+  timelineStart: number;
+  timelineEnd: number;
+  window?: { offset: number; duration: number };
+}): { offset: number; duration: number } {
+  return node.window ?? { offset: 0, duration: node.timelineEnd - node.timelineStart };
+}
 
 /** View a resolved node as an extension node, or null when its type is
  *  core's. For code that has no Seam instance to ask. */

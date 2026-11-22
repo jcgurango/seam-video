@@ -214,6 +214,48 @@ export interface NodeRasterizer {
   dispose(): void | Promise<void>;
 }
 
+// ── Overlays ────────────────────────────────────────────────────────
+
+/** A composition — or the root — as an overlay sees it: where content an
+ *  extension collects up the tree (captions) is drawn. */
+export interface SurfaceView {
+  /** True for the root timeline, false for a composition. */
+  readonly root: boolean;
+  /** The extension fields authored on it (routing, style, …). */
+  readonly ext?: Readonly<Record<string, unknown>>;
+  /** Its resolved children, in its own inner time. */
+  readonly children: readonly { readonly type: string }[];
+}
+
+/** Draws an overlay's pixels at a surface. One instance per host frame
+ *  provider, like a {@link NodeRasterizer}. */
+export interface OverlayRasterizer {
+  /** Draw the overlay for `surface` at its inner time `t`, `width`×`height`
+   *  (the surface's inner canvas), and return its canvas (stable per
+   *  surface), or null when there is nothing to draw. Synchronous. */
+  draw(surface: SurfaceView, t: number, width: number, height: number): CanvasLike | null;
+  ensure?(surface: SurfaceView, t: number, width: number, height: number): Promise<void>;
+  clear?(): void;
+  dispose(): void | Promise<void>;
+}
+
+/** A layer an extension draws ON TOP of a surface's children — the root's or
+ *  a composition's — in that surface's inner canvas. Unlike a node that draws
+ *  itself, an overlay has no node: it shows what the extension collected from
+ *  the surface's subtree. Ancestors of the collected nodes do not transform,
+ *  crop or fade it; only time is mapped on the way up. */
+export interface OverlayDef {
+  /** Unique across the instance. */
+  readonly key: string;
+  /** Pure. Is there anything to draw at `surface` at its inner time `t`? The
+   *  render list asks this for the root and every active composition, every
+   *  frame, and emits the overlay's draw only when true — keep it cheap
+   *  (cache per `surface.children`). */
+  active(surface: SurfaceView, t: number): boolean;
+  /** Attached by the package's `./render` entry. */
+  readonly rasterizer?: (host: RasterHost) => OverlayRasterizer;
+}
+
 /** A node type contributed by an extension.
  *
  *  Core gives every such node, without it being declared: `duration`,
@@ -281,6 +323,8 @@ export interface SeamExtension {
   readonly colorStage?: ColorStage;
   /** New node types. */
   readonly nodes?: readonly NodeTypeDef[];
+  /** Layers drawn on top of a surface. */
+  readonly overlays?: readonly OverlayDef[];
 }
 
 export type RegisteredField = FieldSpec & {
@@ -295,6 +339,10 @@ export interface RegisteredColorStage extends ColorStage {
 }
 
 export interface RegisteredNodeType extends NodeTypeDef {
+  readonly extension: string;
+}
+
+export interface RegisteredOverlay extends OverlayDef {
   readonly extension: string;
 }
 
@@ -313,6 +361,8 @@ export interface Registry {
   readonly colorSlots: number;
   /** Contributed node types by `type`. */
   readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>;
+  /** Contributed overlays, in registration order (= draw order, bottom first). */
+  readonly overlays: readonly RegisteredOverlay[];
 }
 
 /** The node types core itself defines. */
@@ -336,6 +386,7 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
   const colorStages: RegisteredColorStage[] = [];
   const entries = new Map<string, string>();
   const nodeTypes = new Map<string, RegisteredNodeType>();
+  const overlays: RegisteredOverlay[] = [];
   let colorSlots = 0;
 
   for (const ext of extensions) {
@@ -408,6 +459,26 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
       nodeTypes.set(def.type, Object.freeze({ ...def, extension: ext.name }));
     }
 
+    for (const overlay of ext.overlays ?? []) {
+      if (!KEY_RE.test(overlay.key)) {
+        throw new Error(`Extension "${ext.name}": "${overlay.key}" is not a valid overlay key`);
+      }
+      const other = overlays.find((o) => o.key === overlay.key);
+      if (other) {
+        throw new Error(
+          `Extension "${ext.name}": overlay "${overlay.key}" is already contributed by "${other.extension}"`,
+        );
+      }
+      overlays.push(
+        Object.freeze({
+          key: overlay.key,
+          active: overlay.active.bind(overlay),
+          ...(overlay.rasterizer ? { rasterizer: overlay.rasterizer } : {}),
+          extension: ext.name,
+        }),
+      );
+    }
+
     const stage = ext.colorStage;
     if (stage) {
       if (!Number.isInteger(stage.slots) || stage.slots < 1) {
@@ -462,6 +533,7 @@ export function buildRegistry(extensions: readonly SeamExtension[]): Registry {
     colorStages: Object.freeze(colorStages),
     colorSlots,
     nodeTypes,
+    overlays: Object.freeze(overlays),
   });
 }
 

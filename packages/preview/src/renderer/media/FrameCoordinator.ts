@@ -5,7 +5,9 @@ import type {
   ResolvedComposition,
   ResolvedExtensionNode,
   RegisteredNodeType,
+  RegisteredOverlay,
   ExtensionNodeView,
+  Seam,
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
@@ -26,7 +28,13 @@ import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
 import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
-import { clearRasterizers, rasterizerFor, subscribeRasterWake } from "./nodeRasterizers.js";
+import {
+  clearRasterizers,
+  overlayRasterizerFor,
+  rasterizerFor,
+  subscribeRasterWake,
+} from "./nodeRasterizers.js";
+import type { OverlayDrawable } from "@seam/compositor";
 import { resolveSource } from "../components/resolveSource.js";
 import { CutPlanner, type Cut } from "@seam/media-source";
 
@@ -125,12 +133,21 @@ export class FrameCoordinator {
   /** The Seam instance's contributed node types — where rasterizers for
    *  self-drawing extension nodes (a map) come from. */
   private readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>;
-  /** This frame's canvas per self-drawing extension node. */
-  private nodeFrames = new Map<ResolvedExtensionNode, HTMLCanvasElement | OffscreenCanvas>();
+  /** The Seam instance's overlays (the Captions layer). */
+  private readonly overlays: readonly RegisteredOverlay[];
+  /** This frame's canvas per self-drawing extension node / overlay draw. */
+  private nodeFrames = new Map<
+    ResolvedExtensionNode | OverlayDrawable,
+    HTMLCanvasElement | OffscreenCanvas
+  >();
   private rasterWakeUnsub: (() => void) | null = null;
 
-  constructor(nodeTypes: ReadonlyMap<string, RegisteredNodeType> = new Map()) {
-    this.nodeTypes = nodeTypes;
+  /** `extensions`: the host's Seam instance. */
+  constructor(
+    extensions: Pick<Seam, "nodeTypes" | "overlays"> = { nodeTypes: new Map(), overlays: [] },
+  ) {
+    this.nodeTypes = extensions.nodeTypes;
+    this.overlays = extensions.overlays;
   }
   private ready = false;
   /** Bumped on each setTimeline. An in-flight (async) setTimeline checks this
@@ -362,7 +379,18 @@ export class FrameCoordinator {
         if (c.type === "draw") {
           if (c.contentW == null || c.contentH == null) continue;
           const node = c.clip;
-          if ("extension" in node) {
+          if ("overlay" in node) {
+            // An extension overlay at a surface (captions): `drawTime` is
+            // the surface's inner time.
+            const canvas = overlayRasterizerFor(this.overlays, node.overlay)?.draw(
+              node.surface,
+              c.drawTime,
+              c.contentW,
+              c.contentH,
+            );
+            if (canvas) this.nodeFrames.set(node, canvas as unknown as HTMLCanvasElement);
+            else this.nodeFrames.delete(node);
+          } else if ("extension" in node) {
             const canvas = rasterizerFor(this.nodeTypes, node.type)?.draw(
               node as unknown as ExtensionNodeView,
               c.drawTime,
@@ -383,10 +411,10 @@ export class FrameCoordinator {
   }
 
   getFrame(
-    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode,
+    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode | OverlayDrawable,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
-    if ("extension" in clip) {
+    if ("overlay" in clip || "extension" in clip) {
       return this.nodeFrames.get(clip) ?? null;
     }
     if (clip.type === "text") {
@@ -457,7 +485,7 @@ export class FrameCoordinator {
     this.textStore.dispose();
     this.staticStore.dispose();
     this.nodeFrames.clear();
-    clearRasterizers(this.nodeTypes);
+    clearRasterizers(this.nodeTypes, this.overlays);
     this.rasterWakeUnsub?.();
     this.rasterWakeUnsub = null;
     this.ready = false;

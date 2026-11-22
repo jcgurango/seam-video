@@ -25,7 +25,7 @@ import {
 } from "./clip-span.js";
 import { parseStart } from "./anchor.js";
 import type { Registry } from "../registry.js";
-import { asExtensionNode, type ExtFields } from "../resolved-types.js";
+import { asExtensionNode, extensionContentSpan, type ExtFields } from "../resolved-types.js";
 
 /**
  * A node's natural output length: its content (`[in, out]` / inner window)
@@ -728,13 +728,35 @@ function cropChildrenToWindow(
         timelineStart: rebasedStart,
         timelineEnd: rebasedEnd,
       });
+    } else if (asExtensionNode(child)) {
+      // An extension node. If the window cut into it, remember which part of
+      // its own span survives (its content keeps running on the original
+      // span — a map's camera must not restart) and crop its children to
+      // that part, rebased, exactly as a composition's are (speed 1).
+      const ext = asExtensionNode(child)!;
+      const head = visibleStart - child.timelineStart;
+      const cut = head > 0 || visibleEnd < child.timelineEnd;
+      if (!cut) {
+        result.push({ ...child, timelineStart: rebasedStart, timelineEnd: rebasedEnd });
+      } else {
+        const full = extensionContentSpan(ext);
+        const offset = full.offset + head;
+        result.push({
+          ...ext,
+          timelineStart: rebasedStart,
+          timelineEnd: rebasedEnd,
+          window: { offset, duration: full.duration },
+          ...(ext.children
+            ? { children: cropChildrenToWindow(ext.children, head, head + (visibleEnd - visibleStart)) }
+            : {}),
+        } as unknown as ResolvedChild);
+      }
     } else if (
       child.type === "data" ||
       child.type === "text" ||
       child.type === "static" ||
       child.type === "rect" ||
-      child.type === "circle" ||
-      asExtensionNode(child) != null
+      child.type === "circle"
     ) {
       result.push({
         ...child,

@@ -3,8 +3,12 @@ import { createSeam } from "../seam.js";
 import type { ColorStage, SeamExtension } from "../registry.js";
 import type { Composition } from "../types.js";
 import { resolveSpatial } from "../layout/resolve-spatial.js";
-import { flattenResolved } from "../flatten.js";
-import { asExtensionNode, type ResolvedExtensionNode } from "../resolved-types.js";
+import { flattenResolved, walkResolved } from "../flatten.js";
+import {
+  asExtensionNode,
+  extensionContentSpan,
+  type ResolvedExtensionNode,
+} from "../resolved-types.js";
 import { stage as stageExt } from "./stageExtension.js";
 
 describe("createSeam", () => {
@@ -376,5 +380,140 @@ describe("non-visual node types, span from children, composition-only fields", (
     expect(() =>
       createSeam([{ name: "x", fields: [{ key: "volume", nodes: "composition", type: "number" }] }]),
     ).toThrow(/collides with a field of "composition"/);
+  });
+});
+
+describe("an extension node cut by a composition window", () => {
+  const seam = createSeam([stageExt]);
+  const inWindow = (window: object, node: object) =>
+    seam.resolveComposition({
+      type: "composition",
+      children: [{ type: "composition", ...window, children: [node] }],
+    } as unknown as Composition).children[0] as unknown as { children: ResolvedExtensionNode[] };
+
+  const stageNode = {
+    type: "stage",
+    source: "a.bin",
+    duration: 10,
+    children: [
+      { type: "rect", duration: 2 }, // 0–2
+      { type: "rect", duration: 4 }, // 2–6
+      { type: "rect", duration: 4 }, // 6–10
+    ],
+  };
+
+  it("uncut: no window, content span is its own span", () => {
+    const s = inWindow({}, stageNode).children[0];
+    expect(s.window).toBeUndefined();
+    expect(extensionContentSpan(s)).toEqual({ offset: 0, duration: 10 });
+  });
+
+  it("cut at the head: remembers where it starts on its own span, and crops + rebases its children", () => {
+    const s = inWindow({ in: 3 }, stageNode).children[0];
+    expect(s).toMatchObject({ timelineStart: 0, timelineEnd: 7 });
+    // Content keeps running on the ORIGINAL 10 s span, 3 s in.
+    expect(extensionContentSpan(s)).toEqual({ offset: 3, duration: 10 });
+    // Children: the first is gone, the second is trimmed, all rebased.
+    expect(s.children!.map((c) => [c.timelineStart, c.timelineEnd])).toEqual([[0, 3], [3, 7]]);
+  });
+
+  it("cut at the tail: full duration kept for percent keyframes, children cropped", () => {
+    const s = inWindow({ out: 4 }, stageNode).children[0];
+    expect(s).toMatchObject({ timelineStart: 0, timelineEnd: 4 });
+    expect(extensionContentSpan(s)).toEqual({ offset: 0, duration: 10 });
+    expect(s.children!.map((c) => [c.timelineStart, c.timelineEnd])).toEqual([[0, 2], [2, 4]]);
+  });
+
+  it("nested windows accumulate the offset", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [
+        { type: "composition", in: 1, children: [{ type: "composition", in: 2, children: [stageNode] }] },
+      ],
+    } as unknown as Composition);
+    const inner = (t.children[0] as unknown as { children: { children: ResolvedExtensionNode[] }[] }).children[0];
+    expect(extensionContentSpan(inner.children[0])).toEqual({ offset: 3, duration: 10 });
+  });
+
+  it("the crop at time 0 counts too", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [{ ...stageNode, start: -4 }],
+    } as unknown as Composition);
+    const s = t.children[0] as unknown as ResolvedExtensionNode;
+    expect(s).toMatchObject({ timelineStart: 0, timelineEnd: 6 });
+    expect(extensionContentSpan(s)).toEqual({ offset: 4, duration: 10 });
+  });
+});
+
+describe("walkResolved", () => {
+  const seam = createSeam([stageExt]);
+
+  it("visits every node with its span in the root's time, through speed, windows and extension containers", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [
+        { type: "rect", duration: 1 },
+        {
+          type: "composition",
+          speed: 2,
+          in: 2,
+          children: [
+            { type: "rect", duration: 4 }, // inner 0–4 → window 2.. → inner 0–2
+            { type: "stage", source: "a.bin", duration: 4, children: [{ type: "rect", duration: 1, start: 1 }] },
+          ],
+        },
+      ],
+    } as unknown as Composition);
+    const seen: [string, number, number][] = [];
+    walkResolved(t.children, (node, at) => {
+      seen.push([node.type, at.start, at.end]);
+    });
+    expect(seen).toEqual([
+      ["rect", 0, 1],
+      ["composition", 1, 4], // 6 inner seconds at 2×
+      ["rect", 1, 2], // inner 0–2 at 2×
+      ["stage", 2, 4], // inner 2–6 at 2×
+      ["rect", 2.5, 3], // stage-local 1–2, at the composition's 2×
+    ]);
+  });
+
+  it("returning false skips a subtree", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [{ type: "composition", children: [{ type: "rect", duration: 1 }] }, { type: "rect", duration: 1 }],
+    } as unknown as Composition);
+    const seen: string[] = [];
+    walkResolved(t.children, (node) => {
+      seen.push(node.type);
+      return node.type !== "composition";
+    });
+    expect(seen).toEqual(["composition", "rect"]);
+  });
+
+  it("unrolls a looping composition into the cycles it plays", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [{ type: "composition", duration: 3, underflow: "loop", children: [{ type: "rect", duration: 1 }] }],
+    } as unknown as Composition);
+    const rects: [number, number][] = [];
+    walkResolved(t.children, (node, at) => {
+      if (node.type === "rect") rects.push([at.start, at.end]);
+    });
+    expect(rects).toEqual([[0, 1], [1, 2], [2, 3]]);
+  });
+});
+
+describe("overlays", () => {
+  it("registers in order and rejects a duplicate key", () => {
+    const a = { name: "a", overlays: [{ key: "subs", active: () => true }] };
+    const b = { name: "b", overlays: [{ key: "marks", active: () => false }] };
+    expect(createSeam([a, b]).overlays.map((o) => [o.key, o.extension])).toEqual([
+      ["subs", "a"],
+      ["marks", "b"],
+    ]);
+    expect(() => createSeam([a, { name: "c", overlays: [{ key: "subs", active: () => true }] }])).toThrow(
+      /already contributed by "a"/,
+    );
   });
 });

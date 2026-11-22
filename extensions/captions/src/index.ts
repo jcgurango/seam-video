@@ -22,9 +22,11 @@
 //
 // The root composition behaves as "show" unless it says otherwise.
 //
-// Stage A (this file): the node types, the routing field and the style
-// validate and resolve. Collecting, deriving display phrases and rendering
-// come next — see docs/extensions.md.
+// This entry is PURE: the node types, the routing field and the style, plus
+// collecting captions at a surface and deriving the phrases it displays
+// (`collect.ts`). Hosts that draw import `@seam/extension-captions/render`,
+// the same extension with the overlay renderer attached. The editor tools
+// (transcribe, reauthor, CC cut) come next — see docs/extensions.md.
 //
 // The extension imports only the public extension API (`@seam/core`).
 
@@ -32,11 +34,14 @@ import type {
   Child,
   FieldSpec,
   NodeTypeDef,
+  OverlayDef,
   NonVisualExtensionNodeBase,
   ResolvedChild,
   ResolvedExtensionNode,
   SeamExtension,
 } from "@seam/core";
+
+import { activeCues } from "./collect.js";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -227,12 +232,36 @@ const compositionFields: FieldSpec[] = [
   },
 ];
 
-/** The Captions extension. */
+/** The captions layer: drawn on top of a surface's children whenever a
+ *  phrase is on screen there. (Its rasterizer is attached by the `./render`
+ *  entry.) */
+export const captionsOverlay: OverlayDef = {
+  key: "captions",
+  active: (surface, t) => activeCues(surface, t).length > 0,
+};
+
+/** The Captions extension, pure (validate / resolve / collect). Hosts that
+ *  render register `captions` from `@seam/extension-captions/render`. */
 export const captions: SeamExtension = {
   name: "captions",
   fields: compositionFields,
   // `word` first: `caption` names it as its only child type.
   nodes: [wordNode, captionNode],
+  overlays: [captionsOverlay],
 };
+
+export {
+  activeCues,
+  captionRouting,
+  collectCaptions,
+  cueStyle,
+  deriveCues,
+  surfaceCues,
+  surfaceStyle,
+  toSrt,
+  toVtt,
+  type CaptionCue,
+  type CueWord,
+} from "./collect.js";
 
 export default captions;

@@ -303,6 +303,37 @@ A map's `children` are ordinary nodes of any type, placed exactly like a composi
 
 Since every child without a `start` continues the previous child's run, overlays that should all begin with the map need `"start": 0` (the first child starts at 0 implicitly).
 
+### Caption and Word
+
+A **caption** is what was said and when. It is not a `text` node: it has no position or look of its own. Captions **bubble** up the tree to a *surface* — the root, or a composition that asks for them — which draws every caption that reaches it on top of its content, in one shared style. See [Captions](#captions).
+
+```json
+{
+  "type": "caption",
+  "start": "interview@12.4",
+  "speaker": "faye",
+  "children": [
+    { "type": "word", "text": "It's", "duration": 0.22 },
+    { "type": "word", "text": "gonna", "duration": 0.18 },
+    { "type": "word", "text": "rain", "duration": 0.34, "offset": 0.1 }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"caption"` | yes | |
+| `children` | `word[]` | no | The words, as a run. Only `word` nodes are allowed |
+| `text` | string | no | The phrase, for a caption with no words |
+| `duration` | number | if it has no words | Length in seconds. Defaults to the extent of the words |
+| `speaker` | string | no | Picks the surface's per-speaker style |
+| `style` | object | no | A small exception to the surface's style for this caption (same keys as [`captionStyle`](#captions), minus `maxChars` and `speakers`) |
+| `id`, `start`, `offset` | | no | Placement, like any node (see [Placement](#placement)) |
+
+A **word** is `{ "type": "word", "text", "duration" }`; its `offset` is the pause before it. Retiming a word is ordinary timeline editing.
+
+Captions and words have no spatial fields (`size`, `translation`, `opacity`, …) and take no colour adjustments. They are contributed by the **Captions extension** (`@seam/extension-captions`), which every first-party host installs.
+
 ### Composition
 
 A container that places other nodes on its own timeline. The root of every `.seam` file is a composition, and compositions can be nested.
@@ -614,6 +645,53 @@ They are contributed by the **Adjustments extension** (`@seam/extension-adjustme
 ```
 
 These are corrections for making a shot sit next to its neighbours. Grading (shadow/midtone/highlight balance, looks) is done outside Seam. The old `filters` array, `colorbalance` and `bypass` are gone.
+
+## Captions
+
+Captions are collected, not composited where they sit — the way audio is. A [`caption`](#caption-and-word) anywhere in the tree travels up through its enclosing compositions, its time mapped through each one's window, speed and loop. Words that fall outside a composition's `in`/`out` window are dropped and the caption re-forms from the ones that remain, so captions kept with a piece of footage follow that footage through every cut.
+
+Nothing on the way up moves, crops, fades or recolours a caption. Only time is mapped.
+
+Two fields on a **composition** (the root included) decide where they land:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `captions` | `"pass"` \| `"off"` \| `"show"` | `"pass"` | `pass`: captions continue upward. `off`: they stop here and are not drawn. `show`: they stop here and are drawn here, on top of this composition's content, in its inner canvas. **The root always shows them unless it says `"off"`.** |
+| `captionStyle` | object | — | How captions drawn at this composition look |
+
+`captionStyle` takes the text style keys as plain (non-animated) values — `fontFamily`, `fontSize`, `color`, `fontWeight`, `fontStyle`, `textDecoration`, `letterHeight`, `backgroundColor`, `backgroundPadding`, `strokeColor`, `strokeWidth`, `lineHeight`, `textAlign`, `verticalAlign`, `padding` — plus:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `maxChars` | integer | A caption longer than this is split at word boundaries into consecutive phrases, each shown until the next begins. Unset = shown as authored |
+| `speakers` | `{ [speaker]: style }` | Overrides for captions with that `speaker` |
+
+A caption's look is the surface's style, then its speaker's overrides, then its own `style`.
+
+```json
+{
+  "type": "composition",
+  "captionStyle": {
+    "fontFamily": "Liberation Sans", "fontSize": 50, "fontWeight": "bold",
+    "color": "white", "strokeColor": "black", "strokeWidth": 12,
+    "verticalAlign": "bottom", "padding": [610, 100],
+    "maxChars": 32,
+    "speakers": { "faye": { "color": "pink" } }
+  },
+  "children": [
+    { "type": "composition", "in": 4, "out": 9, "children": [
+      { "type": "clip", "id": "a", "source": "interview.mp4", "in": 0, "out": 60 },
+      { "type": "caption", "start": "a@4.2", "speaker": "faye", "children": [
+        { "type": "word", "text": "It's", "duration": 0.22 },
+        { "type": "word", "text": "gonna", "duration": 0.18 },
+        { "type": "word", "text": "rain.", "duration": 0.34 }
+      ] }
+    ] }
+  ]
+}
+```
+
+Display phrases are derived: an authored caption is a hard boundary (captions are never merged), and `maxChars` only ever splits. A caption with `text` and no words has no word timings, so it is never split.
 
 ## Opacity
 

@@ -21,6 +21,10 @@ export {
   type ExtensionNodeView,
   type ChildAnchor,
   type NodeRasterizer,
+  type OverlayDef,
+  type OverlayRasterizer,
+  type SurfaceView,
+  type RegisteredOverlay,
   type RasterHost,
   type CanvasLike,
   type ByteSource,
@@ -78,8 +82,8 @@ export {
   type Length,
   type ParsedLength,
 } from "./layout/units.js";
-export { flattenResolved } from "./flatten.js";
-export type { FlatLeaf } from "./flatten.js";
+export { flattenResolved, walkResolved } from "./flatten.js";
+export type { FlatLeaf, WalkedSpan } from "./flatten.js";
 export * from "./animation/index.js";
 export { createPitchShifter, type PitchShifter } from "./audio/pitchShifter.js";
 export {

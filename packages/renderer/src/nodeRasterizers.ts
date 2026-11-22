@@ -1,6 +1,7 @@
 /**
  * The headless host side of extension node types that draw themselves
- * (`NodeTypeDef.rasterizer` — e.g. the Map extension's `map`).
+ * (`NodeTypeDef.rasterizer` — e.g. the Map extension's `map`) and of
+ * extension overlays (`OverlayDef.rasterizer` — the Captions layer).
  *
  * `NodeRasterizers` creates each type's rasterizer on first use, hands it the
  * Node {@link RasterHost} (Skia canvases, byte-range sources from disk or
@@ -15,12 +16,14 @@ import type {
   ByteSource,
   CanvasLike,
   NodeRasterizer,
+  OverlayRasterizer,
   RasterHost,
-  RegisteredNodeType,
+  Seam,
+  SurfaceView,
   ResolvedExtensionNode,
   ExtensionNodeView,
 } from "@seam/core";
-import { installFonts } from "./text/fonts.js";
+import { installCanvasShim } from "./text/canvasShim.js";
 import { isRemoteSource, resolveSourcePath } from "./mediaInput.js";
 import type { NodeFrame } from "./NodeBackend.js";
 
@@ -51,12 +54,15 @@ class NodeFileSource implements ByteSource {
 
 export class NodeRasterizers {
   private readonly rasterizers = new Map<string, NodeRasterizer | null>();
+  private readonly overlays = new Map<string, OverlayRasterizer | null>();
   private readonly files: NodeFileSource[] = [];
   private readonly host: RasterHost;
+  private canvasReady = false;
 
+  /** `extensions`: the Seam instance (its node types and overlays). */
   constructor(
     basePath: string,
-    private readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>,
+    private readonly extensions: Pick<Seam, "nodeTypes" | "overlays">,
   ) {
     this.host = {
       createCanvas: (width, height) => createCanvas(width, height) as unknown as CanvasLike,
@@ -76,12 +82,59 @@ export class NodeRasterizers {
   private rasterizerFor(type: string): NodeRasterizer | null {
     let r = this.rasterizers.get(type);
     if (r === undefined) {
-      const create = this.nodeTypes.get(type)?.rasterizer;
-      if (create) installFonts(); // canvas text resolves to the bundled Skia families
+      const create = this.extensions.nodeTypes.get(type)?.rasterizer;
+      if (create) this.prepareCanvas();
       r = create ? create(this.host) : null;
       this.rasterizers.set(type, r);
     }
     return r;
+  }
+
+  private overlayFor(key: string): OverlayRasterizer | null {
+    let r = this.overlays.get(key);
+    if (r === undefined) {
+      const create = this.extensions.overlays.find((o) => o.key === key)?.rasterizer;
+      if (create) this.prepareCanvas();
+      r = create ? create(this.host) : null;
+      this.overlays.set(key, r);
+    }
+    return r;
+  }
+
+  /** Canvas text on Skia: the bundled font families + the `OffscreenCanvas`
+   *  polyfill core's text layout measures with (idempotent). */
+  private prepareCanvas(): void {
+    if (this.canvasReady) return;
+    installCanvasShim();
+    this.canvasReady = true;
+  }
+
+  private read(canvas: CanvasLike | null): NodeFrame | null {
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d") as {
+      getImageData(x: number, y: number, w: number, h: number): { data: Uint8ClampedArray };
+    };
+    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return { data: id.data, width: canvas.width, height: canvas.height };
+  }
+
+  /** Rasterize an overlay for `surface` at its inner time `t` into a
+   *  `width`×`height` RGBA frame. Null when it has nothing to draw. */
+  async renderOverlay(
+    key: string,
+    surface: SurfaceView,
+    t: number,
+    width: number,
+    height: number,
+  ): Promise<NodeFrame | null> {
+    const rasterizer = this.overlayFor(key);
+    if (!rasterizer) {
+      throw new Error(
+        `renderer: overlay "${key}" has no rasterizer — register the extension's render entry with createSeam`,
+      );
+    }
+    await rasterizer.ensure?.(surface, t, width, height);
+    return this.read(rasterizer.draw(surface, t, width, height));
   }
 
   /** Rasterize `node` at node-local `drawTime` into a `width`×`height` RGBA
@@ -100,19 +153,15 @@ export class NodeRasterizers {
     }
     const view = node as unknown as ExtensionNodeView;
     await rasterizer.ensure?.(view, drawTime, width, height);
-    const canvas = rasterizer.draw(view, drawTime, width, height);
-    if (!canvas) return null;
-    const ctx = canvas.getContext("2d") as {
-      getImageData(x: number, y: number, w: number, h: number): { data: Uint8ClampedArray };
-    };
-    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    return { data: id.data, width: canvas.width, height: canvas.height };
+    return this.read(rasterizer.draw(view, drawTime, width, height));
   }
 
   /** Dispose the rasterizers and close every file they opened. */
   async dispose(): Promise<void> {
     for (const r of this.rasterizers.values()) await r?.dispose();
     this.rasterizers.clear();
+    for (const r of this.overlays.values()) await r?.dispose();
+    this.overlays.clear();
     await Promise.all(this.files.map((f) => f.close()));
     this.files.length = 0;
   }

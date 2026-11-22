@@ -12,6 +12,45 @@ import type {
 import { asExtensionNode } from "./resolved-types.js";
 import { unrollLoops } from "./layout/resolve.js";
 
+/** Where a node sits in the time of the tree being walked. */
+export interface WalkedSpan {
+  /** The node's span in the walk root's time. */
+  start: number;
+  end: number;
+  /** Local seconds per root second at this node's level (enclosing
+   *  composition speeds multiplied). */
+  rate: number;
+}
+
+/**
+ * Walk a resolved tree — through compositions (their speed, and their loops
+ * unrolled into the cycles they play) and extension containers — calling
+ * `visit` for every node with its span in the time of `children`'s own
+ * timeline. Return `false` from `visit` to skip a node's subtree.
+ *
+ * The generic "collected channel": an extension whose nodes are gathered up
+ * the tree instead of drawn where they sit (captions) walks with this, the
+ * same time mapping `flattenResolved` and the audio mixers use.
+ */
+export function walkResolved(
+  children: ResolvedChild[],
+  visit: (node: ResolvedChild, at: WalkedSpan) => boolean | void,
+  offset = 0,
+  rate = 1,
+): void {
+  for (const child of unrollLoops(children)) {
+    const start = offset + child.timelineStart / rate;
+    const end = offset + child.timelineEnd / rate;
+    if (visit(child, { start, end, rate }) === false) continue;
+    if (child.type === "composition") {
+      walkResolved(child.children, visit, start, rate * child.speed);
+    } else {
+      const kids = asExtensionNode(child)?.children;
+      if (kids) walkResolved(kids, visit, start, rate);
+    }
+  }
+}
+
 export type FlatLeaf =
   | ResolvedClip
   | ResolvedAudio

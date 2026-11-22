@@ -49,6 +49,7 @@ import type {
   ExtFields,
   Length,
   Seam,
+  SurfaceView,
   ChildAnchor,
   ExtensionNodeView,
 } from "@seam/core";
@@ -65,6 +66,7 @@ import {
   squareToQuad,
   applyHomography,
   asExtensionNode,
+  extensionContentSpan,
   type Keyframed,
   type Quad,
   type DistortCorners,
@@ -91,7 +93,7 @@ export const NO_FIELDS: FieldValues = Object.freeze({});
 /** What the render list needs from a Seam instance: the contributed node
  *  types (containers, self-drawing nodes, child anchoring) and fields (which
  *  ones are numbers a colour stage can consume). */
-export type RenderListExtensions = Pick<Seam, "nodeTypes" | "fields">;
+export type RenderListExtensions = Pick<Seam, "nodeTypes" | "fields" | "overlays">;
 
 /** Per-instance lookups, built once and cached. */
 interface Env {
@@ -144,6 +146,64 @@ function hasStageFields(env: Env, ext: ExtFields | undefined): boolean {
   return false;
 }
 
+// Surfaces and their overlay drawables are cached so the same objects come
+// back every frame for a given resolved timeline (hosts cache canvases and
+// textures by identity).
+const surfaceViews = new WeakMap<object, SurfaceView>();
+function surfaceOf(children: ResolvedChild[], ext: ExtFields | undefined, root: boolean): SurfaceView {
+  let view = surfaceViews.get(children);
+  if (!view || view.ext !== ext) {
+    view = { root, children, ...(ext ? { ext } : {}) };
+    surfaceViews.set(children, view);
+  }
+  return view;
+}
+const overlayDrawables = new WeakMap<SurfaceView, Map<string, OverlayDrawable>>();
+function overlayDrawable(surface: SurfaceView, key: string): OverlayDrawable {
+  let byKey = overlayDrawables.get(surface);
+  if (!byKey) overlayDrawables.set(surface, (byKey = new Map()));
+  let d = byKey.get(key);
+  if (!d) byKey.set(key, (d = { overlay: key, surface }));
+  return d;
+}
+
+/** Emit the draws of every extension overlay that has something to show at
+ *  `surface` at its inner time `t` — on top of whatever is already in
+ *  `commands`, filling the surface's viewport at its inner-canvas size. */
+function pushOverlays(
+  env: Env,
+  surface: SurfaceView,
+  t: number,
+  viewport: Viewport,
+  scissor: ClipRect,
+  opacity: number,
+  commands: RenderCommand[],
+): void {
+  for (const overlay of env.seam.overlays) {
+    if (!overlay.active(surface, t)) continue;
+    commands.push({
+      type: "draw",
+      clip: overlayDrawable(surface, overlay.key),
+      fields: NO_FIELDS,
+      scissorX: scissor.x,
+      scissorY: scissor.y,
+      scissorW: scissor.w,
+      scissorH: scissor.h,
+      quadX: viewport.x,
+      quadY: viewport.y,
+      quadW: viewport.w,
+      quadH: viewport.h,
+      rotation: 0,
+      pivotX: 0,
+      pivotY: 0,
+      opacity,
+      drawTime: t,
+      contentW: viewport.contentW,
+      contentH: viewport.contentH,
+    });
+  }
+}
+
 /** Analytic shape the shader rasterizes, in TARGET pixels relative to the
  *  command's quad. Used both as the geometry of a shape fill and as the alpha
  *  mask (`cornerRadius`) of any textured draw / composited group. */
@@ -160,10 +220,25 @@ export interface ShapeGeometry {
   innerInset: number;
 }
 
-/** What a {@link DrawCommand} draws: a core drawable, or an extension node
- *  that draws itself. Tell them apart with `"extension" in clip` (core types
- *  never carry that key), after which `clip.type` narrows as usual. */
-export type Drawable = ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode;
+/** An extension overlay drawn at a surface (the root or a composition): the
+ *  thing a host asks the overlay's rasterizer for. One stable object per
+ *  (surface, overlay), so hosts and the compositor can key textures on it. */
+export interface OverlayDrawable {
+  /** The overlay's key (`OverlayDef.key`). */
+  overlay: string;
+  surface: SurfaceView;
+}
+
+/** What a {@link DrawCommand} draws: a core drawable, an extension node that
+ *  draws itself, or an extension overlay. Tell them apart with
+ *  `"overlay" in clip`, then `"extension" in clip` (core types carry neither
+ *  key), after which `clip.type` narrows as usual. */
+export type Drawable =
+  | ResolvedClip
+  | ResolvedText
+  | ResolvedStatic
+  | ResolvedExtensionNode
+  | OverlayDrawable;
 
 export interface DrawCommand {
   type: "draw";
@@ -339,6 +414,22 @@ export function buildRenderList(
   // Extension fields authored on the root composition (a colour adjustment
   // of the whole video): composite the frame as one full-canvas group so the
   // colour stages see it as a unit, like any composition that carries them.
+  // Extension overlays at the root (captions): on top of everything, and
+  // outside the root's colour-stage group — a look applied to the video does
+  // not recolour its captions.
+  const overlays: RenderCommand[] = [];
+  if (env.seam.overlays.length > 0) {
+    pushOverlays(
+      env,
+      surfaceOf(timeline.children, timeline.ext, true),
+      currentTime,
+      rootViewport,
+      rootClip,
+      1,
+      overlays,
+    );
+  }
+
   if (hasStageFields(env, timeline.ext)) {
     return [
       {
@@ -360,10 +451,11 @@ export function buildRenderList(
         pivotY: 0,
         children: commands,
       },
+      ...overlays,
     ];
   }
 
-  return commands;
+  return overlays.length > 0 ? [...commands, ...overlays] : commands;
 }
 
 /** An un-rotated, un-shaped fill covering `rect` (composition background). */
@@ -774,9 +866,15 @@ function walkChildren(
     // pins): build this frame's anchor function from the node's state at
     // `drawTime` — the same node-local time its own draw carries, so the host
     // rasterizes it for exactly the state the children are placed against.
+    // The node's CONTENT runs on its original span even when a composition
+    // window cut into it (`extensionContentSpan`), so a cropped map shows the
+    // camera it would have had at that moment. Its children are already
+    // cropped + rebased to the visible part, so they keep using `drawTime`.
+    const content = extNode ? extensionContentSpan(extNode) : null;
+    const ownTime = content ? content.offset + drawTime : drawTime;
     const innerAnchors: ChildAnchor | null =
       extNode && def?.createAnchors
-        ? def.createAnchors(extNode as unknown as ExtensionNodeView, drawTime, drawDuration, {
+        ? def.createAnchors(extNode as unknown as ExtensionNodeView, ownTime, content!.duration, {
             width: innerContentW,
             height: innerContentH,
           })
@@ -829,7 +927,7 @@ function walkChildren(
       const groupChildren: RenderCommand[] = [];
       if (ownDraw) {
         groupChildren.push(
-          nodeDraw(extNode!, fboViewport, fboClip, 1, drawTime, fboW, fboH, NO_FIELDS),
+          nodeDraw(extNode!, fboViewport, fboClip, 1, ownTime, fboW, fboH, NO_FIELDS),
         );
       } else if (!isExt && comp.backgroundColor != null) {
         groupChildren.push(plainFill(comp, comp.backgroundColor, fboClip, fboClip, 1));
@@ -845,6 +943,19 @@ function walkChildren(
         groupChildren,
         innerAnchors,
       );
+      // Overlays this composition is a surface for (its own captions), on top
+      // of its children, inside its group.
+      if (!isExt && env.seam.overlays.length > 0) {
+        pushOverlays(
+          env,
+          surfaceOf(comp.children, comp.ext, false),
+          childLocalTime,
+          fboViewport,
+          fboClip,
+          1,
+          groupChildren,
+        );
+      }
 
       commands.push({
         type: "group",
@@ -885,7 +996,7 @@ function walkChildren(
             childViewport,
             childClip,
             opacity,
-            drawTime,
+            ownTime,
             innerContentW,
             innerContentH,
             NO_FIELDS,
@@ -906,6 +1017,17 @@ function walkChildren(
         commands,
         innerAnchors,
       );
+      if (!isExt && env.seam.overlays.length > 0) {
+        pushOverlays(
+          env,
+          surfaceOf(comp.children, comp.ext, false),
+          childLocalTime,
+          childViewport,
+          childClip,
+          opacity,
+          commands,
+        );
+      }
     }
   }
 }

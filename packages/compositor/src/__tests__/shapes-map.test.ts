@@ -203,7 +203,7 @@ describe("buildRenderList — map", () => {
   it("draws the basemap at the inner canvas with map-local drawTime, then the attachments", () => {
     const cmds = commandsAt(root, 1, 512, 512);
     const base = draws(cmds)[0];
-    expect(base.clip.type).toBe("map");
+    expect((base.clip as { type: string }).type).toBe("map");
     expect(base.drawTime).toBe(1);
     expect(base.contentW).toBe(512);
     expect(base.contentH).toBe(512);
@@ -244,6 +244,33 @@ describe("buildRenderList — map", () => {
     expect(x(3.999)).toBeCloseTo(512, 0);
     expect(x(2)).toBeGreaterThan(384);
     expect(x(2)).toBeLessThan(512);
+  });
+
+  it("a map cut by a composition window keeps its camera: it does not restart", () => {
+    // The same map inside a composition whose window starts 2 s in. One second
+    // into that composition is second 3 of the map — the basemap draw carries
+    // that time, and the geo pin sits where it does at t=3 uncut.
+    const windowed: Composition = {
+      type: "composition",
+      contentWidth: 512,
+      contentHeight: 512,
+      children: [{ type: "composition", in: 2, children: [map] } as never],
+    };
+    const geoX = (doc: Composition, t: number) => {
+      const geo = fills(commandsAt(doc, t, 512, 512)).find((c) => c.color === "red")!;
+      return geo.destX + geo.destW / 2;
+    };
+    const base = draws(commandsAt(windowed, 1, 512, 512))[0];
+    expect((base.clip as { type: string }).type).toBe("map");
+    expect(base.drawTime).toBe(3);
+    expect(geoX(windowed, 1)).toBeCloseTo(geoX(root, 3), 6);
+    expect(geoX(windowed, 0)).toBeCloseTo(geoX(root, 2), 6);
+    // The path pin riding the reveal head (progress) follows the same clock.
+    const head = (doc: Composition, t: number) => {
+      const blue = fills(commandsAt(doc, t, 512, 512)).find((c) => c.color === "blue")!;
+      return blue.destX + blue.destW / 2;
+    };
+    expect(head(windowed, 1)).toBeCloseTo(head(root, 3), 6);
   });
 
   it("a map with opacity < 1 or a cornerRadius composites through an FBO", () => {

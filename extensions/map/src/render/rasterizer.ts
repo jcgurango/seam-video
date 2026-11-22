@@ -15,7 +15,13 @@
 // uses, so pinned children land exactly on the basemap.
 
 import type { Source } from "pmtiles";
-import type { CanvasLike, ExtensionNodeView, NodeRasterizer, RasterHost } from "@seam/core";
+import {
+  extensionContentSpan,
+  type CanvasLike,
+  type ExtensionNodeView,
+  type NodeRasterizer,
+  type RasterHost,
+} from "@seam/core";
 import { MapView } from "../view.js";
 import { sampleMapState, type MapTheme, type ResolvedMap } from "../index.js";
 import { TileSourcePool } from "./tile-source.js";
@@ -116,7 +122,9 @@ export function createMapRasterizer(host: RasterHost): NodeRasterizer {
         ctx.restore();
         return entry.canvas;
       }
-      const duration = node.timelineEnd - node.timelineStart;
+      // The map's full span — `drawTime` is content time on it, even when a
+      // composition window cut into the node.
+      const duration = extensionContentSpan(node).duration;
       const state = sampleMapState(node, t, duration);
       const mapView = new MapView(
         { latitude: state.latitude, longitude: state.longitude, zoom: state.zoom, width: W, height: H },
@@ -149,7 +157,9 @@ export function createMapRasterizer(host: RasterHost): NodeRasterizer {
     async ensure(view: ExtensionNodeView, drawTime: number, w: number, h: number): Promise<void> {
       const node = view as unknown as ResolvedMap;
       const [W, H] = sizeOf(w, h);
-      const duration = node.timelineEnd - node.timelineStart;
+      // The map's full span — `drawTime` is content time on it, even when a
+      // composition window cut into the node.
+      const duration = extensionContentSpan(node).duration;
       const state = sampleMapState(node, Math.max(0, drawTime), duration);
       const tiles = pool.acquire(node.source);
       const header = await tiles.header();

@@ -64,7 +64,7 @@ export default function Timeline({
   if (!audioSchedulerRef.current)
     audioSchedulerRef.current = new AudioScheduler();
   if (!coordinatorRef.current)
-    coordinatorRef.current = new FrameCoordinator(seam.nodeTypes);
+    coordinatorRef.current = new FrameCoordinator(seam);
   if (!rendererRef.current) rendererRef.current = new WebGPURenderer(seam);
 
   const mediaStore = mediaStoreRef.current;

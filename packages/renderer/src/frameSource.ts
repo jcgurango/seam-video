@@ -24,7 +24,7 @@ import {
 } from "mediabunny";
 import { layoutText, drawTextLayout, clipSourceTime } from "@seam/core";
 import type {
-  RegisteredNodeType,
+  Seam,
   ResolvedClip,
   ResolvedExtensionNode,
   ResolvedStatic,
@@ -122,17 +122,17 @@ export class FrameSource {
   // in dispose().
   private readonly nodes: NodeRasterizers;
 
-  /** `nodeTypes`: the Seam instance's contributed node types (`seam.nodeTypes`)
-   *  — where the rasterizers come from. */
+  /** `extensions`: the Seam instance — its node types and overlays are where
+   *  the rasterizers come from. */
   constructor(
     basePath: string,
     stores?: BlockStores,
-    nodeTypes: ReadonlyMap<string, RegisteredNodeType> = new Map(),
+    extensions: Pick<Seam, "nodeTypes" | "overlays"> = { nodeTypes: new Map(), overlays: [] },
   ) {
     ensureServer();
     this.basePath = basePath;
     this.stores = stores;
-    this.nodes = new NodeRasterizers(basePath, nodeTypes);
+    this.nodes = new NodeRasterizers(basePath, extensions);
   }
 
   /** Absolute path for a local source; an `http(s)://` URL passes through
@@ -206,6 +206,11 @@ export class FrameSource {
     contentW?: number,
     contentH?: number,
   ): Promise<NodeFrame | null> {
+    // An extension overlay at a surface (captions): `drawTime` is the
+    // surface's inner time, `contentW/H` its inner canvas.
+    if ("overlay" in node) {
+      return this.nodes.renderOverlay(node.overlay, node.surface, drawTime, contentW ?? 1, contentH ?? 1);
+    }
     // An extension node that draws itself (core types never carry the key).
     if ("extension" in node) {
       return this.renderNode(node, drawTime, contentW, contentH);

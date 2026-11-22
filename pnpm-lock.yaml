@@ -433,6 +433,9 @@ importers:
       '@seam/extension-adjustments':
         specifier: workspace:*
         version: link:../../extensions/adjustments
+      '@seam/extension-captions':
+        specifier: workspace:*
+        version: link:../../extensions/captions
       '@seam/extension-map':
         specifier: workspace:*
         version: link:../../extensions/map
