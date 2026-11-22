@@ -45,7 +45,7 @@ Proposed, not yet confirmed:
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
 | 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
-| 3 | Captions (CC cut + CC generation) | stages A–C done (C awaiting JC's test); D–E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
+| 3 | Captions (CC cut + CC generation) | A–C done; D part 1 done (awaiting JC's test); D part 2 and E to do | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
 | 6 | Motion suite | not started | embedded app as a view + its own node type |
@@ -232,7 +232,8 @@ Each stage green; the golden project checked at C and E.
 | A ✔ | `caption` + `word` node types validate and resolve; `captions` routing field and caption style on compositions | node types with no visual presence; restricted children; a span taken from children; fields that target compositions only |
 | B ✔ | Collecting captions: a pure function over the resolved tree giving every caption and word with its output time at its surface; derived display phrases; `toSrt` / `toVtt` | a collected channel (`walkResolved`) |
 | C ✔ | Rendering: the overlay at each surface, in both hosts; golden parity (see below) | overlays (`OverlayDef`, `OverlayRasterizer`, `SurfaceView`) |
-| D | Editor: transcribe command, words edited as children, reauthor, convert to text, a derived caption lane on the timeline, the CC cut view with batch split + delete | commands, views, services, document / selection / playhead access |
+| D1 ✔ | Editor commands: generate captions, reauthor, convert to text; the batch keep-ranges cut (`cutTool.ts`); transcription as a service | commands, tools, services (`EditorExtension`) |
+| D2 | The CC cut view on a selected composition (using `keepRanges`), a derived caption lane on the timeline, words edited inline as a caption's children | views |
 | E | Remove the transcription-specific uses of `data` from the editor: the word tools, the old CC cut mode and its bin-only entry point. The `data` node type stays | — |
 
 Stage C result: see "Golden project" at the end of this document.
@@ -487,6 +488,59 @@ its anchor function `offset + t`, and a rasterizer samples against
 composition's. Before this, a map cut at its head restarted its camera and
 mistimed its children.
 
+### The editor side (stage 3D)
+
+An extension's **`./editor`** entry exports an `EditorExtension`. The types
+live in core (`editor-api.ts`), so an extension still depends on nothing but
+`@seam/core`; the editor never gets imported by an extension.
+
+```ts
+export const captionsEditor: EditorExtension = {
+  name: "captions",
+  commands: [{ id, label, title, enabled?(ctx), run(ctx) }],
+};
+```
+
+A command runs against an `EditorCommandContext` the editor builds from its
+own state:
+
+- `document`, `selection` (path keys), `node(key)`, `resolve(key)` (the node
+  resolved on its own: bins inflated, scripts off, its window applied);
+- `edit(next, { select? })` — one undo step; `notify(messages)`;
+- `tools` — pure document edits by path key: `updateNode`, `appendChildren`,
+  `parentKey`, `freshId`, and **`keepRanges`**;
+- `services.transcribe()` — transcribes the selected root-level clip / audio /
+  composition nodes through the editor's generator-server or Seam Cloud
+  connection (which stays in core) and returns the segments per node WITHOUT
+  touching the document. The editor shows its own progress, errors and the
+  composition mix-mode prompt.
+
+Shells pass the list: `<App seam editorExtensions={[captionsEditor]}>`. The
+toolbar renders each command as a text button after the built-in ones.
+
+**`keepRanges(doc, key, ranges)`** (`packages/editor/src/renderer/cutTool.ts`)
+is split + delete at scale, for a composition: the ranges (inner time) are
+sorted, clamped and merged; the composition becomes a run of pieces with one
+`in` / `out` window each (same body, so its captions travel with it); the
+first piece takes over `id` / `start` / `offset`; a sibling anchored to the
+composition is retargeted to the piece holding its moment (percentages
+re-expressed, a bare id kept only if the start is kept), and one whose moment
+was cut is removed with its whole run and everything anchored to it. It is
+computed directly, not by re-resolving the document per cut. One difference
+from slicing by hand: the first kept piece keeps the composition's `id` even
+when the original start was cut away.
+
+Captions commands (stage D1):
+
+| Command | Does |
+|---------|------|
+| Generate captions (`CC`) | Transcribes the selection. A composition gets its captions INSIDE it, placed by number in its inner time; a clip / audio gets them beside it, anchored to its source time |
+| Reauthor (`CC✎`) | Sets the selected composition's `captions` to `"off"` and writes what it was showing out as caption nodes beside it, anchored to its source time (the root's `maxChars` applied) |
+| Convert to text (`CC→T`) | Replaces root-level captions with `text` nodes carrying the root's style |
+
+The old `data`-based tools (the built-in transcribe button, separate / group
+words, the bin-only CC cut mode) still exist alongside these until D2 / E.
+
 ### Rasterizers and host services (stage 2)
 
 ```ts
@@ -550,6 +604,19 @@ is the same project in the current syntax (`"saturation": 0` on that clip);
 future syntax changes go into that copy and the original stays as authored.
 
 Baseline renders live in `_baseline/` inside that folder, named by commit.
+
+**Comparing renders exactly:** set `SEAM_FRAME_HASHES=<file>` when rendering
+to write one checksum per raw composited frame (before encoding); `diff` two
+such files to get the frames that differ. Comparing encoded video smears a
+one-frame difference across a whole GOP. Byte-identical output is not a
+promise Seam makes — it is the expectation for behaviour-neutral refactors,
+and JC judges the rest by eye.
+
+`GoldenTestVideo-captions.seam` is the same project with its 103 root caption
+`data` nodes converted to `caption` nodes and the root script replaced by a
+root `captionStyle`. It matches the baseline on 4746 of 4797 frames; the
+other 51 (around 77.8 s and 114.5–116 s) differ invisibly, cause not found,
+accepted by JC by eye on 2026-11-22.
 `GoldenTestVideo-d78e536.mp4` is the pre-extensions reference. Stage 0
 rendered all 4797 frames and the audio bit-identical to it (ffmpeg `psnr` +
 audio md5).

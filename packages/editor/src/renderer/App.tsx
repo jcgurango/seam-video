@@ -5,7 +5,16 @@ import {
   DEFAULT_CANVAS_WIDTH,
   resolveSpatial,
 } from "@seam/core";
-import type { Seam, ResolvedTimeline, SeamFile } from "@seam/core";
+import type {
+  EditorCommandContext,
+  EditorExtension,
+  Seam,
+  ResolvedTimeline,
+  SeamFile,
+  Transcript,
+} from "@seam/core";
+import { createEditorTools, resolveStandalone } from "./extensionHost.js";
+import { getNodeAtPath, parsePath as parseNodePath } from "./nodePath.js";
 import { SeamContext } from "./seamContext.js";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
@@ -62,6 +71,9 @@ interface AppProps {
   platform: Platform;
   /** The host's Seam instance: core plus the extensions it installs. */
   seam: Seam;
+  /** What those extensions add to the editor itself (toolbar commands, …) —
+   *  each extension's `./editor` entry. */
+  editorExtensions?: readonly EditorExtension[];
 }
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
@@ -133,7 +145,7 @@ export default function App(props: AppProps) {
   );
 }
 
-function AppBody({ platform, seam }: AppProps) {
+function AppBody({ platform, seam, editorExtensions = [] }: AppProps) {
   // Drop pushes that don't change the document JSON. Mutations
   // (timeline drags, script re-runs, JSON saves that round-trip to the
   // same shape) otherwise hand back a fresh reference, which would
@@ -949,13 +961,89 @@ function AppBody({ platform, seam }: AppProps) {
     void transcriber.run(document, rootSelectedIndices);
   }, [transcriber, document, rootSelectedIndices, selectedCompositionCount]);
 
+  // An extension command waiting on the mix-mode choice (see
+  // `commandContext.services.transcribe`); null when the prompt was opened by
+  // the built-in button.
+  const compAudioWaiter = useRef<((mode: CompositionAudioMode | null) => void) | null>(null);
+
   const handleCompAudioChoose = useCallback(
     (mode: CompositionAudioMode) => {
       setCompAudioPromptOpen(false);
       setTranscribeNotice([]);
+      const waiter = compAudioWaiter.current;
+      if (waiter) {
+        compAudioWaiter.current = null;
+        waiter(mode);
+        return;
+      }
       void transcriber.run(document, rootSelectedIndices, mode);
     },
     [transcriber, document, rootSelectedIndices],
+  );
+
+  const handleCompAudioClose = useCallback(() => {
+    setCompAudioPromptOpen(false);
+    const waiter = compAudioWaiter.current;
+    compAudioWaiter.current = null;
+    waiter?.(null);
+  }, []);
+
+  // ── Extension commands ──
+  // What each extension's toolbar command runs against: the editor's state
+  // right now, its run-aware document tools, and the services it lends
+  // (transcription through the generator connection configured above).
+  const editorTools = useMemo(() => createEditorTools(seam), [seam]);
+  const extensionCommands = useMemo(
+    () => editorExtensions.flatMap((ext) => ext.commands ?? []),
+    [editorExtensions],
+  );
+  const commandContext = useMemo<EditorCommandContext>(
+    () => ({
+      seam,
+      document,
+      selection,
+      node: (key) => (key === "" ? null : getNodeAtPath(document, parseNodePath(key)) ?? null),
+      resolve: (key) => resolveStandalone(seam, document, key),
+      edit: (next, opts) => {
+        editDocument(next);
+        if (opts?.select) setSelection(opts.select);
+      },
+      notify: (messages) => setTranscribeNotice(messages),
+      tools: editorTools,
+      services: {
+        transcribe: async (): Promise<Transcript[]> => {
+          if (rootSelectedIndices.length === 0) return [];
+          setTranscribeNotice([]);
+          let mode: CompositionAudioMode = "first-run";
+          if (selectedCompositionCount > 0) {
+            // A composition in the selection needs a mix-mode choice first.
+            const chosen = await new Promise<CompositionAudioMode | null>((resolve) => {
+              compAudioWaiter.current = resolve;
+              setCompAudioPromptOpen(true);
+            });
+            if (chosen == null) return [];
+            mode = chosen;
+          }
+          const results = await transcriber.transcribe(document, rootSelectedIndices, mode);
+          return results.map((r) => ({
+            key: rootKeyFromIndex(r.index),
+            anchorBase: r.anchorBase,
+            rate: r.rate,
+            segments: r.segments,
+          }));
+        },
+      },
+    }),
+    [
+      seam,
+      document,
+      selection,
+      editDocument,
+      editorTools,
+      rootSelectedIndices,
+      selectedCompositionCount,
+      transcriber,
+    ],
   );
 
   // Remounts the <Timeline> (resetting playhead) when toggling CC-cut mode.
@@ -1140,6 +1228,8 @@ function AppBody({ platform, seam }: AppProps) {
               onTranscribe={handleTranscribe}
               transcribing={transcriber.progress != null}
               onNormalize={handleNormalize}
+              extensionCommands={extensionCommands}
+              commandContext={commandContext}
               normalizing={normalizer.normalizing}
               onCCCutOk={handleCCCutOk}
               onCCCutCancel={handleCCCutCancel}
@@ -1268,7 +1358,7 @@ function AppBody({ platform, seam }: AppProps) {
         open={compAudioPromptOpen}
         compositionCount={selectedCompositionCount}
         onChoose={handleCompAudioChoose}
-        onClose={() => setCompAudioPromptOpen(false)}
+        onClose={handleCompAudioClose}
       />
 
       <SettingsDialog

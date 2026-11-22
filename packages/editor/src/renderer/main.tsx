@@ -15,6 +15,7 @@ import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
 // The render entry: Captions WITH its overlay renderer.
 import { captions } from "@seam/extension-captions/render";
+import { captionsEditor } from "@seam/extension-captions/editor";
 // The render entry: the Map extension WITH its rasterizer (this shell draws).
 import { map } from "@seam/extension-map/render";
 
@@ -58,4 +59,6 @@ setByteSourceResolver(async (filename: string) => {
 });
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App platform={platform} seam={seam} />);
+// What the extensions add to the editor itself (toolbar commands, …).
+const editorExtensions = [captionsEditor];
+root.render(<App platform={platform} seam={seam} editorExtensions={editorExtensions} />);

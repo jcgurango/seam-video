@@ -22,7 +22,7 @@ import {
   AudioLines,
 } from "lucide-react";
 import { useImport } from "./useImport.js";
-import type { ResolvedTimeline } from "@seam/core";
+import type { EditorCommand, EditorCommandContext, ResolvedTimeline } from "@seam/core";
 import {
   editContainer,
   getNodeAtPath,
@@ -85,6 +85,9 @@ interface ControlsBarProps {
   onCCCutCancel: () => void;
   /** True when the CC-cut user has at least one selection (gates OK). */
   ccCutHasSelections: boolean;
+  /** Toolbar commands contributed by extensions, and the context they run in. */
+  extensionCommands?: readonly EditorCommand[];
+  commandContext?: EditorCommandContext;
 }
 
 // Slice + attach logic lives in splitTool.ts / attachTool.ts.
@@ -204,6 +207,8 @@ export default function ControlsBar({
   onCCCutOk,
   onCCCutCancel,
   ccCutHasSelections,
+  extensionCommands = [],
+  commandContext,
 }: ControlsBarProps) {
   const seam = useSeam();
   const {
@@ -646,6 +651,31 @@ export default function ControlsBar({
             >
               <AudioLines size={ICON_SIZE} />
             </button>
+            {/* Commands contributed by extensions (e.g. Captions). */}
+            {commandContext &&
+              extensionCommands.map((command) => {
+                const enabled = command.enabled ? command.enabled(commandContext) : true;
+                return (
+                  <button
+                    key={command.id}
+                    onClick={() => void command.run(commandContext)}
+                    disabled={!enabled}
+                    style={{
+                      ...BTN_STYLE,
+                      width: "auto",
+                      minWidth: 32,
+                      padding: "0 6px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                      opacity: enabled ? 1 : 0.3,
+                    }}
+                    title={command.title}
+                  >
+                    {command.label}
+                  </button>
+                );
+              })}
           </>
         ) : (
           <>

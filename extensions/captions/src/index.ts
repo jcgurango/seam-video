@@ -265,3 +265,10 @@ export {
 } from "./collect.js";
 
 export default captions;
+
+export {
+  captionAsText,
+  captionLength,
+  captionsFromTranscript,
+  reauthoredCaptions,
+} from "./edit.js";

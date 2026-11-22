@@ -8,7 +8,8 @@
  * Drawables: clip / static / text / extension nodes decode or rasterize in `FrameSource`;
  * `rect` / `circle` are analytic fills the compositor draws itself.
  */
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   DEFAULT_CANVAS_HEIGHT,
@@ -292,7 +293,17 @@ export async function renderSeamToFile(
     // one mapAsync per frame. Frames drain FIFO, so `encoded` is the frame index.
     const total = Math.max(1, Math.round(timeline.duration * fps));
     let encoded = 0;
+    // `SEAM_FRAME_HASHES=<file>`: write one line per frame — its index and a
+    // checksum of the raw composited RGBA, BEFORE encoding. Two renders can
+    // then be compared exactly (`diff a.txt b.txt` names the frames that
+    // differ) without the video encoder smearing a one-frame difference
+    // across a whole GOP.
+    const hashPath = process.env.SEAM_FRAME_HASHES;
+    const frameHashes: string[] = [];
     const encodeNext = async (pixels: Uint8Array): Promise<void> => {
+      if (hashPath) {
+        frameHashes.push(`${encoded} ${createHash("sha1").update(pixels).digest("hex")}`);
+      }
       const sample = new VideoSample(pixels, {
         format: "RGBA",
         codedWidth: width,
@@ -353,6 +364,7 @@ export async function renderSeamToFile(
     while (backend.inFlightCount > 0) {
       await encodeNext(await backend.drainOldest());
     }
+    if (hashPath) writeFileSync(hashPath, frameHashes.join("\n") + "\n");
     mark("frame loop");
 
     // Fold in the audio mix that rendered alongside the frame loop. The await

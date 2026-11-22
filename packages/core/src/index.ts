@@ -3,6 +3,15 @@ export * from "./types.js";
 export * from "./resolved-types.js";
 export type { ValidationResult } from "./validate.js";
 export { createSeam, type Seam } from "./seam.js";
+export type {
+  EditorExtension,
+  EditorCommand,
+  EditorCommandContext,
+  EditorTools,
+  EditorServices,
+  Transcript,
+  TranscriptSegment,
+} from "./editor-api.js";
 export {
   VISUAL_NODE_TYPES,
   CORE_NODE_TYPES,
