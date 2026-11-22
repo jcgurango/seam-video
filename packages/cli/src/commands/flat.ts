@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  compileSeamFile,
-  parseSeamFile,
-  resolveComposition,
   sampleVolume,
   unrollLoops,
 } from "@seam/core";
 import type { Keyframed, ResolvedChild } from "@seam/core";
+import { seam } from "../seam.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = seam;
 
 export interface FlatOptions {
   output?: string;

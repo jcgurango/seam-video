@@ -28,37 +28,6 @@ export type Length = number | string;
  *  (treated as a scalar shorthand by `origin`/`translation`/`size`). */
 export type Point2D = Length | { x?: Length; y?: Length };
 
-// ── Filters ────────────────────────────────────────────────────────
-
-// Filters are NOT animatable — params are plain numbers. (Opacity, the one
-// filter anyone keyframed, is now the first-class `opacity` field on
-// SpatialFields.)
-export interface AdjustFilter {
-  type: "adjust";
-  /** When true, the compositor skips this filter entirely (UI on/off toggle). */
-  bypass?: boolean;
-  brightness?: number;
-  contrast?: number;
-  saturation?: number;
-  gamma?: number;
-}
-
-export interface ColorBalanceFilter {
-  type: "colorbalance";
-  bypass?: boolean;
-  rs?: number; gs?: number; bs?: number;
-  rm?: number; gm?: number; bm?: number;
-  rh?: number; gh?: number; bh?: number;
-}
-
-export interface ColorTemperatureFilter {
-  type: "colortemperature";
-  bypass?: boolean;
-  temperature?: number;
-}
-
-export type Filter = AdjustFilter | ColorBalanceFilter | ColorTemperatureFilter;
-
 export interface SpatialFields {
   objectFit?: ObjectFit;
   /** Point on the item that lines up with `translation` in the parent.
@@ -76,8 +45,8 @@ export interface SpatialFields {
   /** Rotation in degrees, clockwise, about the item's `origin` point.
    *  Default `0` (no rotation). Animatable. */
   rotation?: Keyframed<number>;
-  /** Opacity multiplier, 0 (transparent) to 1 (opaque). Default 1. Animatable
-   *  (ejected from filters). Mirrors how `volume` rides through resolution as
+  /** Opacity multiplier, 0 (transparent) to 1 (opaque). Default 1. Animatable.
+   *  Mirrors how `volume` rides through resolution as
    *  a Keyframed value sampled per-frame by renderers. */
   opacity?: Keyframed<number>;
   /** Rounded-corner mask on the node's final rect (any node). Bare number =
@@ -170,7 +139,6 @@ export interface ChildTimingFields extends SpatialFields, PlacementFields {
   out?: number;
   overflow?: Overflow;
   underflow?: Underflow;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 
@@ -215,14 +183,13 @@ export interface Static extends SpatialFields, PlacementFields {
   /** Video-source freeze timestamp in seconds (ignored for images).
    *  Defaults to 0. */
   in?: number;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 
 /**
  * An audio-only clip. Shares clip's temporal vocabulary (`in`/`out`/`speed`/
  * `duration`/`overflow`/`underflow`) and id/anchor fields, but has no
- * spatial layout and no visual filters — audio filtering (gain/EQ/etc.) is
+ * spatial layout and no visual extension fields — audio filtering (gain/EQ/etc.) is
  * different in kind and will get its own schema later.
  */
 export interface Audio extends PlacementFields {
@@ -335,7 +302,6 @@ export interface Text extends SpatialFields, TextStyleFields, PlacementFields {
   contentHeight?: Keyframed<Length>;
   /** Display duration. */
   duration: number;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 
@@ -343,7 +309,7 @@ export interface Text extends SpatialFields, TextStyleFields, PlacementFields {
  * Reusable composition body addressable by `id`. Referenced from any
  * descendant composition via `binItem: "<id>"`. Holds only the body
  * (`children`) — instance-level fields
- * (spatial / timing / filters / metadata) live on each reference, so
+ * (spatial / timing / extension fields / metadata) live on each reference, so
  * swapping a bin entry can't accidentally overwrite a reference's
  * authored properties.
  */
@@ -356,7 +322,7 @@ export interface BinEntry {
  * Fields shared by every composition, whether it's a normal body or a
  * `binItem` reference. The discriminant — `children` vs
  * `binItem` — lives on the two concrete variants below; everything else
- * (spatial / timing / filters / bin scope / script / inset / volume / …)
+ * (spatial / timing / extension fields / bin scope / script / inset / volume / …)
  * applies to both, because a bin reference still carries its own
  * instance-level overrides.
  */
@@ -491,7 +457,6 @@ export interface ShapeFields {
 export interface Rect extends SpatialFields, ShapeFields, PlacementFields {
   type: "rect";
   duration: number;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 
@@ -499,7 +464,6 @@ export interface Rect extends SpatialFields, ShapeFields, PlacementFields {
 export interface Circle extends SpatialFields, ShapeFields, PlacementFields {
   type: "circle";
   duration: number;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 
@@ -543,7 +507,6 @@ export interface MapNode extends SpatialFields, PlacementFields {
   children?: Child[];
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
-  filters?: Filter[];
   metadata?: Metadata;
 }
 

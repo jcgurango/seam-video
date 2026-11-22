@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Player from "./components/Player.js";
+import { seam } from "../seam.js";
 import type { ResolvedTimeline } from "@seam/core";
 import { setMapBasePath } from "./mapBasePath.js";
 
@@ -76,5 +77,5 @@ export default function App() {
     );
   }
 
-  return <Player timeline={timeline} basePath={basePath} />;
+  return <Player timeline={timeline} seam={seam} basePath={basePath} />;
 }

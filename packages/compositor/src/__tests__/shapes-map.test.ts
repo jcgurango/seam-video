@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveComposition,
+  createSeam,
   resolveSpatial,
   type Composition,
 } from "@seam/core";
@@ -11,6 +11,8 @@ import {
   type FillCommand,
   type GroupCommand,
 } from "../RenderList.js";
+
+const { resolveComposition } = createSeam();
 
 const W = 1000;
 const H = 500;
@@ -203,7 +205,7 @@ describe("buildRenderList — map", () => {
     expect(base.drawTime).toBe(1);
     expect(base.contentW).toBe(512);
     expect(base.contentH).toBe(512);
-    expect(base.filters).toEqual([]);
+    expect(base.fields).toEqual({});
     expect(cmds.indexOf(base)).toBeLessThan(cmds.findIndex((c) => c.type === "fill"));
   });
 

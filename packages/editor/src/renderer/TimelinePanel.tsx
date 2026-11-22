@@ -51,6 +51,7 @@ import { timeAfterLift } from "./dropTime.js";
 import { resizeChild, resizeChildInPlace } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
+import { useSeam } from "./seamContext.js";
 
 export interface TimelinePanelProps {
   timeline: ResolvedTimeline;
@@ -240,11 +241,12 @@ function useTimelineSurfaceState(
   rootBin: BinEntry[],
   scrollRef: React.RefObject<HTMLDivElement | null>,
 ): TimelineSurfaceState {
+  const seam = useSeam();
   const { totalDuration } = useTimeline();
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
 
   const rootGroup = useMemo(
-    () => layoutTree(timeline.children, authored, expanded, rootBin),
+    () => layoutTree(seam, timeline.children, authored, expanded, rootBin),
     [timeline, authored, expanded, rootBin],
   );
   const rowCount = rootGroup.rowCount;
@@ -339,6 +341,7 @@ function TimelineSurface({
   runDragGhost,
   onJumpToJson,
 }: TimelineSurfaceProps) {
+  const seam = useSeam();
   const { pxPerSec, rootGroup, rulerTicks } = surface;
   // Editable group placements drive the anchor-line overlay (it draws every
   // selected anchored node's line in content coords, at any nesting level).
@@ -395,7 +398,7 @@ function TimelineSurface({
         }
         editHistory.replace(
           editContainer(initialDoc, parent, rootBin, (sub) =>
-            resize(sub, last.index, side, deltaSec),
+            resize(seam, sub, last.index, side, deltaSec),
           ),
         );
         // (Resizing a block does not move the playhead — follow-the-cursor was
@@ -496,7 +499,7 @@ function TimelineSurface({
   const { seek } = useTimeline();
   const seekToKeyframe: KeyframeSeek = useEvent((path: NodePath, timeExpr: TimeExpr) => {
     if (!docRoot) return;
-    const clock = nodeClock(timeline, docRoot as SeamFile, path, 0);
+    const clock = nodeClock(seam, timeline, docRoot as SeamFile, path, 0);
     if (clock) seek(clock.toGlobal(keyframeMoment(timeExpr, clock.duration)));
   });
 
@@ -1865,6 +1868,7 @@ export default function TimelinePanel({
   platform,
   onJumpToJson,
 }: TimelinePanelProps) {
+  const seam = useSeam();
   // The panel is editable only when given a document; the CC-cut preview
   // passes none, leaving the timeline read-only (selection-only).
   const editable = doc != null;
@@ -1898,7 +1902,7 @@ export default function TimelinePanel({
       // to where that spot ends up (see `dropTime.ts`).
       const options: InsertOptions =
         target.kind === "newRun"
-          ? { start: timeAfterLift(doc, fromPaths, target.region.path, target.time) }
+          ? { start: timeAfterLift(seam, doc, fromPaths, target.region.path, target.time) }
           : insertOptionsFor(target);
       const moved = moveNodesTracked(doc, fromPaths, target.region.path, target.index, options);
       if (!moved) return;
@@ -1968,7 +1972,7 @@ export default function TimelinePanel({
         const paths = selection.map(parsePath);
         // Follow the content: slide the playhead back by the removed span
         // when what's under it shifts (see `deletePlayhead.ts`).
-        const nextTime = playheadAfterDelete(timeline, doc, paths, currentTime);
+        const nextTime = playheadAfterDelete(seam, timeline, doc, paths, currentTime);
         if (nextTime !== currentTime) seek(nextTime);
         onDocumentChange(removeNodesAtPaths(doc, paths));
         onSelectionChange([]);

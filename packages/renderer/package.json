@@ -36,6 +36,7 @@
     "webgpu": "^0.4.0"
   },
   "devDependencies": {
+    "@seam/extension-adjustments": "workspace:*",
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",

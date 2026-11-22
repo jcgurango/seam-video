@@ -3,12 +3,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  parseSeamFile,
-  compileSeamFile,
-  resolveComposition,
+  createSeam,
   type Composition,
 } from "@seam/core";
 import { renderAudioMix } from "../audio.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = createSeam();
 
 // Reverse playback in the offline mix (`out < in` / negative `duration`). The
 // source is a 1 s linear ramp (sample value = 0.8 · t), so the value heard at

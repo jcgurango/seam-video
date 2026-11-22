@@ -62,7 +62,7 @@ A clip references a segment of a source video file.
 | `origin`, `translation`, `size` | `Length` \| `{x?, y?}` | no | Spatial layout (see [Spatial Layout](#spatial-layout)) |
 | `rotation` | number | no | Degrees clockwise about `origin` (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
-| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `id` | string | no | Identifier within the enclosing composition; other nodes' `start` can anchor to it (see [Placement](#placement)) |
 | `start` | number \| string | no | Heads a new run at an absolute time or an anchor (see [Placement](#placement)) |
 | `offset` | number | no | Seconds added to the position: a gap, a crossfade overlap, or a shift (see [Placement](#placement)) |
@@ -77,7 +77,7 @@ The **natural duration** of a clip is `(out - in) / speed`. The `in` and `out` v
 
 ### Audio
 
-An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields and no visual filters.
+An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields and no colour adjustments.
 
 ```json
 { "type": "audio", "source": "voiceover.mp3", "in": 0, "out": 12 }
@@ -94,7 +94,7 @@ An audio-only clip. Same temporal vocabulary as a clip, but no spatial fields an
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
 | `metadata` | object | no | See [Metadata](#metadata) |
 
-Visual props (`filters`, `opacity`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
+Visual props (colour adjustments, `opacity`, `objectFit`, `origin`, `translation`, `size`, `rotation`) are rejected by the schema — `audio` doesn't render to a quad.
 
 ### Static
 
@@ -114,7 +114,7 @@ A frozen frame held for `duration` seconds. The `source` can be an image file (P
 | `source` | string | yes | Path to the image or video file |
 | `duration` | number | yes | How long the frame is shown for (> 0) |
 | `in` | number | no | For video sources: the source timestamp to freeze on (seconds). Ignored for images. Defaults to `0` |
-| `filters` | array | no | See [Filters](#filters) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | See [Spatial Layout](#spatial-layout) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
@@ -189,7 +189,7 @@ A text node renders styled text as inline SVG. Layout (line breaking, alignment)
 | `verticalAlign` | `"top"` \| `"center"` \| `"bottom"` | no | Vertical alignment within the inner box. Default `"top"` |
 | `padding` | number \| `[v,h]` \| `[t,r,b,l]` | no | Inset on the inner layout box. Same shape as `backgroundPadding`; useful for keeping background/stroke from clipping the SVG edges |
 | `contentWidth`, `contentHeight` | `Length` | no | Intrinsic SVG canvas dims (default: parent's content dim). Percentages resolve against the parent (see [Content Dimensions](#content-dimensions)) |
-| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
@@ -250,7 +250,7 @@ Solid shapes. They have no intrinsic size — their natural box is the parent �
 | `fill` | string \| keyframes | no | Any CSS colour. Default `"black"`; `"none"` / `"transparent"` skips the fill |
 | `stroke` | string \| keyframes | no | Stroke colour; drawn only when `strokeWidth` > 0 |
 | `strokeWidth` | number \| keyframes | no | Stroke width in pixels, drawn **inside** the box |
-| `filters` | array | no | See [Filters](#filters) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation`, `cornerRadius` | — | no | See [Spatial Layout](#spatial-layout) |
 | `opacity` | number \| keyframes | no | See [Opacity](#opacity) |
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
@@ -288,7 +288,7 @@ A basemap rasterized from a pmtiles archive, used like a `static` with a camera.
 | `paths` | array | no | Geo polylines: `{ id?, color, points: [[lng, lat], …], progress?, lineWidth? }`. `color`, `progress` (0–1 of the line drawn) and `lineWidth` are animatable |
 | `children` | array | no | Nodes composited over the map (see below) |
 | `contentWidth`, `contentHeight` | `Length` | no | Inner canvas: the raster size and the layout space of `children` (default: 100% of the parent) |
-| `filters` | array | no | See [Filters](#filters) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `objectFit`, `origin`, `translation`, `size`, `rotation`, `cornerRadius` | — | no | See [Spatial Layout](#spatial-layout) |
 | `opacity` | number \| keyframes | no | See [Opacity](#opacity) |
 | `id`, `start`, `offset` | — | no | [Placement](#placement) fields |
@@ -332,7 +332,7 @@ A container that places other nodes on its own timeline. The root of every `.sea
 | `pitch` | number | no | Length-preserving pitch shift in semitones applied to every audio-bearing descendant; adds through nesting and with each clip's own `pitch`. Not animatable (see [Pitch](#pitch)) |
 | `contentWidth` | `Length` | no | Inner canvas width (default: parent's content width). Percentages resolve against the parent; the **root composition** must use a pixel number. See [Content Dimensions](#content-dimensions) |
 | `contentHeight` | `Length` | no | Inner canvas height. Same shape as `contentWidth` |
-| `filters` | array | no | Visual effects applied in order (see [Filters](#filters)) |
+| `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` | number \| keyframes | no | Colour adjustments (see [Adjustments](#adjustments)) |
 | `backgroundColor` | string | no | Any valid SVG/CSS fill value (e.g. `"#000"`, `"rgba(255,0,0,0.5)"`, `"red"`). Painted across the composition's container rect under all children |
 | `objectFit`, `origin`, `translation`, `size`, `rotation` | — | no | Spatial properties (see [Spatial Layout](#spatial-layout)) |
 | `opacity` | number \| keyframes | no | Opacity multiplier `0`–`1` (default `1`); animatable (see [Opacity](#opacity)) |
@@ -523,7 +523,7 @@ A separate **compile pass** resolves these before the resolver runs. Both the re
 }
 ```
 
-A bin entry is `{ id, children }` — strictly a reusable body, not a full composition. Instance-level fields (spatial, in/out, filters, metadata) live on each `binItem` reference, so swapping a bin entry can't reach out and overwrite a reference's authored properties.
+A bin entry is `{ id, children }` — strictly a reusable body, not a full composition. Instance-level fields (spatial, in/out, adjustments, metadata) live on each `binItem` reference, so swapping a bin entry can't reach out and overwrite a reference's authored properties.
 
 A composition with `binItem: "<id>"` adopts the named bin entry's `children` at compile time. The reference's own `children` are ignored.
 
@@ -569,73 +569,41 @@ Every node type accepts an optional `metadata` field — an object with arbitrar
 
 Use it for editor concerns that should round-trip through saves — review state, color tags on timeline blocks, plugin-specific annotations, etc. Unlike a [`data`](#data) node, metadata isn't a timeline citizen: it lives on the node it's attached to, doesn't occupy a span, and isn't reachable as an anchor target.
 
-## Filters
+## Adjustments
 
-Filters apply visual effects to clips, static, text, shapes, maps, and compositions. They are specified as an array on the node.
+Quick colour corrections, authored as plain fields **directly on the node** — any visual node: `clip`, `static`, `text`, `rect`, `circle`, `map`, `composition` (including the root composition, where they apply to the whole output).
 
-**Array order does not determine application order.** Filters of the same type are *combined* (multiple `adjust` filters add their brightness and multiply their contrast/saturation/gamma; `colorbalance` offsets add; `colortemperature` scales multiply), and the combined result is applied in a fixed pipeline order:
+They are contributed by the **Adjustments extension** (`@seam/extension-adjustments`), which every first-party host installs. A host without it rejects these fields at validation rather than silently ignoring them.
 
-```
-adjust → colorbalance → colortemperature
-```
-
-regardless of where each filter sits in the array. So `[colortemperature, adjust]` and `[adjust, colortemperature]` render identically. (A future revision may add true per-filter ordering; today the array is a set, not a sequence.)
-
-**Filters are not animatable** — every parameter is a static number. (The one effect anyone ever keyframed was opacity, which is now the first-class [`opacity`](#opacity) field instead.) To vary a look over time, animate `opacity` or author distinct compositions.
-
-Every filter accepts an optional **`bypass`** boolean. When `true`, the compositor skips that filter entirely — it stays in the array (keeping its parameters) but contributes nothing to the render. This is the on/off toggle an editor UI would use; leaving the entry in place means flipping it back on restores the exact settings.
+| Field | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `brightness` | number \| keyframes | `0` | -1 to 1 | Brightness (additive) |
+| `contrast` | number \| keyframes | `1` | -1000 to 1000 | Contrast multiplier |
+| `saturation` | number \| keyframes | `1` | 0 to 3 | Saturation multiplier (0 = greyscale) |
+| `gamma` | number \| keyframes | `1` | 0.1 to 10 | Gamma correction |
+| `temperature` | number \| keyframes | `6500` | 1000 to 40000 | Colour temperature in Kelvin (lower = warmer/orange, higher = cooler/blue) |
+| `tint` | number \| keyframes | `0` | -1 to 1 | Green–magenta balance: positive pulls green down (towards magenta), negative pulls red and blue down (towards green); ±1 = a 50% pull |
 
 ```json
 {
   "type": "clip",
   "source": "footage.mp4",
   "in": 0, "out": 10,
-  "opacity": 0.8,
-  "filters": [
-    { "type": "adjust", "brightness": 0.2, "contrast": 1.1 }
-  ]
+  "brightness": 0.2,
+  "contrast": 1.1,
+  "saturation": [[0, 0], ["100%", 1]]
 }
 ```
 
-### Filter Types
-
-#### adjust
-
-Color and tone adjustments: brightness, contrast, saturation, and gamma.
-
-| Field | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `brightness` | number | `0` | -1 to 1 | Brightness adjustment (additive) |
-| `contrast` | number | `1` | -1000 to 1000 | Contrast multiplier |
-| `saturation` | number | `1` | 0 to 3 | Saturation multiplier (0 = grayscale) |
-| `gamma` | number | `1` | 0.1 to 10 | Gamma correction |
-
-#### colorbalance
-
-Adjusts color balance for shadows, midtones, and highlights independently.
-
-| Field | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `rs`, `gs`, `bs` | number | `0` | -1 to 1 | Shadow red/green/blue adjustment |
-| `rm`, `gm`, `bm` | number | `0` | -1 to 1 | Midtone red/green/blue adjustment |
-| `rh`, `gh`, `bh` | number | `0` | -1 to 1 | Highlight red/green/blue adjustment |
-
-#### colortemperature
-
-Shifts the color temperature.
-
-| Field | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `temperature` | number | `6500` | 1000 to 40000 | Color temperature in Kelvin (lower = warmer/orange, higher = cooler/blue) |
-
-### Filters on Compositions
-
-Filters can also be applied to compositions, affecting all children as a group:
+- **All six are animatable** with the keyframe-tuple syntax (see [Animation](#animation)), sampled in the node's own time.
+- **Order is fixed**: brightness/contrast → gamma → saturation → temperature × tint, in one pass. There is one value of each per node.
+- **To stack adjustments, nest**: a composition's adjustments apply to its composited children as a group, on top of whatever each child carries.
+- An omitted field has no effect. There is no on/off toggle — remove the field.
 
 ```json
 {
   "type": "composition",
-  "filters": [{ "type": "adjust", "saturation": 0 }],
+  "saturation": 0,
   "children": [
     { "type": "clip", "source": "a.mp4", "in": 0, "out": 10 },
     { "type": "clip", "source": "b.mp4", "in": 0, "out": 5 }
@@ -643,9 +611,11 @@ Filters can also be applied to compositions, affecting all children as a group:
 }
 ```
 
+These are corrections for making a shot sit next to its neighbours. Grading (shadow/midtone/highlight balance, looks) is done outside Seam. The old `filters` array, `colorbalance` and `bypass` are gone.
+
 ## Opacity
 
-`opacity` is a first-class field on every visual node (`clip`, `static`, `text`, `rect`, `circle`, `map`, `composition` — not `audio`). It's a multiplier from `0` (fully transparent) to `1` (fully opaque); the default (absent) is fully opaque. Unlike filters, **`opacity` is animatable** — it follows the keyframe-tuple syntax (see [Animation](#animation)):
+`opacity` is a first-class field on every visual node (`clip`, `static`, `text`, `rect`, `circle`, `map`, `composition` — not `audio`). It's a multiplier from `0` (fully transparent) to `1` (fully opaque); the default (absent) is fully opaque. **`opacity` is animatable** — it follows the keyframe-tuple syntax (see [Animation](#animation)):
 
 ```json
 { "type": "clip", "source": "v.mp4", "in": 0, "out": 5,
@@ -731,7 +701,7 @@ Every key is optional; an absent corner stays where it is, so `{}` is the identi
 Semantics:
 
 - The warp is the **projective map** (homography) that sends the canvas's corners to the pinned points — straight lines stay straight and perspective foreshortening is correct, not a bilinear blend that creases along the diagonal. A corner set that isn't a convex quad (a "bow-tie") falls back to a plain two-triangle blend.
-- It is **purely visual**. The node's layout rect (`origin`/`translation`/`size`, what siblings see) is unchanged; the warped content may spill outside that rect. It composes with `rotation` (the pinned quad rotates about the authored `origin`), `opacity`, `filters`, and `inset` (the visible window is the matching sub-region of the warped canvas).
+- It is **purely visual**. The node's layout rect (`origin`/`translation`/`size`, what siblings see) is unchanged; the warped content may spill outside that rect. It composes with `rotation` (the pinned quad rotates about the authored `origin`), `opacity`, colour adjustments, and `inset` (the visible window is the matching sub-region of the warped canvas).
 - Order within [Spatial Layout](#spatial-layout): objectFit/`size` build the content box → `origin`/`translation`/`rotation` place it → `inset` picks the window → **`distort` warps where that content is drawn**.
 - Ignored on the root composition (there is no parent quad to draw into).
 
@@ -927,7 +897,7 @@ Keyframe values follow the same shape as the static field. For `Point2D` fields 
 | **Rect** / **Circle** | `fill`, `stroke`, `strokeWidth`, `opacity`, `origin`, `translation`, `size`, `rotation` |
 | **Map** | `latitude`, `longitude`, `zoom`, `mapOpacity`, per-path `color` / `progress` / `lineWidth`, `opacity`, `origin`, `translation`, `size`, `rotation` |
 | **Any map child** | `pin` |
-| **Filters** | Nothing — filter parameters are static numbers (not animatable). |
+| **Any visual node** | `brightness`, `contrast`, `saturation`, `gamma`, `temperature`, `tint` (see [Adjustments](#adjustments)) |
 
 ### Renderer support
 

@@ -2,8 +2,7 @@
 // them into composition-time coordinates so the CC view can render a
 // scannable word ribbon and let the user pick time ranges by clicking.
 
-import { resolveComposition } from "@seam/core";
-import type { Child, Composition, Data, SeamFile } from "@seam/core";
+import type { Seam, Child, Composition, Data, SeamFile } from "@seam/core";
 import type { BinEntry } from "./nodeBin.js";
 
 /** Stable colours per transcription index, used to tell overlapping CC
@@ -83,6 +82,7 @@ export function binEntryAsComposition(
  *  its data node resolves (`start` anchor + `offset`, spanning `duration`);
  *  its words are phrase-relative and spread over that span. */
 export function resolveCCWords(
+  seam: Seam,
   entry: BinEntry,
   rootDoc: SeamFile,
 ): CCWord[] {
@@ -90,7 +90,7 @@ export function resolveCCWords(
   let resolved;
   try {
     // `uncropped` keeps resolved children 1:1 with `entry.children`.
-    resolved = resolveComposition(comp, { uncropped: true });
+    resolved = seam.resolveComposition(comp, { uncropped: true });
   } catch {
     return [];
   }

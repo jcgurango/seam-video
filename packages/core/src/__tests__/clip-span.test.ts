@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { clipOut, parseSeamFile, resolveComposition, type Composition } from "../index.js";
+import { clipOut, type Composition } from "../index.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, resolveComposition } = createSeam();
 
 // `in` + `duration` with no `out` on clips/audio: out = in + duration at speed 1.
 

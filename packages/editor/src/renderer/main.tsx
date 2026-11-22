@@ -11,8 +11,12 @@ import App from "./App.js";
 import { detectPlatform, WebPlatform } from "./platform/index.js";
 import { getMapBasePath } from "./mapBasePath.js";
 import type { Source } from "pmtiles";
+import { createSeam } from "@seam/core";
+import { adjustments } from "@seam/extension-adjustments";
 
-const platform = detectPlatform();
+// One Seam instance per host: core plus the extensions this shell installs.
+const seam = createSeam([adjustments]);
+const platform = detectPlatform(seam);
 
 // Seam Cloud is web-editor-only. When this entry runs as a web build (not
 // Electron), wire the optional cloud connection from VITE_SEAM_CLOUD_URL —
@@ -50,4 +54,4 @@ setPmtilesResolver(async (filename: string) => {
 });
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App platform={platform} />);
+root.render(<App platform={platform} seam={seam} />);

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { validate, parseSeamFile } from "../validate.js";
+import { createSeam } from "../seam.js";
+
+const { validate, parseSeamFile } = createSeam();
 
 describe("validate", () => {
   it("accepts a minimal valid composition", () => {
@@ -341,81 +343,6 @@ describe("validate", () => {
     expect(nested({ overflow: "trim-start" }).success).toBe(true);
   });
 
-  it("accepts filters on clips", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "clip",
-          source: "v.mp4",
-          in: 0,
-          out: 5,
-          opacity: 0.8,
-          filters: [{ type: "adjust", brightness: 0.2, contrast: 1.5 }],
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts filters on compositions", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "composition",
-          filters: [{ type: "colortemperature", temperature: 3500 }],
-          children: [
-            { type: "clip", source: "v.mp4", in: 0, out: 5 },
-          ],
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts filters on nested compositions", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "composition",
-          filters: [{ type: "colorbalance", rs: 0.5, bh: -0.3 }],
-          children: [
-            { type: "clip", source: "v.mp4", in: 0, out: 5 },
-          ],
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts empty filters array", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        { type: "clip", source: "v.mp4", in: 0, out: 5, filters: [] },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects invalid filter type", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "clip",
-          source: "v.mp4",
-          in: 0,
-          out: 5,
-          filters: [{ type: "blur", radius: 5 }],
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
-  });
-
   it("accepts inset on a composition (shorthand forms)", () => {
     const result = validate({
       type: "composition",
@@ -474,20 +401,15 @@ describe("validate", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects out-of-range filter values", () => {
+  it("rejects the removed `filters` array (adjustments are extension fields now)", () => {
     const result = validate({
       type: "composition",
       children: [
-        {
-          type: "clip",
-          source: "v.mp4",
-          in: 0,
-          out: 5,
-          filters: [{ type: "adjust", brightness: 5 }],
-        },
+        { type: "clip", source: "v.mp4", in: 0, out: 5, filters: [] },
       ],
     });
     expect(result.success).toBe(false);
+    if (!result.success) expect(result.errors.join(" ")).toMatch(/filters/);
   });
 
   it("rejects unknown spatial field (no position any more)", () => {
@@ -559,22 +481,6 @@ describe("validate", () => {
       ],
     });
     expect(result.success).toBe(true);
-  });
-
-  it("rejects keyframed filter params (filters are static)", () => {
-    const result = validate({
-      type: "composition",
-      children: [
-        {
-          type: "clip",
-          source: "v.mp4",
-          in: 0,
-          out: 5,
-          filters: [{ type: "adjust", brightness: [[0, 0], [1, 1]] }],
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
   });
 
   it("rejects malformed keyframe time expressions", () => {

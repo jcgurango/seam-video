@@ -15,9 +15,11 @@ import {
   VideoSampleSink,
   ALL_FORMATS,
 } from "mediabunny";
-import { resolveComposition, resolveSpatial, type Composition } from "@seam/core";
+import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { buildRenderList, type DrawCommand, type RenderCommand } from "@seam/compositor";
 import { FrameSource, collectDrawables } from "../frameSource.js";
+
+const { resolveComposition } = createSeam();
 
 // End-to-end `underflow: "loop"` on the renderer's video path: the render list
 // wraps the looping clip's drawTime, and the FrameSource cursor (which only

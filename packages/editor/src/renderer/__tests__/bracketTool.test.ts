@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  createSeam,
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  resolveComposition,
   resolveSpatial,
 } from "@seam/core";
 import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
 import { applyBracket } from "../bracketTool.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const resolve = (doc: SeamFile): ResolvedTimeline =>
   resolveSpatial(
@@ -32,7 +35,7 @@ describe("applyBracket — attached to the primary", () => {
   };
 
   it("bracket start: shifts the offset so starts align", () => {
-    const next = applyBracket(doc, resolve(doc), 0, "children.0", ["children.1"], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.0", ["children.1"], "start");
     expect(at(next, 1).offset).toBe(-5);
     expect(at(next, 1).start).toBe("A@5");
     expect(at(next, 1).in).toBe(0);
@@ -41,7 +44,7 @@ describe("applyBracket — attached to the primary", () => {
   });
 
   it("bracket end: right-trims so ends align (the node doesn't move)", () => {
-    const next = applyBracket(doc, resolve(doc), 0, "children.0", ["children.1"], "end");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.0", ["children.1"], "end");
     expect(at(next, 1).out).toBe(5);
     expect(at(next, 1).offset).toBeUndefined();
     const r = resolve(next!);
@@ -58,7 +61,7 @@ describe("applyBracket — attached to the primary", () => {
         clip({ in: 0, out: 2, speed: 0.5, start: "A@5" }),
       ],
     };
-    const next = applyBracket(slow, resolve(slow), 0, "children.0", ["children.1"], "end");
+    const next = applyBracket(seam, slow, resolve(slow), 0, "children.0", ["children.1"], "end");
     expect(at(next, 1).out).toBe(2.5);
     expect(resolve(next!).children[1].timelineEnd).toBe(10);
   });
@@ -73,7 +76,7 @@ describe("applyBracket — attached to the primary", () => {
         clip({ in: 0, out: 2, start: "X@1" }),
       ],
     };
-    const next = applyBracket(other, resolve(other), 0, "children.1", ["children.2"], "start");
+    const next = applyBracket(seam, other, resolve(other), 0, "children.1", ["children.2"], "start");
     expect(at(next, 2).offset).toBe(9);
     expect(resolve(next!).children[2].timelineStart).toBe(10);
   });
@@ -88,7 +91,7 @@ describe("applyBracket — legato (primary not the anchor)", () => {
 
   it("bracket end: right-trims to the primary's start", () => {
     const doc = legatoDoc(clip({ in: 0, out: 2, start: 1 }));
-    const next = applyBracket(doc, resolve(doc), 0, "children.1", ["children.2"], "end");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.1", ["children.2"], "end");
     expect(at(next, 2).out).toBe(4);
     const r = resolve(next!);
     expect(r.children[2].timelineStart).toBe(1);
@@ -97,7 +100,7 @@ describe("applyBracket — legato (primary not the anchor)", () => {
 
   it("bracket start on a run head: offset shifts so the start meets the primary's end", () => {
     const doc = legatoDoc(clip({ in: 0, out: 2, start: 1, offset: 0.5 }));
-    const next = applyBracket(doc, resolve(doc), 0, "children.1", ["children.2"], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.1", ["children.2"], "start");
     expect(at(next, 2).start).toBe(1);
     expect(at(next, 2).offset).toBe(9);
     expect(resolve(next!).children[2].timelineStart).toBe(10);
@@ -114,7 +117,7 @@ describe("applyBracket — legato (primary not the anchor)", () => {
         clip({ in: 6, out: 11 }),
       ],
     };
-    const next = applyBracket(doc, resolve(doc), 0, "children.0", ["children.2"], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.0", ["children.2"], "start");
     expect(at(next, 2).in).toBe(1);
     expect(at(next, 2).start).toBeUndefined();
     expect(at(next, 2).offset).toBeUndefined();
@@ -139,7 +142,7 @@ describe("applyBracket — legato (primary not the anchor)", () => {
         } as unknown as Child,
       ],
     };
-    const next = applyBracket(doc, resolve(doc), 0, "children.0", ["children.1.children.1"], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 0, "children.0", ["children.1.children.1"], "start");
     const nested = next!.children![1] as unknown as SeamFile;
     expect(at(nested, 1).offset).toBe(-2);
     const rNested = resolve(next!).children[1] as unknown as {
@@ -151,7 +154,7 @@ describe("applyBracket — legato (primary not the anchor)", () => {
   it("no-ops (returns null) when everything is already in place", () => {
     // B already ends exactly at the primary's start.
     const doc = legatoDoc(clip({ in: 0, out: 2, start: 3 }));
-    expect(applyBracket(doc, resolve(doc), 0, "children.1", ["children.2"], "end")).toBeNull();
+    expect(applyBracket(seam, doc, resolve(doc), 0, "children.1", ["children.2"], "end")).toBeNull();
   });
 });
 
@@ -162,7 +165,7 @@ describe("applyBracket — primary only, against the playhead", () => {
       children: [clip({ id: "A", in: 0, out: 10 }), clip({ in: 0, out: 2, start: "A@5" })],
     };
     // B starts at 5; playhead at 7 → offset +2.
-    const next = applyBracket(doc, resolve(doc), 7, "children.1", [], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 7, "children.1", [], "start");
     expect(at(next, 1).offset).toBe(2);
     expect(resolve(next!).children[1].timelineStart).toBe(7);
   });
@@ -174,7 +177,7 @@ describe("applyBracket — primary only, against the playhead", () => {
       type: "composition",
       children: [clip({ in: 0, out: 5 }), clip({ in: 0, out: 5 })],
     };
-    const next = applyBracket(doc, resolve(doc), 7, "children.1", [], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 7, "children.1", [], "start");
     expect(at(next, 1).in).toBe(2);
     expect(at(next, 1).offset).toBeUndefined();
     const r = resolve(next!);
@@ -184,7 +187,7 @@ describe("applyBracket — primary only, against the playhead", () => {
 
   it("bracket start on the first child (implicit head, no `start`): trims", () => {
     const doc: SeamFile = { type: "composition", children: [clip({ in: 0, out: 5 })] };
-    const next = applyBracket(doc, resolve(doc), 2, "children.0", [], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 2, "children.0", [], "start");
     expect(at(next, 0).in).toBe(2);
     expect(at(next, 0).offset).toBeUndefined();
   });
@@ -196,7 +199,7 @@ describe("applyBracket — primary only, against the playhead", () => {
       type: "composition",
       children: [clip({ in: 0, out: 4, speed: 2 })],
     };
-    const next = applyBracket(doc, resolve(doc), 3, "children.0", [], "end");
+    const next = applyBracket(seam, doc, resolve(doc), 3, "children.0", [], "end");
     expect(at(next, 0).out).toBe(6);
     expect(resolve(next!).children[0].timelineEnd).toBe(3);
   });
@@ -216,7 +219,7 @@ describe("applyBracket — primary only, against the playhead", () => {
         } as unknown as Child,
       ],
     };
-    const next = applyBracket(doc, resolve(doc), 11, "children.1.children.1", [], "end");
+    const next = applyBracket(seam, doc, resolve(doc), 11, "children.1.children.1", [], "end");
     const nested = next!.children![1] as unknown as SeamFile;
     expect(at(nested, 1).out).toBe(0);
   });
@@ -234,7 +237,7 @@ describe("applyBracket — primary only, against the playhead", () => {
         } as unknown as Child,
       ],
     };
-    const next = applyBracket(doc, resolve(doc), 4, "children.0.children.1", [], "start");
+    const next = applyBracket(seam, doc, resolve(doc), 4, "children.0.children.1", [], "start");
     const nested = next!.children![0] as unknown as SeamFile;
     expect(at(nested, 1).offset).toBe(1);
   });
@@ -244,6 +247,6 @@ describe("applyBracket — primary only, against the playhead", () => {
       type: "composition",
       children: [clip({ in: 0, out: 5 })],
     };
-    expect(applyBracket(doc, resolve(doc), 5, "children.0", [], "end")).toBeNull();
+    expect(applyBracket(seam, doc, resolve(doc), 5, "children.0", [], "end")).toBeNull();
   });
 });

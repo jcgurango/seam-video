@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validate, type Child, type Composition } from "@seam/core";
+import { createSeam, type Child, type Composition } from "@seam/core";
 import { applyCompose, walkComposeDependencies } from "../composeTool.js";
+
+const { validate } = createSeam();
 
 const clip = (extra: Record<string, unknown> = {}): Child =>
   ({ type: "clip", source: "a.mp4", in: 0, out: 2, ...extra }) as Child;

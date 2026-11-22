@@ -21,6 +21,7 @@
 // inspect the bin definitions.
 
 import { validate } from "./validate.js";
+import type { Registry } from "./registry.js";
 import { expandMacros, findUnresolvedMacros } from "./macros.js";
 import type {
   BaseComposition,
@@ -60,6 +61,7 @@ export interface CompileOptions {
  *    3. Recurse into children.
  *    4. Run scripts on each composition. */
 export function compileSeamFile(
+  registry: Registry,
   doc: SeamFile,
   options: CompileOptions = {},
 ): CompileResult {
@@ -80,6 +82,7 @@ export function compileSeamFile(
   const expandedDoc = expanded.data as Composition;
 
   const compiled = compileComposition(
+    registry,
     expandedDoc,
     [],
     errors,
@@ -89,16 +92,18 @@ export function compileSeamFile(
 }
 
 function compileChild(
+  registry: Registry,
   child: Child,
   binStack: BinEntry[][],
   errors: CompileError[],
   runScripts: boolean,
 ): Child {
   if (child.type !== "composition") return child;
-  return compileComposition(child, binStack, errors, runScripts);
+  return compileComposition(registry, child, binStack, errors, runScripts);
 }
 
 function compileComposition(
+  registry: Registry,
   comp: Composition,
   callerBinStack: BinEntry[][],
   errors: CompileError[],
@@ -141,7 +146,7 @@ function compileComposition(
   //    so the resolver downstream doesn't need to defensive-check.
   const inputChildren = staged.children ?? [];
   const newChildren = inputChildren.map((c) =>
-    compileChild(c, innerStack, errors, runScripts),
+    compileChild(registry, c, innerStack, errors, runScripts),
   );
   staged = { ...staged, children: newChildren };
 
@@ -165,7 +170,7 @@ function compileComposition(
           `Script output contains an unresolved macro $$${stray.name} at ${stray.path || "<root>"}. Macros are evaluated before scripts run — script output cannot reference them.`,
         );
       }
-      const v = validate(rawResult);
+      const v = validate(registry, rawResult);
       if (!v.success) {
         throw new Error(
           `Script returned an invalid composition:\n - ${v.errors.join("\n - ")}`,
@@ -177,6 +182,7 @@ function compileComposition(
       // verbatim — the output IS the replacement.
       const { script: _drop, ...withoutScript } = result;
       staged = compileComposition(
+        registry,
         withoutScript as Composition,
         callerBinStack,
         errors,

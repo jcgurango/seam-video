@@ -13,7 +13,7 @@
 // All the data logic (catalog, mixed detection, length splitting, keyframe
 // patching, multi-node write-back + validation) lives in propertyCatalog.ts.
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   isKeyframed,
   type Child,
@@ -29,7 +29,7 @@ import {
   DISTORT_CORNERS,
   GROUP_ORDER,
   INSET_EDGES,
-  ROOT_PROPS,
+  rootProps,
   addKeyframe,
   applyPropertyEdit,
   formatNumber,
@@ -63,17 +63,26 @@ import {
   keyframeMoment,
   nodeClock,
 } from "./playheadKeyframe.js";
+import { useSeam } from "./seamContext.js";
 
 interface PropertiesPanelProps {
   document: SeamFile;
   /** Path keys of the selected nodes (`children.0`, …). */
   selection: string[];
-  /** Commit an edited document WITHOUT clearing the selection. */
-  onDocumentEdit: (next: SeamFile) => void;
+  /** Commit an edited document WITHOUT clearing the selection. With
+   *  `coalesce`, the edit replaces the current history entry instead of
+   *  adding one — the later ticks of one slider drag. */
+  onDocumentEdit: (next: SeamFile, opts?: EditOptions) => void;
   /** The editor timeline (scripts off, root `uncropped`) — maps the playhead
    *  into each node's keyframe time. Without it the keyframe stacks lose
    *  their playhead features (highlight, go-to, insert-at-playhead). */
   timeline?: ResolvedTimeline | null;
+}
+
+/** How an edit lands in undo history. */
+export interface EditOptions {
+  /** Replace the current history entry instead of pushing a new one. */
+  coalesce?: boolean;
 }
 
 /** What a keyframe stack needs to place the playhead in a node's own time. */
@@ -105,12 +114,16 @@ export default function PropertiesPanel({
   onDocumentEdit,
   timeline = null,
 }: PropertiesPanelProps) {
+  const seam = useSeam();
   // No selection → the root composition itself (its own, parentless catalog).
   const isRoot = selection.length === 0;
   const selected = useMemo(() => selectedNodes(document, selection), [document, selection]);
   const nodes = useMemo(() => selected.map((s) => s.node), [selected]);
   const paths = useMemo(() => selected.map((s) => s.path), [selected]);
-  const props = useMemo(() => (isRoot ? ROOT_PROPS : sharedProps(nodes)), [isRoot, nodes]);
+  const props = useMemo(
+    () => (isRoot ? rootProps(seam) : sharedProps(seam, nodes)),
+    [seam, isRoot, nodes],
+  );
   const summary = useMemo(() => summarizeSelection(nodes), [nodes]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setError(null), [selection]);
@@ -124,14 +137,18 @@ export default function PropertiesPanel({
     [timeline, document, selected],
   );
 
-  const edit = (key: string, update: (current: unknown, node: Child) => unknown) => {
-    const result = applyPropertyEdit(document, paths, key, update);
+  const edit = (
+    key: string,
+    update: (current: unknown, node: Child) => unknown,
+    opts?: EditOptions,
+  ) => {
+    const result = applyPropertyEdit(seam, document, paths, key, update);
     if (result.errors) {
       setError(result.errors[0] ?? "invalid value");
       return;
     }
     setError(null);
-    if (result.doc !== document) onDocumentEdit(result.doc);
+    if (result.doc !== document) onDocumentEdit(result.doc, opts);
   };
 
   if (selected.length === 0) {
@@ -180,7 +197,11 @@ export default function PropertiesPanel({
           {error}
         </div>
       )}
-      {GROUP_ORDER.filter((g) => groups.has(g)).map((g) => (
+      {[
+        ...GROUP_ORDER.filter((g) => groups.has(g)),
+        // Groups named by extensions, after core's, in first-appearance order.
+        ...[...groups.keys()].filter((g) => !GROUP_ORDER.includes(g)),
+      ].map((g) => (
         <div key={g} style={{ marginBottom: 10 }}>
           <div
             style={{
@@ -195,7 +216,7 @@ export default function PropertiesPanel({
             {g}
           </div>
           {groups.get(g)!.map((def) => (
-            <PropRow key={def.key} def={def} nodes={nodes} onEdit={(u) => edit(def.key, u)} />
+            <PropRow key={def.key} def={def} nodes={nodes} onEdit={(u, o) => edit(def.key, u, o)} />
           ))}
         </div>
       ))}
@@ -212,7 +233,7 @@ export default function PropertiesPanel({
 interface PropRowProps {
   def: PropDef;
   nodes: Child[];
-  onEdit: (update: (current: unknown, node: Child) => unknown) => void;
+  onEdit: (update: (current: unknown, node: Child) => unknown, opts?: EditOptions) => void;
 }
 
 function PropRow({ def, nodes, onEdit }: PropRowProps) {
@@ -269,7 +290,7 @@ function PropRow({ def, nodes, onEdit }: PropRowProps) {
             {MIXED} different keyframes
           </div>
         ) : (
-          <ValueControl def={def} value={value} mixed={mixed} onChange={(v) => onEdit(() => v)} onAxis={
+          <ValueControl def={def} value={value} mixed={mixed} slider onChange={(v, o) => onEdit(() => v, o)} onAxis={
             def.kind === "point"
               ? (axis, parts) =>
                   onEdit((cur) =>
@@ -326,7 +347,7 @@ function defaultValueFor(def: PropDef): unknown {
     case "backgroundColor":
       return "transparent";
     default:
-      return def.kind === "number" ? 0 : "";
+      return def.kind === "number" ? def.default ?? 0 : "";
   }
 }
 
@@ -378,16 +399,32 @@ interface ValueControlProps {
   value: unknown;
   mixed: boolean;
   /** Whole-value replacement (`undefined` = unset). */
-  onChange: (next: unknown) => void;
+  onChange: (next: unknown, opts?: EditOptions) => void;
+  /** Show a slider beside a ranged number (the row's main control only —
+   *  keyframe rows stay compact). */
+  slider?: boolean;
   /** Point kinds: one axis' percent/px part changed. */
   onAxis?: (axis: Axis, parts: Partial<LengthParts>) => void;
   /** Length kinds: percent/px part changed. */
   onLength?: (parts: Partial<LengthParts>) => void;
 }
 
-function ValueControl({ def, value, mixed, onChange, onAxis, onLength }: ValueControlProps) {
+function ValueControl({ def, value, mixed, slider, onChange, onAxis, onLength }: ValueControlProps) {
   switch (def.kind) {
     case "number":
+      if (slider && def.range) {
+        return (
+          <SliderInput
+            value={mixed ? undefined : (value as number | undefined)}
+            mixed={mixed}
+            range={def.range}
+            fallback={def.default ?? def.range.min}
+            placeholder={mixed ? MIXED : def.placeholder ?? ""}
+            unit={def.unit}
+            onCommit={onChange}
+          />
+        );
+      }
       return (
         <NumberInput
           value={mixed ? undefined : (value as number | undefined)}
@@ -553,10 +590,11 @@ function KeyframeStack({
   kfs: AnyKeyframe[];
   onEdit: (update: (current: unknown, node: Child) => unknown) => void;
 }) {
+  const seam = useSeam();
   const source = useContext(PlayheadContext);
   const { currentTime, seek } = useTimeline();
   const clockAt = (path: NodePath | null | undefined) =>
-    source?.timeline && path ? nodeClock(source.timeline, source.document, path, currentTime) : null;
+    source?.timeline && path ? nodeClock(seam, source.timeline, source.document, path, currentTime) : null;
   // Highlight + go-to follow the first selected node.
   const clock = clockAt(source?.primary);
   const active = activeKeyframeIndex(kfs, clock);
@@ -758,17 +796,89 @@ function LengthInput({
 
 /** Text-backed number input: empty = unset. Commits on blur / Enter,
  *  Escape reverts; a non-number is rejected (reverted). */
+/** A slider plus the exact number beside it. Dragging edits live as ONE undo
+ *  step (the first tick pushes history, the rest coalesce into it);
+ *  double-click resets to the default by unsetting the key. */
+function SliderInput({
+  value,
+  mixed,
+  range,
+  fallback,
+  placeholder,
+  unit,
+  onCommit,
+}: {
+  value: number | undefined;
+  mixed: boolean;
+  range: { min: number; max: number; step: number };
+  /** Where the thumb rests when the key is unset. */
+  fallback: number;
+  placeholder: string;
+  unit?: string;
+  onCommit: (n: number | undefined, opts?: EditOptions) => void;
+}) {
+  const dragging = useRef(false);
+  const shown = Math.min(range.max, Math.max(range.min, value ?? fallback));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={shown}
+        onPointerDown={() => {
+          dragging.current = false;
+        }}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          onCommit(n, { coalesce: dragging.current });
+          dragging.current = true;
+        }}
+        onPointerUp={() => {
+          dragging.current = false;
+        }}
+        onBlur={() => {
+          dragging.current = false;
+        }}
+        onDoubleClick={() => onCommit(undefined)}
+        title="Double-click to reset"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          margin: 0,
+          accentColor: "#5b8def",
+          opacity: mixed || value == null ? 0.55 : 1,
+        }}
+      />
+      <div style={{ width: 68, flexShrink: 0, display: "flex" }}>
+        <NumberInput
+          value={value}
+          placeholder={placeholder}
+          unit={unit}
+          compact
+          step={range.step}
+          onCommit={(n) => onCommit(n)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function NumberInput({
   value,
   placeholder,
   unit,
   compact,
+  step: stepSize = 1,
   onCommit,
 }: {
   value: number | undefined;
   placeholder: string;
   unit?: string;
   compact?: boolean;
+  /** ↑/↓ nudge size (×10 with Shift). Default 1. */
+  step?: number;
   onCommit: (n: number | undefined) => void;
 }) {
   const text = formatNumber(value);
@@ -799,7 +909,7 @@ function NumberInput({
           } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
             const cur = parseNumberInput(draft);
             const base = typeof cur === "number" ? cur : Number(placeholder) || 0;
-            const step = e.shiftKey ? 10 : 1;
+            const step = (e.shiftKey ? 10 : 1) * stepSize;
             const next = base + (e.key === "ArrowUp" ? step : -step);
             setDraft(formatNumber(next));
             onCommit(next);

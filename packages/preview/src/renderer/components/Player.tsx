@@ -1,19 +1,22 @@
 import React from "react";
 import type { ResolvedTimeline } from "@seam/core";
+import type { CompositorExtensions } from "@seam/compositor";
 import Timeline from "./Timeline.js";
 import VideoCanvas from "./VideoCanvas.js";
 import TransportControls from "./TransportControls.js";
 
 interface PlayerProps {
   timeline: ResolvedTimeline;
+  /** The host's Seam instance. */
+  seam: CompositorExtensions;
   basePath: string;
   width?: number;
   height?: number;
 }
 
-export default function Player({ timeline, basePath, width, height }: PlayerProps) {
+export default function Player({ timeline, seam, basePath, width, height }: PlayerProps) {
   return (
-    <Timeline timeline={timeline} basePath={basePath}>
+    <Timeline timeline={timeline} seam={seam} basePath={basePath}>
       <div
         style={{
           display: "flex",

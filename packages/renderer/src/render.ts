@@ -13,15 +13,13 @@ import { dirname } from "node:path";
 import {
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  compileSeamFile,
-  parseSeamFile,
-  resolveComposition,
   resolveSpatial,
 } from "@seam/core";
 import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedStatic,
+  Seam,
 } from "@seam/core";
 import { Compositor, buildRenderList } from "@seam/compositor";
 import {
@@ -163,6 +161,7 @@ function collectMediaNodes(
 }
 
 export async function renderSeamToFile(
+  seam: Seam,
   seamPath: string,
   outPath: string,
   options: RenderOptions = {},
@@ -171,17 +170,17 @@ export async function renderSeamToFile(
 
   // ── compile + resolve (mirrors the CLI/MLT path) ──
   const json = readFileSync(seamPath, "utf-8");
-  const parsed = parseSeamFile(json);
+  const parsed = seam.parseSeamFile(json);
   if (!parsed.success) {
     throw new Error(`seam validation failed:\n  ${parsed.errors.join("\n  ")}`);
   }
-  const { doc, errors } = compileSeamFile(parsed.data);
+  const { doc, errors } = seam.compileSeamFile(parsed.data);
   if (errors.length > 0) {
     throw new Error(
       `seam compile failed:\n  ${errors.map((e) => `${e.source}: ${e.message}`).join("\n  ")}`,
     );
   }
-  const temporal = resolveComposition(doc);
+  const temporal = seam.resolveComposition(doc);
   const width =
     options.width ?? (temporal.contentWidth as number | undefined) ?? DEFAULT_CANVAS_WIDTH;
   const height =
@@ -239,7 +238,7 @@ export async function renderSeamToFile(
     const bufferCount = options.bufferCount ?? 3;
     const device = await createGpuDevice();
     const backend = new NodeBackend(device, bufferCount);
-    const compositor = new Compositor<ReturnType<FrameSource["get"]>>(backend);
+    const compositor = new Compositor<ReturnType<FrameSource["get"]>>(backend, seam);
     compositor.init();
     compositor.resize(width, height);
 

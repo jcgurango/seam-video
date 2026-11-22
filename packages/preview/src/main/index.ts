@@ -5,11 +5,11 @@ import { watch } from "chokidar";
 import {
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  compileSeamFile,
-  parseSeamFile,
-  resolveComposition,
   resolveSpatial,
 } from "@seam/core";
+import { seam } from "../seam.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = seam;
 
 let mainWindow: BrowserWindow | null = null;
 let seamFilePath: string | null = null;

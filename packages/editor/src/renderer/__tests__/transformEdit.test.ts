@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposition, type Child, type SeamFile } from "@seam/core";
+import { createSeam, type Child, type SeamFile } from "@seam/core";
 import {
   applyTransformDrag,
   nudgeLength,
@@ -8,9 +8,12 @@ import {
 } from "../transformEdit.js";
 import { apply, invert, locateNode, mul, type LocatedNode } from "../viewportLocate.js";
 
+const seam = createSeam();
+const { resolveComposition } = seam;
+
 const noMedia = () => null;
 const locate = (doc: SeamFile, indices: number[], t = 0, media = noMedia as never) =>
-  locateNode(doc, resolveComposition(doc, { uncropped: true }), indices, t, media);
+  locateNode(seam, doc, resolveComposition(doc, { uncropped: true }), indices, t, media);
 
 const rect = (extra: Record<string, unknown> = {}): Child =>
   ({ type: "rect", duration: 5, start: 0, size: { x: 200, y: 100 }, ...extra }) as Child;

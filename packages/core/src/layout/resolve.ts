@@ -24,13 +24,15 @@ import {
   resolvedSignedRate,
 } from "./clip-span.js";
 import { parseStart } from "./anchor.js";
+import type { Registry } from "../registry.js";
+import type { ExtFields } from "../resolved-types.js";
 
 /**
  * A node's natural output length: its content (`[in, out]` / inner window)
  * played at `speed`, ignoring `duration`. For the duration-only types this is
  * just `duration`.
  */
-function naturalDuration(child: Child): number {
+function naturalDuration(registry: Registry, child: Child): number {
   switch (child.type) {
     case "clip":
     case "audio":
@@ -45,7 +47,7 @@ function naturalDuration(child: Child): number {
       return child.duration ?? 0;
     case "composition": {
       const compIn = child.in ?? 0;
-      const compOut = child.out ?? resolveCompositionInner(child).duration;
+      const compOut = child.out ?? resolveCompositionInner(registry, child).duration;
       return (compOut - compIn) / (child.speed ?? 1);
     }
   }
@@ -95,16 +97,37 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
 /** Per-frame-sampled visual fields every spatial node carries through
  *  resolution verbatim (like `volume`): opacity, the corner mask, and the map
  *  pin. Omitted keys stay omitted so resolved nodes don't grow `undefined`s. */
-function spatialExtras(child: {
+function spatialExtras(
+  registry: Registry,
+  child: {
+    opacity?: Keyframed<number>;
+    cornerRadius?: Keyframed<Length>;
+    pin?: Keyframed<Pin>;
+  },
+): {
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
   pin?: Keyframed<Pin>;
-}): { opacity?: Keyframed<number>; cornerRadius?: Keyframed<Length>; pin?: Keyframed<Pin> } {
+  ext?: ExtFields;
+} {
+  const ext = extFields(registry, child);
   return {
     ...(child.opacity != null ? { opacity: child.opacity } : {}),
     ...(child.cornerRadius != null ? { cornerRadius: child.cornerRadius } : {}),
     ...(child.pin != null ? { pin: child.pin } : {}),
+    ...(ext ? { ext } : {}),
   };
+}
+
+/** The extension-contributed fields authored on a visual node, or undefined
+ *  when it has none. */
+function extFields(registry: Registry, node: object): ExtFields | undefined {
+  let out: Record<string, unknown> | undefined;
+  for (const key of registry.visualFieldKeys) {
+    const v = (node as Record<string, unknown>)[key];
+    if (v != null) (out ??= {})[key] = v;
+  }
+  return out;
 }
 
 /**
@@ -114,6 +137,7 @@ function spatialExtras(child: {
  * content, defaulting to `stretch` (i.e. `duration` derives the rate).
  */
 function resolveChild(
+  registry: Registry,
   child: Child,
   nat: number,
   target: number,
@@ -148,8 +172,7 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...spatialExtras(child),
+        ...spatialExtras(registry, child),
       },
       actualDuration: target,
     };
@@ -196,8 +219,7 @@ function resolveChild(
         timelineStart: 0,
         timelineEnd: 0,
         ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...spatialExtras(child),
+        ...spatialExtras(registry, child),
       } as ResolvedChild,
       actualDuration: target,
     };
@@ -216,8 +238,7 @@ function resolveChild(
         ...(child.stroke != null ? { stroke: child.stroke } : {}),
         ...(child.strokeWidth != null ? { strokeWidth: child.strokeWidth } : {}),
         ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...spatialExtras(child),
+        ...spatialExtras(registry, child),
       } as ResolvedChild,
       actualDuration: target,
     };
@@ -229,7 +250,7 @@ function resolveChild(
     // composition's (runs + `start` anchors) in map-local time (0 = map
     // start, speed 1). They never extend the map and are NOT cropped to its
     // span here; the compositor only draws what's active.
-    const children = placeChildren(child.children ?? []).children;
+    const children = placeChildren(registry, child.children ?? []).children;
     return {
       resolved: {
         type: "map" as const,
@@ -246,15 +267,14 @@ function resolveChild(
         ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
         ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
         ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...spatialExtras(child),
+        ...spatialExtras(registry, child),
       },
       actualDuration: target,
     };
   }
 
   if (child.type === "composition") {
-    const inner = resolveCompositionInner(child);
+    const inner = resolveCompositionInner(registry, child);
     const compIn = child.in ?? 0;
     const compOut = child.out ?? inner.duration;
     const span = compOut - compIn;
@@ -303,8 +323,7 @@ function resolveChild(
         ...(loop ? { loop } : {}),
         children: croppedChildren,
         ...(spatialInput ? { spatialInput } : {}),
-        ...(child.filters?.length ? { filters: child.filters } : {}),
-        ...spatialExtras(child),
+        ...spatialExtras(registry, child),
         ...(child.volume != null ? { volume: child.volume } : {}),
         ...(child.pitch != null ? { pitch: child.pitch } : {}),
         ...(child.backgroundColor != null ? { backgroundColor: child.backgroundColor } : {}),
@@ -391,8 +410,7 @@ function resolveChild(
       ...(leaf.volume != null ? { volume: leaf.volume } : {}),
       ...(leaf.pitch != null ? { pitch: leaf.pitch } : {}),
       ...(spatialInput ? { spatialInput } : {}),
-      ...(leaf.filters?.length ? { filters: leaf.filters } : {}),
-      ...spatialExtras(leaf),
+      ...spatialExtras(registry, leaf),
     },
     actualDuration,
   };
@@ -408,16 +426,25 @@ export interface ResolveOptions {
 }
 
 export function resolveComposition(
+  registry: Registry,
   composition: Composition,
   options: ResolveOptions = {},
 ): ResolvedTimeline {
-  return resolveCompositionInner(composition, options.uncropped === true);
+  const timeline = resolveCompositionInner(registry, composition, options.uncropped === true);
+  // Fields on the root apply to the whole output. (A nested composition's
+  // ride on its resolved node instead — see `spatialExtras`.)
+  const ext = extFields(registry, composition);
+  return ext ? { ...timeline, ext } : timeline;
 }
 
-function resolveCompositionInner(composition: Composition, uncropped = false): ResolvedTimeline {
+function resolveCompositionInner(
+  registry: Registry,
+  composition: Composition,
+  uncropped = false,
+): ResolvedTimeline {
   // Post-compile, `binItem` references are inflated and `children` is
   // always populated; `?? []` keeps the now-optional authored type happy.
-  const { children, duration } = placeChildren(composition.children ?? [], uncropped);
+  const { children, duration } = placeChildren(registry, composition.children ?? [], uncropped);
 
   return {
     // The latest end among the children — there is no other organizer.
@@ -452,6 +479,7 @@ function resolveCompositionInner(composition: Composition, uncropped = false): R
  * `duration` is the latest end.
  */
 function placeChildren(
+  registry: Registry,
   children: Child[],
   uncropped = false,
 ): { children: ResolvedChild[]; duration: number } {
@@ -461,8 +489,8 @@ function placeChildren(
   const sourceBases: (number | undefined)[] = new Array(n);
   const indexById = new Map<string, number>();
   for (let i = 0; i < n; i++) {
-    const nat = naturalDuration(children[i]);
-    const r = resolveChild(children[i], nat, targetDuration(children[i], nat));
+    const nat = naturalDuration(registry, children[i]);
+    const r = resolveChild(registry, children[i], nat, targetDuration(children[i], nat));
     resolved[i] = r.resolved;
     durations[i] = r.actualDuration;
     sourceBases[i] = r.sourceBase;

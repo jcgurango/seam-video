@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseSeamFile,
-  resolveComposition,
   resolveSpatial,
   samplePin,
   sampleZoom,
@@ -9,6 +7,9 @@ import {
   type ResolvedMap,
   type ResolvedRect,
 } from "../index.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, resolveComposition } = createSeam();
 
 function parse(doc: unknown) {
   return parseSeamFile(JSON.stringify(doc));

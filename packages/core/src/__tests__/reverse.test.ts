@@ -5,13 +5,14 @@ import {
   clipPlayRange,
   clipSourceTime,
   flattenResolved,
-  parseSeamFile,
-  resolveComposition,
   unrollLoops,
   type Composition,
   type ResolvedClip,
   type ResolvedComposition,
 } from "../index.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, resolveComposition } = createSeam();
 
 // Reverse playback: `out < in` or a negative `duration` on clip/audio. The
 // resolved node keeps an ascending [sourceIn, sourceOut] + positive speed and

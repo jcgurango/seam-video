@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { resolveComposition } from "../layout/resolve.js";
 import type { Composition } from "../types.js";
+import { createSeam } from "../seam.js";
+
+const { resolveComposition } = createSeam();
 
 function comp(overrides: Partial<Composition> & { children: Composition["children"] }): Composition {
   return {
@@ -313,41 +315,19 @@ describe("resolveComposition", () => {
     });
   });
 
-  describe("filters", () => {
-    it("passes filters + opacity through to resolved clips", () => {
-      const filters = [{ type: "adjust" as const, brightness: 0.5 }];
+  describe("opacity", () => {
+    it("passes opacity through to resolved clips", () => {
       const result = resolveComposition(
         comp({
           children: [
-            { type: "clip", source: "v.mp4", in: 0, out: 5, filters, opacity: 0.8 },
+            { type: "clip", source: "v.mp4", in: 0, out: 5, opacity: 0.8 },
           ],
         })
       );
       const clip = result.children[0];
       if (clip.type === "clip") {
-        expect(clip.filters).toEqual(filters);
         expect(clip.opacity).toBe(0.8);
-      }
-    });
-
-    it("passes filters through to resolved compositions", () => {
-      const filters = [{ type: "adjust" as const, saturation: 0 }];
-      const result = resolveComposition(
-        comp({
-          children: [
-            {
-              type: "composition",
-              filters,
-              children: [
-                { type: "clip", source: "v.mp4", in: 0, out: 5 },
-              ],
-            },
-          ],
-        })
-      );
-      const child = result.children[0];
-      if (child.type === "composition") {
-        expect(child.filters).toEqual(filters);
+        expect(clip.ext).toBeUndefined();
       }
     });
   });

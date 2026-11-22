@@ -3,12 +3,10 @@ import { Timeline, VideoCanvas } from "@seam/preview";
 import {
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  parseSeamFile,
-  resolveComposition,
   resolveSpatial,
-  validate as validateSeamFile,
 } from "@seam/core";
-import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import type { Seam, ResolvedTimeline, SeamFile } from "@seam/core";
+import { SeamContext } from "./seamContext.js";
 import ControlsBar from "./ControlsBar.js";
 import TimelinePanel from "./TimelinePanel.js";
 import InspectorAccordion from "./InspectorAccordion.js";
@@ -62,6 +60,8 @@ import { WebPlatform } from "./platform/index.js";
 
 interface AppProps {
   platform: Platform;
+  /** The host's Seam instance: core plus the extensions it installs. */
+  seam: Seam;
 }
 
 const EMPTY_DOCUMENT: SeamFile = { type: "composition", children: [] };
@@ -73,8 +73,8 @@ type CCCutMode = { binId: string } | null;
 
 /** `uncropped` keeps root children 1:1 with the authored array (nodes that
  *  start before 0 stay in the list) — what the editing panels need. */
-function resolveDoc(doc: SeamFile, uncropped = false): ResolvedTimeline {
-  const temporal = resolveComposition(doc, { uncropped });
+function resolveDoc(seam: Seam, doc: SeamFile, uncropped = false): ResolvedTimeline {
+  const temporal = seam.resolveComposition(doc, { uncropped });
   return resolveSpatial(
     temporal,
     doc.contentWidth ?? DEFAULT_CANVAS_WIDTH,
@@ -123,7 +123,17 @@ function SelectionBar({
   );
 }
 
-export default function App({ platform }: AppProps) {
+/** Root component. Provides the host's Seam instance to every component and
+ *  hook below (`useSeam`), whichever screen `AppBody` is showing. */
+export default function App(props: AppProps) {
+  return (
+    <SeamContext.Provider value={props.seam}>
+      <AppBody {...props} />
+    </SeamContext.Provider>
+  );
+}
+
+function AppBody({ platform, seam }: AppProps) {
   // Drop pushes that don't change the document JSON. Mutations
   // (timeline drags, script re-runs, JSON saves that round-trip to the
   // same shape) otherwise hand back a fresh reference, which would
@@ -208,7 +218,7 @@ export default function App({ platform }: AppProps) {
 
   const ccWords = useMemo(() => {
     if (!ccBinEntry) return [];
-    return resolveCCWords(ccBinEntry, document);
+    return resolveCCWords(seam, ccBinEntry, document);
   }, [ccBinEntry, document]);
 
   // The document currently being shown. Normal editing operates on the
@@ -256,13 +266,13 @@ export default function App({ platform }: AppProps) {
   const rootTimeline = useMemo<ResolvedTimeline | null>(() => {
     void mediaEpoch; // re-resolve when local media availability changes
     try {
-      const { doc: compiled, errors: compileErrors } = compileDocument(document);
+      const { doc: compiled, errors: compileErrors } = compileDocument(seam, document);
       setScriptError(
         compileErrors.length > 0
           ? compileErrors.map((e) => `${e.source}: ${e.message}`).join("\n")
           : null,
       );
-      const resolved = resolveDoc(compiled);
+      const resolved = resolveDoc(seam, compiled);
       setErrors([]);
       return resolved;
     } catch (err) {
@@ -275,8 +285,8 @@ export default function App({ platform }: AppProps) {
   const playerTimeline = useMemo<ResolvedTimeline | null>(() => {
     if (!ccCut) return rootTimeline;
     try {
-      const { doc: compiled } = compileDocument(activeDoc);
-      return resolveDoc(compiled);
+      const { doc: compiled } = compileDocument(seam, activeDoc);
+      return resolveDoc(seam, compiled);
     } catch (err) {
       console.error("[App] playerTimeline resolve failed:", err, { activeDoc });
       return null;
@@ -285,10 +295,10 @@ export default function App({ platform }: AppProps) {
 
   const editorTimeline = useMemo<ResolvedTimeline | null>(() => {
     try {
-      const { doc: panelCompiled } = compileDocument(activeDoc, {
+      const { doc: panelCompiled } = compileDocument(seam, activeDoc, {
         runScripts: false,
       });
-      return resolveDoc(panelCompiled, true);
+      return resolveDoc(seam, panelCompiled, true);
     } catch (err) {
       console.error("[App] editorTimeline resolve failed:", err, { activeDoc });
       return null;
@@ -326,7 +336,7 @@ export default function App({ platform }: AppProps) {
     if (platform.kind === "web") {
       const wp = platform as WebPlatform;
       wp.clearBlobUrlCache();
-      await wp.preloadBlobUrls(collectClipSources(doc));
+      await wp.preloadBlobUrls(collectClipSources(seam, doc));
     }
     // The authored doc is the source of truth — bin references and
     // script outputs are resolved at compile time by the preview /
@@ -341,7 +351,7 @@ export default function App({ platform }: AppProps) {
   });
 
   const openFromJson = useEvent(async (json: string, fp: string) => {
-    const result = parseSeamFile(json);
+    const result = seam.parseSeamFile(json);
     if (!result.success) {
       setErrors(result.errors);
       return;
@@ -415,7 +425,7 @@ export default function App({ platform }: AppProps) {
   const commitDocument = useEvent(async (newDoc: SeamFile) => {
     if (platform.kind === "web") {
       const wp = platform as WebPlatform;
-      await wp.preloadBlobUrls(collectClipSources(newDoc));
+      await wp.preloadBlobUrls(collectClipSources(seam, newDoc));
     }
     history.push(newDoc);
   });
@@ -433,11 +443,14 @@ export default function App({ platform }: AppProps) {
 
   // Property edits keep the selection: the Properties panel rewrites fields
   // in place, so the selected paths stay valid and the user keeps editing.
+  // `coalesce` (the later ticks of a slider drag) overwrites the current
+  // history entry so the whole drag is one undo step.
   const editDocument = useCallback(
-    (newDoc: SeamFile) => {
-      void commitDocument(newDoc);
+    (newDoc: SeamFile, opts?: { coalesce?: boolean }) => {
+      if (opts?.coalesce) history.replace(newDoc);
+      else void commitDocument(newDoc);
     },
-    [commitDocument]
+    [commitDocument, history]
   );
 
   // The JSON tab edits the authored root document directly. Bin
@@ -479,9 +492,9 @@ export default function App({ platform }: AppProps) {
       const newDoc = next as SeamFile;
       let compileErrors: string[] = [];
       try {
-        const result = compileDocument(newDoc);
+        const result = compileDocument(seam, newDoc);
         compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
-        resolveDoc(result.doc);
+        resolveDoc(seam, result.doc);
       } catch (err) {
         return [...compileErrors, String(err)];
       }
@@ -506,7 +519,7 @@ export default function App({ platform }: AppProps) {
       // children is structurally valid. The compile pass runs lazily
       // for preview/render and surfaces any unresolved references
       // through scriptError.
-      const validated = validateSeamFile(proposed);
+      const validated = seam.validate(proposed);
       if (!validated.success) {
         console.warn("[App] handleJsonNodeSave validate failed:", validated.errors, {
           proposed,
@@ -516,9 +529,9 @@ export default function App({ platform }: AppProps) {
 
       let compileErrors: string[] = [];
       try {
-        const result = compileDocument(validated.data);
+        const result = compileDocument(seam, validated.data);
         compileErrors = result.errors.map((e) => `${e.source}: ${e.message}`);
-        resolveDoc(result.doc);
+        resolveDoc(seam, result.doc);
       } catch (err) {
         return [...compileErrors, String(err)];
       }
@@ -1031,6 +1044,7 @@ export default function App({ platform }: AppProps) {
       <Timeline
         key={viewKey}
         timeline={playerTimeline}
+        seam={seam}
         basePath={basePath}
         preserveTime
         initialTime={0}

@@ -48,6 +48,7 @@ import {
   isWordItem,
 } from "./wordTool.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
+import { useSeam } from "./seamContext.js";
 
 interface ControlsBarProps {
   document: SeamFile;
@@ -204,6 +205,7 @@ export default function ControlsBar({
   onCCCutCancel,
   ccCutHasSelections,
 }: ControlsBarProps) {
+  const seam = useSeam();
   const {
     currentTime,
     totalDuration,
@@ -227,7 +229,7 @@ export default function ControlsBar({
     // own container (bin-rooted selections are skipped — their per-reference
     // playhead is ambiguous).
     if (selection.length === 0) {
-      const nextDoc = sliceAtPlayhead(doc, currentTime);
+      const nextDoc = sliceAtPlayhead(seam, doc, currentTime);
       if (nextDoc) onDocumentChange(nextDoc);
       return;
     }
@@ -248,10 +250,10 @@ export default function ControlsBar({
     for (const g of ordered) {
       // Local time is read off the ORIGINAL doc/timeline (splits don't move
       // anything in time); the edit lands on the accumulated one.
-      const desc = descendToContainer(timeline, doc, g.path, currentTime);
+      const desc = descendToContainer(seam, timeline, doc, g.path, currentTime);
       if (!desc) continue;
       next = editContainer(next, g.path, rootBin, (sub) =>
-        sliceAtPlayhead(sub, desc.localTime, g.indices),
+        sliceAtPlayhead(seam, sub, desc.localTime, g.indices),
       );
     }
     if (next !== doc) onDocumentChange(next);
@@ -323,7 +325,7 @@ export default function ControlsBar({
   const handleAttach = useCallback(() => {
     if (selection.length < 2) return;
     const [primaryKey, ...secondaryKeys] = selection;
-    const result = applyAttach(doc, timeline, currentTime, primaryKey, secondaryKeys);
+    const result = applyAttach(seam, doc, timeline, currentTime, primaryKey, secondaryKeys);
     if (result) {
       onDocumentChange(result.doc);
       // Keep the roles selected so the anchor lines show immediately.
@@ -347,7 +349,7 @@ export default function ControlsBar({
     (side: "start" | "end") => {
       if (selection.length < 1) return;
       const [primaryKey, ...secondaryKeys] = selection;
-      const next = applyBracket(
+      const next = applyBracket(seam,
         doc,
         timeline,
         currentTime,
@@ -440,7 +442,7 @@ export default function ControlsBar({
   }, [doc, selectedIndices, onDocumentChange, onSelectionChange]);
 
   const handleGroupWords = useCallback(() => {
-    const result = groupWords(doc, selectedIndices);
+    const result = groupWords(seam, doc, selectedIndices);
     if (!result.ok) {
       window.alert(result.error);
       return;
@@ -594,7 +596,7 @@ export default function ControlsBar({
             <button
               onClick={() => {
                 if (selectedIndices.length > 0) {
-                  const nextTime = playheadAfterDelete(
+                  const nextTime = playheadAfterDelete(seam,
                     timeline,
                     doc,
                     selectedIndices.map((i) =>

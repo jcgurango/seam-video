@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  createSeam,
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  resolveComposition,
   resolveSpatial,
 } from "@seam/core";
 import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
 import { playheadAfterDelete } from "../deletePlayhead.js";
 import { parsePath } from "../nodePath.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const resolve = (doc: SeamFile): ResolvedTimeline =>
   resolveSpatial(
@@ -20,7 +23,7 @@ const clip = (fields: Record<string, unknown>): Child =>
   ({ type: "clip", source: "a.mp4", ...fields }) as unknown as Child;
 
 const after = (doc: SeamFile, keys: string[], t: number) =>
-  playheadAfterDelete(resolve(doc), doc, keys.map(parsePath), t);
+  playheadAfterDelete(seam, resolve(doc), doc, keys.map(parsePath), t);
 
 // Root: A [0,5) B [5,10) C [10,15)
 const flat: SeamFile = {

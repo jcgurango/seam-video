@@ -25,13 +25,13 @@ import {
 } from "mediabunny";
 import {
   clipSourceTime,
-  compileSeamFile,
   formatStart,
-  parseSeamFile,
   parseStart,
-  resolveComposition,
 } from "@seam/core";
 import type { Composition, ResolvedChild } from "@seam/core";
+import { seam } from "../seam.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = seam;
 
 export interface DistillOptions {
   output?: string;

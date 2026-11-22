@@ -33,7 +33,7 @@
 // Pure transformations on a SeamFile — no React, no platform deps.
 
 import { startAnchorId } from "@seam/core";
-import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import type { Seam, ResolvedTimeline, SeamFile } from "@seam/core";
 import {
   editContainer,
   getNodeAtPath,
@@ -54,6 +54,7 @@ const EPS = 1e-6;
  *  edit lands on `working`. Returns `working` unchanged when the path
  *  doesn't resolve or the edge is already in place. */
 function bracketEdge(
+  seam: Seam,
   working: SeamFile,
   doc: SeamFile,
   resolvedRoot: ResolvedTimeline,
@@ -70,7 +71,7 @@ function bracketEdge(
 
   // Map the target into the node's container-local output time and read the
   // node's resolved edge there.
-  const desc = descendToContainer(resolvedRoot, doc, containerPath, targetGlobal);
+  const desc = descendToContainer(seam, resolvedRoot, doc, containerPath, targetGlobal);
   if (!desc) return working;
   const rNode = desc.rContainer.children[last.index];
   if (!rNode) return working;
@@ -85,7 +86,7 @@ function bracketEdge(
     }));
   }
   return editContainer(working, containerPath, rootBin, (sub) =>
-    resizeChild(sub, last.index, side === "start" ? "left" : "right", delta),
+    resizeChild(seam, sub, last.index, side === "start" ? "left" : "right", delta),
   );
 }
 
@@ -97,6 +98,7 @@ function bracketEdge(
  * spans, or every delta was already zero).
  */
 export function applyBracket(
+  seam: Seam,
   doc: SeamFile,
   resolvedRoot: ResolvedTimeline,
   currentTime: number,
@@ -114,7 +116,7 @@ export function applyBracket(
 
   // Primary only: bracket the primary itself against the playhead.
   if (secondaryKeys.length === 0) {
-    const next = bracketEdge(
+    const next = bracketEdge(seam,
       doc,
       doc,
       resolvedRoot,
@@ -126,7 +128,7 @@ export function applyBracket(
     return next !== doc ? next : null;
   }
 
-  const primarySpan = globalSpanOf(resolvedRoot, doc, primaryPath);
+  const primarySpan = globalSpanOf(seam, resolvedRoot, doc, primaryPath);
   if (!primarySpan) return null;
   const primaryId = primary.id;
   const primaryContainerKey = pathKey(primaryPath.slice(0, -1));
@@ -153,7 +155,7 @@ export function applyBracket(
         ? primarySpan.end
         : primarySpan.start;
 
-    working = bracketEdge(
+    working = bracketEdge(seam,
       working,
       doc,
       resolvedRoot,

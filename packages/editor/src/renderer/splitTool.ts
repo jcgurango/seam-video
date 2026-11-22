@@ -16,14 +16,13 @@
 // Pure transformations on a SeamFile — no React, no platform deps.
 
 import {
-  compileSeamFile,
   formatStart,
   parseStart,
-  resolveComposition,
   resolvedPlayStart,
   resolvedSignedRate,
 } from "@seam/core";
 import type {
+  Seam,
   Audio,
   Child,
   Clip,
@@ -154,6 +153,7 @@ function isSplittable(type: string | undefined): boolean {
  * when nothing was split.
  */
 export function sliceAtPlayhead(
+  seam: Seam,
   doc: SeamFile,
   currentTime: number,
   only?: ReadonlySet<number>,
@@ -164,8 +164,8 @@ export function sliceAtPlayhead(
   // matches them. `runScripts: false` + `uncropped` keep resolved children
   // 1:1 with the authored array, so indices address `doc.children` (the
   // array we mutate).
-  const resolved = resolveComposition(
-    compileSeamFile(doc, { runScripts: false }).doc,
+  const resolved = seam.resolveComposition(
+    seam.compileSeamFile(doc, { runScripts: false }).doc,
     { uncropped: true },
   );
   const children = doc.children ?? [];

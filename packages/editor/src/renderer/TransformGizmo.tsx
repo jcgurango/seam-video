@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { compileSeamFile } from "@seam/core";
 import type { Child, ResolvedTimeline, SeamFile } from "@seam/core";
 import { useTimeline, useTimelineMedia } from "@seam/preview";
 import type { GizmoSurface } from "@seam/preview";
@@ -24,6 +23,7 @@ import {
   type TransformDrag,
 } from "./transformEdit.js";
 import { activeKeyframeIndex, nodeClock } from "./playheadKeyframe.js";
+import { useSeam } from "./seamContext.js";
 
 interface TransformGizmoProps {
   surface: GizmoSurface;
@@ -144,6 +144,7 @@ export default function TransformGizmo({
   timeline,
   history,
 }: TransformGizmoProps) {
+  const seam = useSeam();
   const { currentTime } = useTimeline();
   const media = useTimelineMedia();
 
@@ -153,7 +154,7 @@ export default function TransformGizmo({
 
   const compiled = useMemo(() => {
     try {
-      return compileSeamFile(document, { runScripts: false }).doc;
+      return seam.compileSeamFile(document, { runScripts: false }).doc;
     } catch {
       return null;
     }
@@ -175,7 +176,7 @@ export default function TransformGizmo({
 
   const located: LocatedNode | null =
     compiled && indices && node
-      ? locateNode(compiled, timeline, indices, currentTime, media.getMediaSize)
+      ? locateNode(seam, compiled, timeline, indices, currentTime, media.getMediaSize)
       : null;
 
   // The active drag re-evaluates when a modifier flips without pointer motion.
@@ -190,7 +191,7 @@ export default function TransformGizmo({
   const animatedProps = animatedTransformProps(node);
   const targets: KeyframeTargets = {};
   if (animatedProps.length > 0) {
-    const clock = nodeClock(timeline, document, path, currentTime);
+    const clock = nodeClock(seam, timeline, document, path, currentTime);
     const rec = node as unknown as Record<string, [number | string, unknown][]>;
     for (const key of animatedProps) {
       const index = activeKeyframeIndex(rec[key], clock);

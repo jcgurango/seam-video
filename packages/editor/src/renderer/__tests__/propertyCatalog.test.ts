@@ -5,11 +5,13 @@ import {
   addKeyframe,
   applyPropertyEdit,
   catalogFor,
+  extensionProps,
   joinLength,
   patchKeyframe,
   pointAxis,
   propState,
   removeKeyframe,
+  rootProps,
   selectedNodes,
   sharedProps,
   splitLength,
@@ -19,6 +21,10 @@ import {
   withPointAxis,
 } from "../propertyCatalog.js";
 import { parsePath } from "../nodePath.js";
+import { createSeam } from "@seam/core";
+import { adjustments } from "@seam/extension-adjustments";
+
+const seam = createSeam();
 
 const doc: SeamFile = {
   type: "composition",
@@ -36,9 +42,9 @@ const nodesAt = (...keys: string[]): Child[] => selectedNodes(doc, keys).map((s)
 describe("catalog + multi-selection", () => {
   it("every type has a catalog; shared props are the intersection in first-node order", () => {
     for (const t of ["clip", "audio", "static", "data", "text", "rect", "circle", "map", "composition"] as const) {
-      expect(catalogFor(t).length).toBeGreaterThan(0);
+      expect(catalogFor(seam, t).length).toBeGreaterThan(0);
     }
-    const keys = sharedProps(nodesAt("children.0", "children.2")).map((d) => d.key);
+    const keys = sharedProps(seam, nodesAt("children.0", "children.2")).map((d) => d.key);
     expect(keys).toContain("opacity");
     expect(keys).toContain("translation");
     expect(keys).not.toContain("source"); // text has none
@@ -50,7 +56,7 @@ describe("catalog + multi-selection", () => {
 
   it("every child type exposes start + offset (no transition); the root does not", () => {
     for (const t of ["clip", "audio", "static", "data", "text", "rect", "circle", "map", "composition"] as const) {
-      const defs = catalogFor(t);
+      const defs = catalogFor(seam, t);
       expect(defs.find((d) => d.key === "start")).toMatchObject({ group: "Timing", kind: "scalar" });
       const offset = defs.find((d) => d.key === "offset");
       expect(offset).toMatchObject({ group: "Timing", kind: "number", placeholder: "0" });
@@ -88,7 +94,7 @@ describe("catalog + multi-selection", () => {
     expect(sel[0].path).toEqual([]);
     expect(sel[0].node).toBe(doc);
     // Editing through path [] rewrites the root itself.
-    const r = applyPropertyEdit(doc, [[]], "backgroundColor", () => "#112233");
+    const r = applyPropertyEdit(seam, doc, [[]], "backgroundColor", () => "#112233");
     expect(r.errors).toBeNull();
     expect(r.doc.backgroundColor).toBe("#112233");
     expect(r.doc.children).toBe(doc.children);
@@ -164,13 +170,13 @@ describe("keyframes", () => {
 
 describe("applyPropertyEdit", () => {
   it("start: a number or a valid anchor is written; a malformed anchor is rejected", () => {
-    const withId = applyPropertyEdit(doc, [parsePath("children.0")], "id", () => "a").doc;
+    const withId = applyPropertyEdit(seam, doc, [parsePath("children.0")], "id", () => "a").doc;
     const paths = [parsePath("children.2")];
-    expect(applyPropertyEdit(withId, paths, "start", () => 1.5).doc.children?.[2]).toMatchObject({ start: 1.5 });
-    expect(applyPropertyEdit(withId, paths, "start", () => "a@50%").doc.children?.[2]).toMatchObject({
+    expect(applyPropertyEdit(seam, withId, paths, "start", () => 1.5).doc.children?.[2]).toMatchObject({ start: 1.5 });
+    expect(applyPropertyEdit(seam, withId, paths, "start", () => "a@50%").doc.children?.[2]).toMatchObject({
       start: "a@50%",
     });
-    const bad = applyPropertyEdit(withId, paths, "start", () => "a@x");
+    const bad = applyPropertyEdit(seam, withId, paths, "start", () => "a@x");
     expect(bad.errors?.length).toBeGreaterThan(0);
     expect(bad.doc).toBe(withId);
   });
@@ -178,31 +184,103 @@ describe("applyPropertyEdit", () => {
   const paths = ["children.0", "children.1"].map(parsePath);
 
   it("writes to every selected node, deletes on undefined, validates", () => {
-    const r = applyPropertyEdit(doc, paths, "rotation", () => 45);
+    const r = applyPropertyEdit(seam, doc, paths, "rotation", () => 45);
     expect(r.errors).toBeNull();
     const kids = r.doc.children!;
     expect((kids[0] as { rotation?: number }).rotation).toBe(45);
     expect((kids[1] as { rotation?: number }).rotation).toBe(45);
     expect(kids[2]).toBe(doc.children![2]); // untouched nodes keep identity
 
-    const cleared = applyPropertyEdit(r.doc, paths, "rotation", () => undefined);
+    const cleared = applyPropertyEdit(seam, r.doc, paths, "rotation", () => undefined);
     expect("rotation" in cleared.doc.children![0]).toBe(false);
   });
 
   it("per-node updater sees each node's own value", () => {
-    const r = applyPropertyEdit(doc, paths, "in", (cur) => (cur as number) + 1);
+    const r = applyPropertyEdit(seam, doc, paths, "in", (cur) => (cur as number) + 1);
     expect((r.doc.children![0] as { in: number }).in).toBe(1);
     expect((r.doc.children![1] as { in: number }).in).toBe(2);
   });
 
   it("rejects an invalid result and returns the original doc", () => {
-    const r = applyPropertyEdit(doc, paths, "speed", () => -1);
+    const r = applyPropertyEdit(seam, doc, paths, "speed", () => -1);
     expect(r.errors).not.toBeNull();
     expect(r.doc).toBe(doc);
   });
 
   it("is a no-op (same doc identity) when nothing changes", () => {
-    const r = applyPropertyEdit(doc, paths, "opacity", () => 0.5);
+    const r = applyPropertyEdit(seam, doc, paths, "opacity", () => 0.5);
     expect(r.doc).toBe(doc);
+  });
+});
+
+describe("extension-contributed fields", () => {
+  const withAdj = createSeam([adjustments]);
+  const KEYS = ["brightness", "contrast", "saturation", "gamma", "temperature", "tint"];
+
+  it("appear on every visual node type, after core's rows, and not on audio/data", () => {
+    for (const t of ["clip", "static", "text", "rect", "circle", "map", "composition"] as const) {
+      const keys = catalogFor(withAdj, t).map((d) => d.key);
+      expect(keys.slice(-KEYS.length), t).toEqual(KEYS);
+    }
+    for (const t of ["audio", "data"] as const) {
+      expect(catalogFor(withAdj, t).some((d) => KEYS.includes(d.key)), t).toBe(false);
+    }
+  });
+
+  it("are absent on an instance without the extension", () => {
+    expect(catalogFor(seam, "clip").some((d) => KEYS.includes(d.key))).toBe(false);
+    expect(rootProps(seam)).toBe(ROOT_PROPS);
+  });
+
+  it("derive the row from the field spec: group, default, slider span, unit", () => {
+    const by = new Map(extensionProps(withAdj).map((d) => [d.key, d]));
+    const sat = by.get("saturation")!;
+    expect(sat).toMatchObject({
+      label: "Saturation",
+      group: "Adjustments",
+      kind: "number",
+      animatable: true,
+      placeholder: "1",
+      default: 1,
+      range: { min: 0, max: 2, step: 0.01 },
+    });
+    // The slider spans the soft range, not the (much wider) valid range.
+    expect(by.get("contrast")!.range).toEqual({ min: 0, max: 2, step: 0.01 });
+    expect(by.get("temperature")).toMatchObject({
+      unit: "K",
+      default: 6500,
+      range: { min: 2000, max: 12000, step: 50 },
+    });
+  });
+
+  it("are shared across a mixed visual selection and offered on the root", () => {
+    const nodes = [
+      { type: "clip", source: "a.mp4", in: 0, out: 1 },
+      { type: "rect", duration: 1 },
+    ] as Child[];
+    const keys = sharedProps(withAdj, nodes).map((d) => d.key);
+    for (const k of KEYS) expect(keys).toContain(k);
+    expect(rootProps(withAdj).map((d) => d.key).slice(-KEYS.length)).toEqual(KEYS);
+  });
+
+  it("applyPropertyEdit writes, validates the range and unsets", () => {
+    const d: SeamFile = {
+      type: "composition",
+      children: [{ type: "rect", duration: 1 }],
+    };
+    const path = [parsePath("children.0")];
+    const set = applyPropertyEdit(withAdj, d, path, "saturation", () => 0);
+    expect(set.errors).toBeFalsy();
+    expect((set.doc.children![0] as unknown as Record<string, unknown>).saturation).toBe(0);
+
+    const bad = applyPropertyEdit(withAdj, d, path, "saturation", () => 9);
+    expect(bad.errors?.length).toBeGreaterThan(0);
+    expect(bad.doc).toBe(d);
+
+    const unset = applyPropertyEdit(withAdj, set.doc, path, "saturation", () => undefined);
+    expect("saturation" in (unset.doc.children![0] as object)).toBe(false);
+
+    // The same edit on an instance without the extension is rejected.
+    expect(applyPropertyEdit(seam, d, path, "saturation", () => 0).errors?.length).toBeGreaterThan(0);
   });
 });

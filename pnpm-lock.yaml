@@ -11,6 +11,18 @@ importers:
 
   .: {}
 
+  extensions/adjustments:
+    devDependencies:
+      '@seam/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@25.3.3)(lightningcss@1.33.0)(terser@5.46.2)
+
   packages/cli:
     dependencies:
       '@chenglou/pretext':
@@ -65,6 +77,9 @@ importers:
       '@seam/core':
         specifier: workspace:*
         version: link:../core
+      '@seam/extension-adjustments':
+        specifier: workspace:*
+        version: link:../../extensions/adjustments
       '@seam/renderer':
         specifier: workspace:*
         version: link:../renderer
@@ -197,6 +212,9 @@ importers:
       '@seam/core':
         specifier: workspace:*
         version: link:../core
+      '@seam/extension-adjustments':
+        specifier: workspace:*
+        version: link:../../extensions/adjustments
       '@seam/preview':
         specifier: workspace:*
         version: link:../preview
@@ -299,6 +317,9 @@ importers:
       '@seam/core':
         specifier: workspace:*
         version: link:../core
+      '@seam/extension-adjustments':
+        specifier: workspace:*
+        version: link:../../extensions/adjustments
       '@seam/map':
         specifier: workspace:*
         version: link:../map
@@ -385,6 +406,9 @@ importers:
         specifier: ^0.4.0
         version: 0.4.0
     devDependencies:
+      '@seam/extension-adjustments':
+        specifier: workspace:*
+        version: link:../../extensions/adjustments
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.21
@@ -406,6 +430,9 @@ importers:
       '@seam/editor':
         specifier: workspace:*
         version: link:../editor
+      '@seam/extension-adjustments':
+        specifier: workspace:*
+        version: link:../../extensions/adjustments
       '@seam/preview':
         specifier: workspace:*
         version: link:../preview

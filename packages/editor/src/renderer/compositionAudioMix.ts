@@ -13,8 +13,6 @@
 // with a source-point `start` (`"<id>@<segTime>"`).
 
 import {
-  compileSeamFile,
-  resolveComposition,
   runsOf,
   flattenResolved,
   sampleVolume,
@@ -24,6 +22,7 @@ import {
   type FlatLeaf,
 } from "@seam/core";
 import { decodeMonoRange, encodeWavMono16, type MonoRange } from "./audioExtract.js";
+import type { Seam } from "@seam/core";
 
 /** A clip/audio leaf — the audio-bearing subset of FlatLeaf. */
 type AudioLeaf = Extract<FlatLeaf, { type: "clip" | "audio" }>;
@@ -69,6 +68,7 @@ function isAudioLeaf(leaf: FlatLeaf): leaf is AudioLeaf {
  * to transcribe").
  */
 export async function mixCompositionAudio(
+  seam: Seam,
   composition: Composition,
   opts: MixCompositionOptions
 ): Promise<Blob | null> {
@@ -84,7 +84,7 @@ export async function mixCompositionAudio(
     ...(opts.rootBin ? { bin: opts.rootBin } : {}),
     ...(opts.rootMacros ? { macros: opts.rootMacros } : {}),
   };
-  const compiled = compileSeamFile(wrapper, { runScripts: true });
+  const compiled = seam.compileSeamFile(wrapper, { runScripts: true });
   for (const err of compiled.errors) {
     opts.onCompileError?.(`${err.source}: ${err.message}`);
   }
@@ -101,7 +101,7 @@ export async function mixCompositionAudio(
     ? { ...compiledTarget, children: targetChildren.slice(0, firstRunEnd) }
     : compiledTarget;
 
-  const resolved = resolveComposition(subject);
+  const resolved = seam.resolveComposition(subject);
   const duration = resolved.duration;
   if (!(duration > 0)) return null;
 

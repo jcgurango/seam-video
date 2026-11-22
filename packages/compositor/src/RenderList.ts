@@ -1,8 +1,9 @@
 /**
  * Walks the resolved timeline tree at a given time and produces a command
  * list for the GPU renderer. Clips become DrawCommands with absolute pixel
- * positions. Compositions with filters become GroupCommands whose children
- * are rendered to an intermediate texture (FBO) so the group's filters can
+ * positions. Compositions with extension fields (colour adjustments, …)
+ * become GroupCommands whose children are rendered to an intermediate
+ * texture (FBO) so the group's colour stages can
  * be applied to the composite.
  *
  * Spatial model (post origin/translation/size rewrite):
@@ -38,7 +39,7 @@ import type {
   ResolvedComposition,
   SpatialRect,
   ObjectFit,
-  Filter,
+  ExtFields,
   Length,
   Pin,
 } from "@seam/core";
@@ -63,7 +64,7 @@ import {
 } from "@seam/core";
 import { lngLatToWorld, truncateToFraction } from "@seam/map";
 
-/** Sample a node's first-class opacity (Keyframed, ejected from filters);
+/** Sample a node's first-class opacity (Keyframed);
  *  absent means fully opaque. */
 function sampleOpacity(
   opacity: Keyframed<number> | undefined,
@@ -71,6 +72,25 @@ function sampleOpacity(
   duration: number,
 ): number {
   return opacity == null ? 1 : sampleNumber(opacity, t, duration);
+}
+
+/** A node's extension-contributed field values sampled at one instant, keyed
+ *  by field key. Only authored fields appear; the colour stage that consumes
+ *  them supplies defaults for the rest. */
+export type FieldValues = Readonly<Record<string, number>>;
+
+/** Shared "no contributed fields" value (background fills, layered basemaps). */
+export const NO_FIELDS: FieldValues = Object.freeze({});
+
+/** Sample a node's contributed fields (plain numbers or keyframes) in its own
+ *  time, like opacity. */
+function sampleFields(ext: ExtFields | undefined, t: number, duration: number): FieldValues {
+  if (!ext) return NO_FIELDS;
+  const out: Record<string, number> = {};
+  for (const key in ext) {
+    out[key] = sampleNumber(ext[key] as Keyframed<number>, t, duration);
+  }
+  return out;
 }
 
 /** Analytic shape the shader rasterizes, in TARGET pixels relative to the
@@ -92,9 +112,10 @@ export interface ShapeGeometry {
 export interface DrawCommand {
   type: "draw";
   clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedMap;
-  /** Filters applied to this draw. Normally the node's own; a map's basemap
-   *  draw carries none when the map is layered (the group applies them). */
-  filters: Filter[];
+  /** Sampled extension fields for this draw (colour stages read them).
+   *  Normally the node's own; a map's basemap draw carries none when the map
+   *  is layered (the group applies them). */
+  fields: FieldValues;
   scissorX: number;
   scissorY: number;
   scissorW: number;
@@ -151,8 +172,8 @@ export interface FillCommand {
   pivotY: number;
   /** Analytic shape to rasterize (rect/circle nodes); absent = the plain quad. */
   shape?: ShapeGeometry;
-  /** Colour filters on the shape node (identity for background fills). */
-  filters?: Filter[];
+  /** Sampled extension fields of the shape node (absent for background fills). */
+  fields?: FieldValues;
 }
 
 export interface GroupCommand {
@@ -167,7 +188,8 @@ export interface GroupCommand {
   scissorH: number;
   fboW: number;
   fboH: number;
-  filters: Filter[];
+  /** Sampled extension fields, applied to the composited group. */
+  fields: FieldValues;
   opacity: number;
   /** In-plane rotation in radians of the composited FBO quad, about the
    *  pivot below. 0 = no rotation. */
@@ -266,6 +288,33 @@ export function buildRenderList(
     commands,
     null,
   );
+
+  // Extension fields authored on the root composition (a colour adjustment
+  // of the whole video): composite the frame as one full-canvas group so the
+  // colour stages see it as a unit, like any composition that carries them.
+  if (timeline.ext != null) {
+    return [
+      {
+        type: "group",
+        destX: 0,
+        destY: 0,
+        destW: canvasW,
+        destH: canvasH,
+        scissorX: 0,
+        scissorY: 0,
+        scissorW: canvasW,
+        scissorH: canvasH,
+        fboW: canvasW,
+        fboH: canvasH,
+        fields: sampleFields(timeline.ext, currentTime, timeline.duration),
+        opacity: 1,
+        rotation: 0,
+        pivotX: 0,
+        pivotY: 0,
+        children: commands,
+      },
+    ];
+  }
 
   return commands;
 }
@@ -532,7 +581,7 @@ function walkChildren(
       commands.push({
         type: "draw",
         clip: child,
-        filters: child.filters ?? [],
+        fields: sampleFields(child.ext, drawTime, drawDuration),
         scissorX: scissor.x,
         scissorY: scissor.y,
         scissorW: scissor.w,
@@ -596,7 +645,7 @@ function walkChildren(
         rotation,
         pivotX,
         pivotY,
-        filters: child.filters ?? [],
+        fields: sampleFields(child.ext, drawTime, drawDuration),
       };
       if (!isNoColor(fillColor)) {
         commands.push({
@@ -707,10 +756,12 @@ function walkChildren(
       };
     }
 
-    const hasFilters = child.filters && child.filters.length > 0;
+    // Any authored extension field (a colour adjustment, …) applies to the
+    // composited group as a unit.
+    const hasFields = child.ext != null;
     // A rotated container can't be flattened into the parent pass (its
     // children would need the rotation composed per-quad about the pivot).
-    // Render it to an FBO and rotate the composited quad — same path filters
+    // Render it to an FBO and rotate the composited quad — same path extension fields
     // take. `spatial.rotation != null` covers static and animated rotation
     // alike (resolver only sets it when authored).
     const hasRotation = spatial.rotation != null;
@@ -724,7 +775,7 @@ function walkChildren(
     // and a `cornerRadius` mask clips the composited group, so both need the
     // FBO too.
     const needsLayer =
-      hasFilters ||
+      hasFields ||
       hasRotation ||
       fade < 1 ||
       nodeOpacity < 1 ||
@@ -749,7 +800,7 @@ function walkChildren(
       const groupChildren: RenderCommand[] = [];
       if (isMap) {
         groupChildren.push(
-          basemapDraw(child, fboViewport, fboClip, 1, drawTime, fboW, fboH, []),
+          basemapDraw(child, fboViewport, fboClip, 1, drawTime, fboW, fboH, NO_FIELDS),
         );
       } else if (child.backgroundColor != null) {
         groupChildren.push(plainFill(child, child.backgroundColor, fboClip, fboClip, 1));
@@ -777,7 +828,7 @@ function walkChildren(
         scissorH: childClip.h,
         fboW,
         fboH,
-        filters: child.filters ?? [],
+        fields: sampleFields(child.ext, drawTime, drawDuration),
         opacity: opacity * fade * nodeOpacity,
         rotation,
         pivotX,
@@ -807,7 +858,7 @@ function walkChildren(
             drawTime,
             innerContentW,
             innerContentH,
-            [],
+            NO_FIELDS,
           ),
         );
       } else if (child.backgroundColor != null) {
@@ -838,12 +889,12 @@ function basemapDraw(
   drawTime: number,
   contentW: number,
   contentH: number,
-  filters: Filter[],
+  fields: FieldValues,
 ): DrawCommand {
   return {
     type: "draw",
     clip: map,
-    filters,
+    fields,
     scissorX: scissor.x,
     scissorY: scissor.y,
     scissorW: scissor.w,

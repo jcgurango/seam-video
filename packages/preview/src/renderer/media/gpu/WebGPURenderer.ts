@@ -7,7 +7,11 @@
  * verbatim with the headless Node renderer, so the preview and the final
  * render composite identically by construction.
  */
-import { Compositor, type RenderCommand } from "@seam/compositor";
+import {
+  Compositor,
+  type CompositorExtensions,
+  type RenderCommand,
+} from "@seam/compositor";
 import type {
   ResolvedClip,
   ResolvedMap,
@@ -22,6 +26,10 @@ export class WebGPURenderer {
   private backend = new BrowserBackend();
   private compositor: Compositor<BrowserFrame> | null = null;
 
+  /** `ext`: the host's Seam instance — the shader is built for its
+   *  extension set. */
+  constructor(private readonly ext: CompositorExtensions) {}
+
   get ready(): boolean {
     return this.compositor?.ready ?? false;
   }
@@ -32,7 +40,7 @@ export class WebGPURenderer {
     // identity so we don't fire overlapping inits.
     if (this.compositor) this.dispose();
     await this.backend.init(canvas);
-    this.compositor = new Compositor<BrowserFrame>(this.backend);
+    this.compositor = new Compositor<BrowserFrame>(this.backend, this.ext);
     this.compositor.init();
   }
 

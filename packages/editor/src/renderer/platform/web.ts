@@ -1,5 +1,5 @@
 import { basename } from "../pathUtils.js";
-import type { SeamFile } from "@seam/core";
+import type { Seam, SeamFile } from "@seam/core";
 import type {
   ActionName,
   ExportProgress,
@@ -332,7 +332,9 @@ export class WebPlatform implements Platform {
   private openProjectFn: (() => Promise<OpenResult | null>) | null = null;
   private pickSavePathFn: (() => Promise<string | null>) | null = null;
 
-  constructor() {
+  /** `seam`: the host's Seam instance — the platform compiles documents to
+   *  find their media sources. */
+  constructor(private readonly seam: Seam) {
     this.installKeybindings();
   }
 
@@ -899,7 +901,7 @@ export class WebPlatform implements Platform {
   async classifyProjectMedia(
     doc: SeamFile
   ): Promise<{ localOnly: string[]; cloudOnly: string[]; missing: string[] }> {
-    const sources = Array.from(new Set(collectClipSources(doc))).filter(
+    const sources = Array.from(new Set(collectClipSources(this.seam, doc))).filter(
       (s) =>
         !s.startsWith("http://") &&
         !s.startsWith("https://") &&

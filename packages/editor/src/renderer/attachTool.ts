@@ -14,7 +14,7 @@ import {
   resolvedPlayStart,
   resolvedSignedRate,
 } from "@seam/core";
-import type { Child, ResolvedChild, ResolvedTimeline, SeamFile, Start } from "@seam/core";
+import type { Seam, Child, ResolvedChild, ResolvedTimeline, SeamFile, Start } from "@seam/core";
 import {
   getCompAtPath,
   getNodeAtPath,
@@ -135,6 +135,7 @@ function sourcePoint(id: string, seconds: number): Start {
  * caller can keep them selected.
  */
 export function applyAttach(
+  seam: Seam,
   doc: SeamFile,
   resolvedRoot: ResolvedTimeline,
   currentTime: number,
@@ -153,7 +154,7 @@ export function applyAttach(
   if (!primary) return null;
   // Map the playhead into the primary's container-local time, then read the
   // primary's resolved node there.
-  const desc = descendToContainer(resolvedRoot, doc, containerPath, currentTime);
+  const desc = descendToContainer(seam, resolvedRoot, doc, containerPath, currentTime);
   if (!desc) return null;
   const primaryIndex = primaryPath[primaryPath.length - 1].index;
   const resolvedPrimary = desc.rContainer.children[primaryIndex];
@@ -185,9 +186,9 @@ export function applyAttach(
   // Each secondary's placement, measured before anything moves: where it sits
   // now (in the primary container's local time) and the anchor for it.
   const toLocal = (globalTime: number) =>
-    descendToContainer(resolvedRoot, doc, containerPath, globalTime)?.localTime ?? globalTime;
+    descendToContainer(seam, resolvedRoot, doc, containerPath, globalTime)?.localTime ?? globalTime;
   const placements = secPaths.map((p) => {
-    const span = globalSpanOf(resolvedRoot, doc, p);
+    const span = globalSpanOf(seam, resolvedRoot, doc, p);
     if (!span) {
       // Can't tell where it is: start it at the playhead instead.
       return { start: anchorAt(id, primary, resolvedPrimary, desc.localTime).start };

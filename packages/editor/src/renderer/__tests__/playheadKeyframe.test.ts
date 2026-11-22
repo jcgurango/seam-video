@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposition, type Child, type SeamFile } from "@seam/core";
+import { createSeam, type Child, type SeamFile } from "@seam/core";
 import {
   LAST_FRAME,
   activeKeyframeIndex,
@@ -13,6 +13,9 @@ import { parsePath } from "../nodePath.js";
 import { applyTransformDrag, transformCapabilities } from "../transformEdit.js";
 import { insetEdges, withDistortCoord, withInsetEdge } from "../propertyCatalog.js";
 import { locateNode } from "../viewportLocate.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const clock = (t: number, duration = 10) => ({ t, duration });
 
@@ -34,22 +37,22 @@ describe("nodeClock", () => {
   const resolved = resolveComposition(doc, { uncropped: true });
 
   it("puts the playhead in a root node's own time", () => {
-    const c = nodeClock(resolved, doc, parsePath("children.1"), 5)!;
+    const c = nodeClock(seam, resolved, doc, parsePath("children.1"), 5)!;
     expect(c.t).toBeCloseTo(1);
     expect(c.duration).toBeCloseTo(4);
     expect(c.toGlobal(1)).toBeCloseTo(5);
   });
   it("maps through a sped composition both ways", () => {
     // Comp starts at 4 and plays 2×: global 6 → inner 4 → 2s into the 2nd rect.
-    const c = nodeClock(resolved, doc, parsePath("children.1.children.1"), 6)!;
+    const c = nodeClock(seam, resolved, doc, parsePath("children.1.children.1"), 6)!;
     expect(c.t).toBeCloseTo(2);
     expect(c.duration).toBeCloseTo(6);
     expect(c.toGlobal(2)).toBeCloseTo(6);
     expect(c.toGlobal(0)).toBeCloseTo(5);
   });
   it("runs the root on global time and has no clock for bin-rooted paths", () => {
-    expect(nodeClock(resolved, doc, [], 3)!.t).toBe(3);
-    expect(nodeClock(resolved, doc, parsePath("bin.x.children.0"), 3)).toBeNull();
+    expect(nodeClock(seam, resolved, doc, [], 3)!.t).toBe(3);
+    expect(nodeClock(seam, resolved, doc, parsePath("bin.x.children.0"), 3)).toBeNull();
   });
 });
 
@@ -146,7 +149,7 @@ describe("transform drags on keyframes", () => {
     translation: [[0, { x: "10%", y: "50%" }], ["100%", { x: "90%", y: "50%" }, "ease-in"]],
   } as unknown as Child;
   const doc = { type: "composition", contentWidth: 1000, contentHeight: 500, children: [node] } as SeamFile;
-  const geom = locateNode(doc, resolveComposition(doc, { uncropped: true }), [0], 0, () => null)!;
+  const geom = locateNode(seam, doc, resolveComposition(doc, { uncropped: true }), [0], 0, () => null)!;
 
   it("off a keyframe the animated property can't be edited, static ones can", () => {
     const caps = transformCapabilities(node);

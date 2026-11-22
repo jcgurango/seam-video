@@ -10,8 +10,12 @@ import {
 import App from "@seam/editor/App";
 import { WebPlatform } from "@seam/editor/platform";
 import type { Source } from "pmtiles";
+import { createSeam } from "@seam/core";
+import { adjustments } from "@seam/extension-adjustments";
 
-const platform = new WebPlatform();
+// One Seam instance per host: core plus the extensions this shell installs.
+const seam = createSeam([adjustments]);
+const platform = new WebPlatform(seam);
 
 // Bundle the same fonts the renderer uses (body + CJK/emoji fallbacks) so
 // web text/map output matches the final render. Fire-and-forget.
@@ -45,4 +49,4 @@ const cloud = platform.configureCloud(runtimeCloudUrl || buildCloudUrl);
 if (cloud) void cloud.restore();
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App platform={platform} />);
+root.render(<App platform={platform} seam={seam} />);

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { expandMacros, findUnresolvedMacros } from "../macros.js";
-import { parseSeamFile } from "../validate.js";
-import { compileSeamFile } from "../compile.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, compileSeamFile } = createSeam();
 
 describe("macro expansion", () => {
   it("substitutes scalar values at object value positions", () => {

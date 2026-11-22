@@ -19,7 +19,6 @@ import {
   isKeyframed,
   loopLocalTime,
   resolveBoxProps,
-  resolveComposition,
   sampleContentDim,
   sampleDistort,
   isIdentityDistort,
@@ -28,6 +27,7 @@ import {
   DEFAULT_CANVAS_WIDTH,
 } from "@seam/core";
 import type {
+  Seam,
   Child,
   Composition,
   DistortCorners,
@@ -167,11 +167,11 @@ interface ResolvedBody {
 // Nested bodies re-resolve only when their compiled composition changes
 // (the gizmo re-locates on every playhead tick).
 const bodyCache = new WeakMap<object, ResolvedBody | null>();
-function bodyOf(comp: Composition): ResolvedBody | null {
+function bodyOf(seam: Seam, comp: Composition): ResolvedBody | null {
   let body = bodyCache.get(comp);
   if (body === undefined) {
     try {
-      body = resolveComposition(comp, { uncropped: true });
+      body = seam.resolveComposition(comp, { uncropped: true });
     } catch {
       body = null;
     }
@@ -314,6 +314,7 @@ function placeNode(
  * container (map children aren't handled yet).
  */
 export function locateNode(
+  seam: Seam,
   compiled: SeamFile,
   rootBody: ResolvedBody,
   indices: number[],
@@ -363,7 +364,7 @@ export function locateNode(
     // Descend into a composition.
     if (cChild.type !== "composition" || rChild.type !== "composition") return null;
     if (!placed.inner || !placed.innerToParent) return null;
-    const body = bodyOf(cChild);
+    const body = bodyOf(seam, cChild);
     if (!body) return null;
     t = (cChild.in ?? 0) + loopLocalTime(rChild.loop, local) * rChild.speed;
     toCanvas = mul(toCanvas, placed.innerToParent);

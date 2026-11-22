@@ -3,12 +3,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  parseSeamFile,
-  compileSeamFile,
-  resolveComposition,
+  createSeam,
   type Composition,
 } from "@seam/core";
 import { renderAudioMix } from "../audio.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = createSeam();
 
 // End-to-end check of composition `volume`: render the OfflineAudioContext mix
 // and confirm the actual output amplitude scales by the (nested) comp volume.

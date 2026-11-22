@@ -23,8 +23,9 @@
 // Used by the toolbar slice (find the playhead inside a sub-composition) and
 // attach (compute a source anchor point on a nested primary).
 
-import { compileSeamFile, loopLocalTime, resolveComposition } from "@seam/core";
+import { loopLocalTime } from "@seam/core";
 import type {
+  Seam,
   Child,
   Composition,
   ResolvedChild,
@@ -63,6 +64,7 @@ interface Level {
  *  entered. Returns the final container, or null when a segment is a bin
  *  root, isn't a composition, or can't be resolved. */
 function walkContainers(
+  seam: Seam,
   resolvedRoot: ResolvedTimeline,
   doc: SeamFile,
   containerPath: NodePath,
@@ -75,7 +77,7 @@ function walkContainers(
   let cNode: AuthoredBody | null = null;
   for (const seg of containerPath) {
     if (seg.field === "bin") return null;
-    cNode ??= compileSeamFile(doc, { runScripts: false }).doc;
+    cNode ??= seam.compileSeamFile(doc, { runScripts: false }).doc;
     const rChild = rNode.children[seg.index];
     const aChild = (aNode.children ?? [])[seg.index];
     const cChild: Child | undefined = (cNode.children ?? [])[seg.index];
@@ -91,7 +93,7 @@ function walkContainers(
     }
     let rBody: ResolvedBody;
     try {
-      rBody = resolveComposition(cChild, { uncropped: true });
+      rBody = seam.resolveComposition(cChild, { uncropped: true });
     } catch {
       return null;
     }
@@ -109,13 +111,14 @@ function walkContainers(
  *  the root unchanged. `resolvedRoot` must be 1:1 with `doc.children`
  *  (resolved `uncropped`). */
 export function descendToContainer(
+  seam: Seam,
   resolvedRoot: ResolvedTimeline,
   doc: SeamFile,
   containerPath: NodePath,
   globalTime: number,
 ): ContainerLocal | null {
   let t = globalTime;
-  const end = walkContainers(resolvedRoot, doc, containerPath, ({ rChild, aChild }) => {
+  const end = walkContainers(seam, resolvedRoot, doc, containerPath, ({ rChild, aChild }) => {
     // A looping comp replays its window: wrap into the current cycle first.
     t = (aChild.in ?? 0) + loopLocalTime(rChild.loop, t - rChild.timelineStart) * rChild.speed;
   });
@@ -132,6 +135,7 @@ export interface Span {
  *  (`parent = timelineStart + (inner − in) / speed` per level). Null for
  *  bin-rooted paths or when any level doesn't resolve. */
 export function globalSpanOf(
+  seam: Seam,
   resolvedRoot: ResolvedTimeline,
   doc: SeamFile,
   path: NodePath,
@@ -140,7 +144,7 @@ export function globalSpanOf(
   const last = path[path.length - 1];
   if (last.field === "bin") return null;
   let toGlobal = (t: number) => t;
-  const end = walkContainers(resolvedRoot, doc, path.slice(0, -1), ({ rChild, aChild }) => {
+  const end = walkContainers(seam, resolvedRoot, doc, path.slice(0, -1), ({ rChild, aChild }) => {
     const start = rChild.timelineStart;
     const speed = rChild.speed;
     const inVal = aChild.in ?? 0;

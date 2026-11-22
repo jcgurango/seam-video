@@ -17,6 +17,7 @@ import {
   sampleZoom,
 } from "@seam/core";
 import type {
+  Seam,
   Distort,
   Inset,
   Keyframed,
@@ -58,6 +59,7 @@ export interface NodeClock {
  * on the timeline) or when a level doesn't resolve.
  */
 export function nodeClock(
+  seam: Seam,
   resolvedRoot: ResolvedTimeline,
   doc: SeamFile,
   path: NodePath,
@@ -68,9 +70,9 @@ export function nodeClock(
   }
   const last = path[path.length - 1];
   if (last.field !== "children") return null;
-  const container = descendToContainer(resolvedRoot, doc, path.slice(0, -1), globalTime);
+  const container = descendToContainer(seam, resolvedRoot, doc, path.slice(0, -1), globalTime);
   const rNode = container?.rContainer.children[last.index];
-  const span = globalSpanOf(resolvedRoot, doc, path);
+  const span = globalSpanOf(seam, resolvedRoot, doc, path);
   if (!container || !rNode || !span) return null;
   const duration = rNode.timelineEnd - rNode.timelineStart;
   return {

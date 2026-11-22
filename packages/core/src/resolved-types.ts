@@ -6,13 +6,16 @@ import type {
   Inset,
   InsetMode,
   Distort,
-  Filter,
   Orientation,
   Pin,
   TextPadding,
   TextRun,
   TextStyleFields,
 } from "./types.js";
+
+/** Extension-contributed field values carried on a resolved visual node,
+ *  keyed by field key. Absent when the node authors none. */
+export type ExtFields = Readonly<Record<string, unknown>>;
 
 export type { ObjectFit };
 
@@ -97,7 +100,9 @@ export interface ResolvedClip {
   /** Length-preserving pitch shift in semitones; absent means 0. Adds with
    *  enclosing compositions' `pitch`. */
   pitch?: number;
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
@@ -131,7 +136,9 @@ export interface ResolvedStatic {
   transition?: number;
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
@@ -197,7 +204,9 @@ export interface ResolvedText extends TextStyleFields {
   contentHeight?: Keyframed<Length>;
   timelineStart: number;
   timelineEnd: number;
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
@@ -233,7 +242,9 @@ export interface ResolvedComposition {
   /** Crossfade overlap (s) with the next sibling — see ResolvedClip. */
   transitionOut?: number;
   children: ResolvedChild[];
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   /** Opacity multiplier (0..1); absent means opaque. Sampled per-frame by
    *  renderers, like `volume`. */
   opacity?: Keyframed<number>;
@@ -281,7 +292,9 @@ interface ResolvedShapeBase {
   fill?: Keyframed<string>;
   stroke?: Keyframed<string>;
   strokeWidth?: Keyframed<number>;
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
   pin?: Keyframed<Pin>;
@@ -331,7 +344,9 @@ export interface ResolvedMap {
    *  `"100%"` of the parent); the t=0 bake lives in `intrinsicWidth/Height`. */
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
-  filters?: Filter[];
+  /** Extension-contributed fields authored on this node, verbatim (plain
+   *  values or keyframes) — sampled per frame by the render list. */
+  ext?: ExtFields;
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
   pin?: Keyframed<Pin>;
@@ -374,5 +389,8 @@ export interface ResolvedTimeline {
    *  treat it as `number`. */
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
+  /** Extension-contributed fields authored on the ROOT composition — applied
+   *  to the whole output (the render list wraps the frame in one group). */
+  ext?: ExtFields;
   children: ResolvedChild[];
 }

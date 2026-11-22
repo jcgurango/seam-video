@@ -3,11 +3,11 @@ import { resolve } from "node:path";
 import {
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
-  compileSeamFile,
-  parseSeamFile,
-  resolveComposition,
   resolveSpatial,
 } from "@seam/core";
+import { seam } from "../seam.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = seam;
 
 export interface ResolveOptions {
   output?: string;

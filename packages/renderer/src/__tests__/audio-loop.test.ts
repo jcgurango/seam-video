@@ -3,12 +3,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  parseSeamFile,
-  compileSeamFile,
-  resolveComposition,
+  createSeam,
   type Composition,
 } from "@seam/core";
 import { renderAudioMix } from "../audio.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = createSeam();
 
 // `underflow: "loop"` in the offline mix: a 1s tone anchored over a 3.5s span
 // must sound for the whole span (each cycle is its own buffer-source slice),

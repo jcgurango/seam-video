@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
-  parseSeamFile,
-  resolveComposition,
+  createSeam,
   resolveSpatial,
   type Composition,
 } from "@seam/core";
@@ -9,6 +8,9 @@ import { buildRenderList } from "@seam/compositor";
 import { Compositor } from "@seam/compositor";
 import { createGpuDevice } from "../gpu.js";
 import { NodeBackend, type NodeFrame } from "../NodeBackend.js";
+
+const seam = createSeam();
+const { parseSeamFile, resolveComposition } = seam;
 
 // Regression: a composition with a transparent (unspecified) background and
 // opacity < 1 takes the FBO path. The FBO must clear TRANSPARENT — clearing it
@@ -26,7 +28,7 @@ let compositor: Compositor<NodeFrame>;
 beforeAll(async () => {
   device = await createGpuDevice();
   backend = new NodeBackend(device, 1);
-  compositor = new Compositor<NodeFrame>(backend);
+  compositor = new Compositor<NodeFrame>(backend, seam);
   compositor.init();
   compositor.resize(W, H);
 });

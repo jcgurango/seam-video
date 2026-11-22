@@ -1,5 +1,4 @@
-import { compileSeamFile } from "@seam/core";
-import type { SeamFile, Child, Composition } from "@seam/core";
+import type { Seam, SeamFile, Child, Composition } from "@seam/core";
 import { basename, isAbsolute, relative } from "./pathUtils.js";
 import { isMediaSource } from "./mediaSource.js";
 
@@ -119,10 +118,10 @@ export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile
  * resolvable still carries through. Used by the web platform to warm
  * up its blob URL cache before mounting a document.
  */
-export function collectClipSources(doc: SeamFile, out: string[] = []): string[] {
+export function collectClipSources(seam: Seam, doc: SeamFile, out: string[] = []): string[] {
   let resolved: SeamFile;
   try {
-    resolved = compileSeamFile(doc).doc;
+    resolved = seam.compileSeamFile(doc).doc;
   } catch {
     resolved = doc;
   }

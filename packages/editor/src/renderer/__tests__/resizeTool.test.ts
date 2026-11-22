@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Child, SeamFile } from "@seam/core";
-import { resolveComposition } from "@seam/core";
+import { createSeam } from "@seam/core";
 import { resizeChild, resizeChildInPlace } from "../resizeTool.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const docWith = (child: Child): SeamFile => ({
   type: "composition",
@@ -22,7 +25,7 @@ describe("resizeChild rate-aware in/out", () => {
       in: 0,
       out: 10,
     } as Child);
-    const next = resizeChild(doc, 0, "right", 1);
+    const next = resizeChild(seam, doc, 0, "right", 1);
     expect(childOf(next).out).toBe(11);
   });
 
@@ -35,7 +38,7 @@ describe("resizeChild rate-aware in/out", () => {
       speed: 2,
     } as Child);
     // 1s of output growth consumes 2s of source at 2x.
-    const next = resizeChild(doc, 0, "right", 1);
+    const next = resizeChild(seam, doc, 0, "right", 1);
     expect(childOf(next).out).toBe(12);
   });
 
@@ -47,7 +50,7 @@ describe("resizeChild rate-aware in/out", () => {
       out: 10,
       speed: 2,
     } as Child);
-    const next = resizeChild(doc, 0, "left", 1);
+    const next = resizeChild(seam, doc, 0, "left", 1);
     expect(childOf(next).in).toBe(6);
   });
 
@@ -59,7 +62,7 @@ describe("resizeChild rate-aware in/out", () => {
       out: 4,
       speed: 0.5,
     } as Child);
-    const next = resizeChild(doc, 0, "left", -1);
+    const next = resizeChild(seam, doc, 0, "left", -1);
     expect(childOf(next).in).toBe(1.5);
   });
 
@@ -74,7 +77,7 @@ describe("resizeChild rate-aware in/out", () => {
       out: 10,
       duration: 5,
     } as Child);
-    const next = resizeChild(doc, 0, "right", 1);
+    const next = resizeChild(seam, doc, 0, "right", 1);
     expect(childOf(next).out).toBe(12);
     expect(childOf(next).duration).toBe(6);
   });
@@ -89,7 +92,7 @@ describe("resizeChild rate-aware in/out", () => {
       out: 10,
       duration: 4,
     } as Child);
-    const next = resizeChild(doc, 0, "left", -2);
+    const next = resizeChild(seam, doc, 0, "left", -2);
     expect(childOf(next).in).toBe(0);
     expect(childOf(next).duration).toBe(5);
   });
@@ -102,7 +105,7 @@ describe("resizeChild rate-aware in/out", () => {
       out: 10,
       children: [{ type: "clip", source: "a.mp4", in: 0, out: 10 } as Child],
     } as Child);
-    const next = resizeChild(doc, 0, "right", 1);
+    const next = resizeChild(seam, doc, 0, "right", 1);
     expect(childOf(next).out).toBe(12);
   });
 
@@ -112,7 +115,7 @@ describe("resizeChild rate-aware in/out", () => {
       source: "a.png",
       duration: 5,
     } as Child);
-    const next = resizeChild(doc, 0, "left", 1);
+    const next = resizeChild(seam, doc, 0, "left", 1);
     expect(childOf(next).duration).toBe(4);
   });
 });
@@ -120,7 +123,7 @@ describe("resizeChild rate-aware in/out", () => {
 describe("resizeChild with an omitted out (in + duration shorthand)", () => {
   it("right handle materialises out = in + duration, then extends it", () => {
     const doc = docWith({ type: "clip", source: "a.mp4", in: 2, duration: 3 } as Child);
-    const next = childOf(resizeChild(doc, 0, "right", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "right", 1));
     // Rate is 1 (span == duration), so +1s output = +1s source.
     expect(next.out).toBe(6);
     expect(next.duration).toBe(4);
@@ -129,7 +132,7 @@ describe("resizeChild with an omitted out (in + duration shorthand)", () => {
 
   it("left handle trims in and shrinks duration without needing out", () => {
     const doc = docWith({ type: "clip", source: "a.mp4", in: 2, duration: 3 } as Child);
-    const next = childOf(resizeChild(doc, 0, "left", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "left", 1));
     expect(next.in).toBe(3);
     expect(next.duration).toBe(2);
     expect(next.out).toBeUndefined();
@@ -149,7 +152,7 @@ describe("resizeChild with duration + a non-stretch strategy", () => {
       duration: 3,
       overflow: "trim-end",
     } as Child);
-    const next = childOf(resizeChild(doc, 0, "right", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "right", 1));
     expect(next.out).toBe(12);
     expect(next.duration).toBe(4);
   });
@@ -163,7 +166,7 @@ describe("resizeChild with duration + a non-stretch strategy", () => {
       duration: 10,
       underflow: "loop",
     } as Child);
-    const next = childOf(resizeChild(doc, 0, "left", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "left", 1));
     expect(next.in).toBe(3);
     expect(next.duration).toBe(9);
   });
@@ -178,7 +181,7 @@ describe("resizeChild with duration + a non-stretch strategy", () => {
       duration: 5,
       underflow: "loop",
     } as Child);
-    const next = childOf(resizeChild(doc, 0, "right", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "right", 1));
     expect(next.out).toBe(12);
     expect(next.duration).toBe(6);
   });
@@ -192,7 +195,7 @@ describe("resizeChild with duration + a non-stretch strategy", () => {
       overflow: "trim-end",
       children: [{ type: "clip", source: "a.mp4", in: 0, out: 10 } as Child],
     } as Child);
-    const next = childOf(resizeChild(doc, 0, "right", 1));
+    const next = childOf(resizeChild(seam, doc, 0, "right", 1));
     expect(next.out).toBe(11);
     expect(next.duration).toBe(5);
   });
@@ -208,7 +211,7 @@ describe("resizeChild leaves placement alone", () => {
         { type: "clip", source: "c.mp4", in: 0, out: 1, offset: -0.25 } as Child,
       ],
     };
-    const next = resizeChild(doc, 1, "left", 1);
+    const next = resizeChild(seam, doc, 1, "left", 1);
     expect(next.children![1]).toEqual({ ...doc.children![1], in: 3 });
     expect(next.children![0]).toBe(doc.children![0]);
     expect(next.children![2]).toBe(doc.children![2]);
@@ -225,26 +228,26 @@ describe("resizeChildInPlace (Shift-drag): downstream stays put", () => {
 
   it("left: the node's own offset absorbs the trim; its right edge holds", () => {
     const d = run(c(), c(), c());
-    const next = resizeChildInPlace(d, 1, "left", 1);
+    const next = resizeChildInPlace(seam, d, 1, "left", 1);
     expect(offsets(next)).toEqual([0, 1, 0]);
     expect(spans(next)).toEqual([[0, 5], [6, 10], [10, 15]]);
     // Extending left pulls the offset negative (an overlap with the previous).
-    expect(spans(resizeChildInPlace(d, 1, "left", -1))).toEqual([[0, 5], [4, 10], [10, 15]]);
+    expect(spans(resizeChildInPlace(seam, d, 1, "left", -1))).toEqual([[0, 5], [4, 10], [10, 15]]);
   });
 
   it("right: the nearest earlier offset in the run absorbs it (itself first)", () => {
     const d = run(c(), c({ offset: 2 }), c(), c());
     // Node 2 has no offset → node 1's does the work.
-    const next = resizeChildInPlace(d, 2, "right", 1);
+    const next = resizeChildInPlace(seam, d, 2, "right", 1);
     expect(offsets(next)).toEqual([0, 1, 0, 0]);
     expect(spans(next)).toEqual([[0, 5], [6, 11], [11, 17], [17, 22]]);
     // Node 1 has its own offset → it absorbs.
-    expect(offsets(resizeChildInPlace(d, 1, "right", -1))).toEqual([0, 3, 0, 0]);
+    expect(offsets(resizeChildInPlace(seam, d, 1, "right", -1))).toEqual([0, 3, 0, 0]);
   });
 
   it("right: with no offset in the run, the run head takes it", () => {
     const d = run(c(), c({ start: 10 }), c(), c());
-    const next = resizeChildInPlace(d, 2, "right", -1);
+    const next = resizeChildInPlace(seam, d, 2, "right", -1);
     expect(offsets(next)).toEqual([0, 1, 0, 0]);
     expect(spans(next)).toEqual([[0, 5], [11, 16], [16, 20], [20, 25]]);
   });
@@ -252,7 +255,7 @@ describe("resizeChildInPlace (Shift-drag): downstream stays put", () => {
   it("uses the applied (clamped, rate-scaled) change", () => {
     // Left-extend runs out of source at in=0: only 2s of the 5s drag applies.
     const d = run(c(), c({ speed: 2 }), c());
-    const next = resizeChildInPlace(d, 1, "left", -5);
+    const next = resizeChildInPlace(seam, d, 1, "left", -5);
     expect(offsets(next)).toEqual([0, -1, 0]);
     expect(spans(next)[2]).toEqual(spans(d)[2]);
   });

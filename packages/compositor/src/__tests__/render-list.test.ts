@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveComposition,
+  createSeam,
   resolveSpatial,
   squareToQuad,
   applyHomography,
@@ -12,6 +12,8 @@ import {
   type DrawCommand,
   type GroupCommand,
 } from "../RenderList.js";
+
+const { resolveComposition } = createSeam();
 
 const W = 1080;
 const H = 1920;

@@ -1,7 +1,7 @@
 // Bin tool: promote a selected composition into a reusable bin entry on
 // the root composition's `bin` field, and replace the selected node
 // with a bin reference (`binItem: "<id>"`). Instance-level fields
-// (spatial, in/out, filters, metadata) stay on the reference; only the
+// (spatial, in/out, extension fields, metadata) stay on the reference; only the
 // structural body (`children`) moves into the bin. The reference drops
 // its own children — the compile pass inlines the bin entry's body at
 // render time.

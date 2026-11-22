@@ -32,14 +32,13 @@
 import {
   clipOut,
   clipPlayRange,
-  compileSeamFile,
-  resolveComposition,
   runHeadIndex,
 } from "@seam/core";
 import { withPlacement } from "./runEdit.js";
-import type { Child, Composition, Overflow, Underflow, SeamFile } from "@seam/core";
+import type { Seam, Child, Composition, Overflow, Underflow, SeamFile } from "@seam/core";
 
 export function resizeChild(
+  seam: Seam,
   doc: SeamFile,
   index: number,
   side: "left" | "right",
@@ -48,7 +47,7 @@ export function resizeChild(
   const arr = doc.children ?? [];
   const child = arr[index];
   if (!child) return doc;
-  const next = mutateChild(child, side, deltaSec);
+  const next = mutateChild(seam, child, side, deltaSec);
   if (next === child) return doc;
   const newArr = [...arr];
   newArr[index] = next;
@@ -57,9 +56,9 @@ export function resizeChild(
 
 /** Output length of `doc.children[index]` (bins inflated, scripts off, so
  *  `binItem` references measure their real body). */
-function outputLength(doc: SeamFile, index: number): number | null {
+function outputLength(seam: Seam, doc: SeamFile, index: number): number | null {
   try {
-    const r = resolveComposition(compileSeamFile(doc, { runScripts: false }).doc, {
+    const r = seam.resolveComposition(seam.compileSeamFile(doc, { runScripts: false }).doc, {
       uncropped: true,
     }).children[index];
     return r ? r.timelineEnd - r.timelineStart : null;
@@ -84,15 +83,16 @@ function outputLength(doc: SeamFile, index: number): number | null {
  * `duration` handling all come from `resizeChild`.
  */
 export function resizeChildInPlace(
+  seam: Seam,
   doc: SeamFile,
   index: number,
   side: "left" | "right",
   deltaSec: number,
 ): SeamFile {
-  const resized = resizeChild(doc, index, side, deltaSec);
+  const resized = resizeChild(seam, doc, index, side, deltaSec);
   if (resized === doc) return doc;
-  const before = outputLength(doc, index);
-  const after = outputLength(resized, index);
+  const before = outputLength(seam, doc, index);
+  const after = outputLength(seam, resized, index);
   if (before == null || after == null) return resized;
   // Shorter ⇒ push later by what was lost; longer ⇒ pull earlier.
   const shift = Math.round((before - after) * 1e6) / 1e6;
@@ -112,6 +112,7 @@ export function resizeChildInPlace(
 }
 
 function mutateChild(
+  seam: Seam,
   child: Child,
   side: "left" | "right",
   deltaSec: number,
@@ -125,7 +126,7 @@ function mutateChild(
     // duration, so the first drag materialises the window the handle then
     // adjusts (instead of silently no-opping).
     const inVal = child.in ?? 0;
-    const outVal = child.out ?? innerDuration(child);
+    const outVal = child.out ?? innerDuration(seam, child);
     return resizeInOut({ ...child, in: inVal, out: outVal }, side, deltaSec);
   }
   // Static / text / data / shapes / map: no source axis. Both handles just
@@ -140,9 +141,9 @@ function mutateChild(
 /** Natural duration of a composition's inner timeline (the un-windowed
  *  [0, innerDuration] the default `out` covers). Falls back to 0 if the
  *  composition can't be resolved. */
-function innerDuration(comp: Composition): number {
+function innerDuration(seam: Seam, comp: Composition): number {
   try {
-    return resolveComposition(comp).duration;
+    return seam.resolveComposition(comp).duration;
   } catch {
     return 0;
   }

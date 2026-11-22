@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposition, type Child, type SeamFile } from "@seam/core";
+import { createSeam, type Child, type SeamFile } from "@seam/core";
 import { descendToContainer, globalSpanOf } from "../resolveLocal.js";
 import { parsePath } from "../nodePath.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const resolve = (doc: SeamFile) => resolveComposition(doc, { uncropped: true });
 
@@ -30,13 +33,13 @@ describe("descendToContainer — looping composition", () => {
   it("maps a global time in a later cycle back into the 2s inner window", () => {
     // Window is [0.5, 2.5] → 2s period. Global 5.3s = cycle 2 + 1.3s →
     // inner 0.5 + 1.3 = 1.8.
-    const d = descendToContainer(resolved, doc, path, 5.3);
+    const d = descendToContainer(seam, resolved, doc, path, 5.3);
     expect(d).not.toBeNull();
     expect(d!.localTime).toBeCloseTo(1.8);
   });
 
   it("first cycle is the plain mapping", () => {
-    const d = descendToContainer(resolved, doc, path, 0.7);
+    const d = descendToContainer(seam, resolved, doc, path, 0.7);
     expect(d!.localTime).toBeCloseTo(1.2);
   });
 });
@@ -66,7 +69,7 @@ describe("descendToContainer — resolved container is 1:1 with the authored one
 
   it("keeps every child, positioned in inner coordinates", () => {
     // Comp spans global [5, 8). Global 6 → inner 4 + 1·2 = 6.
-    const d = descendToContainer(resolved, doc, parsePath("children.1"), 6)!;
+    const d = descendToContainer(seam, resolved, doc, parsePath("children.1"), 6)!;
     expect(d.localTime).toBe(6);
     expect(d.rContainer.children.map((c) => [c.timelineStart, c.timelineEnd])).toEqual([
       [0, 3],
@@ -77,7 +80,7 @@ describe("descendToContainer — resolved container is 1:1 with the authored one
   });
 
   it("root path returns the root unchanged", () => {
-    const d = descendToContainer(resolved, doc, [], 6)!;
+    const d = descendToContainer(seam, resolved, doc, [], 6)!;
     expect(d.localTime).toBe(6);
     expect(d.rContainer).toBe(resolved);
     expect(d.aContainer).toBe(doc);
@@ -85,16 +88,16 @@ describe("descendToContainer — resolved container is 1:1 with the authored one
 
   it("globalSpanOf maps inner spans up through window + speed", () => {
     // b: inner [3, 10) → global 5 + (t − 4)/2 → [4.5, 8).
-    expect(globalSpanOf(resolved, doc, parsePath("children.1.children.1"))).toEqual({
+    expect(globalSpanOf(seam, resolved, doc, parsePath("children.1.children.1"))).toEqual({
       start: 4.5,
       end: 8,
     });
-    expect(globalSpanOf(resolved, doc, parsePath("children.0"))).toEqual({ start: 0, end: 5 });
+    expect(globalSpanOf(seam, resolved, doc, parsePath("children.0"))).toEqual({ start: 0, end: 5 });
   });
 
   it("returns null for bin roots and non-composition segments", () => {
-    expect(descendToContainer(resolved, doc, parsePath("children.0"), 1)).toBeNull();
-    expect(globalSpanOf(resolved, doc, parsePath("children.0.children.0"))).toBeNull();
-    expect(globalSpanOf(resolved, doc, parsePath("bin.x.children.0"))).toBeNull();
+    expect(descendToContainer(seam, resolved, doc, parsePath("children.0"), 1)).toBeNull();
+    expect(globalSpanOf(seam, resolved, doc, parsePath("children.0.children.0"))).toBeNull();
+    expect(globalSpanOf(seam, resolved, doc, parsePath("bin.x.children.0"))).toBeNull();
   });
 });

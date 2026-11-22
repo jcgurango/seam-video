@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { resolveComposition, resolveSpatial, type Composition } from "@seam/core";
+import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { buildRenderList, type RenderCommand, type DrawCommand } from "../RenderList.js";
+
+const { resolveComposition } = createSeam();
 
 // `underflow: "loop"`: the render list wraps a looping node's CONTENT time
 // (clip source time / composition inner time) into one cycle per frame while

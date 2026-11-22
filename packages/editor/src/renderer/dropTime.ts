@@ -11,8 +11,7 @@
 // the nodes leave, and the drop time moves with it. A drop before every edge
 // keeps its time.
 
-import { resolveComposition } from "@seam/core";
-import type { BinEntry, Composition, ResolvedChild, SeamFile } from "@seam/core";
+import type { Seam, BinEntry, Composition, ResolvedChild, SeamFile } from "@seam/core";
 import { compileDocument } from "./compile.js";
 import {
   adjustPathAfterRemovals,
@@ -25,6 +24,7 @@ import {
 /** A container's children on its own un-windowed, un-cropped inner timeline
  *  (1:1 with the authored array), or null if it can't be resolved. */
 function resolveContainer(
+  seam: Seam,
   doc: SeamFile,
   containerPath: NodePath,
   rootBin: BinEntry[],
@@ -37,8 +37,8 @@ function resolveContainer(
       children: comp.children ?? [],
       ...(rootBin.length ? { bin: rootBin } : {}),
     };
-    const { doc: compiled } = compileDocument(synthetic, { runScripts: false });
-    return resolveComposition(compiled as Composition, { uncropped: true }).children;
+    const { doc: compiled } = compileDocument(seam, synthetic, { runScripts: false });
+    return seam.resolveComposition(compiled as Composition, { uncropped: true }).children;
   } catch {
     return null;
   }
@@ -50,16 +50,17 @@ function resolveContainer(
  * nodes at `moved` out of the document.
  */
 export function timeAfterLift(
+  seam: Seam,
   doc: SeamFile,
   moved: NodePath[],
   containerPath: NodePath,
   time: number,
 ): number {
   const rootBin = doc.bin ?? [];
-  const before = resolveContainer(doc, containerPath, rootBin);
+  const before = resolveContainer(seam, doc, containerPath, rootBin);
   if (!before) return time;
   const lifted = removeNodesAtPaths(doc, moved, false);
-  const after = resolveContainer(lifted, adjustPathAfterRemovals(containerPath, moved), rootBin);
+  const after = resolveContainer(seam, lifted, adjustPathAfterRemovals(containerPath, moved), rootBin);
   if (!after) return time;
 
   const key = pathKey(containerPath);

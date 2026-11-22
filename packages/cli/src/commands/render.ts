@@ -5,6 +5,7 @@ import {
   type AgcOptions,
   type QualityPreset,
 } from "@seam/renderer";
+import { seam } from "../seam.js";
 
 interface RenderOptions {
   output?: string;
@@ -63,7 +64,7 @@ export async function renderCommand(file: string, options: RenderOptions) {
     const proxies = parseProxies(options.proxy);
     const quality = parseQuality(options.quality);
     const agc = parseAgc(options.agc);
-    const res = await renderSeamToFile(filePath, outputPath, {
+    const res = await renderSeamToFile(seam, filePath, outputPath, {
       fps,
       width: options.width ? parseInt(options.width, 10) : undefined,
       height: options.height ? parseInt(options.height, 10) : undefined,

@@ -14,10 +14,13 @@ import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
 import { FrameCoordinator } from "../media/FrameCoordinator.js";
 import { WebGPURenderer } from "../media/gpu/WebGPURenderer.js";
-import { buildRenderList } from "@seam/compositor";
+import { buildRenderList, type CompositorExtensions } from "@seam/compositor";
 
 interface TimelineProps {
   timeline: ResolvedTimeline;
+  /** The host's Seam instance (the compositor's shader is built for its
+   *  extension set). Read once, at mount. */
+  seam: CompositorExtensions;
   basePath: string;
   preserveTime?: boolean;
   initialTime?: number;
@@ -32,6 +35,7 @@ interface CanvasMount {
 
 export default function Timeline({
   timeline,
+  seam,
   basePath,
   preserveTime = false,
   initialTime = 0,
@@ -60,7 +64,7 @@ export default function Timeline({
     audioSchedulerRef.current = new AudioScheduler();
   if (!coordinatorRef.current)
     coordinatorRef.current = new FrameCoordinator();
-  if (!rendererRef.current) rendererRef.current = new WebGPURenderer();
+  if (!rendererRef.current) rendererRef.current = new WebGPURenderer(seam);
 
   const mediaStore = mediaStoreRef.current;
   const audioScheduler = audioSchedulerRef.current;

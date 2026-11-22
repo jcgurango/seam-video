@@ -22,7 +22,6 @@ import type { WebPlatform } from "./platform/web.js";
 type SectionId =
   | "new"
   | "properties"
-  | "filters"
   | "json"
   | "script"
   | "inspector"
@@ -32,7 +31,6 @@ type SectionId =
 const BASE_SECTIONS: { id: SectionId; label: string }[] = [
   { id: "new", label: "New" },
   { id: "properties", label: "Properties" },
-  { id: "filters", label: "Filters" },
   { id: "json", label: "JSON" },
   { id: "script", label: "Script" },
   { id: "inspector", label: "Inspector" },
@@ -72,7 +70,7 @@ interface InspectorAccordionProps {
   /** Commit a property edit on the editor-surface root WITHOUT clearing the
    *  selection (unlike `onRootDocumentChange`), so the panel stays on the
    *  nodes being edited. */
-  onDocumentEdit: (next: SeamFile) => void;
+  onDocumentEdit: (next: SeamFile, opts?: { coalesce?: boolean }) => void;
 }
 
 /**
@@ -124,8 +122,6 @@ export default function InspectorAccordion({
             timeline={timeline}
           />
         );
-      case "filters":
-        return <PaddedTab>Filters panel (placeholder)</PaddedTab>;
       case "json":
         return (
           <JsonNodePanel

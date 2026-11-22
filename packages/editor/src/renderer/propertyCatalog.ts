@@ -8,16 +8,20 @@
 // panel shows both inputs side by side), and how an edit is written back to
 // every selected node immutably.
 //
-// Deliberately NOT here: `children` (the timeline owns them), `filters`
-// (being absorbed into first-party properties), and the structured bags
+// Extension-contributed fields (`seam.fields` — e.g. the Adjustments
+// extension's brightness / saturation / …) are appended to every visual
+// node's catalog and to the root's: `catalogFor` / `sharedProps` / `rootProps`
+// take the Seam instance for that. A field with a range gets a slider.
+//
+// Deliberately NOT here: `children` (the timeline owns them) and the structured bags
 // (`pin`, `paths`, `data`, `metadata`, `bin`, `script`, `macros`) — those
 // stay in the JSON panel for now. (`inset` and `distort` have their own
 // kinds: four edge lengths / four corner points.)
 
 import {
+  VISUAL_NODE_TYPES,
   isKeyframed,
   parseLength,
-  validate as validateSeamFile,
   type Child,
   type Distort,
   type Inset,
@@ -29,6 +33,7 @@ import {
   type TimeExpr,
 } from "@seam/core";
 import { getNodeAtPath, parsePath, updateNodeAtPath, type NodePath } from "./nodePath.js";
+import type { Seam } from "@seam/core";
 
 export type PropKind =
   /** A plain number (seconds, px, degrees, …). */
@@ -62,7 +67,10 @@ export type PropGroup =
   | "Appearance"
   | "Text"
   | "Map"
-  | "Audio";
+  | "Audio"
+  /** A group named by an extension (`FieldSpec.group`); shown after the
+   *  core groups, in first-appearance order. */
+  | (string & {});
 
 export interface PropDef {
   key: string;
@@ -81,6 +89,12 @@ export interface PropDef {
   percentDefault?: number;
   /** Unit hint rendered after a number input. */
   unit?: string;
+  /** `number` only: the span of a slider shown beside the number input.
+   *  Typed values may fall outside it (the schema has the last word). */
+  range?: { min: number; max: number; step: number };
+  /** `number` only: the value an omitted key evaluates to — where the
+   *  slider rests, and the first keyframe's value when animating from unset. */
+  default?: number;
   options?: readonly string[];
   /** Short help shown as the row's tooltip. */
   hint?: string;
@@ -556,19 +570,65 @@ export const GROUP_ORDER: PropGroup[] = [
   "Audio",
 ];
 
-export function catalogFor(type: Child["type"]): PropDef[] {
-  return CATALOG[type] ?? [];
+const extensionPropsCache = new WeakMap<Seam, PropDef[]>();
+
+/** The Properties rows for the fields the installed extensions contribute to
+ *  visual nodes — derived from the same `FieldSpec` that drives validation
+ *  and rendering, so an extension declares a field once. */
+export function extensionProps(seam: Seam): PropDef[] {
+  let defs = extensionPropsCache.get(seam);
+  if (!defs) {
+    defs = seam.fields
+      .filter((f) => f.nodes === "visual")
+      .map((f): PropDef => {
+        const lo = f.softMin ?? f.min;
+        const hi = f.softMax ?? f.max;
+        return {
+          key: f.key,
+          label: f.label ?? f.key,
+          group: f.group ?? "Extensions",
+          kind: "number",
+          animatable: f.animatable === true,
+          placeholder: String(f.default),
+          default: f.default,
+          ...(f.unit ? { unit: f.unit } : {}),
+          ...(lo != null && hi != null
+            ? { range: { min: lo, max: hi, step: f.step ?? (hi - lo) / 100 } }
+            : {}),
+        };
+      });
+    extensionPropsCache.set(seam, defs);
+  }
+  return defs;
+}
+
+const VISUAL_TYPES: ReadonlySet<string> = new Set(VISUAL_NODE_TYPES);
+
+/** A node type's properties: core's, then (on visual nodes) the installed
+ *  extensions'. */
+export function catalogFor(seam: Seam, type: Child["type"]): PropDef[] {
+  const core = CATALOG[type] ?? [];
+  if (!VISUAL_TYPES.has(type)) return core;
+  const ext = extensionProps(seam);
+  return ext.length ? [...core, ...ext] : core;
+}
+
+/** The root composition's properties (no selection): its own parentless
+ *  catalog plus the extension fields, which apply to the whole output there. */
+export function rootProps(seam: Seam): PropDef[] {
+  const ext = extensionProps(seam);
+  return ext.length ? [...ROOT_PROPS, ...ext] : ROOT_PROPS;
 }
 
 /** Properties every node in `nodes` exposes, in the first node's catalog
  *  order. Two types sharing a key must agree on its kind (they do — the
  *  catalog reuses one definition per key — but a mismatch is dropped rather
  *  than shown wrong). */
-export function sharedProps(nodes: Child[]): PropDef[] {
+export function sharedProps(seam: Seam, nodes: Child[]): PropDef[] {
   if (nodes.length === 0) return [];
   const [first, ...rest] = nodes;
-  const others = rest.map((n) => new Map(catalogFor(n.type).map((d) => [d.key, d])));
-  return catalogFor(first.type).filter((def) =>
+  const others = rest.map((n) => new Map(catalogFor(seam, n.type).map((d) => [d.key, d])));
+  return catalogFor(seam, first.type).filter((def) =>
     others.every((m) => {
       const o = m.get(def.key);
       return o != null && o.kind === def.kind;
@@ -821,6 +881,7 @@ export interface EditResult {
  *  validated once afterwards; an invalid result is rejected with its errors
  *  rather than committed. */
 export function applyPropertyEdit(
+  seam: Seam,
   doc: SeamFile,
   paths: NodePath[],
   key: string,
@@ -841,7 +902,7 @@ export function applyPropertyEdit(
     });
   }
   if (next === doc) return { doc, errors: null };
-  const v = validateSeamFile(next);
+  const v = seam.validate(next);
   if (!v.success) return { doc, errors: v.errors };
   return { doc: next, errors: null };
 }

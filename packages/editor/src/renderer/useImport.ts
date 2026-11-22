@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 import { useTimeline } from "@seam/preview";
-import { resolveComposition } from "@seam/core";
-import type { SeamFile, Clip, Audio, Static, Child, MapNode } from "@seam/core";
+import type { Seam, SeamFile, Clip, Audio, Static, Child, MapNode } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
 import type { Platform } from "./platform/index.js";
+import { useSeam } from "./seamContext.js";
 
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
 const AUDIO_EXTENSIONS = [
@@ -96,9 +96,9 @@ function toRelativeSource(absPath: string, baseDir: string): string {
   return absPath;
 }
 
-function findInsertionIndex(doc: SeamFile, currentTime: number): number {
+function findInsertionIndex(seam: Seam, doc: SeamFile, currentTime: number): number {
   if ((doc.children ?? []).length === 0) return 0;
-  const resolved = resolveComposition(doc);
+  const resolved = seam.resolveComposition(doc);
   const boundaries = [0, ...resolved.children.map((c) => c.timelineEnd)];
   let bestIdx = 0;
   let bestDist = Math.abs(currentTime - boundaries[0]);
@@ -189,6 +189,7 @@ export function useImport(
   onDocumentChange: (doc: SeamFile) => void,
   platform: Platform
 ): (files: FileList | File[], insertIndex?: number) => Promise<void> {
+  const seam = useSeam();
   const { currentTime } = useTimeline();
 
   return useCallback(
@@ -200,7 +201,7 @@ export function useImport(
       // Cursor-based callers pass `insertIndex` (computed via the same
       // reorder snap math); the file picker / fallback path falls back
       // to the nearest playhead boundary.
-      const insertAt = insertIndex ?? findInsertionIndex(doc, currentTime);
+      const insertAt = insertIndex ?? findInsertionIndex(seam, doc, currentTime);
       const merged = [...(doc.children ?? [])];
       merged.splice(insertAt, 0, ...newChildren);
       onDocumentChange({ ...doc, children: merged });

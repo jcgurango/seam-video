@@ -1,0 +1,32 @@
+{
+  "name": "@seam/extension-adjustments",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Seam extension: colour adjustments (brightness, contrast, saturation, gamma, temperature, tint) as first-class keyframeable fields on every visual node.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@seam/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@seam/core": "workspace:*",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

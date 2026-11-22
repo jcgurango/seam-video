@@ -17,6 +17,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@seam/core": "workspace:*",
+    "@seam/extension-adjustments": "workspace:*",
     "@seam/preview": "workspace:*",
     "lucide-react": "^1.8.0",
     "mediabunny": "^1.61.5",

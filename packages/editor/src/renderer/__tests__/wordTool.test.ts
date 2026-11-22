@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposition } from "@seam/core";
+import { createSeam } from "@seam/core";
 import type { Child, SeamFile } from "@seam/core";
 import { groupWords, separateByWord } from "../wordTool.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const clip = (fields: Record<string, unknown>): Child =>
   ({ type: "clip", source: "a.mp4", ...fields }) as unknown as Child;
@@ -121,7 +124,7 @@ describe("groupWords", () => {
         clip({ in: 0, out: 1, start: 0 }),
       ],
     };
-    const result = groupWords(doc, [3, 1, 2]);
+    const result = groupWords(seam, doc, [3, 1, 2]);
     if (!result.ok) throw new Error(result.error);
     expect(result.doc.children).toEqual([
       doc.children![0],
@@ -154,7 +157,7 @@ describe("groupWords", () => {
         word("hello", "c@12", 1, { offset: -0.5 }),
       ],
     };
-    const result = groupWords(doc, [1, 2]);
+    const result = groupWords(seam, doc, [1, 2]);
     if (!result.ok) throw new Error(result.error);
     const grouped = result.doc.children![1] as unknown as Record<string, unknown>;
     expect(grouped.start).toBe("c@12");
@@ -174,7 +177,7 @@ describe("groupWords", () => {
         follower,
       ],
     };
-    const result = groupWords(doc, [1, 2]);
+    const result = groupWords(seam, doc, [1, 2]);
     if (!result.ok) throw new Error(result.error);
     expect(result.doc.children![2]).toEqual({ ...follower, start: "c@14" });
     // …so it doesn't join the phrase's run.
@@ -190,9 +193,9 @@ describe("groupWords", () => {
         word("free", "c", 1),
       ],
     };
-    expect(groupWords(doc, [1]).ok).toBe(false);
-    expect(groupWords(doc, [0, 1])).toEqual({ ok: false, error: "Select only word items to group." });
-    expect(groupWords(doc, [1, 2])).toEqual({ ok: false, error: "malformed start and duration" });
+    expect(groupWords(seam, doc, [1]).ok).toBe(false);
+    expect(groupWords(seam, doc, [0, 1])).toEqual({ ok: false, error: "Select only word items to group." });
+    expect(groupWords(seam, doc, [1, 2])).toEqual({ ok: false, error: "malformed start and duration" });
   });
 
   it("round-trips with separateByWord", () => {
@@ -202,7 +205,7 @@ describe("groupWords", () => {
     };
     const sep = separateByWord(doc, [1]);
     if (!sep.ok) throw new Error(sep.error);
-    const grp = groupWords(sep.doc, [1, 2, 3]);
+    const grp = groupWords(seam, sep.doc, [1, 2, 3]);
     if (!grp.ok) throw new Error(grp.error);
     expect(spans(grp.doc)).toEqual(spans(doc));
     const again = separateByWord(grp.doc, [1]);

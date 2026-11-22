@@ -17,6 +17,7 @@
     "@chenglou/pretext": "^0.0.6",
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
+    "@seam/extension-adjustments": "workspace:*",
     "@seam/map": "workspace:*",
     "@seam/media-source": "workspace:*",
     "chokidar": "^4.0.0",

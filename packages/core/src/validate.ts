@@ -1,7 +1,8 @@
-import { SeamFileSchema } from "./schema.js";
+import { buildSeamFileSchema } from "./schema.js";
 import { formatZodError } from "./format-error.js";
 import { expandMacros } from "./macros.js";
 import type { SeamFile } from "./types.js";
+import type { Registry } from "./registry.js";
 
 export type ValidationResult =
   | { success: true; data: SeamFile }
@@ -23,12 +24,24 @@ export type ValidationResult =
  *  defaults therefore aren't baked into the returned doc — which matches how
  *  the editor already operates on documents after an in-place edit, and the
  *  renderer/preview null-guard every optional field.) */
-export function validate(input: unknown): ValidationResult {
+const schemaCache = new WeakMap<Registry, ReturnType<typeof buildSeamFileSchema>>();
+
+/** The document schema for a registry, built once per instance. */
+export function schemaFor(registry: Registry): ReturnType<typeof buildSeamFileSchema> {
+  let schema = schemaCache.get(registry);
+  if (!schema) {
+    schema = buildSeamFileSchema(registry);
+    schemaCache.set(registry, schema);
+  }
+  return schema;
+}
+
+export function validate(registry: Registry, input: unknown): ValidationResult {
   const expanded = expandMacros(input);
   if (!expanded.success) {
     return { success: false, errors: expanded.errors };
   }
-  const result = SeamFileSchema.safeParse(expanded.data);
+  const result = schemaFor(registry).safeParse(expanded.data);
   if (!result.success) {
     return {
       success: false,
@@ -45,12 +58,12 @@ export function validate(input: unknown): ValidationResult {
  *  macros — that happens at the compile boundary. The editor needs the
  *  source form preserved so the JSON editor can show what the user
  *  authored. */
-export function parseSeamFile(json: string): ValidationResult {
+export function parseSeamFile(registry: Registry, json: string): ValidationResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {
     return { success: false, errors: ["Invalid JSON"] };
   }
-  return validate(parsed);
+  return validate(registry, parsed);
 }

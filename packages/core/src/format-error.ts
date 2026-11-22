@@ -7,7 +7,7 @@ export interface FormattedIssue {
   message: string;
 }
 
-/** The discriminant key our object unions (Child, filters)
+/** The discriminant key our object unions (Child)
  *  switch on. */
 const TYPE_KEY = "type";
 

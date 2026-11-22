@@ -3,12 +3,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  parseSeamFile,
-  compileSeamFile,
-  resolveComposition,
+  createSeam,
   type Composition,
 } from "@seam/core";
 import { renderAudioMix } from "../audio.js";
+
+const { parseSeamFile, compileSeamFile, resolveComposition } = createSeam();
 
 // End-to-end check of `pitch`: render the OfflineAudioContext mix of a 440Hz
 // sine and confirm the output's spectral peak moves to the shifted frequency

@@ -4,8 +4,9 @@
 // since they're first-party schema fields rather than editor-only
 // metadata conventions.
 
-import { compileSeamFile } from "@seam/core";
 import type {
+  Seam,
+  SeamFile,
   CompileError as CoreCompileError,
   CompileOptions as CoreCompileOptions,
   CompileResult as CoreCompileResult,
@@ -16,10 +17,11 @@ export type CompileOptions = CoreCompileOptions;
 export type CompileResult = CoreCompileResult;
 
 export function compileDocument(
-  doc: Parameters<typeof compileSeamFile>[0],
+  seam: Seam,
+  doc: SeamFile,
   options: CompileOptions = {},
 ): CompileResult {
-  return compileSeamFile(doc, options);
+  return seam.compileSeamFile(doc, options);
 }
 
 /** No-op identity. The new schema stores no rendered shadow alongside

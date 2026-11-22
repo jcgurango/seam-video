@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { resolveComposition } from "../layout/resolve.js";
-import { parseSeamFile } from "../validate.js";
 import type { Composition } from "../types.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, resolveComposition } = createSeam();
 
 function comp(
   overrides: Partial<Composition> & { children: Composition["children"] }

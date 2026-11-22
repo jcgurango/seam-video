@@ -63,6 +63,7 @@
   },
   "devDependencies": {
     "@seam/core": "workspace:*",
+    "@seam/extension-adjustments": "workspace:*",
     "@seam/renderer": "workspace:*",
     "@types/node": "^25.3.3",
     "esbuild": "^0.24.0",

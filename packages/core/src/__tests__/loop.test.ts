@@ -1,15 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveComposition,
   unrollLoops,
   loopLocalTime,
   loopIterations,
   flattenResolved,
-  parseSeamFile,
   type Composition,
   type ResolvedClip,
   type ResolvedComposition,
 } from "../index.js";
+import { createSeam } from "../seam.js";
+
+const { parseSeamFile, resolveComposition } = createSeam();
 
 // `underflow: "loop"` — a node whose `duration` exceeds its natural length
 // replays its content from the start until the duration is filled. The

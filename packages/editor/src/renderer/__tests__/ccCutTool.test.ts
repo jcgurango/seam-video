@@ -6,6 +6,9 @@ import {
   buildCCSpliceChildren,
   resolveCCWords,
 } from "../ccCutTool.js";
+import { createSeam } from "@seam/core";
+
+const seam = createSeam();
 
 const root: SeamFile = { type: "composition", contentWidth: 1920, contentHeight: 1080, children: [] };
 
@@ -34,7 +37,7 @@ describe("resolveCCWords", () => {
         phrase("c@11", 2, [["one", 0, 0.5], ["two", 1, 2]]),
       ],
     };
-    expect(resolveCCWords(entry, root)).toEqual([
+    expect(resolveCCWords(seam, entry, root)).toEqual([
       { text: "one", start: 1, end: 1.5, transcriptionIndex: 1 },
       { text: "two", start: 2, end: 3, transcriptionIndex: 1 },
       { text: "three", start: 5, end: 6, transcriptionIndex: 0 },
@@ -52,7 +55,7 @@ describe("resolveCCWords", () => {
         phrase("c@12", 1, [["a", 0, 1], ["b", 1, 2]], { offset: 0.5 }),
       ],
     };
-    expect(resolveCCWords(entry, root)).toEqual([
+    expect(resolveCCWords(seam, entry, root)).toEqual([
       { text: "a", start: 1.5, end: 2, transcriptionIndex: 0 },
       { text: "b", start: 2, end: 2.5, transcriptionIndex: 0 },
     ]);
@@ -60,9 +63,9 @@ describe("resolveCCWords", () => {
 
   it("ignores non-transcription data and returns [] when the entry can't resolve", () => {
     const marker = { type: "data", data: { words: [] }, tags: ["marker"], duration: 1 } as Child;
-    expect(resolveCCWords({ id: "x", children: [marker] }, root)).toEqual([]);
+    expect(resolveCCWords(seam, { id: "x", children: [marker] }, root)).toEqual([]);
     expect(
-      resolveCCWords({ id: "x", children: [phrase("missing@1", 1, [["a", 0, 1]])] }, root),
+      resolveCCWords(seam, { id: "x", children: [phrase("missing@1", 1, [["a", 0, 1]])] }, root),
     ).toEqual([]);
   });
 });

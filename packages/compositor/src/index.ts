@@ -5,13 +5,14 @@
  * same {@link Compositor}, {@link buildRenderList}, and WGSL shader; only the
  * {@link RenderBackend} (device, frame upload, target) differs.
  */
-export { Compositor } from "./Compositor.js";
+export { Compositor, type CompositorExtensions } from "./Compositor.js";
 export type { RenderBackend } from "./backend.js";
-export { buildRenderList } from "./RenderList.js";
+export { buildRenderList, NO_FIELDS } from "./RenderList.js";
 export type {
   RenderCommand,
   DrawCommand,
   GroupCommand,
   FillCommand,
   ShapeGeometry,
+  FieldValues,
 } from "./RenderList.js";

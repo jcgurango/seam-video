@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposition } from "@seam/core";
+import { createSeam } from "@seam/core";
 import type { Child, Composition, SeamFile } from "@seam/core";
 import {
   insertIntoRuns,
@@ -15,6 +15,9 @@ import { layoutTree } from "../timelineTree.js";
 import { dropTargetAt, flattenDropRegions, runZIndexAt } from "../dropRegions.js";
 import { ROW_GAP, ROW_HEIGHT, RULER_HEIGHT } from "../timelineLayout.js";
 import { timeAfterLift } from "../dropTime.js";
+
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const clip = (name: string, extra: Record<string, unknown> = {}): Child =>
   ({ type: "clip", source: `${name}.mp4`, in: 0, out: 5, ...extra }) as Child;
@@ -196,7 +199,7 @@ describe("moveNodesTracked", () => {
 
 describe("applyAttach — anchors without moving", () => {
   const at = (d: SeamFile, t: number, primary: string, secondaries: string[]) =>
-    applyAttach(d, resolveComposition(d, { uncropped: true }), t, primary, secondaries)!;
+    applyAttach(seam, d, resolveComposition(d, { uncropped: true }), t, primary, secondaries)!;
 
   it("point at the playhead, offset back to where the secondary already is", () => {
     // a plays source [10,20] at 0..10; o sits at 2..7; playhead at 4.
@@ -286,7 +289,7 @@ describe("layout + drop targets", () => {
     ],
   };
   const resolved = resolveComposition({ type: "composition", ...body }, { uncropped: true }).children;
-  const group = layoutTree(resolved, body, new Set(), []);
+  const group = layoutTree(seam, resolved, body, new Set(), []);
 
   it("packs runs: overlapping later runs go below, non-overlapping share a row", () => {
     expect(group.runs.map((r) => [r.head, r.end, r.row])).toEqual([
@@ -365,23 +368,23 @@ describe("timeAfterLift — a new-run drop follows what the cursor pointed at", 
   const A = [parsePath("children.0")];
 
   it("dragging A onto C's start lands where C ends up", () => {
-    expect(timeAfterLift(abc, A, [], 10)).toBe(5);
-    const moved = moveNodesTracked(abc, A, [], 3, { start: timeAfterLift(abc, A, [], 10) })!;
+    expect(timeAfterLift(seam, abc, A, [], 10)).toBe(5);
+    const moved = moveNodesTracked(abc, A, [], 3, { start: timeAfterLift(seam, abc, A, [], 10) })!;
     expect(names(moved.doc.children!)).toEqual(["b", "c", "a"]);
     expect(starts(moved.doc)).toEqual([0, 5, 5]);
   });
 
   it("a free drop keeps its distance from the edge before it", () => {
-    expect(timeAfterLift(abc, A, [], 12)).toBe(7);
+    expect(timeAfterLift(seam, abc, A, [], 12)).toBe(7);
     // Before every surviving edge: nothing to follow.
-    expect(timeAfterLift(abc, A, [], 1)).toBe(1);
+    expect(timeAfterLift(seam, abc, A, [], 1)).toBe(1);
   });
 
   it("nothing moves when the lifted node rippled nothing", () => {
     const d = doc([clip("a"), clip("b"), clip("o", { start: 2 })]);
-    expect(timeAfterLift(d, [parsePath("children.2")], [], 5)).toBe(5);
+    expect(timeAfterLift(seam, d, [parsePath("children.2")], [], 5)).toBe(5);
     // Lifting the last member of a run leaves earlier edges alone.
-    expect(timeAfterLift(abc, [parsePath("children.2")], [], 5)).toBe(5);
+    expect(timeAfterLift(seam, abc, [parsePath("children.2")], [], 5)).toBe(5);
   });
 
   it("follows a nested composition that shrinks when a node is dragged out of it", () => {
@@ -390,6 +393,6 @@ describe("timeAfterLift — a new-run drop follows what the cursor pointed at", 
       clip("b"),
     ]);
     // b starts at 10; pulling x out of the comp leaves it 5s long → b at 5.
-    expect(timeAfterLift(d, [parsePath("children.0.children.0")], [], 10)).toBe(5);
+    expect(timeAfterLift(seam, d, [parsePath("children.0.children.0")], [], 10)).toBe(5);
   });
 });

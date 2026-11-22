@@ -1,13 +1,23 @@
 export * from "./schema.js";
 export * from "./types.js";
 export * from "./resolved-types.js";
-export * from "./validate.js";
+export type { ValidationResult } from "./validate.js";
+export { createSeam, type Seam } from "./seam.js";
+export {
+  VISUAL_NODE_TYPES,
+  type SeamExtension,
+  type FieldSpec,
+  type FieldTarget,
+  type ColorStage,
+  type RegisteredField,
+  type RegisteredColorStage,
+} from "./registry.js";
 export { formatZodError, type FormattedIssue } from "./format-error.js";
-export { compileSeamFile, runScript } from "./compile.js";
+export { runScript } from "./compile.js";
 export type { CompileError, CompileOptions, CompileResult } from "./compile.js";
 export { expandMacros, findUnresolvedMacros } from "./macros.js";
 export type { MacroExpandResult } from "./macros.js";
-export { resolveComposition, unrollLoops, type ResolveOptions } from "./layout/resolve.js";
+export { unrollLoops, type ResolveOptions } from "./layout/resolve.js";
 export {
   clipOut,
   clipIsReversed,

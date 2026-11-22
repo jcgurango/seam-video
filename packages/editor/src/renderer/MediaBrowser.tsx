@@ -38,6 +38,7 @@ import {
   probeDurationSeconds,
 } from "./mediaThumbs.js";
 import { collectClipSources } from "./exportHelpers.js";
+import { useSeam } from "./seamContext.js";
 
 interface MediaBrowserProps {
   platform: WebPlatform;
@@ -169,6 +170,7 @@ export default function MediaBrowser({
   externalReloadKey = 0,
   onImported,
 }: MediaBrowserProps) {
+  const seam = useSeam();
   const [items, setItems] = useState<MediaItem[] | null>(null);
   const [sort, setSort] = useState<SortKey>("added");
   const [inProjectOnly, setInProjectOnly] = useState(false);
@@ -308,7 +310,7 @@ export default function MediaBrowser({
   };
 
   const usedSources = useMemo(
-    () => new Set(currentDoc ? collectClipSources(currentDoc) : []),
+    () => new Set(currentDoc ? collectClipSources(seam, currentDoc) : []),
     [currentDoc],
   );
 

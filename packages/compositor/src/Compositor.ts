@@ -1,7 +1,8 @@
 /**
  * Platform-neutral WebGPU compositor. Renders a {@link RenderCommand} tree to
- * a backend-provided target using textured quads. Compositions with filters
- * render to intermediate textures (FBO) so filters apply to the composite.
+ * a backend-provided target using textured quads. Compositions that need it
+ * (extension fields, rotation, opacity, inset, distort, corner mask) render
+ * to intermediate textures (FBO) so the effect applies to the composite.
  *
  * This is the preview's old `WebGPURenderer` with the four browser-specific
  * touch points lifted behind a {@link RenderBackend}: device + output format,
@@ -9,46 +10,71 @@
  * algorithm (pipelines, uniforms, FBO pool, encode loop) is unchanged and is
  * shared verbatim between the live preview and the headless Node renderer.
  *
- * The shader handles all filter types in a single pass per quad:
- *   adjust (eq) — BT.601 YUV, matching FFmpeg's eq formula
- *   colorbalance — FFmpeg's exact weight functions (a=4, b=0.333, scale=0.7)
- *   colortemperature — Planckian locus RGB scaling
+ * One pass per quad. The fragment shader is ASSEMBLED per Seam instance:
+ *   colour stages — per-pixel colour functions contributed by extensions
+ *                   (`seam.colorStages`), fused in registration order; each
+ *                   owns a run of slots in the `ext` uniform array
  *   opacity — alpha multiply
  *   shape — analytic rounded-rect / ellipse coverage (signed distance, 1px
  *           AA): the geometry of a `rect`/`circle` fill, or the `cornerRadius`
  *           mask on any textured draw / composited group
  */
 
-import { quadWeights, type Filter, type Quad } from "@seam/core";
+import { quadWeights, type Quad, type Seam } from "@seam/core";
 import type { RenderBackend } from "./backend.js";
-import type {
-  RenderCommand,
-  DrawCommand,
-  FillCommand,
-  GroupCommand,
-  ShapeGeometry,
+import {
+  NO_FIELDS,
+  type RenderCommand,
+  type DrawCommand,
+  type FillCommand,
+  type GroupCommand,
+  type FieldValues,
+  type ShapeGeometry,
 } from "./RenderList.js";
+
+/** What the compositor needs from a Seam instance: the contributed colour
+ *  stages and how many uniform slots they take. */
+export type CompositorExtensions = Pick<Seam, "colorStages" | "colorSlots">;
 
 /** Anything a {@link DrawCommand} can carry — addressed by object identity. */
 type Drawable = DrawCommand["clip"];
 
 // ── WGSL Shader ──
 
-const SHADER = /* wgsl */ `
+/** Float offsets of the fixed uniform members (each a vec4f). The extension
+ *  colour-stage slots follow at {@link EXT_BASE}. */
+const U_ROT = 8;
+const U_CROP = 12;
+const U_CORNERS = 16; // c01, c23, cw — 12 floats
+const U_SHAPE = 28;
+const EXT_BASE = 32;
+const FIXED_VEC4S = EXT_BASE / 4;
+
+/** Assemble the shader for one extension set. `ext` always has at least one
+ *  slot (WGSL has no zero-length arrays). */
+function buildShader(ext: CompositorExtensions): string {
+  const slots = Math.max(1, ext.colorSlots);
+  const stageSource = ext.colorStages.map((st) => st.wgsl).join("\n");
+  const stageCalls = ext.colorStages
+    .map((st) => {
+      const args = Array.from({ length: st.slots }, (_, i) => `u.ext[${st.offset + i}]`);
+      return `  rgb = ${st.entry}(${["rgb", ...args].join(", ")});`;
+    })
+    .join("\n");
+  return SHADER_HEAD.replace("__EXT_SLOTS__", String(slots)) + stageSource + SHADER_FS_OPEN + stageCalls + SHADER_FS_CLOSE;
+}
+
+const SHADER_HEAD = /* wgsl */ `
 struct Uniforms {
   dest: vec4f,
   canvas_opacity: vec4f,
-  eq: vec4f,
-  cb_shadows: vec4f,
-  cb_midtones: vec4f,
-  cb_highlights: vec4f,
-  ct_scale: vec4f,
   rot: vec4f, // rotation_radians, pivot_x, pivot_y, distort_enabled (0/1)
   crop: vec4f, // u0, v0, u1, v1 — visible source sub-rect (inset); full = 0,0,1,1
   c01: vec4f, // distort corners TL.xy, TR.xy (target px, pre-rotation)
   c23: vec4f, // distort corners BR.xy, BL.xy
   cw: vec4f,  // per-corner homogeneous weights (TL, TR, BR, BL) → clip.w
   shape: vec4f, // kind (0 none / 1 roundrect / 2 ellipse), radius px, outer inset px, inner inset px (<0 = solid)
+  ext: array<vec4f, __EXT_SLOTS__>, // extension colour-stage slots
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -132,53 +158,18 @@ fn coverage(d: f32) -> f32 {
   return clamp(0.5 - d / aa, 0.0, 1.0);
 }
 
-fn rgb_to_yuv(rgb: vec3f) -> vec3f {
-  let y = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
-  let u = -0.169 * rgb.r - 0.331 * rgb.g + 0.500 * rgb.b + 0.5;
-  let v =  0.500 * rgb.r - 0.419 * rgb.g - 0.081 * rgb.b + 0.5;
-  return vec3f(y, u, v);
-}
+`;
 
-fn yuv_to_rgb(yuv: vec3f) -> vec3f {
-  let y = yuv.x;
-  let u = yuv.y - 0.5;
-  let v = yuv.z - 0.5;
-  let r = y + 1.402 * v;
-  let g = y - 0.344 * u - 0.714 * v;
-  let b = y + 1.772 * u;
-  return vec3f(r, g, b);
-}
-
+const SHADER_FS_OPEN = /* wgsl */ `
 @fragment
 fn fs(input: VSOut) -> @location(0) vec4f {
   let color = textureSample(tex, tex_sampler, input.uv);
   var rgb = color.rgb;
 
-  // ── adjust (eq) — matches FFmpeg's create_lut order ──
-  var yuv = rgb_to_yuv(rgb);
-  // Step 1: contrast + brightness (before gamma)
-  var y = u.eq.y * (yuv.x - 0.5) + 0.5 + u.eq.x;
-  // Step 2: gamma (applied to the contrast/brightness result)
-  y = max(y, 0.0);
-  let gamma_inv = 1.0 / u.eq.w;
-  y = pow(y, gamma_inv);
-  yuv.x = y;
-  yuv.y = (yuv.y - 0.5) * u.eq.z + 0.5;
-  yuv.z = (yuv.z - 0.5) * u.eq.z + 0.5;
-  rgb = clamp(yuv_to_rgb(yuv), vec3f(0.0), vec3f(1.0));
+  // ── extension colour stages (registration order) ──
+`;
 
-  // ── colorbalance ──
-  let cb_l = max(max(rgb.r, rgb.g), rgb.b) + min(min(rgb.r, rgb.g), rgb.b);
-  let sw = clamp((0.333 - cb_l) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
-  let mw = clamp((cb_l - 0.333) * 4.0 + 0.5, 0.0, 1.0)
-         * clamp((1.0 - cb_l - 0.333) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
-  let hw = clamp((cb_l + 0.333 - 1.0) * 4.0 + 0.5, 0.0, 1.0) * 0.7;
-  rgb.r = clamp(rgb.r + u.cb_shadows.x * sw + u.cb_midtones.x * mw + u.cb_highlights.x * hw, 0.0, 1.0);
-  rgb.g = clamp(rgb.g + u.cb_shadows.y * sw + u.cb_midtones.y * mw + u.cb_highlights.y * hw, 0.0, 1.0);
-  rgb.b = clamp(rgb.b + u.cb_shadows.z * sw + u.cb_midtones.z * mw + u.cb_highlights.z * hw, 0.0, 1.0);
-
-  // ── colortemperature ──
-  rgb = clamp(rgb * u.ct_scale.xyz, vec3f(0.0), vec3f(1.0));
+const SHADER_FS_CLOSE = /* wgsl */ `
 
   // ── shape / cornerRadius mask ──
   // Computed unconditionally (derivatives need uniform control flow); a kind
@@ -194,13 +185,15 @@ fn fs(input: VSOut) -> @location(0) vec4f {
 }
 `;
 
-const UNIFORM_SIZE = 208; // 13 × vec4f
-const UNIFORM_ALIGN = 256;
 const MAX_DRAWS = 128;
 const FBO_FORMAT: GPUTextureFormat = "rgba8unorm";
 
 export class Compositor<F = unknown> {
   private readonly backend: RenderBackend<F>;
+  private readonly ext: CompositorExtensions;
+  /** Bytes of one draw's uniform block, and its 256-aligned stride. */
+  private readonly uniformSize: number;
+  private readonly uniformAlign: number;
   private device!: GPUDevice;
   private pipeline!: GPURenderPipeline;
   private fboPipeline!: GPURenderPipeline; // same shader, targets FBO_FORMAT
@@ -217,11 +210,11 @@ export class Compositor<F = unknown> {
     object | symbol,
     { view: GPUTextureView; bg: GPUBindGroup }
   >();
-  private uniformStaging = new ArrayBuffer(MAX_DRAWS * UNIFORM_ALIGN);
+  private uniformStaging: ArrayBuffer;
   /** Byte view of {@link uniformStaging} for `writeBuffer` — Dawn's Node
    *  bindings mishandle a raw ArrayBuffer source, so we always hand it a
    *  typed-array view (valid in the browser too). */
-  private uniformStagingBytes = new Uint8Array(this.uniformStaging);
+  private uniformStagingBytes: Uint8Array<ArrayBuffer>;
   private frameCount = 0;
   private drawSlot = 0;
   private activeClips = new Set<object>();
@@ -230,8 +223,15 @@ export class Compositor<F = unknown> {
   private fboPool = new Map<string, GPUTexture[]>();
   private fboInUse: GPUTexture[] = [];
 
-  constructor(backend: RenderBackend<F>) {
+  /** `ext`: the Seam instance (or its `colorStages` / `colorSlots`) — the
+   *  shader and uniform layout are built for that extension set. */
+  constructor(backend: RenderBackend<F>, ext: CompositorExtensions) {
     this.backend = backend;
+    this.ext = ext;
+    this.uniformSize = (FIXED_VEC4S + Math.max(1, ext.colorSlots)) * 16;
+    this.uniformAlign = Math.ceil(this.uniformSize / 256) * 256;
+    this.uniformStaging = new ArrayBuffer(MAX_DRAWS * this.uniformAlign);
+    this.uniformStagingBytes = new Uint8Array(this.uniformStaging);
   }
 
   get ready(): boolean {
@@ -281,7 +281,7 @@ export class Compositor<F = unknown> {
       ],
     });
 
-    const shaderModule = this.device.createShaderModule({ code: SHADER });
+    const shaderModule = this.device.createShaderModule({ code: buildShader(this.ext) });
 
     const makePipeline = (targetFormat: GPUTextureFormat) =>
       this.device.createRenderPipeline({
@@ -320,7 +320,7 @@ export class Compositor<F = unknown> {
     });
 
     this.uniformBuffer = this.device.createBuffer({
-      size: MAX_DRAWS * UNIFORM_ALIGN,
+      size: MAX_DRAWS * this.uniformAlign,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -333,8 +333,8 @@ export class Compositor<F = unknown> {
               binding: 0,
               resource: {
                 buffer: this.uniformBuffer,
-                offset: i * UNIFORM_ALIGN,
-                size: UNIFORM_SIZE,
+                offset: i * this.uniformAlign,
+                size: this.uniformSize,
               },
             },
           ],
@@ -382,7 +382,7 @@ export class Compositor<F = unknown> {
         0,
         this.uniformStagingBytes,
         0,
-        this.drawSlot * UNIFORM_ALIGN,
+        this.drawSlot * this.uniformAlign,
       );
     }
 
@@ -493,12 +493,20 @@ export class Compositor<F = unknown> {
     this.writeGroupUniforms(slot, cmd);
   }
 
+  /** Let each colour stage fill its uniform slots from the command's sampled
+   *  field values (an empty set = every field at its default). */
+  private writeStages(f32: Float32Array, fields: FieldValues): void {
+    for (const st of this.ext.colorStages) {
+      const at = EXT_BASE + st.offset * 4;
+      st.prepare(fields, f32.subarray(at, at + st.slots * 4));
+    }
+  }
+
   private writeUniforms(slot: number, cmd: DrawCommand): void {
-    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
-      slot * UNIFORM_ALIGN,
-      UNIFORM_SIZE / 4,
+      slot * this.uniformAlign,
+      this.uniformSize / 4,
     );
     f32[0] = cmd.quadX;
     f32[1] = cmd.quadY;
@@ -508,27 +516,18 @@ export class Compositor<F = unknown> {
     f32[5] = 0; // canvas_h — set during encode
     f32[6] = cmd.opacity; // node opacity already folded in by RenderList
     f32[7] = 0;
-    f32[8] = fp.brightness;
-    f32[9] = fp.contrast;
-    f32[10] = fp.saturation;
-    f32[11] = fp.gamma;
-    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
-    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
-    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
-    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
-    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
+    f32[U_ROT] = cmd.rotation; f32[U_ROT + 1] = cmd.pivotX; f32[U_ROT + 2] = cmd.pivotY; f32[U_ROT + 3] = 0;
     writeCrop(f32, cmd.sourceRect);
     writeCorners(f32, undefined); // leaves aren't corner-pinned (comp-only)
     writeShape(f32, cmd.mask);
+    this.writeStages(f32, cmd.fields);
   }
 
   private writeFillUniforms(slot: number, cmd: FillCommand): void {
-    // Background fills carry no filters (identity); shape nodes may.
-    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
-      slot * UNIFORM_ALIGN,
-      UNIFORM_SIZE / 4,
+      slot * this.uniformAlign,
+      this.uniformSize / 4,
     );
     f32[0] = cmd.destX;
     f32[1] = cmd.destY;
@@ -538,28 +537,20 @@ export class Compositor<F = unknown> {
     f32[5] = 0; // canvas_h — set during encode
     f32[6] = cmd.opacity;
     f32[7] = 0;
-    f32[8] = fp.brightness;
-    f32[9] = fp.contrast;
-    f32[10] = fp.saturation;
-    f32[11] = fp.gamma;
-    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
-    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
-    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
-    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
     // Shape fills rotate about their origin like any node; background fills
     // pass 0 (a rotated comp's bg fill rides inside its FBO).
-    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY; f32[31] = 0;
+    f32[U_ROT] = cmd.rotation; f32[U_ROT + 1] = cmd.pivotX; f32[U_ROT + 2] = cmd.pivotY; f32[U_ROT + 3] = 0;
     writeCrop(f32, undefined); // fills sample no sub-rect
     writeCorners(f32, undefined);
     writeShape(f32, cmd.shape);
+    this.writeStages(f32, cmd.fields ?? NO_FIELDS);
   }
 
   private writeGroupUniforms(slot: number, cmd: GroupCommand): void {
-    const fp = extractFilterParams(cmd.filters);
     const f32 = new Float32Array(
       this.uniformStaging,
-      slot * UNIFORM_ALIGN,
-      UNIFORM_SIZE / 4,
+      slot * this.uniformAlign,
+      this.uniformSize / 4,
     );
     // The FBO quad is drawn at the group's dest rect on the parent
     f32[0] = cmd.destX;
@@ -570,19 +561,12 @@ export class Compositor<F = unknown> {
     f32[5] = 0; // canvas_h — set during encode
     f32[6] = cmd.opacity; // node opacity already folded in by RenderList
     f32[7] = 0;
-    f32[8] = fp.brightness;
-    f32[9] = fp.contrast;
-    f32[10] = fp.saturation;
-    f32[11] = fp.gamma;
-    f32[12] = fp.cb_rs; f32[13] = fp.cb_gs; f32[14] = fp.cb_bs; f32[15] = 0;
-    f32[16] = fp.cb_rm; f32[17] = fp.cb_gm; f32[18] = fp.cb_bm; f32[19] = 0;
-    f32[20] = fp.cb_rh; f32[21] = fp.cb_gh; f32[22] = fp.cb_bh; f32[23] = 0;
-    f32[24] = fp.ct_r; f32[25] = fp.ct_g; f32[26] = fp.ct_b; f32[27] = 0;
-    f32[28] = cmd.rotation; f32[29] = cmd.pivotX; f32[30] = cmd.pivotY;
-    f32[31] = cmd.corners ? 1 : 0; // distort flag — vs reads geometry from c01/c23
+    f32[U_ROT] = cmd.rotation; f32[U_ROT + 1] = cmd.pivotX; f32[U_ROT + 2] = cmd.pivotY;
+    f32[U_ROT + 3] = cmd.corners ? 1 : 0; // distort flag — vs reads geometry from c01/c23
     writeCrop(f32, cmd.sourceRect);
     writeCorners(f32, cmd.corners);
     writeShape(f32, cmd.mask);
+    this.writeStages(f32, cmd.fields);
   }
 
   // ── Phase 3: Encode ──
@@ -644,16 +628,16 @@ export class Compositor<F = unknown> {
 
         const f32 = new Float32Array(
           this.uniformStaging,
-          slot * UNIFORM_ALIGN,
-          UNIFORM_SIZE / 4,
+          slot * this.uniformAlign,
+          this.uniformSize / 4,
         );
         f32[4] = targetW;
         f32[5] = targetH;
         this.device.queue.writeBuffer(
           this.uniformBuffer,
-          slot * UNIFORM_ALIGN + 16,
+          slot * this.uniformAlign + 16,
           this.uniformStagingBytes,
-          slot * UNIFORM_ALIGN + 16,
+          slot * this.uniformAlign + 16,
           8,
         );
 
@@ -680,17 +664,17 @@ export class Compositor<F = unknown> {
         // but canvas size depends on the render target)
         const f32 = new Float32Array(
           this.uniformStaging,
-          slot * UNIFORM_ALIGN,
-          UNIFORM_SIZE / 4,
+          slot * this.uniformAlign,
+          this.uniformSize / 4,
         );
         f32[4] = targetW;
         f32[5] = targetH;
         // Re-upload just this slot
         this.device.queue.writeBuffer(
           this.uniformBuffer,
-          slot * UNIFORM_ALIGN + 16, // offset to canvas_opacity.x
+          slot * this.uniformAlign + 16, // offset to canvas_opacity.x
           this.uniformStagingBytes,
-          slot * UNIFORM_ALIGN + 16,
+          slot * this.uniformAlign + 16,
           8, // 2 floats
         );
 
@@ -705,7 +689,7 @@ export class Compositor<F = unknown> {
         pass.setBindGroup(1, cached.bg);
         pass.draw(6);
       } else {
-        // Group: draw FBO texture with filters
+        // Group: draw the FBO texture (colour stages, opacity, mask)
         const fboKey = (cmd as any)._fboKey as symbol;
         const cached = this.texBindGroupCache.get(fboKey);
         if (!cached) continue;
@@ -713,16 +697,16 @@ export class Compositor<F = unknown> {
         // Patch canvas size
         const f32 = new Float32Array(
           this.uniformStaging,
-          slot * UNIFORM_ALIGN,
-          UNIFORM_SIZE / 4,
+          slot * this.uniformAlign,
+          this.uniformSize / 4,
         );
         f32[4] = targetW;
         f32[5] = targetH;
         this.device.queue.writeBuffer(
           this.uniformBuffer,
-          slot * UNIFORM_ALIGN + 16,
+          slot * this.uniformAlign + 16,
           this.uniformStagingBytes,
-          slot * UNIFORM_ALIGN + 16,
+          slot * this.uniformAlign + 16,
           8,
         );
 
@@ -801,136 +785,43 @@ export class Compositor<F = unknown> {
   }
 }
 
-// ── Filter param extraction ──
-
-interface FilterParams {
-  brightness: number;
-  contrast: number;
-  saturation: number;
-  gamma: number;
-  cb_rs: number; cb_gs: number; cb_bs: number;
-  cb_rm: number; cb_gm: number; cb_bm: number;
-  cb_rh: number; cb_gh: number; cb_bh: number;
-  ct_r: number; ct_g: number; ct_b: number;
-}
-
-const IDENTITY_PARAMS: FilterParams = {
-  brightness: 0, contrast: 1, saturation: 1, gamma: 1,
-  cb_rs: 0, cb_gs: 0, cb_bs: 0,
-  cb_rm: 0, cb_gm: 0, cb_bm: 0,
-  cb_rh: 0, cb_gh: 0, cb_bh: 0,
-  ct_r: 1, ct_g: 1, ct_b: 1,
-};
-
-/** Write the crop sub-rect (uniform float slots 32–35). Absent → full 0,0,1,1. */
+/** Write the crop sub-rect (4 floats at U_CROP). Absent → full 0,0,1,1. */
 function writeCrop(
   f32: Float32Array,
   sr: { u0: number; v0: number; u1: number; v1: number } | undefined,
 ): void {
-  f32[32] = sr?.u0 ?? 0;
-  f32[33] = sr?.v0 ?? 0;
-  f32[34] = sr?.u1 ?? 1;
-  f32[35] = sr?.v1 ?? 1;
+  f32[U_CROP] = sr?.u0 ?? 0;
+  f32[U_CROP + 1] = sr?.v0 ?? 0;
+  f32[U_CROP + 2] = sr?.u1 ?? 1;
+  f32[U_CROP + 3] = sr?.v1 ?? 1;
 }
 
-/** Write the corner-pin quad (float slots 36–47): TL/TR, BR/BL in target px
+/** Write the corner-pin quad (12 floats at U_CORNERS): TL/TR, BR/BL in target px
  *  plus the per-corner homogeneous weights. Absent → zeros + unit weights
  *  (ignored by the shader when `rot.w` is 0). */
 function writeCorners(f32: Float32Array, corners: Quad | undefined): void {
   if (!corners) {
-    for (let i = 36; i < 44; i++) f32[i] = 0;
-    f32[44] = 1; f32[45] = 1; f32[46] = 1; f32[47] = 1;
+    for (let i = 0; i < 8; i++) f32[U_CORNERS + i] = 0;
+    for (let i = 8; i < 12; i++) f32[U_CORNERS + i] = 1;
     return;
   }
   const [tl, tr, br, bl] = corners;
-  f32[36] = tl.x; f32[37] = tl.y; f32[38] = tr.x; f32[39] = tr.y;
-  f32[40] = br.x; f32[41] = br.y; f32[42] = bl.x; f32[43] = bl.y;
+  const c = U_CORNERS;
+  f32[c] = tl.x; f32[c + 1] = tl.y; f32[c + 2] = tr.x; f32[c + 3] = tr.y;
+  f32[c + 4] = br.x; f32[c + 5] = br.y; f32[c + 6] = bl.x; f32[c + 7] = bl.y;
   const w = quadWeights(corners);
-  f32[44] = w[0]; f32[45] = w[1]; f32[46] = w[2]; f32[47] = w[3];
+  f32[c + 8] = w[0]; f32[c + 9] = w[1]; f32[c + 10] = w[2]; f32[c + 11] = w[3];
 }
 
-/** Write the shape / mask geometry (float slots 48–51). Absent → kind 0 (the
+/** Write the shape / mask geometry (4 floats at U_SHAPE). Absent → kind 0 (the
  *  shader then yields full coverage). */
 function writeShape(f32: Float32Array, shape: ShapeGeometry | undefined): void {
   if (!shape) {
-    f32[48] = 0; f32[49] = 0; f32[50] = 0; f32[51] = -1;
+    f32[U_SHAPE] = 0; f32[U_SHAPE + 1] = 0; f32[U_SHAPE + 2] = 0; f32[U_SHAPE + 3] = -1;
     return;
   }
-  f32[48] = shape.kind === "ellipse" ? 2 : 1;
-  f32[49] = shape.radius;
-  f32[50] = shape.outerInset;
-  f32[51] = shape.innerInset;
-}
-
-// Filters are static now (opacity was ejected to a node field), so this is a
-// plain fold over their literal params — no per-frame sampling.
-function extractFilterParams(filters: Filter[] | undefined): FilterParams {
-  if (!filters?.length) return IDENTITY_PARAMS;
-
-  const p = { ...IDENTITY_PARAMS };
-
-  for (const f of filters) {
-    if (f.bypass) continue; // UI toggle — skip this filter entirely
-    switch (f.type) {
-      case "adjust":
-        p.brightness += f.brightness ?? 0;
-        p.contrast *= f.contrast ?? 1;
-        p.saturation *= f.saturation ?? 1;
-        p.gamma *= f.gamma ?? 1;
-        break;
-      case "colorbalance":
-        p.cb_rs += f.rs ?? 0; p.cb_gs += f.gs ?? 0; p.cb_bs += f.bs ?? 0;
-        p.cb_rm += f.rm ?? 0; p.cb_gm += f.gm ?? 0; p.cb_bm += f.bm ?? 0;
-        p.cb_rh += f.rh ?? 0; p.cb_gh += f.gh ?? 0; p.cb_bh += f.bh ?? 0;
-        break;
-      case "colortemperature": {
-        const { r, g, b } = tempToScale(f.temperature ?? 6500);
-        p.ct_r *= r; p.ct_g *= g; p.ct_b *= b;
-        break;
-      }
-    }
-  }
-
-  return p;
-}
-
-function tempToRGB(temp: number): { r: number; g: number; b: number } {
-  const t = temp / 100;
-  let r: number, g: number, b: number;
-
-  if (t <= 66) {
-    r = 255;
-  } else {
-    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
-  }
-
-  if (t <= 66) {
-    g = 99.4708025861 * Math.log(t) - 161.1195681661;
-  } else {
-    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-  }
-
-  if (t >= 66) {
-    b = 255;
-  } else if (t <= 19) {
-    b = 0;
-  } else {
-    b = 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  }
-
-  return {
-    r: Math.max(0, Math.min(255, r)),
-    g: Math.max(0, Math.min(255, g)),
-    b: Math.max(0, Math.min(255, b)),
-  };
-}
-
-function tempToScale(temp: number): { r: number; g: number; b: number } {
-  const target = tempToRGB(temp);
-  const ref = tempToRGB(6500);
-  return {
-    r: target.r / ref.r,
-    g: target.g / ref.g,
-    b: target.b / ref.b,
-  };
+  f32[U_SHAPE] = shape.kind === "ellipse" ? 2 : 1;
+  f32[U_SHAPE + 1] = shape.radius;
+  f32[U_SHAPE + 2] = shape.outerInset;
+  f32[U_SHAPE + 3] = shape.innerInset;
 }

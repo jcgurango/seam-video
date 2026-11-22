@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveComposition,
-  validate,
   parseStart,
   formatStart,
   startAnchorId,
@@ -15,6 +13,9 @@ import {
   type ResolvedComposition,
   type ResolvedMap,
 } from "../index.js";
+import { createSeam } from "../seam.js";
+
+const { validate, resolveComposition } = createSeam();
 
 // The placement model: one `children` array, array order = z-order only.
 // Every node lands at

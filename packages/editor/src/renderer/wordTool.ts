@@ -10,8 +10,8 @@
 // indices are root child indices (the resolved timeline is 1:1 with
 // `doc.children`).
 
-import { formatStart, parseStart, resolveComposition } from "@seam/core";
-import type { Child, Data, SeamFile, Start } from "@seam/core";
+import { formatStart, parseStart } from "@seam/core";
+import type { Seam, Child, Data, SeamFile, Start } from "@seam/core";
 import { removeFromRuns } from "./runEdit.js";
 
 /** One whisper word inside a transcription `data` payload. */
@@ -157,6 +157,7 @@ export function separateByWord(
  * its timeline offset from the phrase start.
  */
 export function groupWords(
+  seam: Seam,
   doc: SeamFile,
   selectedIndices: number[],
 ): WordToolResult {
@@ -167,7 +168,7 @@ export function groupWords(
   let resolved;
   try {
     // `uncropped` keeps resolved children 1:1 with `doc.children`.
-    resolved = resolveComposition(doc, { uncropped: true });
+    resolved = seam.resolveComposition(doc, { uncropped: true });
   } catch {
     return { ok: false, error: "Could not resolve the timeline." };
   }

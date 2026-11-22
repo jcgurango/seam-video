@@ -27,7 +27,7 @@
 // Pure — no React, no platform deps.
 
 import { isRunMember } from "@seam/core";
-import type { ResolvedTimeline, SeamFile } from "@seam/core";
+import type { Seam, ResolvedTimeline, SeamFile } from "@seam/core";
 import { getCompAtPath, getNodeAtPath, isPrefix, type NodePath } from "./nodePath.js";
 import { globalSpanOf } from "./resolveLocal.js";
 
@@ -57,6 +57,7 @@ function inSequence(doc: SeamFile, path: NodePath): boolean {
  *  doc) and the playhead *before* the delete. Returns `currentTime`
  *  unchanged when nothing qualifies. */
 export function playheadAfterDelete(
+  seam: Seam,
   resolvedRoot: ResolvedTimeline,
   doc: SeamFile,
   paths: NodePath[],
@@ -72,7 +73,7 @@ export function playheadAfterDelete(
     if (paths.some((p) => p !== path && p.length < path.length && isPrefix(p, path))) {
       continue;
     }
-    const span = globalSpanOf(resolvedRoot, doc, path);
+    const span = globalSpanOf(seam, resolvedRoot, doc, path);
     if (!span) continue;
     if (currentTime < span.start - EPS) continue;
 
@@ -81,7 +82,7 @@ export function playheadAfterDelete(
     for (let depth = path.length - 1; depth >= 1; depth--) {
       const ancestor = path.slice(0, depth);
       if (!hasFixedDuration(doc, ancestor)) continue;
-      const aSpan = globalSpanOf(resolvedRoot, doc, ancestor);
+      const aSpan = globalSpanOf(seam, resolvedRoot, doc, ancestor);
       visible =
         aSpan != null &&
         currentTime >= aSpan.start - EPS &&

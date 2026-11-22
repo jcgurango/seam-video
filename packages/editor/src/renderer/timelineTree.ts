@@ -19,7 +19,6 @@
 // the shared bin entry's body; regular compositions resolve their own.
 
 import {
-  resolveComposition,
   runsOf,
   type BinEntry,
   type Child,
@@ -31,6 +30,7 @@ import { compileDocument } from "./compile.js";
 import { findBinItem } from "./nodeBin.js";
 import { pathKey, type NodePath } from "./nodePath.js";
 import { hasAnimatedLanes, lanesForNode, type KeyframeLane } from "./keyframeLanes.js";
+import type { Seam } from "@seam/core";
 
 interface AuthoredBody {
   children?: Child[];
@@ -108,15 +108,15 @@ export interface TreeGroup {
  *  root bin so any nested `binItem`s resolve; scripts are left off and the
  *  resolve is `uncropped`, so resolved children map 1:1 onto authored ones.
  *  Returns null if it can't be resolved. */
-function resolveBody(body: AuthoredBody, rootBin: BinEntry[]): ResolvedChild[] | null {
+function resolveBody(seam: Seam, body: AuthoredBody, rootBin: BinEntry[]): ResolvedChild[] | null {
   try {
     const synthetic: Composition = {
       type: "composition",
       children: body.children,
       ...(rootBin.length ? { bin: rootBin } : {}),
     };
-    const { doc } = compileDocument(synthetic, { runScripts: false });
-    return resolveComposition(doc as Composition, { uncropped: true }).children;
+    const { doc } = compileDocument(seam, synthetic, { runScripts: false });
+    return seam.resolveComposition(doc as Composition, { uncropped: true }).children;
   } catch {
     return null;
   }
@@ -168,6 +168,7 @@ function packRuns(resolved: ResolvedChild[], slices: [number, number][]): TreeRu
 }
 
 function buildExpansion(
+  seam: Seam,
   block: TreeBlock,
   expanded: Set<string>,
   rootBin: BinEntry[],
@@ -190,7 +191,7 @@ function buildExpansion(
     body = { children: docComp.children ?? [] };
   }
   if (!body) return null;
-  const resolved = resolveBody(body, rootBin);
+  const resolved = resolveBody(seam, body, rootBin);
   if (!resolved) return null;
   // Window transform for the expansion: inner content is shifted left by
   // the reference's `in` and compressed by the resolved window speed, so
@@ -198,7 +199,7 @@ function buildExpansion(
   // container trims the rest.
   const originSec = docComp?.in ?? 0;
   const scale = (block.child as ResolvedComposition).speed || 1;
-  return layoutGroup(
+  return layoutGroup(seam,
     resolved,
     body,
     expanded,
@@ -211,6 +212,7 @@ function buildExpansion(
 }
 
 function layoutGroup(
+  seam: Seam,
   resolved: ResolvedChild[],
   authored: AuthoredBody | undefined,
   expanded: Set<string>,
@@ -277,7 +279,7 @@ function layoutGroup(
         // `expBaseRow` (they sit at different x, under their own blocks).
         let winRows = 0;
         if (block.isComposition) {
-          const group = buildExpansion(block, expanded, rootBin, editable);
+          const group = buildExpansion(seam, block, expanded, rootBin, editable);
           if (group) {
             block.expansion = { group, topRow: expBaseRow };
             winRows = group.rowCount;
@@ -311,6 +313,7 @@ function layoutGroup(
 /** Lay out the whole (possibly partially-expanded) timeline tree. The root
  *  body uses the identity transform (it isn't windowed) and is editable. */
 export function layoutTree(
+  seam: Seam,
   resolved: ResolvedChild[],
   authored: AuthoredBody | undefined,
   expanded: Set<string>,
@@ -318,8 +321,8 @@ export function layoutTree(
 ): TreeGroup {
   // With a document, re-resolve the body un-cropped so blocks stay 1:1 with
   // authored children even when some start before 0.
-  const body = (authored && resolveBody(authored, rootBin)) || resolved;
-  return layoutGroup(
+  const body = (authored && resolveBody(seam, authored, rootBin)) || resolved;
+  return layoutGroup(seam,
     body,
     authored,
     expanded,

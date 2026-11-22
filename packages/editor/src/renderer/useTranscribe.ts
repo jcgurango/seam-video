@@ -16,16 +16,15 @@
 
 import {
   clipOut,
-  compileSeamFile,
   formatStart,
-  resolveComposition,
 } from "@seam/core";
 import { useCallback, useRef, useState } from "react";
-import type { Audio, Child, Clip, Composition, SeamFile } from "@seam/core";
+import type { Seam, Audio, Child, Clip, Composition, SeamFile } from "@seam/core";
 import type { History } from "./useHistory.js";
 import type { Platform } from "./platform/index.js";
 import { extractAudioWav } from "./audioExtract.js";
 import { mixCompositionAudio } from "./compositionAudioMix.js";
+import { useSeam } from "./seamContext.js";
 
 /** For a selected composition, which audio the mix covers (chosen via the
  *  modal that pops before the job runs). */
@@ -90,10 +89,10 @@ function selectionTargets(host: SeamFile, selectedIndices: number[]): Target[] {
 /** Source seconds per output second of each root child, as resolved (so a
  *  `duration` stretch and `binItem` bodies are accounted for). Phrase
  *  durations are output seconds, whisper's are source seconds. */
-function playbackRates(doc: SeamFile): (number | undefined)[] {
+function playbackRates(seam: Seam, doc: SeamFile): (number | undefined)[] {
   try {
-    const resolved = resolveComposition(
-      compileSeamFile(doc, { runScripts: false }).doc,
+    const resolved = seam.resolveComposition(
+      seam.compileSeamFile(doc, { runScripts: false }).doc,
       { uncropped: true },
     );
     return resolved.children.map((rc) =>
@@ -140,6 +139,7 @@ function withAppendedChild(host: SeamFile, node: Child): SeamFile {
 }
 
 export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
+  const seam = useSeam();
   const { serverUrl, history } = opts;
   const [progress, setProgress] = useState<TranscribeProgress | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -161,7 +161,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
       // Transcription targets the selected root-level nodes. There's no
       // auto/all mode anymore — the caller gates the button on a selection.
       const targets = selectionTargets(document, selectedIndices);
-      const rates = playbackRates(document);
+      const rates = playbackRates(seam, document);
 
       if (targets.length === 0) {
         setErrors(["Select a clip, audio, or composition to transcribe."]);
@@ -211,7 +211,7 @@ export function useTranscribe(opts: UseTranscribeOptions): UseTranscribe {
           let wav: Blob | null;
           let anchorBase: number;
           if (target.child.type === "composition") {
-            wav = await mixCompositionAudio(target.child, {
+            wav = await mixCompositionAudio(seam, target.child, {
               firstRunOnly: compositionMode === "first-run",
               // Root-level target → the document IS its enclosing scope, so
               // its bin/macros are what binItem/`$$` references resolve against.
