@@ -5,7 +5,7 @@
  *   → decode active frames (mediabunny) → composite (Dawn) → read back
  *   → encode (mediabunny) → mux mp4.
  *
- * Drawables: clip / static / text / map decode or rasterize in `FrameSource`;
+ * Drawables: clip / static / text / extension nodes decode or rasterize in `FrameSource`;
  * `rect` / `circle` are analytic fills the compositor draws itself.
  */
 import { readFileSync } from "node:fs";
@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import {
   DEFAULT_CANVAS_HEIGHT,
   DEFAULT_CANVAS_WIDTH,
+  asExtensionNode,
   resolveSpatial,
 } from "@seam/core";
 import type {
@@ -123,28 +124,42 @@ function agcBuffer(
   return { buffer, report };
 }
 
-/** Swap clip/static/audio/map `source`s that exactly equal a proxy key,
- *  recursing compositions and maps. Verbatim match, mutates the (local)
- *  resolved tree in place so probe/decode/audio all see the replacement. */
-function applyProxies(children: ResolvedChild[], proxies: Map<string, string>): void {
+/** Swap media sources that exactly equal a proxy key — clip/static/audio
+ *  `source`, plus every field an extension node type flags `source` (a map's
+ *  pmtiles) — recursing compositions and extension containers. Verbatim
+ *  match, mutates the (local) resolved tree in place so probe/decode/audio
+ *  all see the replacement. */
+function applyProxies(
+  seam: Seam,
+  children: ResolvedChild[],
+  proxies: Map<string, string>,
+): void {
   if (proxies.size === 0) return;
   for (const child of children) {
-    if (
-      child.type === "clip" ||
-      child.type === "static" ||
-      child.type === "audio" ||
-      child.type === "map"
-    ) {
+    const ext = asExtensionNode(child);
+    if (ext) {
+      const rec = ext as unknown as Record<string, unknown>;
+      for (const f of seam.nodeTypes.get(ext.type)?.fields ?? []) {
+        if (f.type !== "string" || !f.source) continue;
+        const current = rec[f.key];
+        const replacement = typeof current === "string" ? proxies.get(current) : undefined;
+        if (replacement != null) rec[f.key] = replacement;
+      }
+      if (ext.children) applyProxies(seam, ext.children, proxies);
+      continue;
+    }
+    if (child.type === "clip" || child.type === "static" || child.type === "audio") {
       const replacement = proxies.get(child.source);
       if (replacement != null) child.source = replacement;
     }
-    if (child.type === "composition" || child.type === "map") {
-      applyProxies(child.children, proxies);
+    if (child.type === "composition") {
+      applyProxies(seam, child.children, proxies);
     }
   }
 }
 
-/** Collect clip + static nodes (recursing compositions and maps) so their
+/** Collect clip + static nodes (recursing compositions and extension
+ *  containers) so their
  *  dimensions can be warmed up before the frame loop's buildRenderList needs
  *  them. */
 function collectMediaNodes(
@@ -155,8 +170,11 @@ function collectMediaNodes(
   for (const child of children) {
     if (child.type === "clip") clips.add(child);
     else if (child.type === "static") statics.add(child);
-    else if (child.type === "composition" || child.type === "map")
-      collectMediaNodes(child.children, clips, statics);
+    else if (child.type === "composition") collectMediaNodes(child.children, clips, statics);
+    else {
+      const kids = asExtensionNode(child)?.children;
+      if (kids) collectMediaNodes(kids, clips, statics);
+    }
   }
 }
 
@@ -187,7 +205,7 @@ export async function renderSeamToFile(
     options.height ?? (temporal.contentHeight as number | undefined) ?? DEFAULT_CANVAS_HEIGHT;
   const timeline = resolveSpatial(temporal, width, height);
   // Swap proxied sources before anything reads them (decode, audio, maps).
-  if (options.proxies) applyProxies(timeline.children, options.proxies);
+  if (options.proxies) applyProxies(seam, timeline.children, options.proxies);
   const basePath = dirname(seamPath);
 
   // Optional phase timing (SEAM_NEXT_TIMING=1) — startup work happens before
@@ -248,7 +266,7 @@ export async function renderSeamToFile(
     const clipNodes = new Set<ResolvedClip>();
     const staticNodes = new Set<ResolvedStatic>();
     collectMediaNodes(timeline.children, clipNodes, staticNodes);
-    const source = (frameSource = new FrameSource(basePath, stores));
+    const source = (frameSource = new FrameSource(basePath, stores, seam.nodeTypes));
     for (const clip of clipNodes) await source.openSource(clip.source);
     for (const node of staticNodes) await source.openStatic(node);
     mark("gpu+warmup");
@@ -310,7 +328,7 @@ export async function renderSeamToFile(
       }
       const t = i / fps;
       planner.update(t);
-      const commands = buildRenderList(timeline, t, width, height, (clip) =>
+      const commands = buildRenderList(seam, timeline, t, width, height, (clip) =>
         source.intrinsicSize(clip),
       );
       const p0 = performance.now();

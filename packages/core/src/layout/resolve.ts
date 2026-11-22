@@ -3,8 +3,8 @@ import type {
   Child,
   Keyframed,
   Length,
+  ExtensionNodeBase,
   Overflow,
-  Pin,
   TextRun,
   Underflow,
 } from "../types.js";
@@ -25,7 +25,7 @@ import {
 } from "./clip-span.js";
 import { parseStart } from "./anchor.js";
 import type { Registry } from "../registry.js";
-import type { ExtFields } from "../resolved-types.js";
+import { asExtensionNode, type ExtFields } from "../resolved-types.js";
 
 /**
  * A node's natural output length: its content (`[in, out]` / inner window)
@@ -33,6 +33,10 @@ import type { ExtFields } from "../resolved-types.js";
  * just `duration`.
  */
 function naturalDuration(registry: Registry, child: Child): number {
+  // An extension node shows for exactly its authored `duration`.
+  if (registry.nodeTypes.has(child.type)) {
+    return (child as unknown as ExtensionNodeBase).duration;
+  }
   switch (child.type) {
     case "clip":
     case "audio":
@@ -41,7 +45,6 @@ function naturalDuration(registry: Registry, child: Child): number {
     case "text":
     case "rect":
     case "circle":
-    case "map":
       return child.duration;
     case "data":
       return child.duration ?? 0;
@@ -95,27 +98,29 @@ function collectSpatialInput(child: Child): SpatialInput | undefined {
 }
 
 /** Per-frame-sampled visual fields every spatial node carries through
- *  resolution verbatim (like `volume`): opacity, the corner mask, and the map
- *  pin. Omitted keys stay omitted so resolved nodes don't grow `undefined`s. */
+ *  resolution verbatim (like `volume`): opacity, the corner mask, and any
+ *  extension-contributed fields. Omitted keys stay omitted so resolved nodes don't grow `undefined`s. */
 function spatialExtras(
   registry: Registry,
   child: {
     opacity?: Keyframed<number>;
     cornerRadius?: Keyframed<Length>;
-    pin?: Keyframed<Pin>;
   },
 ): {
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
-  pin?: Keyframed<Pin>;
   ext?: ExtFields;
+  anchored?: true;
 } {
   const ext = extFields(registry, child);
+  // A field that positions the node inside an extension container (a map
+  // `pin`) makes its baked rect meaningless — flag it for the spatial pass.
+  const anchored = ext != null && registry.anchorFieldKeys.some((k) => ext[k] != null);
   return {
     ...(child.opacity != null ? { opacity: child.opacity } : {}),
     ...(child.cornerRadius != null ? { cornerRadius: child.cornerRadius } : {}),
-    ...(child.pin != null ? { pin: child.pin } : {}),
     ...(ext ? { ext } : {}),
+    ...(anchored ? { anchored: true as const } : {}),
   };
 }
 
@@ -244,31 +249,37 @@ function resolveChild(
     };
   }
 
-  if (child.type === "map") {
-    // A map is a static-like leaf for timing (the camera keyframes sample
-    // against its span) that also hosts children: placed exactly like a
-    // composition's (runs + `start` anchors) in map-local time (0 = map
-    // start, speed 1). They never extend the map and are NOT cropped to its
-    // span here; the compositor only draws what's active.
-    const children = placeChildren(registry, child.children ?? []).children;
+  // An extension-contributed node type: a static-like leaf for timing (its
+  // keyframes sample against its span) whose own fields ride through
+  // verbatim. A container type also hosts children: placed exactly like a
+  // composition's (runs + `start` anchors) in node-local time (0 = the
+  // node's start, speed 1). They never extend the node and are NOT cropped
+  // to its span here; the compositor only draws what's active.
+  const def = registry.nodeTypes.get(child.type);
+  if (def) {
+    const node = child as unknown as ExtensionNodeBase & Record<string, unknown>;
+    const own: Record<string, unknown> = {};
+    for (const f of def.fields ?? []) {
+      const v = node[f.key];
+      // An empty array is "nothing authored" (matches how core's own
+      // optional arrays resolve).
+      if (v != null && !(Array.isArray(v) && v.length === 0)) own[f.key] = v;
+    }
     return {
       resolved: {
-        type: "map" as const,
-        source: child.source,
+        type: def.type,
+        extension: true as const,
         timelineStart: 0,
         timelineEnd: 0,
-        ...(child.latitude != null ? { latitude: child.latitude } : {}),
-        ...(child.longitude != null ? { longitude: child.longitude } : {}),
-        ...(child.zoom != null ? { zoom: child.zoom } : {}),
-        ...(child.mapOpacity != null ? { mapOpacity: child.mapOpacity } : {}),
-        ...(child.theme != null ? { theme: child.theme } : {}),
-        ...(child.paths?.length ? { paths: child.paths } : {}),
-        children,
-        ...(child.contentWidth != null ? { contentWidth: child.contentWidth } : {}),
-        ...(child.contentHeight != null ? { contentHeight: child.contentHeight } : {}),
+        ...own,
+        ...(def.children
+          ? { children: placeChildren(registry, node.children ?? []).children }
+          : {}),
+        ...(node.contentWidth != null ? { contentWidth: node.contentWidth } : {}),
+        ...(node.contentHeight != null ? { contentHeight: node.contentHeight } : {}),
         ...(spatialInput ? { spatialInput } : {}),
-        ...spatialExtras(registry, child),
-      },
+        ...spatialExtras(registry, node),
+      } as unknown as ResolvedChild,
       actualDuration: target,
     };
   }
@@ -612,7 +623,7 @@ function buildIdMapEntry(resolved: ResolvedChild, compWindowIn = 0): IdMapEntry 
     resolved.type === "text" ||
     resolved.type === "rect" ||
     resolved.type === "circle" ||
-    resolved.type === "map"
+    asExtensionNode(resolved) != null
   ) {
     // Static-like leaves: source time is just output seconds from the start.
     return { start, end, baseSourceTime: 0, speed: 1 };
@@ -693,7 +704,7 @@ function cropChildrenToWindow(
       child.type === "static" ||
       child.type === "rect" ||
       child.type === "circle" ||
-      child.type === "map"
+      asExtensionNode(child) != null
     ) {
       result.push({
         ...child,

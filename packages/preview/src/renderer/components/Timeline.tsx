@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import type { ResolvedTimeline } from "@seam/core";
+import type { Seam, ResolvedTimeline } from "@seam/core";
 import {
   TimelineContext,
   TimelineCanvasContext,
@@ -14,13 +14,14 @@ import { MediaStore } from "../media/MediaStore.js";
 import { AudioScheduler } from "../media/AudioScheduler.js";
 import { FrameCoordinator } from "../media/FrameCoordinator.js";
 import { WebGPURenderer } from "../media/gpu/WebGPURenderer.js";
-import { buildRenderList, type CompositorExtensions } from "@seam/compositor";
+import { buildRenderList } from "@seam/compositor";
 
 interface TimelineProps {
   timeline: ResolvedTimeline;
-  /** The host's Seam instance (the compositor's shader is built for its
-   *  extension set). Read once, at mount. */
-  seam: CompositorExtensions;
+  /** The host's Seam instance: the compositor's shader is built for its
+   *  extension set, and self-drawing node types get their rasterizers from
+   *  it. Read once, at mount. */
+  seam: Seam;
   basePath: string;
   preserveTime?: boolean;
   initialTime?: number;
@@ -63,7 +64,7 @@ export default function Timeline({
   if (!audioSchedulerRef.current)
     audioSchedulerRef.current = new AudioScheduler();
   if (!coordinatorRef.current)
-    coordinatorRef.current = new FrameCoordinator();
+    coordinatorRef.current = new FrameCoordinator(seam.nodeTypes);
   if (!rendererRef.current) rendererRef.current = new WebGPURenderer(seam);
 
   const mediaStore = mediaStoreRef.current;
@@ -214,7 +215,7 @@ export default function Timeline({
         );
       }
       renderer.resize(mount.width, mount.height);
-      const commands = buildRenderList(
+      const commands = buildRenderList(seam, 
         timelineRef.current,
         time,
         mount.width,

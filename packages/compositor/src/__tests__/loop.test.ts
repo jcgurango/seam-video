@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { buildRenderList, type RenderCommand, type DrawCommand } from "../RenderList.js";
 
-const { resolveComposition } = createSeam();
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 // `underflow: "loop"`: the render list wraps a looping node's CONTENT time
 // (clip source time / composition inner time) into one cycle per frame while
@@ -22,7 +23,7 @@ function draws(commands: RenderCommand[]): DrawCommand[] {
 
 function renderAt(root: Composition, t: number): DrawCommand[] {
   const timeline = resolveSpatial(resolveComposition(root), W, H);
-  return draws(buildRenderList(timeline, t, W, H, () => ({ w: W, h: H })));
+  return draws(buildRenderList(seam, timeline, t, W, H, () => ({ w: W, h: H })));
 }
 
 /** Start with `id` and fill 10s (the bg's length) — `underflow` says how. */

@@ -34,5 +34,5 @@ export {
   resetSourceResolver,
 } from "./components/resolveSource.js";
 export type { SourceResolver } from "./components/resolveSource.js";
-export { setPmtilesResolver } from "./media/mapPool.js";
-export type { PmtilesResolver } from "./media/mapPool.js";
+export { setByteSourceResolver } from "./media/nodeRasterizers.js";
+export type { ByteSourceResolver } from "./media/nodeRasterizers.js";

@@ -10,9 +10,8 @@ import { flatCommand } from "./commands/flat.js";
 import { distillCommand } from "./commands/distill.js";
 
 // In the published CLI, @seam/renderer is bundled into this file, so its
-// source-relative font/style lookups no longer resolve. The build vendors the
-// renderer's `fonts/` and `osm-bright/` next to this bundle; point the renderer
-// at them. In dev (tsx from source) there are no sibling assets, so we leave
+// source-relative font lookups no longer resolve. The build vendors the
+// renderer's `fonts/` next to this bundle; point the renderer at them. In dev (tsx from source) there are no sibling assets, so we leave
 // the env unset and the renderer falls back to its own package-relative paths.
 const selfDir = dirname(fileURLToPath(import.meta.url));
 if (!process.env.SEAM_RENDERER_ASSETS && existsSync(resolvePath(selfDir, "fonts"))) {

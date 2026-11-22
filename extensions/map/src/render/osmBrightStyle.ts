@@ -1,4 +1,12 @@
-{
+// The bundled OSM Bright style (https://github.com/openmaptiles/osm-bright-gl-style,
+// BSD 3-Clause / CC-BY 4.0), as a module so both hosts load it the same way.
+// The rasterizer reads `layers` (filters, paint, text-font) directly and never
+// fetches the style's glyphs / sprite / source URLs, so it is used as is.
+//
+// GENERATED from style.json — edit that upstream style, not this file.
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const OSM_BRIGHT_STYLE: any = {
   "version": 8,
   "name": "Bright",
   "metadata": {
@@ -2557,4 +2565,4 @@
     }
   ],
   "id": "bright"
-}
+};

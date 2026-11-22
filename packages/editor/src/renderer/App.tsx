@@ -679,7 +679,7 @@ function AppBody({ platform, seam }: AppProps) {
       let doc = history.current;
       // Electron: rewrite absolute paths to relative to the .seam file's dir
       if (platform.kind === "electron") {
-        doc = remapSourcesToRelative(doc, dirname(fp));
+        doc = remapSourcesToRelative(seam, doc, dirname(fp));
         history.replace(doc);
       }
       const json = JSON.stringify(doc, null, 2);

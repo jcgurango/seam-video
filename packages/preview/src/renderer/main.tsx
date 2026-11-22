@@ -7,7 +7,7 @@ import {
   loadMapLabelFonts,
 } from "./fonts.js";
 import { FetchSource } from "pmtiles";
-import { setPmtilesResolver } from "./media/mapPool.js";
+import { setByteSourceResolver } from "./media/nodeRasterizers.js";
 import { defaultResolveSource } from "./components/resolveSource.js";
 import { getMapBasePath } from "./mapBasePath.js";
 
@@ -22,13 +22,13 @@ loadFallbackFonts();
 // rasterization finds Liberation Sans already registered.
 loadMapLabelFonts();
 
-// Resolve a `map` node's `.pmtiles` source to a byte-range Source. The preview
+// Resolve a node's byte-range `source` (a `map`'s `.pmtiles`). The preview
 // always runs in Electron, so a file:// FetchSource is enough — the main
 // process's custom file:// handler honors Range requests. basePath is the .seam
 // file's directory, learned per timeline update (App keeps getMapBasePath()
-// current). Registered at boot because the TileSource pool caches each source
-// permanently — the resolver must already exist before the first map renders.
-setPmtilesResolver(async (filename) => {
+// current). Registered at boot because a rasterizer may cache each source
+// permanently — the resolver must already exist before the first frame.
+setByteSourceResolver(async (filename) => {
   const url = defaultResolveSource(filename, getMapBasePath());
   if (!url.startsWith("file://") && !url.startsWith("http")) return null;
   return new FetchSource(url);

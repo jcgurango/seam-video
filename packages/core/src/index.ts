@@ -5,12 +5,28 @@ export type { ValidationResult } from "./validate.js";
 export { createSeam, type Seam } from "./seam.js";
 export {
   VISUAL_NODE_TYPES,
+  CORE_NODE_TYPES,
   type SeamExtension,
   type FieldSpec,
+  type NumberFieldSpec,
+  type StringFieldSpec,
+  type EnumFieldSpec,
+  type ColorFieldSpec,
+  type LengthFieldSpec,
+  type CustomFieldSpec,
+  type SchemaHelpers,
   type FieldTarget,
   type ColorStage,
+  type NodeTypeDef,
+  type ExtensionNodeView,
+  type ChildAnchor,
+  type NodeRasterizer,
+  type RasterHost,
+  type CanvasLike,
+  type ByteSource,
   type RegisteredField,
   type RegisteredColorStage,
+  type RegisteredNodeType,
 } from "./registry.js";
 export { formatZodError, type FormattedIssue } from "./format-error.js";
 export { runScript } from "./compile.js";
@@ -47,12 +63,6 @@ export {
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
 } from "./layout/resolve-spatial.js";
-export {
-  sampleMapState,
-  DEFAULT_MAP_ZOOM,
-  type MapState,
-  type MapPathState,
-} from "./layout/map-state.js";
 export {
   squareToQuad,
   applyHomography,

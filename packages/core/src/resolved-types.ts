@@ -7,7 +7,6 @@ import type {
   InsetMode,
   Distort,
   Orientation,
-  Pin,
   TextPadding,
   TextRun,
   TextStyleFields,
@@ -110,7 +109,9 @@ export interface ResolvedClip {
    *  Sampled per-frame against the shorter side of the final rect. */
   cornerRadius?: Keyframed<Length>;
   /** Geo / path anchor — read only when this node is a map attachment. */
-  pin?: Keyframed<Pin>;
+  /** Set when the node authors an extension field that positions it inside
+   *  an extension container (a map `pin`): layout re-evaluates per frame. */
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -146,7 +147,9 @@ export interface ResolvedStatic {
    *  Sampled per-frame against the shorter side of the final rect. */
   cornerRadius?: Keyframed<Length>;
   /** Geo / path anchor — read only when this node is a map attachment. */
-  pin?: Keyframed<Pin>;
+  /** Set when the node authors an extension field that positions it inside
+   *  an extension container (a map `pin`): layout re-evaluates per frame. */
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -214,7 +217,9 @@ export interface ResolvedText extends TextStyleFields {
    *  Sampled per-frame against the shorter side of the final rect. */
   cornerRadius?: Keyframed<Length>;
   /** Geo / path anchor — read only when this node is a map attachment. */
-  pin?: Keyframed<Pin>;
+  /** Set when the node authors an extension field that positions it inside
+   *  an extension container (a map `pin`): layout re-evaluates per frame. */
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -252,7 +257,9 @@ export interface ResolvedComposition {
    *  Sampled per-frame against the shorter side of the final rect. */
   cornerRadius?: Keyframed<Length>;
   /** Geo / path anchor — read only when this node is a map attachment. */
-  pin?: Keyframed<Pin>;
+  /** Set when the node authors an extension field that positions it inside
+   *  an extension container (a map `pin`): layout re-evaluates per frame. */
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -297,7 +304,9 @@ interface ResolvedShapeBase {
   ext?: ExtFields;
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
-  pin?: Keyframed<Pin>;
+  /** Set when the node authors an extension field that positions it inside
+   *  an extension container (a map `pin`): layout re-evaluates per frame. */
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -315,31 +324,24 @@ export interface ResolvedCircle extends ResolvedShapeBase {
   type: "circle";
 }
 
-export interface ResolvedMapPath {
-  id?: string;
-  color: Keyframed<string>;
-  points: [number, number][];
-  progress?: Keyframed<number>;
-  lineWidth?: Keyframed<number>;
-}
-
-/** A map after resolution. Its `children` are its resolved children, in
- *  map-local time (0 = the map's start, speed 1), laid out against the map's
- *  inner canvas; a child's `pin` overrides its translation at render time. */
-export interface ResolvedMap {
-  type: "map";
-  source: string;
+/** An extension-contributed node after resolution — what core guarantees.
+ *  The node's own fields (`NodeTypeDef.fields`) sit flat beside these,
+ *  authored values verbatim; an extension package declares its exact shape
+ *  by extending this and merging it into {@link ResolvedExtensionNodeTypes}.
+ *
+ *  A container's `children` are in node-local time (0 = the node's start,
+ *  speed 1), laid out against its inner canvas. */
+export interface ResolvedExtensionNode<T extends string = string> {
+  type: T;
+  /** Marks a node whose `type` an extension defines (registry-free code
+   *  tells it from core types by this). */
+  extension: true;
   timelineStart: number;
   timelineEnd: number;
   transition?: number;
   transitionOut?: number;
-  latitude?: Keyframed<number>;
-  longitude?: Keyframed<number>;
-  zoom?: Keyframed<number>;
-  mapOpacity?: Keyframed<number>;
-  theme?: "light" | "dark";
-  paths?: ResolvedMapPath[];
-  children: ResolvedChild[];
+  /** Present exactly on container types. */
+  children?: ResolvedChild[];
   /** Inner canvas — the AUTHORED `Keyframed<Length>` preserved (default
    *  `"100%"` of the parent); the t=0 bake lives in `intrinsicWidth/Height`. */
   contentWidth?: Keyframed<Length>;
@@ -349,7 +351,7 @@ export interface ResolvedMap {
   ext?: ExtFields;
   opacity?: Keyframed<number>;
   cornerRadius?: Keyframed<Length>;
-  pin?: Keyframed<Pin>;
+  anchored?: true;
   spatial?: SpatialRect;
   objectFit?: ObjectFit;
   spatialInput?: SpatialInput;
@@ -357,6 +359,21 @@ export interface ResolvedMap {
   intrinsicHeight?: number;
   naturalWidth?: number;
   naturalHeight?: number;
+}
+
+/** Resolved extension node types by `type`. Empty in core — merged into by
+ *  extension packages, like `ExtensionNodeTypes`. */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface ResolvedExtensionNodeTypes {}
+
+export type ResolvedExtensionChild = ResolvedExtensionNodeTypes[keyof ResolvedExtensionNodeTypes];
+
+/** View a resolved node as an extension node, or null when its type is
+ *  core's. For code that has no Seam instance to ask. */
+export function asExtensionNode(node: { type: string }): ResolvedExtensionNode | null {
+  return (node as { extension?: unknown }).extension === true
+    ? (node as unknown as ResolvedExtensionNode)
+    : null;
 }
 
 export type ResolvedChild =
@@ -367,8 +384,8 @@ export type ResolvedChild =
   | ResolvedText
   | ResolvedRect
   | ResolvedCircle
-  | ResolvedMap
-  | ResolvedComposition;
+  | ResolvedComposition
+  | ResolvedExtensionChild;
 
 export interface ResolvedTimeline {
   duration: number;

@@ -5,7 +5,7 @@ import {
   loadFallbackFonts,
   loadMapLabelFonts,
   setSourceResolver,
-  setPmtilesResolver,
+  setByteSourceResolver,
 } from "@seam/preview";
 import App from "./App.js";
 import { detectPlatform, WebPlatform } from "./platform/index.js";
@@ -13,9 +13,11 @@ import { getMapBasePath } from "./mapBasePath.js";
 import type { Source } from "pmtiles";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
+// The render entry: the Map extension WITH its rasterizer (this shell draws).
+import { map } from "@seam/extension-map/render";
 
 // One Seam instance per host: core plus the extensions this shell installs.
-const seam = createSeam([adjustments]);
+const seam = createSeam([adjustments, map]);
 const platform = detectPlatform(seam);
 
 // Seam Cloud is web-editor-only. When this entry runs as a web build (not
@@ -48,8 +50,8 @@ setSourceResolver((source, basePath) =>
 
 // pmtiles → byte-range Source — same shape on web (OPFS) + electron
 // (file:// FetchSource). `map` nodes use it when opening pmtiles.
-setPmtilesResolver(async (filename: string) => {
-  const src = await platform.openPmtilesSource(filename, getMapBasePath());
+setByteSourceResolver(async (filename: string) => {
+  const src = await platform.openByteSource(filename, getMapBasePath());
   return (src as Source | null) ?? null;
 });
 

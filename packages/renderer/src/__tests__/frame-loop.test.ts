@@ -19,7 +19,8 @@ import { createSeam, resolveSpatial, type Composition } from "@seam/core";
 import { buildRenderList, type DrawCommand, type RenderCommand } from "@seam/compositor";
 import { FrameSource, collectDrawables } from "../frameSource.js";
 
-const { resolveComposition } = createSeam();
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 // End-to-end `underflow: "loop"` on the renderer's video path: the render list
 // wraps the looping clip's drawTime, and the FrameSource cursor (which only
@@ -124,7 +125,7 @@ describe("underflow: loop — renderer video path", () => {
     // sees a backward jump at 1.5s, 3s and 4.5s and must re-seek.
     for (let i = 0; i < 5 * FPS; i++) {
       const t = i / FPS;
-      const commands = buildRenderList(timeline, t, W, H, () => ({ w: W, h: H }));
+      const commands = buildRenderList(seam, timeline, t, W, H, () => ({ w: W, h: H }));
       const ds = draws(commands);
       expect(ds, `clip active at ${t}`).toHaveLength(1);
       const expectedLocal = ((t % period) + period) % period;

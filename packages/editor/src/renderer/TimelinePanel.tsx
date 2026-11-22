@@ -51,6 +51,7 @@ import { timeAfterLift } from "./dropTime.js";
 import { resizeChild, resizeChildInPlace } from "./resizeTool.js";
 import { useEvent } from "./useEvent.js";
 import { isTypingInEditableSurface } from "./keyboardGuards.js";
+import type { Seam } from "@seam/core";
 import { useSeam } from "./seamContext.js";
 
 export interface TimelinePanelProps {
@@ -153,8 +154,16 @@ const BLOCK_COLORS: Record<string, { bg: string; border: string }> = {
   text: { bg: "#a04060", border: "#c45582" },
   rect: { bg: "#b03a8f", border: "#d957b8" },
   circle: { bg: "#b03a8f", border: "#d957b8" },
-  map: { bg: "#2f7a5a", border: "#4bb886" },
 };
+
+/** A block's colours: core's table, else the extension node type's own
+ *  (`NodeTypeDef.editor`), else the clip colours. */
+function blockColors(seam: Seam, type: string): { bg: string; border: string } {
+  const core = BLOCK_COLORS[type];
+  if (core) return core;
+  const ext = seam.nodeTypes.get(type)?.editor;
+  return ext ? { bg: ext.color, border: ext.border } : BLOCK_COLORS.clip;
+}
 
 // Window-boundary markers drawn at the left/right edges of an expanded
 // composition (its `in`/`out` window), in the composition accent. Overlaid
@@ -1599,9 +1608,10 @@ function ChildBlockView({
       ) => void)
     | null;
 }) {
+  const seam = useSeam();
   const label = childLabel(displayChild, child);
   const displayType = displayChild?.type ?? child.type;
-  const colors = BLOCK_COLORS[displayType] ?? BLOCK_COLORS.clip;
+  const colors = blockColors(seam, displayType);
 
   // Drag-to-reorder. `mouseDownPos` records the press origin;
   // `reorderHandedOff` flips true once we move past the threshold so the
@@ -1917,7 +1927,7 @@ export default function TimelinePanel({
     async (target: DropTarget, files: FileList | File[]) => {
       if (!doc || !onDocumentChange) return;
       const baseDir = filePath ? dirname(filePath) : null;
-      const items = await buildItemsFromFiles(files, platform, baseDir);
+      const items = await buildItemsFromFiles(seam, files, platform, baseDir);
       if (items.length === 0) return;
       onDocumentChange(
         insertNodes(doc, target.region.path, target.index, items, insertOptionsFor(target)),

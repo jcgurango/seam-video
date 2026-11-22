@@ -1,5 +1,5 @@
 import { defaultResolveSource } from "@seam/preview";
-import type { SeamFile } from "@seam/core";
+import type { Seam, SeamFile } from "@seam/core";
 import type {
   ActionName,
   ExportProgress,
@@ -51,7 +51,9 @@ export class ElectronPlatform implements Platform {
   // app last registered.
   private exportHandler: (() => void) | null = null;
 
-  constructor() {
+  /** `seam`: the host's Seam instance — export walks a document's media
+   *  sources, which extension node types contribute to. */
+  constructor(private readonly seam: Seam) {
     window.seamApi.onMenuExport(() => this.exportHandler?.());
   }
 
@@ -84,7 +86,7 @@ export class ElectronPlatform implements Platform {
     return defaultResolveSource(source, basePath);
   }
 
-  async openPmtilesSource(
+  async openByteSource(
     source: string,
     basePath: string,
   ): Promise<unknown | null> {
@@ -132,7 +134,7 @@ export class ElectronPlatform implements Platform {
     defaultName: string,
     onProgress?: (p: ExportProgress) => void
   ): Promise<boolean> {
-    const plan = buildExportPlan(doc);
+    const plan = buildExportPlan(this.seam, doc);
     const clips = plan.entries.map((entry) => {
       const p = entry.originalSource;
       const sourcePath = isAbsolute(p) ? p : `${basePath}/${p}`;

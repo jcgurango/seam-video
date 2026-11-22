@@ -21,10 +21,10 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@seam/core": "workspace:*",
-    "@seam/map": "workspace:*"
+    "@seam/core": "workspace:*"
   },
   "devDependencies": {
+    "@seam/extension-map": "workspace:*",
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

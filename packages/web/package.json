@@ -12,6 +12,7 @@
     "@seam/core": "workspace:*",
     "@seam/editor": "workspace:*",
     "@seam/extension-adjustments": "workspace:*",
+    "@seam/extension-map": "workspace:*",
     "@seam/preview": "workspace:*",
     "pmtiles": "^4.4.1",
     "react": "^19.0.0",

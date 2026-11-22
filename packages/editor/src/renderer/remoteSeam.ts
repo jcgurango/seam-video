@@ -5,7 +5,7 @@
  * behind the Cloud menu's Export / Import Remote .seam; the platform supplies
  * the name↔URL lookups.
  */
-import type { SeamFile } from "@seam/core";
+import type { Seam, SeamFile } from "@seam/core";
 import { mapDocumentSources } from "./exportHelpers.js";
 
 /** `http(s)://` sources — already remote, streamed as-is by every host. */
@@ -33,11 +33,12 @@ export interface RemoteDocumentResult {
  * source as-is and reports it in `unresolved` so the caller can abort.
  */
 export function toRemoteDocument(
+  seam: Seam,
   doc: SeamFile,
   urlFor: (name: string) => string | null
 ): RemoteDocumentResult {
   const unresolved = new Set<string>();
-  const document = mapDocumentSources(doc, (src) => {
+  const document = mapDocumentSources(seam, doc, (src) => {
     if (isRemoteSource(src) || isOpaqueSource(src)) return src;
     const url = urlFor(src);
     if (url == null) {
@@ -62,11 +63,12 @@ export interface LocalDocumentResult {
  * and are reported in `kept`.
  */
 export function fromRemoteDocument(
+  seam: Seam,
   doc: SeamFile,
   nameFor: (url: string) => string | null
 ): LocalDocumentResult {
   const kept = new Set<string>();
-  const document = mapDocumentSources(doc, (src) => {
+  const document = mapDocumentSources(seam, doc, (src) => {
     if (!isRemoteSource(src)) return src;
     const name = nameFor(src);
     if (name == null) {

@@ -41,9 +41,9 @@ function collectAllIds(doc: SeamFile): Set<string> {
   const out = new Set<string>();
   const visit = (child: Child) => {
     if (child.id != null) out.add(child.id);
-    if (child.type === "composition" || child.type === "map") {
-      (child.children ?? []).forEach(visit);
-    }
+    // A composition or an extension container (a map).
+    const kids = (child as { children?: Child[] }).children;
+    if (Array.isArray(kids)) kids.forEach(visit);
   };
   visit(doc);
   return out;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Registry, RegisteredField } from "./registry.js";
+import type { FieldSpec, Registry, RegisteredNodeType, SchemaHelpers } from "./registry.js";
 
 export const ObjectFitSchema = z.enum(["center", "fit", "cover"]);
 
@@ -139,23 +139,6 @@ const DistortSchema = z.object({
   y3: LengthSchema.optional(),
 }).strict();
 
-// Where a node's `origin` lands when it is a child of a `map`: either a
-// geographic coordinate or a fraction along one of the map's `paths` (by index
-// or path `id`; `position` defaults to that path's current `progress`, so the
-// node rides the head of the reveal). Ignored outside a map. Keyframes
-// interpolate lat/lng (geo→geo) or `position` (same path→same path); a change
-// of kind or path snaps at the keyframe.
-const PinSchema = z.union([
-  z.object({
-    latitude: z.number().min(-90).max(90),
-    longitude: z.number().min(-180).max(180),
-  }).strict(),
-  z.object({
-    path: z.union([z.number().int().nonnegative(), z.string().min(1)]),
-    position: z.number().min(0).max(1).optional(),
-  }).strict(),
-]);
-
 const SpatialFieldsSchema = {
   objectFit: ObjectFitSchema.optional(),
   origin: keyframed(Point2DSchema).optional(),
@@ -170,8 +153,6 @@ const SpatialFieldsSchema = {
   // resolves against the SHORTER side of the rect, so `"50%"` turns a square
   // into a circle and a rectangle into a pill. Animatable.
   cornerRadius: keyframed(LengthSchema).optional(),
-  // Geo / path anchor — only meaningful on a `map`'s children. See PinSchema.
-  pin: keyframed(PinSchema).optional(),
 };
 
 /** Pre-transform source orientation (clockwise degrees). Bakes into the
@@ -206,12 +187,41 @@ const nonZero = z.number().refine((n) => n !== 0, { message: "Must be non-zero" 
 const spanNonEmpty = (data: { in: number; out?: number }) =>
   data.out == null || data.out !== data.in;
 
-/** Zod schema for one contributed field. */
-function fieldSchema(spec: RegisteredField): z.ZodTypeAny {
-  let num = z.number();
-  if (spec.min != null) num = num.min(spec.min);
-  if (spec.max != null) num = num.max(spec.max);
-  return (spec.animatable ? keyframed(num) : num).optional();
+const SCHEMA_HELPERS: SchemaHelpers = { keyframed, length: LengthSchema };
+
+/** Zod schema for one contributed field, built from its declaration. */
+function fieldSchema(spec: FieldSpec): z.ZodTypeAny {
+  let value: z.ZodTypeAny;
+  switch (spec.type) {
+    case "number": {
+      let num = z.number();
+      if (spec.min != null) num = num.min(spec.min);
+      if (spec.max != null) num = num.max(spec.max);
+      value = num;
+      break;
+    }
+    case "string":
+      value = z.string().min(1);
+      break;
+    case "enum":
+      value = z.enum(spec.options as [string, ...string[]]);
+      break;
+    case "color":
+      value = z.string();
+      break;
+    case "length":
+      value = LengthSchema;
+      break;
+    case "custom":
+      // The extension wraps keyframes itself (its value may not be tweenable
+      // the default way).
+      return optionalUnless(spec.required, spec.schema(z, SCHEMA_HELPERS));
+  }
+  return optionalUnless(spec.required, spec.animatable ? keyframed(value) : value);
+}
+
+function optionalUnless(required: boolean | undefined, schema: z.ZodTypeAny): z.ZodTypeAny {
+  return required ? schema : schema.optional();
 }
 
 /**
@@ -225,9 +235,7 @@ function fieldSchema(spec: RegisteredField): z.ZodTypeAny {
  */
 export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
   const visualExt: Record<string, z.ZodTypeAny> = {};
-  for (const f of registry.fields) {
-    if (f.nodes === "visual") visualExt[f.key] = fieldSchema(f);
-  }
+  for (const f of registry.fields) visualExt[f.key] = fieldSchema(f);
   const visual = <S extends z.ZodRawShape>(type: string, shape: S): S => {
     for (const key of Object.keys(visualExt)) {
       if (key in shape) {
@@ -435,56 +443,50 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
     ...MetadataFieldsSchema,
   })).strict();
 
-  // ── Map ────────────────────────────────────────────────────────────
+  // ── Extension node types ──
   //
-  // A basemap rasterized from a pmtiles archive (see @seam/map), used like a
-  // `static` with a camera: `latitude` / `longitude` / `zoom` / `mapOpacity`
-  // are animatable, `paths` draw geo polylines over it, and `children` are
-  // ordinary nodes (any type) composited over the map — a node carrying a `pin`
-  // has its `origin` placed at the pin's projected point (its `translation`
-  // then acts as a pixel offset from there). The map's inner canvas
-  // (`contentWidth`/`contentHeight`, default 100% of the parent) is both the
-  // raster size and the layout space its children resolve against.
-
-  const MapPathSchema = z.object({
-    // Referenced by a `pin: { path: "<id>" }`; else pins address paths by index.
-    id: z.string().min(1).optional(),
-    color: keyframed(z.string()),
-    // [[lng, lat], ...] — at least two points. Not animatable.
-    points: z.array(z.tuple([z.number(), z.number()])).min(2),
-    // 0..1 fraction of the line drawn (the rest is hidden). Default 1.
-    progress: keyframed(z.number().min(0).max(1)).optional(),
-    // Stroke width in display pixels. Default 4.
-    lineWidth: keyframed(z.number().positive()).optional(),
-  }).strict();
-
-  const MapSchema: z.ZodType<any> = z.lazy(() =>
-    z.object(visual("map", {
-      type: z.literal("map"),
-      // pmtiles archive — host-resolved like clip/static `source`.
-      source: z.string().min(1),
-      duration: z.number().positive(),
-      latitude: keyframed(z.number().min(-90).max(90)).optional(),
-      longitude: keyframed(z.number().min(-180).max(180)).optional(),
-      // maplibre-512 convention. Interpolates in scale space (linear in 2^-zoom).
-      zoom: keyframed(z.number().nonnegative()).optional(),
-      // Opacity of the basemap layers only (tiles: fills/lines/labels) — paths
-      // and children are unaffected. Distinct from the node's `opacity`.
-      mapOpacity: keyframed(z.number().min(0).max(1)).optional(),
-      theme: z.enum(["light", "dark"]).optional(),
-      paths: z.array(MapPathSchema).optional(),
-      /** Nodes composited over the map, placed exactly like a composition's
-       *  children (runs + `start` anchors; time 0 is the map's start) but they
-       *  never extend the map — its `duration` is authoritative. A `pin` places
-       *  a node geographically. */
-      children: z.array(ChildSchema).optional(),
-      contentWidth: keyframed(LengthSchema).optional(),
-      contentHeight: keyframed(LengthSchema).optional(),
-      ...SpatialFieldsSchema,
+  // Every contributed node type gets the same frame from core — `duration`,
+  // an inner canvas, the spatial / placement / metadata fields, `children`
+  // when it is a container — around its own declared fields.
+  const extensionNode = (def: RegisteredNodeType): z.ZodTypeAny => {
+    const own: Record<string, z.ZodTypeAny> = {};
+    for (const f of def.fields ?? []) own[f.key] = fieldSchema(f);
+    const frameKeys = new Set([
+      "type",
+      "duration",
+      "contentWidth",
+      "contentHeight",
+      "children",
+      ...Object.keys(SpatialFieldsSchema),
+      ...Object.keys(AnchorFieldsSchema),
+      ...Object.keys(MetadataFieldsSchema),
+      ...Object.keys(visualExt),
+    ]);
+    // Checked now (not inside the lazy schema) so a bad definition fails at
+    // `createSeam`.
+    for (const key of Object.keys(own)) {
+      if (frameKeys.has(key)) {
+        throw new Error(
+          `Extension "${def.extension}": "${def.type}.${key}" collides with a field every node already has`,
+        );
+      }
+    }
+    return z.lazy(() =>
+      z.object({
+        type: z.literal(def.type),
+        duration: z.number().positive(),
+        contentWidth: keyframed(LengthSchema).optional(),
+        contentHeight: keyframed(LengthSchema).optional(),
+        ...(def.children ? { children: z.array(ChildSchema).optional() } : {}),
+        ...SpatialFieldsSchema,
         ...AnchorFieldsSchema,
-      ...MetadataFieldsSchema,
-    })).strict()
-  );
+        ...MetadataFieldsSchema,
+        ...visualExt,
+        ...own,
+      }).strict(),
+    );
+  };
+  const extensionNodeSchemas = [...registry.nodeTypes.values()].map(extensionNode);
 
   const ChildSchema: z.ZodType<any> = z.lazy(() =>
     z.union([
@@ -495,9 +497,9 @@ export function buildSeamFileSchema(registry: Registry): z.ZodType<any> {
       TextSchema,
       RectSchema,
       CircleSchema,
-      MapSchema,
       CompositionSchema,
-    ])
+      ...extensionNodeSchemas,
+    ] as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
   );
 
   /** A reusable composition body, addressed by `id` and referenced from

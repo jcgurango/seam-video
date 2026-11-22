@@ -23,8 +23,10 @@ import {
 import { parsePath } from "../nodePath.js";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
+import { map } from "@seam/extension-map";
 
-const seam = createSeam();
+// Core plus the Map extension (a contributed node type with its own catalog).
+const seam = createSeam([map]);
 
 const doc: SeamFile = {
   type: "composition",
@@ -214,7 +216,7 @@ describe("applyPropertyEdit", () => {
 });
 
 describe("extension-contributed fields", () => {
-  const withAdj = createSeam([adjustments]);
+  const withAdj = createSeam([adjustments, map]);
   const KEYS = ["brightness", "contrast", "saturation", "gamma", "temperature", "tint"];
 
   it("appear on every visual node type, after core's rows, and not on audio/data", () => {
@@ -282,5 +284,35 @@ describe("extension-contributed fields", () => {
 
     // The same edit on an instance without the extension is rejected.
     expect(applyPropertyEdit(seam, d, path, "saturation", () => 0).errors?.length).toBeGreaterThan(0);
+  });
+});
+
+describe("extension node types", () => {
+  it("get a catalog from their definition: source, duration, placement, own fields, spatial, inner canvas", () => {
+    const keys = catalogFor(seam, "map").map((d) => d.key);
+    expect(keys.slice(0, 5)).toEqual(["source", "duration", "start", "offset", "id"]);
+    expect(keys.slice(5, 10)).toEqual(["latitude", "longitude", "zoom", "mapOpacity", "theme"]);
+    for (const k of ["translation", "size", "rotation", "opacity", "contentWidth", "contentHeight"]) {
+      expect(keys).toContain(k);
+    }
+    // Structured fields have no row (JSON panel).
+    expect(keys).not.toContain("paths");
+    expect(keys).not.toContain("pin");
+  });
+
+  it("derive each row from its field declaration", () => {
+    const by = new Map(catalogFor(seam, "map").map((d) => [d.key, d]));
+    expect(by.get("source")).toMatchObject({ kind: "string", group: "Media", label: "Source" });
+    expect(by.get("theme")).toMatchObject({ kind: "enum", options: ["light", "dark"], placeholder: "light", group: "Map" });
+    expect(by.get("latitude")).toMatchObject({ kind: "number", animatable: true, placeholder: "0", group: "Map" });
+    // No slider without an asked-for control span.
+    expect(by.get("latitude")!.range).toBeUndefined();
+    // Zoom brings its own (scale-space) interpolation.
+    const zoom = by.get("zoom")!;
+    expect(zoom.sample!([[0, 10], [1, 12]], 0.5, 1)).toBeCloseTo(10 - Math.log2(0.625), 9);
+  });
+
+  it("are unknown on an instance without the extension", () => {
+    expect(catalogFor(createSeam(), "map" as never)).toEqual([]);
   });
 });

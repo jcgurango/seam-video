@@ -7,8 +7,9 @@ import type {
   ResolvedText,
   ResolvedRect,
   ResolvedCircle,
-  ResolvedMap,
+  ResolvedExtensionChild,
 } from "./resolved-types.js";
+import { asExtensionNode } from "./resolved-types.js";
 import { unrollLoops } from "./layout/resolve.js";
 
 export type FlatLeaf =
@@ -19,7 +20,7 @@ export type FlatLeaf =
   | ResolvedText
   | ResolvedRect
   | ResolvedCircle
-  | ResolvedMap;
+  | ResolvedExtensionChild;
 
 /**
  * Flatten a resolved tree into a linear list of leaves (clips, audios,
@@ -88,17 +89,16 @@ export function flattenResolved(
         timelineStart: start,
         timelineEnd: end,
       });
-    } else if (child.type === "map") {
-      // The map itself is a leaf (basemap + camera); its children live in
-      // map-local time at speed 1, so they flatten like a composition's
-      // children offset by the map's start.
-      result.push({
-        ...child,
-        timelineStart: start,
-        timelineEnd: end,
-      });
-      result.push(...flattenResolved(child.children, start, parentSpeed));
-    } else {
+    } else if (asExtensionNode(child)) {
+      // An extension node is itself a leaf; a container's children live in
+      // node-local time at speed 1, so they flatten like a composition's
+      // children offset by the node's start.
+      const node = asExtensionNode(child)!;
+      result.push({ ...node, timelineStart: start, timelineEnd: end } as unknown as FlatLeaf);
+      if (node.children) {
+        result.push(...flattenResolved(node.children, start, parentSpeed));
+      }
+    } else if (child.type === "composition") {
       // Composition: recurse with compounded speed and offset
       const compoundSpeed = child.speed * parentSpeed;
       const innerFlat = flattenResolved(child.children, start, compoundSpeed);

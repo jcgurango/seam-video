@@ -81,7 +81,7 @@ export interface Platform {
    * The return type is `unknown` here so this types module doesn't have
    * to depend on `pmtiles`; consumers cast to `Source` at the call site.
    */
-  openPmtilesSource(source: string, basePath: string): Promise<unknown | null>;
+  openByteSource(source: string, basePath: string): Promise<unknown | null>;
 
   // ── Menu / keyboard actions ──────────────────────────────────────
 

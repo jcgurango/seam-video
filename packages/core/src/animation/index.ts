@@ -21,7 +21,6 @@ export {
   sampleVolume,
   resolveVolume,
   dbToGain,
-  sampleZoom,
-  samplePin,
+  sampleKeyframes,
 } from "./keyframes.js";
 

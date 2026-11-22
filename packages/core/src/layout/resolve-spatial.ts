@@ -20,11 +20,12 @@
 //   6. Resolve `translation` against parent dims → point in parent space.
 //   7. Final rect: `{x: translation.x - origin.x, y: ..., width/height}`.
 
-import type {
-  ResolvedTimeline,
-  ResolvedChild,
-  SpatialRect,
-  SpatialInput,
+import {
+  asExtensionNode,
+  type ResolvedTimeline,
+  type ResolvedChild,
+  type SpatialRect,
+  type SpatialInput,
 } from "../resolved-types.js";
 import type { Length, ObjectFit, Point2D, Keyframed } from "../types.js";
 import { resolveLength, hasPercent } from "./units.js";
@@ -138,10 +139,10 @@ function resolveNode(
   const duration = node.timelineEnd - node.timelineStart;
   let intrinsicW: number | undefined;
   let intrinsicH: number | undefined;
+  // Every extension node has an inner canvas (default 100% of the parent).
+  const extNode = asExtensionNode(node);
   const hasContentDims =
-    node.type === "composition" ||
-    node.type === "text" ||
-    node.type === "map";
+    node.type === "composition" || node.type === "text" || extNode != null;
   // `hasContentDims` is a boolean (not a type guard), so read the authored
   // dims through a cast — they exist exactly on the three content-bearing types.
   const cw = hasContentDims
@@ -169,13 +170,13 @@ function resolveNode(
   // The node re-evaluates per-frame (keep `spatialInput`) if its own spatial
   // animates, OR its inner content size animates (natural size depends on it),
   // OR its parent dims animate (translation/size resolve against the parent),
-  // OR it is pinned to a map (the pin replaces `translation` at render time, so
+  // OR it is anchored inside an extension container — a map `pin` — (the anchor replaces `translation` at render time, so
   // the baked rect is meaningless and the authored input must survive).
   const animated =
     hasAnimatedSpatialInput(input) ||
     parentDimsAnimated ||
     ownContentKeyframed ||
-    node.pin != null;
+    node.anchored === true;
 
   // Step 3: post-objectFit natural size (the value of `size: "100%"`).
   const { naturalWidth, naturalHeight } = computeNaturalSize(
@@ -197,7 +198,28 @@ function resolveNode(
     return rest as T;
   };
 
-  if (node.type === "composition" || node.type === "map") {
+  if (extNode) {
+    // Inner-canvas dim (t=0 bake) — what a container's children resolve
+    // their static spatial against (see the composition branch below).
+    const displayW = spatial ? spatial.width : naturalWidth;
+    const displayH = spatial ? spatial.height : naturalHeight;
+    const innerW = intrinsicW ?? displayW;
+    const innerH = intrinsicH ?? displayH;
+    return stripIfStatic({
+      ...extNode,
+      intrinsicWidth: intrinsicW,
+      intrinsicHeight: intrinsicH,
+      naturalWidth,
+      naturalHeight,
+      spatial,
+      objectFit: fitForSelf,
+      ...(extNode.children
+        ? { children: resolveChildren(extNode.children, innerW, innerH, ownObjectFit, dimsAnimated) }
+        : {}),
+    }) as unknown as ResolvedChild;
+  }
+
+  if (node.type === "composition") {
     const displayW = spatial ? spatial.width : naturalWidth;
     const displayH = spatial ? spatial.height : naturalHeight;
     // Inner-canvas dim (t=0 bake) — the parent dims used to resolve children's

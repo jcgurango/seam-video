@@ -74,7 +74,7 @@ export function loadFallbackFonts(): Promise<void> {
 
 // ── Map label fonts ────────────────────────────────────────────────
 //
-// @seam/map renders labels as canvas text. `buildLabelFont` there derives the
+// The Map extension renders labels as canvas text. Its `buildLabelFont` derives the
 // weight/style keywords and resolves against the base "Liberation Sans" family
 // (real weight/style faces), then falls through per-glyph to the CJK + emoji
 // families — so all three must be in document.fonts before the first map draw.

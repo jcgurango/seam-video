@@ -1,7 +1,8 @@
 {
-  "name": "@seam/map",
+  "name": "@seam/extension-map",
   "version": "0.1.0",
   "private": true,
+  "description": "Seam extension: the `map` node — a basemap rasterized from a pmtiles archive with an animatable camera, geo paths, and ordinary nodes pinned to it.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,12 +10,16 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./render": {
+      "import": "./dist/render/index.js",
+      "types": "./dist/render/index.d.ts"
     }
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "engines": {
@@ -23,11 +28,14 @@
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.3",
     "@maplibre/maplibre-gl-style-spec": "^24.10.0",
-    "@seam/core": "workspace:*",
     "pbf": "^4.0.1",
     "pmtiles": "^4.4.1"
   },
+  "peerDependencies": {
+    "@seam/core": "workspace:*"
+  },
   "devDependencies": {
+    "@seam/core": "workspace:*",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

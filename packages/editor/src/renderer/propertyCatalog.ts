@@ -24,6 +24,7 @@ import {
   parseLength,
   type Child,
   type Distort,
+  type FieldSpec,
   type Inset,
   type Keyframe,
   type Keyframed,
@@ -66,7 +67,6 @@ export type PropGroup =
   | "Layout"
   | "Appearance"
   | "Text"
-  | "Map"
   | "Audio"
   /** A group named by an extension (`FieldSpec.group`); shown after the
    *  core groups, in first-appearance order. */
@@ -95,6 +95,9 @@ export interface PropDef {
   /** `number` only: the value an omitted key evaluates to — where the
    *  slider rests, and the first keyframe's value when animating from unset. */
   default?: number;
+  /** `number` only: the field's own keyframe interpolation, when it isn't
+   *  linear (a map's zoom tweens in scale space). */
+  sample?: (value: unknown, t: number, duration: number) => number;
   options?: readonly string[];
   /** Short help shown as the row's tooltip. */
   hint?: string;
@@ -402,29 +405,6 @@ const SHAPE_PROPS: PropDef[] = [
   },
 ];
 
-const MAP_PROPS: PropDef[] = [
-  { key: "latitude", label: "Latitude", group: "Map", kind: "number", animatable: true, placeholder: "0" },
-  { key: "longitude", label: "Longitude", group: "Map", kind: "number", animatable: true, placeholder: "0" },
-  {
-    key: "zoom",
-    label: "Zoom",
-    group: "Map",
-    kind: "number",
-    animatable: true,
-    placeholder: "1",
-    hint: "maplibre-512 zoom; tweens in scale space.",
-  },
-  {
-    key: "mapOpacity",
-    label: "Basemap opacity",
-    group: "Map",
-    kind: "number",
-    animatable: true,
-    placeholder: "1",
-  },
-  { key: "theme", label: "Theme", group: "Map", kind: "enum", options: ["light", "dark"], placeholder: "light" },
-];
-
 const COMPOSITION_PROPS: PropDef[] = [
   ...IN_OUT.map((d) => ({ ...d, placeholder: d.key === "in" ? "0" : "whole timeline" })),
   SPEED,
@@ -469,7 +449,7 @@ const COMPOSITION_PROPS: PropDef[] = [
   PITCH,
 ];
 
-const CATALOG: Record<Child["type"], PropDef[]> = {
+const CATALOG: Record<string, PropDef[]> = {
   clip: [
     SOURCE,
     ...IN_OUT,
@@ -513,7 +493,6 @@ const CATALOG: Record<Child["type"], PropDef[]> = {
   text: [DURATION_REQ, ...PLACEMENT, ...TEXT_PROPS, ...SPATIAL, ...CONTENT_DIMS],
   rect: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
   circle: [DURATION_REQ, ...PLACEMENT, ...SHAPE_PROPS, ...SPATIAL],
-  map: [SOURCE, DURATION_REQ, ...PLACEMENT, ...MAP_PROPS, ...SPATIAL, ...CONTENT_DIMS],
   composition: COMPOSITION_PROPS,
 };
 
@@ -566,49 +545,114 @@ export const GROUP_ORDER: PropGroup[] = [
   "Layout",
   "Appearance",
   "Text",
-  "Map",
   "Audio",
 ];
 
+/** The Properties row for one contributed field — derived from the same
+ *  `FieldSpec` that drives validation and rendering, so an extension declares
+ *  a field once. Structured (`custom`) fields get no row: JSON panel, or the
+ *  extension's own editing surface. */
+function propFromField(f: FieldSpec): PropDef | null {
+  const base = {
+    key: f.key,
+    label: f.label ?? f.key,
+    group: f.group ?? "Extensions",
+    animatable: f.animatable === true,
+    ...(f.hint ? { hint: f.hint } : {}),
+  };
+  switch (f.type) {
+    case "number": {
+      const lo = f.softMin ?? f.min;
+      const hi = f.softMax ?? f.max;
+      return {
+        ...base,
+        kind: "number",
+        ...(f.default != null ? { placeholder: String(f.default), default: f.default } : {}),
+        ...(f.unit ? { unit: f.unit } : {}),
+        ...(f.sample ? { sample: f.sample } : {}),
+        // A slider only where the declaration asks for a control span: an
+        // explicit soft range, or a step over a bounded range.
+        ...(lo != null && hi != null && (f.softMin != null || f.softMax != null || f.step != null)
+          ? { range: { min: lo, max: hi, step: f.step ?? (hi - lo) / 100 } }
+          : {}),
+      };
+    }
+    case "string":
+      return { ...base, kind: "string", ...(f.default != null ? { placeholder: f.default } : {}) };
+    case "enum":
+      return {
+        ...base,
+        kind: "enum",
+        options: f.options,
+        ...(f.default != null ? { placeholder: f.default } : {}),
+      };
+    case "color":
+      return { ...base, kind: "color", ...(f.default != null ? { placeholder: f.default } : {}) };
+    case "length":
+      return {
+        ...base,
+        kind: "length",
+        ...(f.default != null ? { placeholder: f.default } : {}),
+        ...(f.percentDefault != null ? { percentDefault: f.percentDefault } : {}),
+      };
+    case "custom":
+      return null;
+  }
+}
+
+const propsOf = (fields: readonly FieldSpec[]): PropDef[] =>
+  fields.map(propFromField).filter((d): d is PropDef => d != null);
+
 const extensionPropsCache = new WeakMap<Seam, PropDef[]>();
 
-/** The Properties rows for the fields the installed extensions contribute to
- *  visual nodes — derived from the same `FieldSpec` that drives validation
- *  and rendering, so an extension declares a field once. */
+/** The rows for the fields the installed extensions contribute to every
+ *  visual node (e.g. the Adjustments extension's sliders). */
 export function extensionProps(seam: Seam): PropDef[] {
   let defs = extensionPropsCache.get(seam);
   if (!defs) {
-    defs = seam.fields
-      .filter((f) => f.nodes === "visual")
-      .map((f): PropDef => {
-        const lo = f.softMin ?? f.min;
-        const hi = f.softMax ?? f.max;
-        return {
-          key: f.key,
-          label: f.label ?? f.key,
-          group: f.group ?? "Extensions",
-          kind: "number",
-          animatable: f.animatable === true,
-          placeholder: String(f.default),
-          default: f.default,
-          ...(f.unit ? { unit: f.unit } : {}),
-          ...(lo != null && hi != null
-            ? { range: { min: lo, max: hi, step: f.step ?? (hi - lo) / 100 } }
-            : {}),
-        };
-      });
+    defs = propsOf(seam.fields);
     extensionPropsCache.set(seam, defs);
   }
   return defs;
 }
 
+const nodeTypePropsCache = new WeakMap<Seam, Map<string, PropDef[]>>();
+
+/** The catalog of an extension node type (e.g. `map`): what core gives every
+ *  such node — duration, placement, the spatial fields, the inner canvas —
+ *  around the type's own declared fields (media sources first, like a clip's
+ *  `source`). */
+function nodeTypeProps(seam: Seam, type: string): PropDef[] | null {
+  const def = seam.nodeTypes.get(type);
+  if (!def) return null;
+  let byType = nodeTypePropsCache.get(seam);
+  if (!byType) nodeTypePropsCache.set(seam, (byType = new Map()));
+  let props = byType.get(type);
+  if (!props) {
+    const fields = def.fields ?? [];
+    const isSource = (f: FieldSpec) => f.type === "string" && f.source === true;
+    props = [
+      ...propsOf(fields.filter(isSource)),
+      DURATION_REQ,
+      ...PLACEMENT,
+      ...propsOf(fields.filter((f) => !isSource(f))),
+      ...SPATIAL,
+      ...CONTENT_DIMS,
+    ];
+    byType.set(type, props);
+  }
+  return props;
+}
+
 const VISUAL_TYPES: ReadonlySet<string> = new Set(VISUAL_NODE_TYPES);
 
-/** A node type's properties: core's, then (on visual nodes) the installed
- *  extensions'. */
+/** A node type's properties: core's (or the extension node type's own
+ *  catalog), then — on visual nodes — the fields extensions contribute to
+ *  every visual node. */
 export function catalogFor(seam: Seam, type: Child["type"]): PropDef[] {
-  const core = CATALOG[type] ?? [];
-  if (!VISUAL_TYPES.has(type)) return core;
+  const own = nodeTypeProps(seam, type);
+  const core = own ?? CATALOG[type] ?? [];
+  if (!own && !VISUAL_TYPES.has(type)) return core;
   const ext = extensionProps(seam);
   return ext.length ? [...core, ...ext] : core;
 }

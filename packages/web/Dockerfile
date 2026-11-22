@@ -15,14 +15,15 @@ RUN npm install -g pnpm@10
 WORKDIR /repo
 COPY . .
 
-# Install just the web app's workspace closure (core/compositor/map/preview/
-# editor + their deps). All pure JS/TS — no native compilation.
+# Install just the web app's workspace closure (core/compositor/extensions/
+# preview/editor + their deps). All pure JS/TS — no native compilation.
 RUN pnpm install --frozen-lockfile --filter @seam/web...
 
-# @seam/core, @seam/compositor and @seam/map resolve from their built dist, so
-# compile them (tsc) before bundling. editor/preview are consumed as source by
-# Vite, so they don't need an electron-vite build.
-RUN pnpm --filter @seam/core --filter @seam/compositor --filter @seam/map \
+# @seam/core, @seam/compositor, @seam/media-source and the extensions
+# (`extensions/*`) resolve from their built dist, so compile them (tsc) before
+# bundling — pnpm orders them topologically (core first). editor/preview are
+# consumed as source by Vite, so they don't need an electron-vite build.
+RUN pnpm --filter @seam/core --filter "./extensions/*" --filter @seam/compositor \
  --filter @seam/media-source build \
  && pnpm --filter @seam/web build
 

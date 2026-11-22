@@ -3,8 +3,8 @@
 // All @seam/* workspace JS is bundled into dist/index.js (so those packages
 // never need to be published). Third-party + native deps stay external and are
 // declared as real `dependencies` of @seam-media/cli. The renderer's runtime assets
-// (fonts, OSM Bright style) are vendored into dist/ so the package is
-// self-contained on install.
+// (fonts) are vendored into dist/ so the package is self-contained on install.
+// (The Map extension's OSM Bright style is a module, bundled with the JS.)
 import * as esbuild from "esbuild";
 import { cp, rm, mkdir, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,7 @@ await chmod(resolve(dist, "index.js"), 0o755);
 
 // Vendor the renderer's runtime assets (located at run time via
 // SEAM_RENDERER_ASSETS, set in src/index.ts).
-for (const name of ["fonts", "osm-bright"]) {
+for (const name of ["fonts"]) {
   await cp(resolve(rendererRoot, name), resolve(dist, name), { recursive: true });
 }
 

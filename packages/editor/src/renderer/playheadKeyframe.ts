@@ -14,7 +14,6 @@ import {
   sampleColor,
   sampleNumber,
   sampleVolume,
-  sampleZoom,
 } from "@seam/core";
 import type {
   Seam,
@@ -253,7 +252,7 @@ function mixLength(
 export function interpolatedValue(
   kfs: readonly AnyKeyframe[],
   clock: Pick<NodeClock, "t" | "duration">,
-  def: Pick<PropDef, "key" | "kind" | "percentDefault">,
+  def: Pick<PropDef, "key" | "kind" | "percentDefault" | "sample">,
 ): unknown {
   const { t, duration } = clock;
   const { a, b, f } = segmentAt(kfs, clock);
@@ -261,9 +260,11 @@ export function interpolatedValue(
   try {
     switch (def.kind) {
       case "number":
+        // A field with its own interpolation (a map's zoom tweens in scale
+        // space) brings its sampler.
         return round(
-          def.key === "zoom"
-            ? sampleZoom(kfs as Keyframed<number>, t, duration)
+          def.sample
+            ? def.sample(kfs, t, duration)
             : sampleNumber(kfs as Keyframed<number>, t, duration),
           4,
         );

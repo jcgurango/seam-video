@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { createSeam } from "../seam.js";
 import type { ColorStage, SeamExtension } from "../registry.js";
 import type { Composition } from "../types.js";
+import { resolveSpatial } from "../layout/resolve-spatial.js";
+import { flattenResolved } from "../flatten.js";
+import { asExtensionNode, type ResolvedExtensionNode } from "../resolved-types.js";
+import { stage as stageExt } from "./stageExtension.js";
 
 describe("createSeam", () => {
   it("creates an instance with no extensions by default", () => {
@@ -58,7 +62,7 @@ const gainExt: SeamExtension = {
 };
 
 describe("extension fields", () => {
-  const seam = createSeam([gainExt]);
+  const seam = createSeam([gainExt, stageExt]);
   const doc = (child: Record<string, unknown>) => ({ type: "composition", children: [child] });
 
   it("exposes the registered fields and stages", () => {
@@ -68,6 +72,7 @@ describe("extension fields", () => {
     ]);
     expect(seam.colorSlots).toBe(1);
     expect(seam.colorStages.map((s) => [s.entry, s.offset])).toEqual([["t_stage", 0]]);
+    expect([...seam.nodeTypes.keys()]).toEqual(["stage"]);
   });
 
   it("accepts a contributed field on every visual node type", () => {
@@ -77,7 +82,7 @@ describe("extension fields", () => {
       { type: "text", text: "hi", duration: 1 },
       { type: "rect", duration: 1 },
       { type: "circle", duration: 1 },
-      { type: "map", source: "a.pmtiles", duration: 1 },
+      { type: "stage", source: "a.bin", duration: 1 },
       { type: "composition", children: [{ type: "rect", duration: 1 }] },
     ];
     for (const node of nodes) {
@@ -143,5 +148,143 @@ describe("extension fields", () => {
     ]);
     expect(two.colorStages.map((s) => s.offset)).toEqual([0, 1]);
     expect(two.colorSlots).toBe(4);
+  });
+});
+
+describe("extension node types", () => {
+  const seam = createSeam([stageExt]);
+  const doc = (child: Record<string, unknown>) => ({ type: "composition", children: [child] });
+  const node = { type: "stage", source: "a.bin", duration: 4 };
+
+  it("validates the node's own fields from their declarations", () => {
+    expect(seam.validate(doc(node)).success).toBe(true);
+    expect(seam.validate(doc({ ...node, level: [[0, 0], [4, 10]], mode: "b", tint: "red", gap: "50% + 4" })).success).toBe(true);
+    // required, range, enum, strictness
+    expect(seam.validate(doc({ type: "stage", duration: 4 })).success).toBe(false);
+    expect(seam.validate(doc({ ...node, level: 11 })).success).toBe(false);
+    expect(seam.validate(doc({ ...node, mode: "c" })).success).toBe(false);
+    expect(seam.validate(doc({ ...node, mode: [[0, "a"]] })).success).toBe(false);
+    expect(seam.validate(doc({ ...node, nope: 1 })).success).toBe(false);
+    // structured field via the schema escape hatch
+    expect(seam.validate(doc({ ...node, points: [[0, 0], [1, 1]] })).success).toBe(true);
+    expect(seam.validate(doc({ ...node, points: [[0, 0]] })).success).toBe(false);
+  });
+
+  it("gets duration, the inner canvas, spatial / placement fields and children from core", () => {
+    const full = {
+      ...node,
+      id: "s",
+      start: 1,
+      offset: 0.5,
+      opacity: 0.5,
+      rotation: 10,
+      cornerRadius: "50%",
+      contentWidth: 400,
+      contentHeight: "50%",
+      metadata: { a: 1 },
+      children: [{ type: "rect", duration: 1 }],
+    };
+    const r = seam.validate(doc(full));
+    expect(r.success, r.success ? "" : r.errors.join("\n")).toBe(true);
+    expect(seam.validate(doc({ type: "stage", source: "a.bin" })).success).toBe(false);
+  });
+
+  it("is unknown without the extension", () => {
+    const r = createSeam().validate(doc(node));
+    expect(r.success).toBe(false);
+  });
+
+  it("resolves as a leaf for timing, with its fields verbatim and children in node-local time", () => {
+    const level = [[0, 0], [4, 10]];
+    const t = resolveSpatial(
+      seam.resolveComposition({
+        type: "composition",
+        contentWidth: 1000,
+        contentHeight: 500,
+        children: [
+          { type: "rect", duration: 2 },
+          {
+            ...node,
+            level,
+            contentWidth: 400,
+            children: [
+              { type: "rect", duration: 1, size: 10 },
+              { type: "rect", duration: 9 },
+            ],
+          },
+        ],
+      } as unknown as Composition),
+      1000,
+      500,
+    );
+    const s = t.children[1] as unknown as ResolvedExtensionNode & { source: string; level: unknown };
+    expect(asExtensionNode(t.children[0])).toBeNull();
+    expect(asExtensionNode(t.children[1])).toBe(s);
+    expect(s).toMatchObject({ type: "stage", extension: true, source: "a.bin", timelineStart: 2, timelineEnd: 6 });
+    expect(s.level).toBe(level);
+    // Children: node-local time, never extending the node.
+    expect(s.children!.map((c) => [c.timelineStart, c.timelineEnd])).toEqual([[0, 1], [1, 10]]);
+    expect(t.duration).toBe(6);
+    // Inner canvas: authored width, default (100% of parent) height; children
+    // lay out against it.
+    expect(s.intrinsicWidth).toBe(400);
+    expect(s.intrinsicHeight).toBe(500);
+    expect((s.children![0] as { spatial?: unknown }).spatial).toEqual({ x: 195, y: 245, width: 10, height: 10 });
+  });
+
+  it("flattens to the node itself plus its children offset by its start", () => {
+    const t = seam.resolveComposition({
+      type: "composition",
+      children: [
+        { type: "rect", duration: 2 },
+        { ...node, children: [{ type: "clip", source: "v.mp4", in: 0, out: 1, start: 1 }] },
+      ],
+    } as unknown as Composition);
+    const flat = flattenResolved(t.children);
+    expect(flat.map((l) => [l.type, l.timelineStart, l.timelineEnd])).toEqual([
+      ["rect", 0, 2],
+      ["stage", 2, 6],
+      ["clip", 3, 4],
+    ]);
+  });
+
+  it("rejects a core type name, a duplicate type and a field core already gives every node", () => {
+    expect(() => createSeam([{ name: "x", nodes: [{ type: "clip" }] }])).toThrow(/is a core type/);
+    expect(() => createSeam([stageExt, { name: "y", nodes: [{ type: "stage" }] }])).toThrow(/already contributed by "stage"/);
+    expect(() =>
+      createSeam([{ name: "z", nodes: [{ type: "thing", fields: [{ key: "opacity", type: "number" }] }] }]),
+    ).toThrow(/collides with a field every node already has/);
+    expect(() =>
+      createSeam([{ name: "w", nodes: [{ type: "thing", createAnchors: () => null }] }]),
+    ).toThrow(/createAnchors but no children/);
+  });
+
+  it("a visual field flagged `anchor` marks the node for per-frame layout", () => {
+    const withPin = createSeam([
+      stageExt,
+      {
+        name: "pinny",
+        fields: [
+          { key: "spot", nodes: "visual", type: "custom", anchor: true, schema: (z) => z.number() },
+        ],
+      },
+    ]);
+    const t = resolveSpatial(
+      withPin.resolveComposition({
+        type: "composition",
+        children: [
+          { ...node, children: [{ type: "rect", duration: 1, size: 10, spot: 3 }, { type: "rect", duration: 1, size: 10 }] },
+        ],
+      } as unknown as Composition),
+      100,
+      100,
+    );
+    const kids = (t.children[0] as unknown as ResolvedExtensionNode).children!;
+    expect(kids[0]).toMatchObject({ anchored: true, ext: { spot: 3 } });
+    // The authored spatial input survives on the anchored node (and is baked
+    // away on the plain one), so the anchor can replace `translation` per frame.
+    expect((kids[0] as { spatialInput?: unknown }).spatialInput).toBeDefined();
+    expect((kids[1] as { spatialInput?: unknown }).spatialInput).toBeUndefined();
+    expect((kids[1] as { anchored?: unknown }).anchored).toBeUndefined();
   });
 });

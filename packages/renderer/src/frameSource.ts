@@ -7,8 +7,9 @@
  * frames synchronously via {@link get}.
  *
  * Providers: clip (mediabunny forward cursor), static (image via Skia, else a
- * video freeze frame), text (Skia + Pretext layout), map (@seam/map on Skia via
- * {@link MapRasterizer}). Shapes (`rect`/`circle`) never reach here — the
+ * video freeze frame), text (Skia + Pretext layout), and extension node types
+ * that draw themselves (e.g. the Map extension's `map`, via their own
+ * rasterizer on Skia — see {@link NodeRasterizers}). Shapes (`rect`/`circle`) never reach here — the
  * compositor rasterizes them analytically.
  */
 import { registerMediabunnyServer } from "@mediabunny/server";
@@ -23,13 +24,14 @@ import {
 } from "mediabunny";
 import { layoutText, drawTextLayout, clipSourceTime } from "@seam/core";
 import type {
+  RegisteredNodeType,
   ResolvedClip,
-  ResolvedMap,
+  ResolvedExtensionNode,
   ResolvedStatic,
   ResolvedText,
 } from "@seam/core";
 import { installCanvasShim } from "./text/canvasShim.js";
-import { MapRasterizer } from "./mapRasterizer.js";
+import { NodeRasterizers } from "./nodeRasterizers.js";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
@@ -115,15 +117,22 @@ export class FrameSource {
   private readonly staticDims = new Map<ResolvedStatic, { w: number; h: number }>();
   private textReady = false;
 
-  // Maps rasterize on demand (no disk pre-pass); the rasterizer's tile pool
-  // stays warm across frames and is closed in dispose().
-  private readonly maps: MapRasterizer;
+  // Extension node types that draw themselves (a map's basemap) rasterize on
+  // demand; their rasterizers' caches stay warm across frames and are closed
+  // in dispose().
+  private readonly nodes: NodeRasterizers;
 
-  constructor(basePath: string, stores?: BlockStores) {
+  /** `nodeTypes`: the Seam instance's contributed node types (`seam.nodeTypes`)
+   *  — where the rasterizers come from. */
+  constructor(
+    basePath: string,
+    stores?: BlockStores,
+    nodeTypes: ReadonlyMap<string, RegisteredNodeType> = new Map(),
+  ) {
     ensureServer();
     this.basePath = basePath;
     this.stores = stores;
-    this.maps = new MapRasterizer(basePath);
+    this.nodes = new NodeRasterizers(basePath, nodeTypes);
   }
 
   /** Absolute path for a local source; an `http(s)://` URL passes through
@@ -197,6 +206,11 @@ export class FrameSource {
     contentW?: number,
     contentH?: number,
   ): Promise<NodeFrame | null> {
+    // An extension node that draws itself (core types never carry the key).
+    if ("extension" in node) {
+      return this.renderNode(node, drawTime, contentW, contentH);
+    }
+
     if (node.type === "clip") {
       return this.decodeClip(node, drawTime);
     }
@@ -214,26 +228,22 @@ export class FrameSource {
       return this.renderText(node, drawTime, contentW, contentH);
     }
 
-    if (node.type === "map") {
-      return this.renderMap(node, drawTime, contentW, contentH);
-    }
-
     throw new Error(
       `renderer: no frame provider for "${(node as { type: string }).type}"`,
     );
   }
 
-  /** Rasterize the basemap at map-local `drawTime`, at the per-frame
+  /** Rasterize an extension node at node-local `drawTime`, at the per-frame
    *  inner-canvas size (`contentW`/`contentH`) sampled by the compositor. */
-  private renderMap(
-    node: ResolvedMap,
+  private renderNode(
+    node: ResolvedExtensionNode,
     drawTime: number,
     contentW?: number,
     contentH?: number,
-  ): Promise<NodeFrame> {
+  ): Promise<NodeFrame | null> {
     const w = contentW ?? node.intrinsicWidth ?? 1;
     const h = contentH ?? node.intrinsicHeight ?? 1;
-    return this.maps.render(node, drawTime, w, h);
+    return this.nodes.render(node, drawTime, w, h);
   }
 
   /** Decode a clip frame by advancing a forward sample cursor to the needed
@@ -380,7 +390,7 @@ export class FrameSource {
     return cursor.frame;
   }
 
-  /** Release decoder resources held by open clip cursors + map archives. */
+  /** Release decoder resources held by open clip cursors + node rasterizers. */
   async dispose(): Promise<void> {
     for (const cursor of this.clipCursors.values()) closeCursor(cursor);
     this.clipCursors.clear();
@@ -389,7 +399,7 @@ export class FrameSource {
       cursor.hdr?.dispose();
     }
     this.reverseCursors.clear();
-    await this.maps.dispose();
+    await this.nodes.dispose();
   }
 
   /** Decode a static. The kind comes from the file's leading bytes (a

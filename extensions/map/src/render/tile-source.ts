@@ -16,7 +16,7 @@
 import { PMTiles, type Source } from "pmtiles";
 import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
-import type { TileRange } from "./view.js";
+import type { TileRange } from "../view.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type DecodedTile = any; // a @mapbox/vector-tile VectorTile

@@ -22,6 +22,7 @@ import {
   createPitchShifter,
   loopIterations,
   unrollLoops,
+  asExtensionNode,
 } from "@seam/core";
 import type {
   Keyframed,
@@ -71,11 +72,14 @@ function collectAudioNodes(
   out: AudioEntry[],
 ): void {
   for (const c of children) {
-    if (c.type === "map") {
-      // A map's children live in map-local time at speed 1 and inherit
-      // every enclosing volume/pitch unchanged (maps have neither).
+    const ext = asExtensionNode(c);
+    if (ext) {
+      // An extension container's children live in node-local time at speed 1
+      // and inherit every enclosing volume/pitch unchanged (such nodes have
+      // neither). A clip pinned to a map still plays its audio.
+      if (!ext.children) continue;
       collectAudioNodes(
-        c.children,
+        ext.children,
         parentSpeed,
         parentDelay + c.timelineStart / parentSpeed,
         parentVolumes,

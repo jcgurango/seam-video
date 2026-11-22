@@ -2,7 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   setSourceResolver,
-  setPmtilesResolver,
+  setByteSourceResolver,
   loadLiberationSans,
   loadFallbackFonts,
   loadMapLabelFonts,
@@ -12,9 +12,11 @@ import { WebPlatform } from "@seam/editor/platform";
 import type { Source } from "pmtiles";
 import { createSeam } from "@seam/core";
 import { adjustments } from "@seam/extension-adjustments";
+// The render entry: the Map extension WITH its rasterizer (this shell draws).
+import { map } from "@seam/extension-map/render";
 
 // One Seam instance per host: core plus the extensions this shell installs.
-const seam = createSeam([adjustments]);
+const seam = createSeam([adjustments, map]);
 const platform = new WebPlatform(seam);
 
 // Bundle the same fonts the renderer uses (body + CJK/emoji fallbacks) so
@@ -30,8 +32,8 @@ setSourceResolver((source, basePath) =>
 // `map` nodes need byte-range pmtiles access — the
 // platform opens an OPFS-backed File and wraps it as a pmtiles Source.
 // basePath is "" on web (OPFS clips/ is the resolution root).
-setPmtilesResolver(async (filename: string) => {
-  const src = await platform.openPmtilesSource(filename, "");
+setByteSourceResolver(async (filename: string) => {
+  const src = await platform.openByteSource(filename, "");
   return (src as Source | null) ?? null;
 });
 

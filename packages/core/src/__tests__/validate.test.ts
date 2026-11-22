@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { createSeam } from "../seam.js";
+import { stage } from "./stageExtension.js";
 
-const { validate, parseSeamFile } = createSeam();
+// `stage` is a stand-in extension node type (see stageExtension.ts).
+const { validate, parseSeamFile } = createSeam([stage]);
 
 describe("validate", () => {
   it("accepts a minimal valid composition", () => {
@@ -615,7 +617,7 @@ describe("validate — verbose error messages", () => {
 describe("validate — macro expansion runs before schema checks", () => {
   it("accepts an array-valued macro spliced into a typed array", () => {
     // Regression: validation used to run on the raw source, so the
-    // "$$POINTS" placeholder failed MapPath.points (needs >=2 [num,num]
+    // "$$POINTS" placeholder failed a points array (needs >=2 [num,num]
     // tuples) even though the expanded document is valid.
     const result = validate({
       type: "composition",
@@ -627,10 +629,10 @@ describe("validate — macro expansion runs before schema checks", () => {
       },
       children: [
         {
-          type: "map",
-          source: "area.pmtiles",
+          type: "stage",
+          source: "area.bin",
           duration: 5,
-          paths: [{ color: "red", points: ["$$POINTS"] }],
+          points: ["$$POINTS"],
         },
       ],
     });

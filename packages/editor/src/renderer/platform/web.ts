@@ -11,7 +11,7 @@ import {
   collectClipSources,
   mapDocumentSources,
 } from "../exportHelpers.js";
-import { classifyByName, type MediaKind } from "../useImport.js";
+import { classifyByName, isByteRangeFile, type MediaKind } from "../useImport.js";
 import {
   toRemoteDocument,
   fromRemoteDocument,
@@ -427,18 +427,18 @@ export class WebPlatform implements Platform {
   }
 
   async importClip(file: File): Promise<string> {
-    // pmtiles never need a blob URL — Map elements go through
-    // openPmtilesSource() which reads byte ranges directly from the
-    // OPFS file. Creating a blob URL would force the entire pmtiles
-    // file into memory once for nothing.
-    const isPmtiles = file.name.toLowerCase().endsWith(".pmtiles");
+    // A byte-range file (a map's pmtiles archive) never needs a blob URL —
+    // its node goes through openByteSource(), which reads byte ranges
+    // directly from the OPFS file. Creating a blob URL would force the
+    // entire file into memory once for nothing.
+    const isByteRange = isByteRangeFile(this.seam, file.name);
     const fp = await fingerprint(file);
 
     // Check if we already have an identical clip; reuse its filename if so.
     const index = await this.ensureFingerprintIndex();
     const existing = index.get(fp) ?? null;
     if (existing) {
-      if (isPmtiles) return existing;
+      if (isByteRange) return existing;
       if (!this.blobUrlCache.has(existing)) {
         try {
           const f = await readFileFromDir(CLIPS_DIR, existing);
@@ -458,7 +458,7 @@ export class WebPlatform implements Platform {
       this.cloudBlocksName(c, fp)
     );
     await writeFileToDir(CLIPS_DIR, name, file);
-    if (!isPmtiles) {
+    if (!isByteRange) {
       this.blobUrlCache.set(name, URL.createObjectURL(file));
     }
 
@@ -478,7 +478,7 @@ export class WebPlatform implements Platform {
    *  Source. Multi-GB pmtiles files stay on disk — File.slice() backs
    *  pmtiles' byte-range protocol, so only the requested ranges actually
    *  read into memory. */
-  async openPmtilesSource(
+  async openByteSource(
     source: string,
     _basePath: string,
   ): Promise<unknown | null> {
@@ -493,7 +493,7 @@ export class WebPlatform implements Platform {
       return new FileSource(file);
     } catch (err) {
       console.warn(
-        `WebPlatform.openPmtilesSource: ${source} not in OPFS clips/`,
+        `WebPlatform.openByteSource: ${source} not in OPFS clips/`,
         err,
       );
       return null;
@@ -578,9 +578,9 @@ export class WebPlatform implements Platform {
     for (const source of unique) {
       if (this.blobUrlCache.has(source)) continue;
       if (source.startsWith("http") || source.startsWith("blob:")) continue;
-      // Map archives are read by byte range via openPmtilesSource — a blob
+      // Byte-range files (map archives) are read via openByteSource — a blob
       // URL would force the whole (multi-GB) file into memory.
-      if (source.toLowerCase().endsWith(".pmtiles")) continue;
+      if (isByteRangeFile(this.seam, source)) continue;
       try {
         const file = await readFileFromDir(CLIPS_DIR, source);
         this.blobUrlCache.set(source, URL.createObjectURL(file));
@@ -707,7 +707,7 @@ export class WebPlatform implements Platform {
     defaultName: string,
     onProgress?: (p: ExportProgress) => void
   ): Promise<boolean> {
-    const plan = buildExportPlan(doc);
+    const plan = buildExportPlan(this.seam, doc);
     const seamName = `${defaultName}.seam`;
 
     // Stat pass: entry sizes for byte-accurate progress, and drop missing
@@ -1018,7 +1018,7 @@ export class WebPlatform implements Platform {
   buildRemoteDocument(doc: SeamFile): { document: SeamFile; unresolved: string[] } {
     const cloud = this._cloud;
     if (!cloud) throw new Error("Seam Cloud is not connected.");
-    return toRemoteDocument(doc, (name) => cloud.fileUrlForName(name));
+    return toRemoteDocument(this.seam, doc, (name) => cloud.fileUrlForName(name));
   }
 
   /** Trigger a browser download of a remote-form document as
@@ -1053,7 +1053,7 @@ export class WebPlatform implements Platform {
     if (!cloud) throw new Error("Seam Cloud is not connected.");
     const text = await file.text();
     const parsed = JSON.parse(text) as SeamFile;
-    const { document, kept } = fromRemoteDocument(parsed, (url) => {
+    const { document, kept } = fromRemoteDocument(this.seam, parsed, (url) => {
       const id = parseCloudMediaUrl(url, cloud.baseUrl);
       return id ? cloud.mediaById(id)?.filename ?? null : null;
     });
@@ -1130,7 +1130,7 @@ export class WebPlatform implements Platform {
     await writeFileToDir(CLIPS_DIR, filename, blob);
     const fp = await fingerprint(blob);
     index.set(fp, filename);
-    if (!filename.toLowerCase().endsWith(".pmtiles")) {
+    if (!isByteRangeFile(this.seam, filename)) {
       this.blobUrlCache.set(filename, URL.createObjectURL(blob));
     }
     const kind = classifyByName(filename);
@@ -1372,7 +1372,7 @@ export class WebPlatform implements Platform {
       let finalJson = text;
       try {
         const parsed = JSON.parse(text) as SeamFile;
-        const rewritten = mapDocumentSources(parsed, (src) => {
+        const rewritten = mapDocumentSources(this.seam, parsed, (src) => {
           if (/^(https?:|blob:|data:)/.test(src)) return src;
           const flat = basename(src);
           return renameMap.get(flat) ?? flat;

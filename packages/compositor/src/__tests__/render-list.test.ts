@@ -13,7 +13,8 @@ import {
   type GroupCommand,
 } from "../RenderList.js";
 
-const { resolveComposition } = createSeam();
+const seam = createSeam();
+const { resolveComposition } = seam;
 
 const W = 1080;
 const H = 1920;
@@ -42,7 +43,7 @@ function groups(commands: RenderCommand[]): GroupCommand[] {
 
 function commandsAt(root: Composition, t: number): RenderCommand[] {
   const timeline = resolveSpatial(resolveComposition(root), W, H);
-  return buildRenderList(timeline, t, W, H, () => ({ w: W, h: H }));
+  return buildRenderList(seam, timeline, t, W, H, () => ({ w: W, h: H }));
 }
 
 function renderAt(root: Composition, t: number): DrawCommand[] {

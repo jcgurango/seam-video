@@ -8,6 +8,7 @@
 export { Compositor, type CompositorExtensions } from "./Compositor.js";
 export type { RenderBackend } from "./backend.js";
 export { buildRenderList, NO_FIELDS } from "./RenderList.js";
+export type { RenderListExtensions, Drawable } from "./RenderList.js";
 export type {
   RenderCommand,
   DrawCommand,

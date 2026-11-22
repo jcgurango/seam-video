@@ -42,7 +42,7 @@ async function renderCenterPixel(doc: Composition, t: number): Promise<number[]>
   const r = parseSeamFile(JSON.stringify(doc));
   if (!r.success) throw new Error(r.errors.join(", "));
   const timeline = resolveSpatial(resolveComposition(r.data as Composition), W, H);
-  const commands = buildRenderList(timeline, t, W, H, () => null);
+  const commands = buildRenderList(seam, timeline, t, W, H, () => null);
   await compositor.render(commands, () => null);
   const pixels = await backend.drainOldest();
   const idx = (Math.floor(H / 2) * W + Math.floor(W / 2)) * 4;

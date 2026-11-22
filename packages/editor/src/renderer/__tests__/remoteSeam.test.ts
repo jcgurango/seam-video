@@ -7,6 +7,11 @@ import {
   remoteExportFilename,
   localProjectFilename,
 } from "../remoteSeam.js";
+import { createSeam } from "@seam/core";
+import { map } from "@seam/extension-map";
+
+// The Map extension contributes a node type with a media `source`.
+const seam = createSeam([map]);
 
 const BASE = "https://cloud.example.com";
 const urlOf = (id: string) => `${BASE}/api/media/${id}/file?token=abc%3D`;
@@ -50,7 +55,7 @@ describe("toRemoteDocument", () => {
       "logo.png": "L",
       "intro.mp4": "I",
     };
-    const { document, unresolved } = toRemoteDocument(doc, (n) =>
+    const { document, unresolved } = toRemoteDocument(seam, doc, (n) =>
       ids[n] ? urlOf(ids[n]) : null
     );
     expect(unresolved).toEqual([]);
@@ -75,7 +80,7 @@ describe("toRemoteDocument", () => {
         { type: "clip", source: "a.mp4", in: 0, out: 1 },
       ],
     } as SeamFile;
-    const { document, unresolved } = toRemoteDocument(twice, (n) =>
+    const { document, unresolved } = toRemoteDocument(seam, twice, (n) =>
       n === "a.mp4" ? urlOf("A") : null
     );
     expect(unresolved).toEqual(["missing.mp4"]);
@@ -85,8 +90,8 @@ describe("toRemoteDocument", () => {
 
 describe("fromRemoteDocument", () => {
   it("maps recognised cloud URLs back to filenames and keeps foreign URLs", () => {
-    const remote = toRemoteDocument(doc, (n) => urlOf(`id:${n}`)).document;
-    const { document, kept } = fromRemoteDocument(remote, (url) => {
+    const remote = toRemoteDocument(seam, doc, (n) => urlOf(`id:${n}`)).document;
+    const { document, kept } = fromRemoteDocument(seam, remote, (url) => {
       const id = parseCloudMediaUrl(url, BASE);
       return id?.startsWith("id:") ? id.slice(3) : null;
     });

@@ -11,6 +11,7 @@ import {
   type Registry,
   type RegisteredColorStage,
   type RegisteredField,
+  type RegisteredNodeType,
   type SeamExtension,
 } from "./registry.js";
 import {
@@ -39,6 +40,10 @@ export interface Seam {
   readonly colorStages: readonly RegisteredColorStage[];
   /** Total `vec4f` uniform slots the colour stages need. */
   readonly colorSlots: number;
+  /** Contributed node types by `type` — the render list (containers, child
+   *  anchoring, self-drawing nodes), the hosts (rasterizers) and the editor
+   *  (catalog, import, block colours) read them. */
+  readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>;
   /** Strict schema validation of a (macro-expanded) document. Returns the
    *  authored source on success. */
   validate(input: unknown): ValidationResult;
@@ -60,6 +65,7 @@ export function createSeam(extensions: readonly SeamExtension[] = []): Seam {
     fields: registry.fields,
     colorStages: registry.colorStages,
     colorSlots: registry.colorSlots,
+    nodeTypes: registry.nodeTypes,
     validate: (input: unknown) => validate(registry, input),
     parseSeamFile: (json: string) => parseSeamFile(registry, json),
     compileSeamFile: (doc: SeamFile, options?: CompileOptions) =>

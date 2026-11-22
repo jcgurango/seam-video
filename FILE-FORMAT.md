@@ -260,6 +260,8 @@ Solid shapes. They have no intrinsic size â€” their natural box is the parent â€
 
 A basemap rasterized from a pmtiles archive, used like a `static` with a camera.
 
+The `map` node and the `pin` field on its children are contributed by the **Map extension** (`@seam/extension-map`), which every first-party host installs. A host without it rejects both at validation.
+
 ```json
 {
   "type": "map",

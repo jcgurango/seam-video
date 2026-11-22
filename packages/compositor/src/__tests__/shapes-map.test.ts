@@ -11,15 +11,17 @@ import {
   type FillCommand,
   type GroupCommand,
 } from "../RenderList.js";
+import { map as mapExtension } from "@seam/extension-map";
 
-const { resolveComposition } = createSeam();
+const seam = createSeam([mapExtension]);
+const { resolveComposition } = seam;
 
 const W = 1000;
 const H = 500;
 
 function commandsAt(root: Composition, t: number, cw = W, ch = H): RenderCommand[] {
   const timeline = resolveSpatial(resolveComposition(root), cw, ch);
-  return buildRenderList(timeline, t, cw, ch, () => ({ w: 100, h: 100 }));
+  return buildRenderList(seam, timeline, t, cw, ch, () => ({ w: 100, h: 100 }));
 }
 
 function fills(cmds: RenderCommand[]): FillCommand[] {
@@ -76,7 +78,7 @@ describe("buildRenderList — rect / circle", () => {
     // Keys are per RESOLVED node: stable across frames of one timeline.
     const timeline = resolveSpatial(resolveComposition(root), W, H);
     const list = (t: number) =>
-      fills(buildRenderList(timeline, t, W, H, () => null));
+      fills(buildRenderList(seam, timeline, t, W, H, () => null));
     const a0 = list(0);
     const b = list(1);
     expect(b[0].key).toBe(a0[0].key);

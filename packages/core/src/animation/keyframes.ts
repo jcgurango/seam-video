@@ -7,7 +7,7 @@ import { interpolateNumber, interpolateRgb } from "d3-interpolate";
 import { resolveEasing } from "./easing.js";
 import { resolveTimeExpr, type TimeExpr } from "./time.js";
 import { resolveLength } from "../layout/units.js";
-import type { Distort, Inset, Length, Pin, TextPadding } from "../types.js";
+import type { Distort, Inset, Length, TextPadding } from "../types.js";
 
 export type Keyframe<T> = [TimeExpr, T] | [TimeExpr, T, string];
 export type Keyframed<T> = T | Keyframe<T>[];
@@ -72,49 +72,21 @@ export function sampleNumber(
   return sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
 }
 
-/** Map zoom (maplibre-512 convention). Interpolates in SCALE space — linear in
- *  2^-zoom (metres per pixel) — so a zoom tween reads as a constant-rate
- *  dolly rather than an exponential rush at the end. */
-export function sampleZoom(
-  value: Keyframed<number>,
+/** The general keyframe sampler behind the typed ones — for extensions whose
+ *  values don't tween the default way (a zoom that interpolates in scale
+ *  space, a pin that snaps between kinds). `project` maps each authored
+ *  keyframe value into the space `interpolate` blends in; a plain
+ *  (non-keyframed) value is projected and returned as is. Easing and time
+ *  expressions behave exactly as for the built-in samplers. */
+export function sampleKeyframes<T, R>(
+  value: Keyframed<T>,
   t: number,
-  duration: number
-): number {
-  if (!isKeyframed(value)) return value as number;
-  const frames = buildFrames(value, duration, (z) => Math.pow(2, -z));
-  const scale = sampleFrames(frames, t, (a, b, f) => a + (b - a) * f);
-  return scale > 0 ? -Math.log2(scale) : frames[frames.length - 1].value;
-}
-
-/** Map attachment anchor. Geo→geo tweens lat/lng; same-path→same-path tweens
- *  `position` (a missing position holds the "ride the head" default, which is
- *  resolved by the renderer against the path's live `progress`, so it stays
- *  discrete); any change of kind or path snaps at the keyframe. */
-export function samplePin(
-  value: Keyframed<Pin>,
-  t: number,
-  duration: number
-): Pin {
-  if (!isKeyframed(value)) return value as Pin;
-  const frames = buildFrames(value, duration, (p) => p);
-  return sampleFrames(frames, t, (a, b, f) => {
-    if ("latitude" in a && "latitude" in b) {
-      return {
-        latitude: a.latitude + (b.latitude - a.latitude) * f,
-        longitude: a.longitude + (b.longitude - a.longitude) * f,
-      };
-    }
-    if (
-      "path" in a &&
-      "path" in b &&
-      a.path === b.path &&
-      typeof a.position === "number" &&
-      typeof b.position === "number"
-    ) {
-      return { path: a.path, position: a.position + (b.position - a.position) * f };
-    }
-    return f < 1 ? a : b;
-  });
+  duration: number,
+  project: (v: T) => R,
+  interpolate: (a: R, b: R, fraction: number) => R,
+): R {
+  if (!isKeyframed(value)) return project(value as T);
+  return sampleFrames(buildFrames(value, duration, project), t, interpolate);
 }
 
 // Volume: a linear gain multiplier or a decibel string ("25dB", "-25.5dB").

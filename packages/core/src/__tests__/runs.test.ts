@@ -11,11 +11,13 @@ import {
   type ResolvedChild,
   type ResolvedClip,
   type ResolvedComposition,
-  type ResolvedMap,
+  type ResolvedExtensionNode,
 } from "../index.js";
 import { createSeam } from "../seam.js";
+import { stage } from "./stageExtension.js";
 
-const { validate, resolveComposition } = createSeam();
+// `stage` is a stand-in extension container (see stageExtension.ts).
+const { validate, resolveComposition } = createSeam([stage]);
 
 // The placement model: one `children` array, array order = z-order only.
 // Every node lands at
@@ -365,7 +367,7 @@ describe("runs: `start`", () => {
     expect(at({ type: "rect", duration: 4 })).toBe(3.5);
     expect(at({ type: "circle", duration: 4 })).toBe(3.5);
     expect(at({ type: "data", data: null, duration: 4 })).toBe(3.5);
-    expect(at({ type: "map", source: "m.pmtiles", duration: 4 })).toBe(3.5);
+    expect(at({ type: "stage", source: "m.bin", duration: 4 } as unknown as Child)).toBe(3.5);
   });
 
   it("`offset` on a head shifts off the anchor, in output seconds", () => {
@@ -516,11 +518,11 @@ describe("runs: errors", () => {
     ).toThrow(/anchor cycle through child 1/);
   });
 
-  it("a cycle inside a nested composition or a map throws too", () => {
+  it("a cycle inside a nested composition or an extension container throws too", () => {
     const cyc = [clip("a.mp4", 2, { id: "a", start: "b" }), clip("b.mp4", 2, { id: "b", start: "a" })];
     expect(() => resolve([{ type: "composition", children: cyc }])).toThrow(/anchor cycle/);
     expect(() =>
-      resolve([{ type: "map", source: "m.pmtiles", duration: 3, children: cyc }])
+      resolve([{ type: "stage", source: "m.bin", duration: 3, children: cyc } as unknown as Child])
     ).toThrow(/anchor cycle/);
   });
 });
@@ -737,11 +739,11 @@ describe("runs: z-order", () => {
   });
 });
 
-describe("runs: inside a map's children", () => {
+describe("runs: inside an extension container's children", () => {
   const map = (children: Child[], extra: object = {}): Child =>
-    ({ type: "map", source: "area.pmtiles", duration: 6, children, ...extra }) as Child;
+    ({ type: "stage", source: "area.bin", duration: 6, children, ...extra }) as unknown as Child;
   const kids = (children: Child[]) =>
-    (resolve([clip("lead.mp4", 2), map(children)]).children[1] as ResolvedMap).children;
+    (resolve([clip("lead.mp4", 2), map(children)]).children[1] as unknown as ResolvedExtensionNode).children!;
 
   it("places children in map-local time with the same run rules", () => {
     const c = kids([
@@ -776,13 +778,13 @@ describe("runs: inside a map's children", () => {
       map([clip("a.mp4", 5), clip("b.mp4", 4), { type: "rect", duration: 2, start: 20 }]),
       clip("next.mp4", 1),
     ]);
-    const m = long.children[0] as ResolvedMap;
+    const m = long.children[0] as unknown as ResolvedExtensionNode;
     expect(m).toMatchObject({ timelineStart: 0, timelineEnd: 6 });
-    expect(spans(m.children)).toEqual([[0, 5], [5, 9], [20, 22]]);
+    expect(spans(m.children!)).toEqual([[0, 5], [5, 9], [20, 22]]);
     expect(long.children[1]).toMatchObject({ timelineStart: 6, timelineEnd: 7 });
     expect(long.duration).toBe(7);
 
-    expect((resolve([map([])]).children[0] as ResolvedMap).children).toEqual([]);
+    expect((resolve([map([])]).children[0] as unknown as ResolvedExtensionNode).children!).toEqual([]);
   });
 
   it("the map itself is an ordinary run member / head / anchor target", () => {
@@ -1120,7 +1122,7 @@ describe("schema: id / start / offset", () => {
       { type: "text", text: "hi", duration: 1 },
       { type: "rect", duration: 1 },
       { type: "circle", duration: 1 },
-      { type: "map", source: "m.pmtiles", duration: 1 },
+      { type: "stage", source: "m.bin", duration: 1 },
       { type: "composition", children: [] },
     ];
     for (const node of nodes) {
@@ -1152,13 +1154,13 @@ describe("schema: id / start / offset", () => {
     expect(
       validate({
         type: "composition",
-        children: [{ type: "map", source: "m.pmtiles", duration: 1, attachments: overlay }],
+        children: [{ type: "stage", source: "m.bin", duration: 1, attachments: overlay }],
       }).success
     ).toBe(false);
     expect(
       validate({
         type: "composition",
-        children: [{ type: "map", source: "m.pmtiles", duration: 1, children: overlay }],
+        children: [{ type: "stage", source: "m.bin", duration: 1, children: overlay }],
       }).success
     ).toBe(true);
   });

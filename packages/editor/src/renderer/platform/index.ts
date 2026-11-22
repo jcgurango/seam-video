@@ -14,7 +14,7 @@ export { WebPlatform } from "./web.js";
  */
 export function detectPlatform(seam: Seam): Platform {
   if (typeof window !== "undefined" && (window as any).seamApi) {
-    return new ElectronPlatform();
+    return new ElectronPlatform(seam);
   }
   return new WebPlatform(seam);
 }

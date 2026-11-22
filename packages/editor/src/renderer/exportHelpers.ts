@@ -4,13 +4,15 @@ import { isMediaSource } from "./mediaSource.js";
 
 /**
  * Immutably map every media-source path in a document — clip/audio/static
- * `source` fields and a map's pmtiles `source` — through `fn`. Recurses
+ * `source` fields and every field an extension node type flags `source` (a
+ * map's pmtiles) — through `fn`. Recurses
  * compositions' `children`, `bin` entry bodies (a clip living only inside a
  * bin entry is media too) AND a map's `children`. The single
  * walk behind export planning, relative remapping, and import-time source
  * rewriting.
  */
 export function mapDocumentSources(
+  seam: Seam,
   doc: SeamFile,
   fn: (src: string) => string
 ): SeamFile {
@@ -18,12 +20,19 @@ export function mapDocumentSources(
     if (isMediaSource(child)) {
       return { ...child, source: fn(child.source) };
     }
-    if (child.type === "map") {
-      return {
-        ...child,
-        source: fn(child.source),
-        ...(child.children ? { children: child.children.map(walkChild) } : {}),
-      };
+    // An extension node type: every field it flags `source` (a map's
+    // pmtiles), and its children when it is a container.
+    const def = seam.nodeTypes.get(child.type);
+    if (def) {
+      const rec = child as unknown as Record<string, unknown>;
+      const out: Record<string, unknown> = { ...rec };
+      for (const f of def.fields ?? []) {
+        if (f.type === "string" && f.source && typeof rec[f.key] === "string") {
+          out[f.key] = fn(rec[f.key] as string);
+        }
+      }
+      if (Array.isArray(rec.children)) out.children = (rec.children as Child[]).map(walkChild);
+      return out as unknown as Child;
     }
     if (child.type === "composition") {
       return walkComp(child) as Child;
@@ -59,7 +68,7 @@ export interface ExportPlan {
  * Walk the document and flatten every media-source field to a basename
  * suitable for a flat export folder, renaming on basename collisions.
  */
-export function buildExportPlan(doc: SeamFile): ExportPlan {
+export function buildExportPlan(seam: Seam, doc: SeamFile): ExportPlan {
   const sourceToExport = new Map<string, string>();
   const usedNames = new Set<string>();
 
@@ -82,7 +91,7 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
     return candidate;
   };
 
-  const document = mapDocumentSources(doc, pickExportName);
+  const document = mapDocumentSources(seam, doc, pickExportName);
 
   const entries: Array<{ originalSource: string; exportName: string }> = [];
   for (const [originalSource, exportName] of sourceToExport) {
@@ -98,14 +107,14 @@ export function buildExportPlan(doc: SeamFile): ExportPlan {
  * clips/etc. by paths relative to where the file lives. Compositions
  * recurse; non-media nodes pass through unchanged.
  */
-export function remapSourcesToRelative(doc: SeamFile, baseDir: string): SeamFile {
+export function remapSourcesToRelative(seam: Seam, doc: SeamFile, baseDir: string): SeamFile {
   const toRelative = (absPath: string): string => {
     const rel = relative(baseDir, absPath);
     if (!rel.startsWith("..") && !isAbsolute(rel)) return rel;
     return absPath;
   };
 
-  return mapDocumentSources(doc, (src) =>
+  return mapDocumentSources(seam, doc, (src) =>
     isAbsolute(src) ? toRelative(src) : src
   );
 }
@@ -126,7 +135,7 @@ export function collectClipSources(seam: Seam, doc: SeamFile, out: string[] = []
     resolved = doc;
   }
 
-  mapDocumentSources(resolved, (src) => {
+  mapDocumentSources(seam, resolved, (src) => {
     out.push(src);
     return src;
   });

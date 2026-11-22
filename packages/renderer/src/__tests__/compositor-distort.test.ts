@@ -43,7 +43,7 @@ async function renderPixels(doc: Composition, t: number): Promise<Uint8Array> {
   const r = parseSeamFile(JSON.stringify(doc));
   if (!r.success) throw new Error(r.errors.join(", "));
   const timeline = resolveSpatial(resolveComposition(r.data as Composition), W, H);
-  const commands = buildRenderList(timeline, t, W, H, () => null);
+  const commands = buildRenderList(seam, timeline, t, W, H, () => null);
   await compositor.render(commands, () => null);
   return backend.drainOldest();
 }

@@ -74,7 +74,7 @@ async function render(
   const r = parseSeamFile(JSON.stringify(doc));
   if (!r.success) throw new Error(r.errors.join(", "));
   const timeline = resolveSpatial(resolveComposition(r.data as Composition), W, H);
-  const commands = buildRenderList(timeline, t, W, H, () => null);
+  const commands = buildRenderList(seam, timeline, t, W, H, () => null);
   await compositor.render(commands, () => null);
   const pixels = await backend.drainOldest();
   const i = ((H / 2) * W + W / 2) * 4;
@@ -173,7 +173,7 @@ describe("Compositor — no colour stages installed", () => {
       const r = bare.parseSeamFile(JSON.stringify(doc));
       if (!r.success) throw new Error(r.errors.join(", "));
       const timeline = resolveSpatial(bare.resolveComposition(r.data as Composition), W, H);
-      await c.render(buildRenderList(timeline, 0.5, W, H, () => null), () => null);
+      await c.render(buildRenderList(seam, timeline, 0.5, W, H, () => null), () => null);
       const pixels = await backend.drainOldest();
       const i = ((H / 2) * W + W / 2) * 4;
       expect([pixels[i], pixels[i + 1], pixels[i + 2]]).toEqual([192, 96, 48]);

@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import type { SeamFile } from "@seam/core";
 import { buildExportPlan, mapDocumentSources } from "../exportHelpers.js";
 import { basename } from "../pathUtils.js";
+import { createSeam } from "@seam/core";
+import { map } from "@seam/extension-map";
+
+// The Map extension contributes a node type with a media `source`.
+const seam = createSeam([map]);
 
 describe("mapDocumentSources", () => {
   const doc: SeamFile = {
@@ -32,7 +37,7 @@ describe("mapDocumentSources", () => {
 
   it("maps sources across children, nested comps, map children AND bin bodies", () => {
     const seen: string[] = [];
-    const out = mapDocumentSources(doc, (src) => {
+    const out = mapDocumentSources(seam, doc, (src) => {
       seen.push(src);
       return `X/${src}`;
     });
@@ -60,7 +65,7 @@ describe("mapDocumentSources", () => {
 
   it("applies the import-style flatten + rename mapping", () => {
     const renameMap = new Map([["a.mp4", "a-1.mp4"]]);
-    const out = mapDocumentSources(doc, (src) => {
+    const out = mapDocumentSources(seam, doc, (src) => {
       if (/^(https?:|blob:|data:)/.test(src)) return src;
       const flat = basename(src);
       return renameMap.get(flat) ?? flat;
@@ -88,7 +93,7 @@ describe("buildExportPlan", () => {
       ],
     } as SeamFile;
 
-    const plan = buildExportPlan(doc);
+    const plan = buildExportPlan(seam, doc);
     const names = plan.entries.map((e) => e.exportName).sort();
     expect(names).toEqual(["only-in-bin.mp4", "take-1.mp4", "take.mp4"]);
     // Both document references follow their (renamed) entries.

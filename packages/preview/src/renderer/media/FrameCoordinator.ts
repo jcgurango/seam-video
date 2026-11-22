@@ -3,7 +3,9 @@ import type {
   ResolvedChild,
   ResolvedClip,
   ResolvedComposition,
-  ResolvedMap,
+  ResolvedExtensionNode,
+  RegisteredNodeType,
+  ExtensionNodeView,
   ResolvedStatic,
   ResolvedText,
   ResolvedTimeline,
@@ -15,6 +17,7 @@ import {
   unrollLoops,
   resolvedPlayStart,
   resolvedSignedRate,
+  asExtensionNode,
 } from "@seam/core";
 import type { RenderCommand } from "@seam/compositor";
 import { AudioBufferSink } from "mediabunny";
@@ -23,7 +26,7 @@ import { MediaStore } from "./MediaStore.js";
 import { AudioScheduler } from "./AudioScheduler.js";
 import { TextStore } from "./TextStore.js";
 import { StaticStore } from "./StaticStore.js";
-import { MapStore } from "./MapStore.js";
+import { clearRasterizers, rasterizerFor, subscribeRasterWake } from "./nodeRasterizers.js";
 import { resolveSource } from "../components/resolveSource.js";
 import { CutPlanner, type Cut } from "@seam/media-source";
 
@@ -119,7 +122,16 @@ export class FrameCoordinator {
   private audioScheduler: AudioScheduler | null = null;
   private textStore = new TextStore();
   private staticStore = new StaticStore();
-  private mapStore = new MapStore();
+  /** The Seam instance's contributed node types — where rasterizers for
+   *  self-drawing extension nodes (a map) come from. */
+  private readonly nodeTypes: ReadonlyMap<string, RegisteredNodeType>;
+  /** This frame's canvas per self-drawing extension node. */
+  private nodeFrames = new Map<ResolvedExtensionNode, HTMLCanvasElement | OffscreenCanvas>();
+  private rasterWakeUnsub: (() => void) | null = null;
+
+  constructor(nodeTypes: ReadonlyMap<string, RegisteredNodeType> = new Map()) {
+    this.nodeTypes = nodeTypes;
+  }
   private ready = false;
   /** Bumped on each setTimeline. An in-flight (async) setTimeline checks this
    *  after every await and bails if a newer one started — otherwise its decode
@@ -194,9 +206,9 @@ export class FrameCoordinator {
     this.hasStatics = containsStatic(timeline.children);
     void this.staticStore.setTimeline(timeline, basePath, mediaStore);
 
-    // Maps rasterize per frame from the render list (applyContentSizes); the
-    // store only needs to repaint when tiles land.
-    this.mapStore.onFrameAvailable = () => this.onFrameAvailable?.();
+    // Self-drawing extension nodes (a map) rasterize per frame from the
+    // render list (applyContentSizes); repaint when their content lands.
+    this.rasterWakeUnsub ??= subscribeRasterWake(() => this.onFrameAvailable?.());
 
     // Align AudioContext sample rate with the first decodable audio track
     for (const flat of this.flatClips) {
@@ -335,12 +347,13 @@ export class FrameCoordinator {
    * cached Map, so async frame arrivals (via onFrameAvailable) immediately
    * become visible on the next gpuRender call without needing a reconcile.
    */
-  /** Push the compositor's per-frame inner-canvas sizes (text/map) from a
-   *  freshly-built render list into the stores, so an animated `contentWidth`
-   *  reflows/resizes the rasterized texture. Call right before `getFrame` in
-   *  the render pass — text resizes synchronously; maps rasterize here for
-   *  the draw's map-local `drawTime` (so nested-composition time mapping lives
-   *  in the render list alone). */
+  /** Push the compositor's per-frame inner-canvas sizes (text / extension
+   *  nodes) from a freshly-built render list into the stores, so an animated
+   *  `contentWidth` reflows/resizes the rasterized texture. Call right before
+   *  `getFrame` in the render pass — text resizes synchronously; self-drawing
+   *  extension nodes (a map) rasterize here for the draw's node-local
+   *  `drawTime` (so nested-composition time mapping lives in the render list
+   *  alone). */
   applyContentSizes(commands: RenderCommand[], currentTime: number): void {
     if (!this.ready) return;
     const textSizes = new Map<ResolvedText, { w: number; h: number }>();
@@ -349,10 +362,17 @@ export class FrameCoordinator {
         if (c.type === "draw") {
           if (c.contentW == null || c.contentH == null) continue;
           const node = c.clip;
-          if (node.type === "text")
+          if ("extension" in node) {
+            const canvas = rasterizerFor(this.nodeTypes, node.type)?.draw(
+              node as unknown as ExtensionNodeView,
+              c.drawTime,
+              c.contentW,
+              c.contentH,
+            );
+            if (canvas) this.nodeFrames.set(node, canvas as unknown as HTMLCanvasElement);
+            else this.nodeFrames.delete(node);
+          } else if (node.type === "text")
             textSizes.set(node, { w: c.contentW, h: c.contentH });
-          else if (node.type === "map")
-            this.mapStore.draw(node, c.drawTime, c.contentW, c.contentH);
         } else if (c.type === "group") {
           walk(c.children);
         }
@@ -363,17 +383,17 @@ export class FrameCoordinator {
   }
 
   getFrame(
-    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedMap,
+    clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode,
     timelineTime: number
   ): HTMLCanvasElement | OffscreenCanvas | null {
+    if ("extension" in clip) {
+      return this.nodeFrames.get(clip) ?? null;
+    }
     if (clip.type === "text") {
       return this.textStore.getFrame(clip);
     }
     if (clip.type === "static") {
       return this.staticStore.getFrame(clip);
-    }
-    if (clip.type === "map") {
-      return this.mapStore.getFrame(clip);
     }
     const entries = this.flatByClip.get(clip);
     if (!entries) return null;
@@ -436,7 +456,10 @@ export class FrameCoordinator {
     this.playingClips.clear();
     this.textStore.dispose();
     this.staticStore.dispose();
-    this.mapStore.clear();
+    this.nodeFrames.clear();
+    clearRasterizers(this.nodeTypes);
+    this.rasterWakeUnsub?.();
+    this.rasterWakeUnsub = null;
     this.ready = false;
   }
 
@@ -715,15 +738,16 @@ function collectClips(
           )
         );
       }
-    } else if (child.type === "map") {
-      // Map children: map-local time (0 = map start) at speed 1; the map
-      // itself has no volume/pitch, so the enclosing multipliers pass through.
+    } else if (asExtensionNode(child)?.children) {
+      // An extension container's children (a map's): node-local time (0 =
+      // the node's start) at speed 1; the node itself has no volume/pitch,
+      // so the enclosing multipliers pass through.
       const parentToLocal = toLocalTime;
       const parentToAbsolute = toAbsoluteTime;
-      const map = child;
+      const map = asExtensionNode(child)!;
       result.push(
         ...collectClips(
-          map.children,
+          map.children!,
           (t: number) => parentToLocal(t) - map.timelineStart,
           (localT: number) => parentToAbsolute(map.timelineStart + localT),
           basePath,
@@ -747,6 +771,7 @@ function containsStatic(children: ResolvedChild[]): boolean {
   return children.some(
     (c) =>
       c.type === "static" ||
-      ((c.type === "composition" || c.type === "map") && containsStatic(c.children)),
+      (c.type === "composition" && containsStatic(c.children)) ||
+      containsStatic(asExtensionNode(c)?.children ?? []),
   );
 }

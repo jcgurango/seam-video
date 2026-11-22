@@ -21,6 +21,13 @@
  * geometry applied as an alpha mask on its draw (leaf) or on its composited
  * group (composition / map).
  *
+ * Extension node types (`seam.nodeTypes` — e.g. the Map extension's `map`)
+ * are containers too: a DrawCommand for the node itself when it draws (the
+ * host gets the pixels from the extension's rasterizer), then its children
+ * walked in node-local time inside its inner canvas; a container that
+ * defines `createAnchors` places each child's origin (a map `pin`).
+ *
+ * (Original note, map being the first such type:)
  * Maps are containers: a DrawCommand for the basemap (the host rasterizes it
  * at the inner canvas size for `drawTime`), then the map's children walked
  * like a composition's children — except a child with a `pin` has its origin
@@ -35,13 +42,15 @@ import type {
   ResolvedText,
   ResolvedRect,
   ResolvedCircle,
-  ResolvedMap,
+  ResolvedExtensionNode,
   ResolvedComposition,
   SpatialRect,
   ObjectFit,
   ExtFields,
   Length,
-  Pin,
+  Seam,
+  ChildAnchor,
+  ExtensionNodeView,
 } from "@seam/core";
 import {
   resolveBoxProps,
@@ -50,19 +59,16 @@ import {
   sampleNumber,
   sampleColor,
   sampleLength,
-  sampleMapState,
-  samplePin,
   sampleDistort,
   isIdentityDistort,
   loopLocalTime,
   squareToQuad,
   applyHomography,
+  asExtensionNode,
   type Keyframed,
-  type MapState,
   type Quad,
   type DistortCorners,
 } from "@seam/core";
-import { lngLatToWorld, truncateToFraction } from "@seam/map";
 
 /** Sample a node's first-class opacity (Keyframed);
  *  absent means fully opaque. */
@@ -82,15 +88,51 @@ export type FieldValues = Readonly<Record<string, number>>;
 /** Shared "no contributed fields" value (background fills, layered basemaps). */
 export const NO_FIELDS: FieldValues = Object.freeze({});
 
-/** Sample a node's contributed fields (plain numbers or keyframes) in its own
- *  time, like opacity. */
-function sampleFields(ext: ExtFields | undefined, t: number, duration: number): FieldValues {
-  if (!ext) return NO_FIELDS;
-  const out: Record<string, number> = {};
-  for (const key in ext) {
-    out[key] = sampleNumber(ext[key] as Keyframed<number>, t, duration);
+/** What the render list needs from a Seam instance: the contributed node
+ *  types (containers, self-drawing nodes, child anchoring) and fields (which
+ *  ones are numbers a colour stage can consume). */
+export type RenderListExtensions = Pick<Seam, "nodeTypes" | "fields">;
+
+/** Per-instance lookups, built once and cached. */
+interface Env {
+  seam: RenderListExtensions;
+  /** Numeric contributed fields by key → custom sampler (or null = linear). */
+  numeric: Map<string, ((value: unknown, t: number, duration: number) => number) | null>;
+}
+
+const envCache = new WeakMap<RenderListExtensions, Env>();
+function envFor(seam: RenderListExtensions): Env {
+  let env = envCache.get(seam);
+  if (!env) {
+    const numeric: Env["numeric"] = new Map();
+    for (const f of seam.fields) {
+      if (f.type === "number") numeric.set(f.key, f.sample ?? null);
+    }
+    env = { seam, numeric };
+    envCache.set(seam, env);
   }
-  return out;
+  return env;
+}
+
+/** Sample a node's NUMERIC contributed fields (plain numbers or keyframes) in
+ *  its own time, like opacity — the values colour stages read. Structured
+ *  fields (a map `pin`) ride in `ext` too but are not sampled here. */
+function sampleFields(
+  env: Env,
+  ext: ExtFields | undefined,
+  t: number,
+  duration: number,
+): FieldValues {
+  if (!ext) return NO_FIELDS;
+  let out: Record<string, number> | undefined;
+  for (const key in ext) {
+    const sampler = env.numeric.get(key);
+    if (sampler === undefined) continue;
+    (out ??= {})[key] = sampler
+      ? sampler(ext[key], t, duration)
+      : sampleNumber(ext[key] as Keyframed<number>, t, duration);
+  }
+  return out ?? NO_FIELDS;
 }
 
 /** Analytic shape the shader rasterizes, in TARGET pixels relative to the
@@ -109,12 +151,17 @@ export interface ShapeGeometry {
   innerInset: number;
 }
 
+/** What a {@link DrawCommand} draws: a core drawable, or an extension node
+ *  that draws itself. Tell them apart with `"extension" in clip` (core types
+ *  never carry that key), after which `clip.type` narrows as usual. */
+export type Drawable = ResolvedClip | ResolvedText | ResolvedStatic | ResolvedExtensionNode;
+
 export interface DrawCommand {
   type: "draw";
-  clip: ResolvedClip | ResolvedText | ResolvedStatic | ResolvedMap;
+  clip: Drawable;
   /** Sampled extension fields for this draw (colour stages read them).
-   *  Normally the node's own; a map's basemap draw carries none when the map
-   *  is layered (the group applies them). */
+   *  Normally the node's own; an extension container's own draw carries none
+   *  when the container is layered (the group applies them). */
   fields: FieldValues;
   scissorX: number;
   scissorY: number;
@@ -232,33 +279,23 @@ type SizeGetter = (
   clip: ResolvedClip | ResolvedStatic,
 ) => { w: number; h: number } | null;
 
-/** A map's camera + paths at the current map-local time, used to project the
- *  `pin` of each attachment into the map's content space. */
-interface MapContext {
-  latitude: number;
-  longitude: number;
-  zoom: number;
-  width: number;
-  height: number;
-  paths: MapState["paths"];
-}
-
 type SpatialNode =
   | ResolvedClip
   | ResolvedStatic
   | ResolvedText
   | ResolvedRect
   | ResolvedCircle
-  | ResolvedMap
   | ResolvedComposition;
 
 export function buildRenderList(
+  seam: RenderListExtensions,
   timeline: ResolvedTimeline,
   currentTime: number,
   canvasW: number,
   canvasH: number,
   getIntrinsicSize: SizeGetter,
 ): RenderCommand[] {
+  const env = envFor(seam);
   const commands: RenderCommand[] = [];
 
   const rootViewport: Viewport = {
@@ -279,6 +316,7 @@ export function buildRenderList(
   }
 
   walkChildren(
+    env,
     timeline.children,
     currentTime,
     rootViewport,
@@ -306,7 +344,7 @@ export function buildRenderList(
         scissorH: canvasH,
         fboW: canvasW,
         fboH: canvasH,
-        fields: sampleFields(timeline.ext, currentTime, timeline.duration),
+        fields: sampleFields(env, timeline.ext, currentTime, timeline.duration),
         opacity: 1,
         rotation: 0,
         pivotX: 0,
@@ -401,15 +439,21 @@ function dynamicSpatial(
   } else if (
     child.type === "composition" ||
     child.type === "text" ||
-    child.type === "map"
+    asExtensionNode(child) != null
   ) {
     // Sample the (animatable) inner canvas against the LIVE parent dims, then
     // post-objectFit it — mirrors the resolver's t=0 bake but per-frame, so an
     // animated contentWidth (or an animated parent canvas) reflows the natural
-    // rect here instead of using a stale baked value.
-    const iw = sampleContentDim(child.contentWidth, t, duration, parentW);
-    const ih = sampleContentDim(child.contentHeight, t, duration, parentH);
-    const n = computeNaturalSize(child.objectFit ?? "fit", iw, ih, parentW, parentH);
+    // rect here instead of using a stale baked value. (Every extension node
+    // has an inner canvas.)
+    const inner = child as {
+      contentWidth?: Keyframed<Length>;
+      contentHeight?: Keyframed<Length>;
+      objectFit?: ObjectFit;
+    };
+    const iw = sampleContentDim(inner.contentWidth, t, duration, parentW);
+    const ih = sampleContentDim(inner.contentHeight, t, duration, parentH);
+    const n = computeNaturalSize(inner.objectFit ?? "fit", iw, ih, parentW, parentH);
     naturalW = n.naturalWidth;
     naturalH = n.naturalHeight;
   }
@@ -458,42 +502,6 @@ function roundRectMask(radius: number): ShapeGeometry | undefined {
   return { kind: "roundrect", radius, outerInset: 0, innerInset: -1 };
 }
 
-/** Project a pinned child's anchor into the map's content space (px). Null
- *  when the pin can't be resolved (unknown path) — the child then lays out
- *  as if unpinned. */
-function projectPin(
-  pin: Keyframed<Pin>,
-  t: number,
-  duration: number,
-  ctx: MapContext,
-): { x: number; y: number } | null {
-  const p = samplePin(pin, t, duration);
-  if ("latitude" in p) {
-    const [x, y] = projectLngLat(ctx, p.longitude, p.latitude);
-    return { x, y };
-  }
-  const paths = ctx.paths ?? [];
-  const path =
-    typeof p.path === "number"
-      ? paths[p.path]
-      : paths.find((pp) => pp.id === p.path);
-  if (!path || path.points.length < 2) return null;
-  const position = p.position ?? path.progress;
-  const screen = path.points.map(([lng, lat]) => projectLngLat(ctx, lng, lat));
-  const frac = Math.max(0, Math.min(1, position));
-  const pt = frac >= 1 ? screen[screen.length - 1] : truncateToFraction(screen, frac).at(-1);
-  return pt ? { x: pt[0], y: pt[1] } : null;
-}
-
-/** lon/lat → map content px (top-left origin) for the camera in `ctx`.
- *  Same math as @seam/map's MapView.project, so overlays land exactly where
- *  the basemap rasterizer puts the geometry. */
-function projectLngLat(ctx: MapContext, lng: number, lat: number): [number, number] {
-  const [x, y] = lngLatToWorld(lng, lat, ctx.zoom);
-  const [cx, cy] = lngLatToWorld(ctx.longitude, ctx.latitude, ctx.zoom);
-  return [x - (cx - ctx.width / 2), y - (cy - ctx.height / 2)];
-}
-
 /** Stable fill-texture keys per shape node (one for the fill, one for the
  *  stroke) so the backends' colour-tile caches persist across frames. */
 const shapeKeys = new WeakMap<object, { fill: object; stroke: object }>();
@@ -512,6 +520,7 @@ function isNoColor(c: string): boolean {
 }
 
 function walkChildren(
+  env: Env,
   children: ResolvedChild[],
   localTime: number,
   viewport: Viewport,
@@ -519,7 +528,8 @@ function walkChildren(
   opacity: number,
   getIntrinsicSize: SizeGetter,
   commands: RenderCommand[],
-  mapCtx: MapContext | null,
+  /** The enclosing extension container's child-anchor function, if any. */
+  anchors: ChildAnchor | null,
 ): void {
   for (const child of children) {
     if (child.type === "audio" || child.type === "data") continue;
@@ -538,11 +548,11 @@ function walkChildren(
         ? loopLocalTime(child.loop, drawTime)
         : drawTime;
 
-    // A pinned attachment of a map: its origin lands on the projected pin.
-    const anchor =
-      mapCtx && child.pin != null
-        ? projectPin(child.pin, drawTime, drawDuration, mapCtx)
-        : null;
+    // Inside an extension container that anchors its children (a map and
+    // its pins): where this child's origin lands, or null to lay out normally.
+    const anchor = anchors
+      ? anchors(child as unknown as ExtensionNodeView, drawTime, drawDuration)
+      : null;
 
     // Content→target scale (for px-valued strokes / radii on this level).
     const scale = Math.min(
@@ -581,7 +591,7 @@ function walkChildren(
       commands.push({
         type: "draw",
         clip: child,
-        fields: sampleFields(child.ext, drawTime, drawDuration),
+        fields: sampleFields(env, child.ext, drawTime, drawDuration),
         scissorX: scissor.x,
         scissorY: scissor.y,
         scissorW: scissor.w,
@@ -645,7 +655,7 @@ function walkChildren(
         rotation,
         pivotX,
         pivotY,
-        fields: sampleFields(child.ext, drawTime, drawDuration),
+        fields: sampleFields(env, child.ext, drawTime, drawDuration),
       };
       if (!isNoColor(fillColor)) {
         commands.push({
@@ -667,8 +677,17 @@ function walkChildren(
       continue;
     }
 
-    // ── containers: composition / map ──
-    const isMap = child.type === "map";
+    // ── containers: composition / extension node ──
+    // An extension node always takes this path: it is a container when its
+    // type has `children`, and simply has none otherwise.
+    const extNode = asExtensionNode(child);
+    const def = extNode ? env.seam.nodeTypes.get(extNode.type) : undefined;
+    // A type this instance has no definition for (resolved elsewhere): skip.
+    if (extNode && !def) continue;
+    const isExt = extNode != null;
+    // Composition-only fields below are read through `comp`, guarded by
+    // `!isExt` (the union may also hold extension node types here).
+    const comp = child as ResolvedComposition;
 
     // `childLocalTime` is the comp's *inner-window* time (children were
     // rebased into inner coords spanning [0, windowOut−windowIn]). Clamp it
@@ -677,13 +696,13 @@ function walkChildren(
     // (windowDur = span / speed), which also holds with overflow/underflow
     // stretch folded into `speed`. Clamping to `duration` alone pinned inner
     // time at the output length, freezing the first child and starving every
-    // later child. A map's children live in map-local time at speed 1. A
+    // later child. An extension container's children live in node-local time at speed 1. A
     // looping comp's `contentTime` already wraps into one cycle.
-    const childLocalTime = isMap
+    const childLocalTime = isExt
       ? drawTime
-      : Math.min(contentTime * child.speed, child.duration * child.speed);
+      : Math.min(contentTime * comp.speed, comp.duration * comp.speed);
 
-    const spatial = dynamicSpatial(child, viewport, localTime, getIntrinsicSize, anchor);
+    const spatial = dynamicSpatial(comp, viewport, localTime, getIntrinsicSize, anchor);
     const container = absoluteRect(viewport, spatial);
     const { rotation, pivotX, pivotY } = rotationFor(viewport, spatial, container);
 
@@ -712,8 +731,8 @@ function walkChildren(
     // Identity corners (the default) carry nothing, so an un-distorted comp
     // stays on the plain path.
     let corners: Quad | undefined;
-    if (!isMap && child.distort != null && innerContentW > 0 && innerContentH > 0) {
-      const c = sampleDistort(child.distort, drawTime, drawDuration, innerContentW, innerContentH);
+    if (!isExt && comp.distort != null && innerContentW > 0 && innerContentH > 0) {
+      const c = sampleDistort(comp.distort, drawTime, drawDuration, innerContentW, innerContentH);
       if (!isIdentityDistort(c, innerContentW, innerContentH)) {
         corners = distortedCorners(c, innerContentW, innerContentH, container, spatial.sourceRect);
       }
@@ -740,21 +759,20 @@ function walkChildren(
       cornerRadiusPx(child.cornerRadius, drawTime, drawDuration, spatial, scale),
     );
 
-    // The map's camera at this instant, for its pinned children. The
-    // basemap draw's `drawTime` is the same map-local time, so the host
-    // rasterizes the tiles for exactly this camera.
-    let innerMapCtx: MapContext | null = null;
-    if (isMap) {
-      const st = sampleMapState(child, drawTime, drawDuration);
-      innerMapCtx = {
-        latitude: st.latitude,
-        longitude: st.longitude,
-        zoom: st.zoom,
-        width: innerContentW,
-        height: innerContentH,
-        paths: st.paths,
-      };
-    }
+    // An extension container that anchors its children (a map and its
+    // pins): build this frame's anchor function from the node's state at
+    // `drawTime` — the same node-local time its own draw carries, so the host
+    // rasterizes it for exactly the state the children are placed against.
+    const innerAnchors: ChildAnchor | null =
+      extNode && def?.createAnchors
+        ? def.createAnchors(extNode as unknown as ExtensionNodeView, drawTime, drawDuration, {
+            width: innerContentW,
+            height: innerContentH,
+          })
+        : null;
+    const innerChildren: ResolvedChild[] = isExt ? (extNode!.children ?? []) : comp.children;
+    // The node's own draw, beneath its children.
+    const ownDraw = isExt && def?.draws === true;
 
     // Any authored extension field (a colour adjustment, …) applies to the
     // composited group as a unit.
@@ -798,22 +816,23 @@ function walkChildren(
       const fboClip: ClipRect = { x: 0, y: 0, w: fboW, h: fboH };
 
       const groupChildren: RenderCommand[] = [];
-      if (isMap) {
+      if (ownDraw) {
         groupChildren.push(
-          basemapDraw(child, fboViewport, fboClip, 1, drawTime, fboW, fboH, NO_FIELDS),
+          nodeDraw(extNode!, fboViewport, fboClip, 1, drawTime, fboW, fboH, NO_FIELDS),
         );
-      } else if (child.backgroundColor != null) {
-        groupChildren.push(plainFill(child, child.backgroundColor, fboClip, fboClip, 1));
+      } else if (!isExt && comp.backgroundColor != null) {
+        groupChildren.push(plainFill(comp, comp.backgroundColor, fboClip, fboClip, 1));
       }
       walkChildren(
-        child.children,
+        env,
+        innerChildren,
         childLocalTime,
         fboViewport,
         fboClip,
         1,
         getIntrinsicSize,
         groupChildren,
-        innerMapCtx,
+        innerAnchors,
       );
 
       commands.push({
@@ -828,7 +847,7 @@ function walkChildren(
         scissorH: childClip.h,
         fboW,
         fboH,
-        fields: sampleFields(child.ext, drawTime, drawDuration),
+        fields: sampleFields(env, child.ext, drawTime, drawDuration),
         opacity: opacity * fade * nodeOpacity,
         rotation,
         pivotX,
@@ -848,10 +867,10 @@ function walkChildren(
         contentH: innerContentH,
       };
 
-      if (isMap) {
+      if (ownDraw) {
         commands.push(
-          basemapDraw(
-            child,
+          nodeDraw(
+            extNode!,
             childViewport,
             childClip,
             opacity,
@@ -861,28 +880,30 @@ function walkChildren(
             NO_FIELDS,
           ),
         );
-      } else if (child.backgroundColor != null) {
-        commands.push(plainFill(child, child.backgroundColor, container, childClip, opacity));
+      } else if (!isExt && comp.backgroundColor != null) {
+        commands.push(plainFill(comp, comp.backgroundColor, container, childClip, opacity));
       }
 
       walkChildren(
-        child.children,
+        env,
+        innerChildren,
         childLocalTime,
         childViewport,
         childClip,
         opacity,
         getIntrinsicSize,
         commands,
-        innerMapCtx,
+        innerAnchors,
       );
     }
   }
 }
 
-/** The basemap draw of a map node: fills its container viewport; the host
- *  rasterizes the tiles at `contentW`×`contentH` for the camera at `drawTime`. */
-function basemapDraw(
-  map: ResolvedMap,
+/** An extension node's own draw (a map's basemap): fills its container
+ *  viewport; the host gets the pixels from the type's rasterizer, at
+ *  `contentW`×`contentH` for node-local `drawTime`. */
+function nodeDraw(
+  node: ResolvedExtensionNode,
   viewport: Viewport,
   scissor: ClipRect,
   opacity: number,
@@ -893,7 +914,7 @@ function basemapDraw(
 ): DrawCommand {
   return {
     type: "draw",
-    clip: map,
+    clip: node,
     fields,
     scissorX: scissor.x,
     scissorY: scissor.y,

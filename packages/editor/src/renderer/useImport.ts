@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useTimeline } from "@seam/preview";
-import type { Seam, SeamFile, Clip, Audio, Static, Child, MapNode } from "@seam/core";
+import type { Seam, SeamFile, Clip, Audio, Static, Child, RegisteredNodeType } from "@seam/core";
 import { dirname, isAbsolute, relative } from "./pathUtils.js";
 import type { Platform } from "./platform/index.js";
 import { useSeam } from "./seamContext.js";
@@ -40,12 +40,33 @@ export const SOURCE_DRAG_MIME = "application/x-seam-source";
  *  media browser can build the same node for an existing image source. */
 export const IMAGE_DEFAULT_DURATION_S = 5;
 
-/** Sensible default for a pmtiles drop — 5s static map. Authors can
- *  then animate camera + paths in the map node's JSON. */
-const PMTILES_DEFAULT_DURATION = 5;
-/** Default map view. Authors should set their own; 0,0 just centers
- *  somewhere visible until they update it. */
-const PMTILES_DEFAULT_VIEW = { latitude: 0, longitude: 0, zoom: 1 };
+/** How long a node imported through an extension (a `.pmtiles` → the Map
+ *  extension's `map`) holds by default — like a still. The author sets its
+ *  real length, camera and so on afterwards. */
+const NODE_DEFAULT_DURATION_S = 5;
+
+const extensionOf = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+};
+
+/** The extension node type that imports files named like `name` (its
+ *  `NodeTypeDef.import.extensions`), or null. */
+export function importerFor(seam: Seam, name: string): RegisteredNodeType | null {
+  const ext = extensionOf(name);
+  if (!ext) return null;
+  for (const def of seam.nodeTypes.values()) {
+    if (def.import?.extensions.includes(ext)) return def;
+  }
+  return null;
+}
+
+/** True when a file of this name is read by byte range straight from storage
+ *  (a multi-GB map archive) — it must never be loaded whole or given a blob
+ *  URL. */
+export function isByteRangeFile(seam: Seam, name: string): boolean {
+  return importerFor(seam, name)?.import?.byteRange === true;
+}
 
 /** Classify by filename extension alone. Used both by `classifyMediaFile`
  *  (with a MIME fallback) and by the media browser, which only has the
@@ -116,6 +137,7 @@ function findInsertionIndex(seam: Seam, doc: SeamFile, currentTime: number): num
  *  platform, and build a Child node per file. Unrecognised files are
  *  skipped. Caller decides where to place the returned nodes. */
 export async function buildItemsFromFiles(
+  seam: Seam,
   fileList: FileList | File[],
   platform: Platform,
   baseDir: string | null,
@@ -134,7 +156,7 @@ export async function buildItemsFromFiles(
       kind === "image"
         ? IMAGE_DEFAULT_DURATION_S
         : kind === "pmtiles"
-          ? PMTILES_DEFAULT_DURATION
+          ? NODE_DEFAULT_DURATION_S
           : await probeDuration(file, kind);
     const stored = await platform.importClip(file);
     // On Electron, `stored` is an absolute path; collapse to relative if
@@ -144,43 +166,38 @@ export async function buildItemsFromFiles(
       platform.kind === "electron" && baseDir && isAbsolute(stored)
         ? toRelativeSource(stored, baseDir)
         : stored;
-    newChildren.push(buildItemFromSource(kind, source, duration));
+    const item = buildItemFromSource(seam, kind, source, duration);
+    if (item) newChildren.push(item);
   }
   return newChildren;
 }
 
 /** Build the timeline Child for an already-stored media `source` of a known
  *  `kind`. `duration` is the natural length: for video/audio it's the probed
- *  source duration (→ `out`), for image/pmtiles the display hold. Shared by
+ *  source duration (→ `out`), for an image / extension-imported file the
+ *  display hold. Shared by
  *  the file importer and the media browser's drag-to-timeline. */
 export function buildItemFromSource(
+  seam: Seam,
   kind: MediaKind,
   source: string,
   duration: number,
-): Child {
+): Child | null {
   switch (kind) {
     case "video":
       return { type: "clip", source, in: 0, out: duration } satisfies Clip;
     case "audio":
       return { type: "audio", source, in: 0, out: duration } satisfies Audio;
-    case "pmtiles":
-      return makeMapNode(source, duration);
     case "image":
       return { type: "static", source, duration } satisfies Static;
+    default: {
+      // Not core media: the node comes from whichever extension imports
+      // this kind of file (the Map extension, for a pmtiles archive). Null
+      // when no installed extension does.
+      const importer = importerFor(seam, source)?.import;
+      return importer ? (importer.create(source, { duration }) as unknown as Child) : null;
+    }
   }
-}
-
-/** A `map` node filling its parent (default inner canvas = 100% of the
- *  parent), ready for the author to set lat/lng/zoom + paths. */
-function makeMapNode(source: string, duration: number): MapNode {
-  return {
-    type: "map",
-    source,
-    duration,
-    latitude: PMTILES_DEFAULT_VIEW.latitude,
-    longitude: PMTILES_DEFAULT_VIEW.longitude,
-    zoom: PMTILES_DEFAULT_VIEW.zoom,
-  };
 }
 
 export function useImport(
@@ -195,7 +212,7 @@ export function useImport(
   return useCallback(
     async (fileList: FileList | File[], insertIndex?: number) => {
       const baseDir = filePath ? dirname(filePath) : null;
-      const newChildren = await buildItemsFromFiles(fileList, platform, baseDir);
+      const newChildren = await buildItemsFromFiles(seam, fileList, platform, baseDir);
       if (newChildren.length === 0) return;
 
       // Cursor-based callers pass `insertIndex` (computed via the same

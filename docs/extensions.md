@@ -43,8 +43,8 @@ Proposed, not yet confirmed:
 | # | Extension | Status | First forces |
 |---|-----------|--------|--------------|
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
-| 1 | Adjustments | done, awaiting JC's test | property contribution, shader colour stage, Properties rows |
-| 2 | Map | not started | node-type contract, host services, lifecycle, child placement |
+| 1 | Adjustments | done | property contribution, shader colour stage, Properties rows |
+| 2 | Map | done, awaiting JC's test | node-type contract, host services, lifecycle, child placement |
 | 3 | CC Cut + CC generation | not started | views, panels, commands |
 | 4 | Text | not started | natural-size feedback into layout, fonts as a host service |
 | 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
@@ -101,6 +101,69 @@ maths; the Dawn test covers one colour on the real GPU). So "installed but
 unused" matches "not installed", and skipping the maths at defaults would be
 a small performance choice only.
 
+### 2. Map — touchpoint inventory (2026-11-22)
+
+Everything outside `packages/map` that knows about maps, pins or pmtiles
+today. This list is the requirement for the node-type contract.
+
+| Layer | Where | What it does for map |
+|-------|-------|----------------------|
+| Schema / types | `core/schema.ts`, `types.ts`, `resolved-types.ts` | `MapSchema`, `MapPathSchema`; `map` in the `Child` union; `PinSchema` + `pin` in the universal spatial fields |
+| Samplers | `core/animation/keyframes.ts`, `layout/map-state.ts` | `sampleZoom` (scale-space), `samplePin`, `sampleMapState` |
+| Resolver | `core/layout/resolve.ts` | duration = authored `duration`; children placed by runs in map-local time (speed 1, never extend the map); `pin` carried by `spatialExtras`; id-map and window-crop special cases |
+| Spatial pass | `core/layout/resolve-spatial.ts` | inner canvas (`contentWidth`/`contentHeight`) like comp/text; children recursion; keeps `spatialInput` on pinned nodes; `resolveBoxProps(…, anchor)` |
+| Flatten | `core/flatten.ts`, `cli/commands/flat.ts` | recurse map children |
+| Render list | `compositor/RenderList.ts` | basemap `DrawCommand`; children walked in the map viewport; `MapContext` + `projectPin` (imports `@seam/map` projection maths); layered vs flattened |
+| Renderer host | `renderer/frameSource.ts`, `mapRasterizer.ts`, `render.ts`, `audio.ts` | async rasterize (awaits tiles) on `@napi-rs/canvas`; pmtiles from fs / http; style JSON read from disk; tile pool per render; proxy + media-collection + audio recursion |
+| Preview host | `preview/…/FrameCoordinator.ts`, `MapStore.ts`, `mapPool.ts`, `mapBasePath.ts`, three `main.tsx` | sync draw from whatever tiles are decoded + wake-and-repaint; page-global tile pool; pmtiles resolver injected at boot; themed style memo; clip/audio recursion |
+| Editor | `useImport.ts`, `platform/{web,electron,types}.ts`, `exportHelpers.ts`, `remoteSeam.ts`, `propertyCatalog.ts`, `TimelinePanel.tsx`, `playheadKeyframe.ts`, `MediaBrowser.tsx`, `mediaThumbs.ts` | `.pmtiles` drop → map node; byte-range source opener (no blob URL); source walking; Properties rows + "Map" group; block colour; zoom interpolation special case |
+| Assets | `renderer/osm-bright/`, CLI `build.mjs` vendoring, `SEAM_RENDERER_ASSETS` | bundled style |
+
+Not in scope: Seam Cloud's `pmtiles` media kind (that is media handling, not
+the node).
+
+### 2. Map — what was built
+
+The file format did not change: `"type": "map"` and `pin` are exactly as
+authored before, now contributed by `extensions/map`
+(`@seam/extension-map`). Core, the compositor and both hosts contain no map
+code; `packages/map` and both copies of the OSM Bright style are gone.
+
+- **`@seam/extension-map`** (pure): the `map` node definition, the `pin`
+  field, their types, `sampleMapState` / `sampleZoom` / `samplePin`, the
+  projection maths and the pin → pixel anchor function.
+- **`@seam/extension-map/render`**: the same extension with its rasterizer
+  attached (pmtiles + MVT decode + style evaluation + Canvas2D), and the
+  style as a module. Hosts that draw register this entry.
+- One rasterizer replaced the preview's `MapStore` + `mapPool` and the
+  renderer's `MapRasterizer`.
+
+Verification: the golden project's resolved tree is identical apart from the
+renames (`pin` → `ext.pin` + `anchored`, `extension: true` on maps), and its
+render is bit-identical to the baseline (all 4797 frames + audio), five maps
+and fifteen pins included.
+
+Fixed along the way (a pre-existing preview bug): the "loading map…"
+placeholder set text alignment and font on the canvas that is then reused
+for the real draw, so the live preview's maps differed from the render once
+the placeholder had been shown. It is now wrapped in `save()` / `restore()`,
+and a preview-mode draw converges to exactly the renderer's pixels (checked
+with a one-off script against the golden project's map; there is no
+committed test because the repo has no pmtiles fixture).
+
+Not exercised live: a map in the running editor or preview app (the browser
+profile used for checks has no pmtiles in its storage).
+
+Left as is, knowingly:
+
+- The editor's media library and Seam Cloud still classify `.pmtiles` as a
+  media kind (icon, listing). That is file handling, not the node; turning a
+  file into a node goes through the extension's import definition.
+- `mapBasePath.ts` (editor, preview) keeps its name; it is the base path for
+  any byte-range source.
+- Children of an extension container still have no viewport gizmo
+  (`locateNode` returned null for map children before, too).
+
 ## Decision log
 
 | Date | Decision | Why |
@@ -118,14 +181,23 @@ a small performance choice only.
 | 2026-11-22 | Resolved nodes carry contributed fields in an `ext` bag, authored values verbatim | Flat is the authoring rule; internally a bag lets the render list sample without knowing the extension set |
 | 2026-11-22 | Root-composition fields apply to the whole frame | Silently ignoring a render-affecting field is the failure mode the validation rule exists to prevent |
 | 2026-11-22 | Slider span (`softMin`/`softMax`) is separate from the valid range | `contrast` validates −1000…1000, which is useless as a control |
+| 2026-11-22 | The field spec covers the kinds the Properties panel already renders (number, string, enum, colour, length); structured values use a `custom` field whose schema the extension builds with core's own Zod (`(z, h) => …`) | Simple fields get rows for free; `paths` and `pin` want a purpose-built editor, not a generated form |
+| 2026-11-22 | `pin` is a field the Map extension contributes to every visual node | Keeps the format; without the extension a document using `pin` fails validation |
+| 2026-11-22 | No general "lower to render commands" hook. A node type declares `children`, `draws` and `createAnchors`; core does the walk | Map needs nothing more; a hook nobody uses is an API to maintain |
+| 2026-11-22 | Extension node and field TYPES reach TypeScript by declaration merging (`ExtensionNodeTypes`, `ResolvedExtensionNodeTypes`, `VisualExtensionFields`) | A union member with `type: string` destroys discriminated-union narrowing everywhere; merged literal types keep it, and a program is typed for exactly the extensions it imports |
+| 2026-11-22 | Resolved extension nodes carry `extension: true` | Registry-free code (spatial pass, flatten, hosts) tells them from core types without a Seam instance (`asExtensionNode`, or `"extension" in node`) |
+| 2026-11-22 | A rasterizer is attached to the node definition by the package's `./render` entry; the pure entry has none | Validate / resolve consumers never load pmtiles or the style evaluator |
+| 2026-11-22 | One rasterizer for both hosts: sync `draw` from what is loaded + `requestRepaint`, and an optional async `ensure` the offline renderer awaits | Removes two parallel host adapters; parity by construction |
+| 2026-11-22 | In the preview, rasterizers are page-lifetime (one per Seam instance and node type) | Decoded tiles stay warm across timelines and remounts, as the page-global tile pool did |
 
 ## Open questions
 
 - Does a `.seam` declare the extensions it requires (names, versions)?
   Deferred until dynamic loading.
-- TypeScript types for contributed fields: module augmentation vs a looser
-  node type. Today the authored types (`Clip`, …) do not know the fields;
-  code that builds documents in TS casts.
+- Adjustments does not yet merge its six fields into
+  `VisualExtensionFields` (Map does for `pin`), so TS code authoring
+  `saturation` on a typed node still casts.
+- A custom editing surface for `paths` and `pin` (click on the map).
 - One shared "first-party extension list" module vs each host listing its
   own (today: each host).
 - Sandboxing of project-local extension code (remote `.seam`, cloud render).
@@ -187,7 +259,7 @@ const ext: SeamExtension = {
 ```
 
 - `nodes: "visual"` is the only target: clip, static, text, rect, circle,
-  map, composition (`VISUAL_NODE_TYPES`). `type: "number"` is the only type.
+  composition (`VISUAL_NODE_TYPES`) and every extension node type.
 - **Schema:** built per instance (`buildSeamFileSchema`). Node schemas are
   strict, so an unregistered field fails validation. A key that collides
   with a core field or another extension's throws at `createSeam`.
@@ -200,6 +272,84 @@ const ext: SeamExtension = {
   (label, group, placeholder = default, keyframe toggle, slider when it has
   a range). `catalogFor(seam, type)` / `sharedProps(seam, nodes)` /
   `rootProps(seam)` append them.
+
+### Field kinds (stage 2)
+
+| `type` | Value | Properties row |
+|--------|-------|----------------|
+| `number` | number (`min` / `max`), optional custom `sample` | number box; slider when it declares a control span |
+| `string` | non-empty string; `source: true` = a media path | text box |
+| `enum` | one of `options` | select |
+| `color` | CSS colour string | swatch + text |
+| `length` | `Length` | percent + px |
+| `custom` | whatever `schema(z, h)` returns | none (JSON panel) |
+
+Any kind may be `animatable` (a `custom` field wraps keyframes itself with
+`h.keyframed`). A `custom` field on visual nodes may be flagged `anchor`: it
+positions the node inside an extension container, so layout re-evaluates per
+frame.
+
+### Node types (stage 2)
+
+```ts
+const mapNode: NodeTypeDef = {
+  type: "map",
+  fields: [ /* the node's own fields — no `nodes` */ ],
+  children: true,          // a container
+  draws: true,             // emits its own draw, beneath its children
+  createAnchors(node, t, duration, inner) { … return (child, t, d) => ({ x, y }) | null },
+  editor: { color, border },
+  import: { extensions: ["pmtiles"], byteRange: true, create(source, { duration }) { … } },
+  rasterizer: createMapRasterizer,   // only on the ./render entry
+};
+```
+
+Core gives every extension node, undeclared: `duration` (required — the
+node shows for exactly that long), an inner canvas (`contentWidth` /
+`contentHeight`, default 100 % of the parent), the spatial fields, placement
+(`id` / `start` / `offset`), `metadata`, and every field extensions
+contribute to visual nodes.
+
+- **Schema:** generated per instance around the declared fields; a type name
+  or field key that collides with core or another extension throws at
+  `createSeam`.
+- **Resolver:** a leaf for timing; own fields ride flat on the resolved node,
+  authored values verbatim, with `extension: true`. A container's children
+  are placed by runs in node-local time at speed 1 and never extend it.
+- **Spatial pass / flatten / audio / clip collection:** generic over
+  `asExtensionNode(node)`.
+- **Render list** (`buildRenderList(seam, …)`): the node's own draw at its
+  inner-canvas size and node-local `drawTime`, then its children; each
+  child's origin goes through the container's anchor function, built once
+  per frame.
+- **Sources:** `string` fields flagged `source` are walked by export, remote
+  .seam, import rewriting and `--proxy`.
+- **Editor:** the catalog (`catalogFor`) is the type's source fields,
+  duration, placement, its other fields, spatial, inner canvas; the block
+  colour comes from `editor`; dropped files matching `import.extensions`
+  become the node `import.create` returns.
+
+### Rasterizers and host services (stage 2)
+
+```ts
+rasterizer(host) → {
+  draw(node, drawTime, width, height): CanvasLike | null   // sync, from what is ready
+  ensure?(node, drawTime, width, height): Promise<void>    // the renderer awaits this
+  clear?(): void                                           // new timeline
+  dispose(): void | Promise<void>
+}
+host = {
+  createCanvas(width, height),   // browser canvas / @napi-rs/canvas
+  openSource(source),            // byte ranges: OPFS, file://, fs, http
+  requestRepaint(),              // async content landed
+}
+```
+
+- Renderer: `NodeRasterizers` (`packages/renderer/src/nodeRasterizers.ts`),
+  one set per render run, reads the returned canvas back as RGBA.
+- Preview: `media/nodeRasterizers.ts`, page-lifetime; the shell injects the
+  source opener with `setByteSourceResolver` (was `setPmtilesResolver`);
+  platforms expose `openByteSource` (was `openPmtilesSource`).
 
 ### Colour stages (stage 1)
 
@@ -226,7 +376,8 @@ colorStage: {
 
 Hosts pass the instance to the compositor: the renderer through
 `renderSeamToFile(seam, …)`, the preview through `<Timeline seam>` /
-`<Player seam>`.
+`<Player seam>`. Hosts that draw list the `./render` entries:
+`createSeam([adjustments, map])` with `map` from `@seam/extension-map/render`.
 
 ## Golden project
 

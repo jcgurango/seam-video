@@ -3,7 +3,7 @@
 // CanvasRenderingContext2D — the renderer hands it a node-canvas context, the
 // preview hands it an HTMLCanvasElement context. No WebGL, no DOM, no OL.
 
-import { MapView, truncateToFraction } from "./view.js";
+import { MapView, truncateToFraction } from "../view.js";
 import type { DecodedTile, TileProvider } from "./tile-source.js";
 import {
   type AnyLayer,

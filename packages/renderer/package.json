@@ -26,7 +26,6 @@
     "@napi-rs/canvas": "^0.1.100",
     "@seam/compositor": "workspace:*",
     "@seam/core": "workspace:*",
-    "@seam/map": "workspace:*",
     "@seam/media-source": "workspace:*",
     "canvas": "^3.2.3",
     "mediabunny": "^1.61.5",
@@ -37,6 +36,7 @@
   },
   "devDependencies": {
     "@seam/extension-adjustments": "workspace:*",
+    "@seam/extension-map": "workspace:*",
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0",

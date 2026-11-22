@@ -370,7 +370,12 @@ export default function MediaBrowser({
   }, [merged, inProjectOnly, usedSources, sort, query]);
 
   const handleDragStart = (item: MediaItem, e: React.DragEvent) => {
-    const child = buildItemFromSource(item.kind, item.name, dragDuration(item));
+    const child = buildItemFromSource(seam, item.kind, item.name, dragDuration(item));
+    // Null: a file kind no installed extension turns into a node.
+    if (!child) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData(SOURCE_DRAG_MIME, JSON.stringify([child]));
     e.dataTransfer.effectAllowed = "copy";
   };

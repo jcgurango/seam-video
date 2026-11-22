@@ -1,6 +1,5 @@
 import React from "react";
-import type { ResolvedTimeline } from "@seam/core";
-import type { CompositorExtensions } from "@seam/compositor";
+import type { ResolvedTimeline, Seam } from "@seam/core";
 import Timeline from "./Timeline.js";
 import VideoCanvas from "./VideoCanvas.js";
 import TransportControls from "./TransportControls.js";
@@ -8,7 +7,7 @@ import TransportControls from "./TransportControls.js";
 interface PlayerProps {
   timeline: ResolvedTimeline;
   /** The host's Seam instance. */
-  seam: CompositorExtensions;
+  seam: Seam;
   basePath: string;
   width?: number;
   height?: number;

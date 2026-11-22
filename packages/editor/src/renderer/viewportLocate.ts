@@ -207,6 +207,7 @@ interface Placed {
 /** Lay one node out in its parent — mirrors `RenderList`'s `dynamicSpatial`
  *  plus the container mapping. `t`/`duration` are node-local. */
 function placeNode(
+  seam: Seam,
   node: Child,
   parentW: number,
   parentH: number,
@@ -232,7 +233,12 @@ function placeNode(
       naturalW = n.naturalWidth;
       naturalH = n.naturalHeight;
     }
-  } else if (node.type === "composition" || node.type === "text" || node.type === "map") {
+  } else if (
+    node.type === "composition" ||
+    node.type === "text" ||
+    // Every extension node type has an inner canvas.
+    seam.nodeTypes.has(node.type)
+  ) {
     const cw = (node as { contentWidth?: Keyframed<Length> }).contentWidth;
     const ch = (node as { contentHeight?: Keyframed<Length> }).contentHeight;
     innerW = sampleContentDim(cw, t, duration, parentW);
@@ -343,7 +349,7 @@ export function locateNode(
     const local = t - rChild.timelineStart;
     const duration = rChild.timelineEnd - rChild.timelineStart;
 
-    const placed = placeNode(cChild, parentW, parentH, fit, local, duration, getMediaSize);
+    const placed = placeNode(seam, cChild, parentW, parentH, fit, local, duration, getMediaSize);
     if (!placed) return null;
 
     if (depth === indices.length - 1) {

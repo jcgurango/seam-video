@@ -28,7 +28,15 @@ export type Length = number | string;
  *  (treated as a scalar shorthand by `origin`/`translation`/`size`). */
 export type Point2D = Length | { x?: Length; y?: Length };
 
-export interface SpatialFields {
+/** Fields extensions contribute to every visual node. Empty in core — an
+ *  extension package adds its fields by declaration merging:
+ *  `declare module "@seam/core" { interface VisualExtensionFields { … } }`,
+ *  so documents built in TypeScript are typed for exactly the extensions the
+ *  program imports. */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface VisualExtensionFields {}
+
+export interface SpatialFields extends VisualExtensionFields {
   objectFit?: ObjectFit;
   /** Point on the item that lines up with `translation` in the parent.
    *  Per-axis: percent (0..100%) selects a position along the item's
@@ -53,22 +61,7 @@ export interface SpatialFields {
    *  px; `%` resolves against the SHORTER side of the rect, so `"50%"` turns a
    *  square into a circle and a rectangle into a pill. Default 0. Animatable. */
   cornerRadius?: Keyframed<Length>;
-  /** Geo / path anchor — only meaningful on a `map`'s children: the node's
-   *  `origin` lands at the pin's projected point and `translation` becomes a
-   *  pixel offset from there. Ignored elsewhere. Animatable (see {@link Pin}). */
-  pin?: Keyframed<Pin>;
 }
-
-/**
- * Where a map attachment is anchored: a geographic coordinate, or a fraction
- * along one of the map's `paths` (by index or path `id`). `position` defaults
- * to that path's current `progress`, so the node rides the head of the
- * reveal. Keyframes interpolate lat/lng (geo→geo) or `position` (same path →
- * same path); a change of kind or path snaps at the keyframe.
- */
-export type Pin =
-  | { latitude: number; longitude: number }
-  | { path: number | string; position?: number };
 
 /** Per-edge inset, in the text-padding shorthand shape but `Length`-valued:
  *  `L` (all edges) | `[v, h]` | `[t, r, b, l]`. `%` resolves against the
@@ -467,48 +460,31 @@ export interface Circle extends SpatialFields, ShapeFields, PlacementFields {
   metadata?: Metadata;
 }
 
-// ── Map ────────────────────────────────────────────────────────────
+// ── Extension node types ───────────────────────────────────────────
 
-/** Geo polyline drawn over a map. */
-export interface MapPath {
-  /** Referenced by `pin: { path: "<id>" }`; else pins address by index. */
-  id?: string;
-  color: Keyframed<string>;
-  /** [[lng, lat], ...] — at least two points. Not animatable. */
-  points: [number, number][];
-  /** 0..1 fraction of the line drawn. Default 1. Animatable. */
-  progress?: Keyframed<number>;
-  /** Stroke width in display pixels. Default 4. Animatable. */
-  lineWidth?: Keyframed<number>;
-}
-
-/**
- * A basemap rasterized from a pmtiles archive with an animatable camera,
- * geo `paths`, and ordinary nodes composited over it as `children`
- * (placed geographically via `pin`). The inner canvas (`contentWidth` /
- * `contentHeight`, default 100% of the parent) is both the raster size and the
- * layout space the children resolve against.
- */
-export interface MapNode extends SpatialFields, PlacementFields {
-  type: "map";
-  /** pmtiles archive — host-resolved like clip/static `source`. */
-  source: string;
+/** What core gives every extension-contributed node type (see
+ *  `NodeTypeDef`): it shows for `duration`, has an inner canvas, the spatial
+ *  and placement fields, and — when it is a container — `children`. */
+export interface ExtensionNodeBase<T extends string = string>
+  extends SpatialFields, PlacementFields {
+  type: T;
   duration: number;
-  latitude?: Keyframed<number>;
-  longitude?: Keyframed<number>;
-  /** maplibre-512 convention; interpolates in scale space (linear in 2^-zoom). */
-  zoom?: Keyframed<number>;
-  /** Basemap-only opacity (tiles); paths/children unaffected. */
-  mapOpacity?: Keyframed<number>;
-  theme?: "light" | "dark";
-  paths?: MapPath[];
-  /** Placed like a composition's children (time 0 = map start), but they
-   *  never extend the map: its `duration` is authoritative. */
+  /** Container types only: placed like a composition's children (time 0 =
+   *  the node's start), but they never extend the node. */
   children?: Child[];
   contentWidth?: Keyframed<Length>;
   contentHeight?: Keyframed<Length>;
   metadata?: Metadata;
 }
+
+/** Authored extension node types by `type`. Empty in core — an extension
+ *  package adds its node by declaration merging:
+ *  `declare module "@seam/core" { interface ExtensionNodeTypes { map: MapNode } }`. */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface ExtensionNodeTypes {}
+
+/** Every extension node type the program knows (`never` without any). */
+export type ExtensionChild = ExtensionNodeTypes[keyof ExtensionNodeTypes];
 
 export type Child =
   | Clip
@@ -518,6 +494,6 @@ export type Child =
   | Text
   | Rect
   | Circle
-  | MapNode
-  | Composition;
+  | Composition
+  | ExtensionChild;
 export type SeamFile = Composition;

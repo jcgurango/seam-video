@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  asExtensionNode,
   sampleVolume,
   unrollLoops,
 } from "@seam/core";
@@ -90,9 +91,11 @@ function collect(
         ? [...envs, { volume: child.volume, startAbs: start, duration: end - start }]
         : envs;
       collect(child.children, start, child.speed * parentSpeed, innerEnvs, out);
-    } else if (child.type === "map") {
-      // Map children: map-local time at speed 1, no volume of their own.
-      collect(child.children, start, parentSpeed, envs, out);
+    } else {
+      // An extension container's children (a map's): node-local time at
+      // speed 1, no volume of their own.
+      const kids = asExtensionNode(child)?.children;
+      if (kids) collect(kids, start, parentSpeed, envs, out);
     }
   }
 }
