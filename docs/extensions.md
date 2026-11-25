@@ -30,6 +30,23 @@ from extensions.
   and own whole views.
 - **Clean breaks.** When a feature moves to an extension the old form is
   removed. No aliases, no converter.
+- **Three layers, one contract** (agreed 2026-11-25). Code reaches a
+  document from three places that differ only in where it lives and who
+  vouches for it:
+
+  | Layer | Lives | Vouched for by | For |
+  |---|---|---|---|
+  | Core | Seam | Seam | the editing model: timing, layout, compositing, simple nodes |
+  | Bundled extensions | the installation | the user, as curator | what many projects need (text, captions, maps) |
+  | Project extensions | the project folder | the project's author | the one-off: this chart, this 3D scene |
+
+  All three use the same extension contract, so a project extension that
+  earns its place moves into the bundled set unchanged. Promotion rule:
+  written twice → an extension; needed by every project → core.
+- **Two escape hatches.** Compile-time scripts generate ordinary nodes
+  (editable, limited vocabulary). Project extensions draw (anything, but
+  opaque pixels). If the editor should understand a thing, it gets a real
+  node type.
 
 Proposed, not yet confirmed:
 
@@ -40,6 +57,15 @@ Proposed, not yet confirmed:
 
 ## Roadmap
 
+**How work is organised from here (JC, 2026-11-25).** Phase A moved what
+existed out of core (rows 0–4). Phase B builds the **project-extension
+system** (row 5). After that the contract grows **project by project**: JC
+feeds a concrete use case, I work toward it, and the contract gains only what
+that use case needs. Each addition is recorded in "Extension contract" with
+the project that introduced it. The contract is done when JC says it is.
+The old rows "Shaders / transitions" and "Motion suite" are no longer
+scheduled; they come back as use cases if and when JC brings them.
+
 | # | Extension | Status | First forces |
 |---|-----------|--------|--------------|
 | 0 | The `Seam` instance (no extension) | done | explicit registry threaded through validate / compile / resolve |
@@ -47,8 +73,16 @@ Proposed, not yet confirmed:
 | 2 | Map | done | node-type contract, host services, lifecycle, child placement |
 | 3 | Captions (CC cut + CC generation) | done (A–E) | non-visual node types, a collected channel, overlay rendering, views, commands, services |
 | 4 | Text | evicted into `extensions/text`; `wrap: false` (text sized by what it says) added on top. Awaiting JC's test | extension dependencies (`requires`), leaf self-drawing nodes, New-panel tiles, measured inner canvases |
-| 5 | Shaders / transitions | not started | general shader command (0 / 1 / 2 inputs), pass chain |
-| 6 | Motion suite | not started | embedded app as a view + its own node type |
+| 5 | **Project extensions** (Phase B) | next — being scoped | extensions loaded from the project folder; a per-document `Seam` instance; bundling project code; trust |
+
+### Use-case projects (Phase C)
+
+One row per project JC brings. Each names the use case, what the contract
+gained, and its status.
+
+| Project | Use case | Contract gained | Status |
+|---|---|---|---|
+| — | — | — | — |
 
 ### 1. Adjustments — scope
 
@@ -333,7 +367,9 @@ text is the direct way to its true pixel size.
 
 **Next, in order:**
 
-1. Roadmap item 5, Shaders / transitions.
+1. Roadmap row 5, project extensions. Scope it with JC first (open
+   decisions: how a project declares its extensions, TypeScript, the trust
+   prompt); no code before he confirms.
 2. Loose ends: fonts as a host service (my idea, not a request — JC has it
    noted; only worth building for per-project or extension-shipped fonts);
    a CLI command for `toSrt` / `toVtt`; converting
@@ -350,6 +386,10 @@ Clean breaks, no converters. Keep this document and `CLAUDE.md` current.
 
 | Date | Decision | Why |
 |------|----------|-----|
+| 2026-11-25 | Next step is the project-extension system; afterwards the contract grows only through concrete use-case projects JC brings, until he calls it done | JC's plan: grow the API from real needs, not from a speculative roadmap |
+| 2026-11-25 | Project code reaches a document as a project-local *extension* on the same contract as bundled ones (not a separate "code node" API) | Promotion to the bundled set is then free, and a one-off still gets fields, Properties rows and validation |
+| 2026-11-25 | Shaders / transitions and the motion suite are unscheduled; they return as use cases if JC brings them | Same reason |
+| 2026-11-23 | Desktop first; web and cloud stagnate. If web returns it ships a curated extension set | JC: diverging installations make "a hosted editor that opens any project" incoherent; the reasons web existed (Electron HDR, mobile) are gone. See `docs/platforms.md` |
 | 2026-11-23 | `objectFit` on a container fits its children (inherited); a node is fitted by its parent's. `fitSelf` overrides that per node | JC confirmed the code's rule as intended and asked for the override; mixed fits in one container, true-size text without a wrapper |
 | 2026-11-22 | Unwrapped text (`wrap: false`) is a property of the text node; its measured box is its inner canvas and `objectFit` applies to it as to a composition's. No max width / height | JC's plan: single-line text whose natural size is the rendered text; you own the line breaks; resampling under `fit` is accepted (fix with font size / padding, supersampling later if needed) |
 | 2026-11-22 | `padding` is kept on unwrapped text | JC: otherwise a background with background padding overflows the box |
@@ -391,7 +431,9 @@ Clean breaks, no converters. Keep this document and `CLAUDE.md` current.
 ## Open questions
 
 - Does a `.seam` declare the extensions it requires (names, versions)?
-  Deferred until dynamic loading.
+  Deferred until dynamic loading. More pressing with desktop-first
+  (`docs/platforms.md`): a project opened on an installation missing one of
+  its extensions just fails validation today.
 - Adjustments does not yet merge its six fields into
   `VisualExtensionFields` (Map does for `pin`), so TS code authoring
   `saturation` on a typed node still casts.
