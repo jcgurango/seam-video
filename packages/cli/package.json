@@ -54,7 +54,6 @@
     "d3-ease": "^3.0.1",
     "d3-interpolate": "^3.0.1",
     "mediabunny": "^1.61.5",
-    "node-av": "^6.0.0",
     "node-web-audio-api": "^1.0.0",
     "pbf": "^4.0.1",
     "pmtiles": "^4.4.1",

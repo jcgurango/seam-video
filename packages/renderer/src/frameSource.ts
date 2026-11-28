@@ -34,6 +34,7 @@ import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import type { RenderCommand, DrawCommand } from "@seam/compositor";
 import type { NodeFrame } from "./NodeBackend.js";
 import { HdrToSdrConverter, isHdrSample } from "./hdrToSdr.js";
+import { HdrToSdrGpu } from "./hdrToSdrGpu.js";
 import { openMediaSource, resolveSourcePath } from "./mediaInput.js";
 import { rasterizeSvg } from "./svgImage.js";
 import { classifyStatic } from "./staticKind.js";
@@ -72,8 +73,9 @@ interface ClipCursor {
   lastTime: number; // last requested source time (detect backward jumps)
   rotation: Rotation;
   // HDR (HLG/PQ-tagged) sources tone-map to SDR on the way to RGBA; created
-  // on the first HDR sample, one per cursor (the converter is sequential).
+  // on the first HDR sample, one per cursor (the converters are sequential).
   hdr: HdrToSdrConverter | null;
+  hdrGpu: HdrToSdrGpu | null;
 }
 
 /** Backward decode window for a reversed clip (`reverse: true`). Decoders
@@ -91,6 +93,13 @@ interface ReverseCursor {
   frame: NodeFrame | null;
   rotation: Rotation;
   hdr: HdrToSdrConverter | null;
+  hdrGpu: HdrToSdrGpu | null;
+}
+
+/** The HDR converters a decode cursor owns (see {@link sampleToFrame}). */
+interface HdrHolder {
+  hdr: HdrToSdrConverter | null;
+  hdrGpu: HdrToSdrGpu | null;
 }
 
 const REVERSE_WINDOW = 12;
@@ -118,11 +127,19 @@ export class FrameSource {
   // Maps rasterize on demand (no disk pre-pass); the rasterizer's tile pool
   // stays warm across frames and is closed in dispose().
   private readonly maps: MapRasterizer;
+  /** The compositor's device, when frames may be handed over as textures. */
+  private readonly device: GPUDevice | undefined;
 
-  constructor(basePath: string, stores?: BlockStores) {
+  /**
+   * `device` — the device the compositor's backend renders on. With it, HDR
+   * clip frames are tone-mapped on the GPU and returned as textures
+   * (`NodeFrame.view`, no CPU pixels); without it everything is CPU RGBA.
+   */
+  constructor(basePath: string, stores?: BlockStores, device?: GPUDevice) {
     ensureServer();
     this.basePath = basePath;
     this.stores = stores;
+    this.device = device;
     this.maps = new MapRasterizer(basePath);
   }
 
@@ -273,6 +290,7 @@ export class FrameSource {
         frame: null,
         lastTime: sourceTime,
         hdr: null,
+        hdrGpu: null,
         // Fold the authored pre-transform orientation onto the container's
         // metadata rotation — both bake into the decoded pixels.
         rotation: addRotation(entry.rotation, node.orientation),
@@ -308,7 +326,7 @@ export class FrameSource {
 
     if (!cursor.current) return null;
     if (advanced || !cursor.frame) {
-      cursor.frame = await sampleToFrame(cursor.current, cursor.rotation, cursor);
+      cursor.frame = await sampleToFrame(cursor.current, cursor.rotation, cursor, this.device);
     }
     return cursor.frame;
   }
@@ -331,6 +349,7 @@ export class FrameSource {
         shown: null,
         frame: null,
         hdr: null,
+        hdrGpu: null,
         rotation: addRotation(entry.rotation, node.orientation),
       };
       this.reverseCursors.set(node, cursor);
@@ -374,7 +393,7 @@ export class FrameSource {
     }
     if (!pick) return null;
     if (pick !== cursor.shown || !cursor.frame) {
-      cursor.frame = await sampleToFrame(pick, cursor.rotation, cursor);
+      cursor.frame = await sampleToFrame(pick, cursor.rotation, cursor, this.device);
       cursor.shown = pick;
     }
     return cursor.frame;
@@ -387,6 +406,7 @@ export class FrameSource {
     for (const cursor of this.reverseCursors.values()) {
       for (const s of cursor.samples) s.close();
       cursor.hdr?.dispose();
+      cursor.hdrGpu?.dispose();
     }
     this.reverseCursors.clear();
     await this.maps.dispose();
@@ -420,8 +440,9 @@ export class FrameSource {
       return null;
     }
     // One-shot: a freeze frame decodes once, so the HDR converter (if the
-    // source needs one) lives only for this call.
-    const holder = { hdr: null as HdrToSdrConverter | null };
+    // source needs one) lives only for this call — on the CPU, since a GPU
+    // frame's texture would have to outlive it.
+    const holder: HdrHolder = { hdr: null, hdrGpu: null };
     try {
       const frame = await sampleToFrame(sample, entry.rotation, holder);
       this.staticDims.set(node, { w: frame.width, h: frame.height });
@@ -462,20 +483,30 @@ export class FrameSource {
   }
 }
 
-/** Convert a decoded VideoSample to a display-oriented RGBA frame. HDR-tagged
- *  samples (HLG/PQ) go through `holder.hdr` (tonemapx → SDR BT.709), created
- *  on demand and owned by the caller; everything else takes mediabunny's
- *  plain RGBA conversion. */
+/** Convert a decoded VideoSample to a display-oriented frame. HDR-tagged
+ *  samples (HLG/PQ) are tone-mapped to SDR BT.709 by the converters in
+ *  `holder`, created on demand and owned by the caller: on the GPU when a
+ *  `device` is given (the frame comes back as a texture, rotation included),
+ *  else in TypeScript. Everything else takes mediabunny's plain RGBA
+ *  conversion. */
 async function sampleToFrame(
   sample: VideoSample,
   rotation: Rotation,
-  holder: { hdr: HdrToSdrConverter | null },
+  holder: HdrHolder,
+  device?: GPUDevice,
 ): Promise<NodeFrame> {
   const cw = sample.codedWidth;
   const ch = sample.codedHeight;
   let coded: Uint8Array;
   if (isHdrSample(sample)) {
     holder.hdr ??= new HdrToSdrConverter();
+    if (device) {
+      const pic = await holder.hdr.readPicture(sample);
+      if (pic) {
+        holder.hdrGpu ??= new HdrToSdrGpu(device);
+        return holder.hdrGpu.convert(pic, rotation);
+      }
+    }
     coded = await holder.hdr.toRgba(sample);
   } else {
     coded = new Uint8Array(sample.allocationSize({ format: "RGBA" }));
@@ -496,6 +527,8 @@ function closeCursor(cursor: ClipCursor): void {
   cursor.iter.return?.(undefined);
   cursor.hdr?.dispose();
   cursor.hdr = null;
+  cursor.hdrGpu?.dispose();
+  cursor.hdrGpu = null;
   cursor.current = null;
   cursor.pending = null;
   cursor.frame = null;
@@ -507,7 +540,7 @@ function closeCursor(cursor: ClipCursor): void {
  * container's rotation metadata says how to orient them for display, and for
  * 90/270 the dimensions swap. Square-pixel assumption (PAR ignored).
  */
-function rotateRGBA(
+export function rotateRGBA(
   src: Uint8Array,
   w: number,
   h: number,

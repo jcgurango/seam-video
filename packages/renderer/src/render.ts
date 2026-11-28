@@ -249,7 +249,7 @@ export async function renderSeamToFile(
     const clipNodes = new Set<ResolvedClip>();
     const staticNodes = new Set<ResolvedStatic>();
     collectMediaNodes(timeline.children, clipNodes, staticNodes);
-    const source = (frameSource = new FrameSource(basePath, stores));
+    const source = (frameSource = new FrameSource(basePath, stores, device));
     for (const clip of clipNodes) await source.openSource(clip.source);
     for (const node of staticNodes) await source.openStatic(node);
     mark("gpu+warmup");

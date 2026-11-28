@@ -15,11 +15,15 @@
 import type { RenderBackend } from "@seam/compositor";
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 
-/** A decoded/rasterized frame as tightly-packed RGBA8 (row stride = width*4). */
+/** A decoded/rasterized frame as tightly-packed RGBA8 (row stride = width*4).
+ *  A frame that was produced on the GPU (HDR tone mapping, `hdrToSdrGpu.ts`)
+ *  instead carries the `rgba8unorm` texture `view` it already lives in — on
+ *  this backend's device — and an empty `data`. */
 export interface NodeFrame {
   data: Uint8Array | Uint8ClampedArray;
   width: number;
   height: number;
+  view?: GPUTextureView;
 }
 
 interface TexEntry {
@@ -64,6 +68,8 @@ export class NodeBackend implements RenderBackend<NodeFrame> {
   }
 
   uploadFrame(key: object, frame: NodeFrame): GPUTextureView {
+    // Already a texture on this device: nothing to upload.
+    if (frame.view) return frame.view;
     const entry = this.ensureTexture(key, frame.width, frame.height);
     this.device.queue.writeTexture(
       { texture: entry.texture },

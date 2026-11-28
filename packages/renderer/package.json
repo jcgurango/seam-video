@@ -30,7 +30,6 @@
     "@seam/media-source": "workspace:*",
     "canvas": "^3.2.3",
     "mediabunny": "^1.61.5",
-    "node-av": "^6.0.0",
     "node-web-audio-api": "^1.0.0",
     "pmtiles": "^4.4.1",
     "webgpu": "^0.4.0"
